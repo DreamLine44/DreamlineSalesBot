@@ -11,14 +11,14 @@
  *   { type: 'list',    header, body, buttonLabel, rows: [{id, title, description?}] }
  *
  * v3.1 SALES ASSISTANT additions:
- * [SA-MB1] buildUpsellUI: one-shot add-on suggestion with UPSELL_YES / UPSELL_NO buttons.
+ * buildUpsellUI: one-shot add-on suggestion with UPSELL_YES / UPSELL_NO buttons.
  *          Only shown once per session (flowService tracks upsellSent).
- * [SA-MB2] buildPaymentInstructionsUI: structured payment message with total, Wave number,
+ * buildPaymentInstructionsUI: structured payment message with total, Wave number,
  *          and screenshot instruction — matches spec exactly.
- * [SA-MB3] buildPaymentProofReceivedUI / buildPaymentConfirmedUI / buildPaymentRejectedUI:
+ * buildPaymentProofReceivedUI / buildPaymentConfirmedUI / buildPaymentRejectedUI:
  *          three distinct payment status messages from modes labels.
- * [SA-MB4] buildClarificationUI: plain text question for unknown intents (not a menu dump).
- * [SA-MB5] buildWelcomeUI: single-button mode → text fallback (WhatsApp requires ≥2 buttons).
+ * buildClarificationUI: plain text question for unknown intents (not a menu dump).
+ * buildWelcomeUI: single-button mode → text fallback (WhatsApp requires ≥2 buttons).
  *
  * v3.0 improvements preserved:
  * - buildSmartFallbackUI: mode-appropriate action buttons, never dead-end text
@@ -38,7 +38,7 @@ const formatPrice = (price) => (price != null && price > 0 ? ` (D${price})` : ''
 
 /**
  * buildWelcomeUI(business)
- * [SA-MB5] Single-button modes fall back to text (WhatsApp requires ≥2 for buttons).
+ * Single-button modes fall back to text (WhatsApp requires ≥2 for buttons).
  */
 export function buildWelcomeUI(business) {
   const cfg     = getModeConfig(business);
@@ -112,7 +112,7 @@ export function buildServicesUI(business) {
   // Mode-aware defaults so a restaurant table-booking list doesn't show salon emoji/copy
   const headerEmoji = isRestaurant ? '🍽️' : '💅';
   const defaultName = business?.name || (isRestaurant ? 'Our Restaurant' : 'Our Salon');
-  // [FIX-1] When services array is empty, show a meaningful fallback with contact info
+  // When services array is empty, show a meaningful fallback with contact info
   // instead of the stale "Booking options are being updated" placeholder message.
   const contactHint = business?.adminPhone
     ? `Please contact us directly at *${business.adminPhone}* to book.`
@@ -164,7 +164,7 @@ export function buildConfirmUI(business, summaryText) {
 export const confirmPrompt = (text) =>
   clean(`${text}\n\n━━━━━━━━━━━━━━━━\nIs this correct?\n\n✅ Reply *YES* to confirm\n❌ Reply *NO* to cancel`);
 
-// ─── [SA-MB1] UPSELL UI ───────────────────────────────────────────────────────
+// ─── UPSELL UI ───────────────────────────────────────────────────────
 
 /**
  * buildUpsellUI(business, addOnName, addOnPrice)
@@ -192,7 +192,7 @@ export function buildUpsellUI(business, addOnName, addOnPrice) {
   };
 }
 
-// ─── [SA-MB2] PAYMENT INSTRUCTIONS UI ────────────────────────────────────────
+// ─── PAYMENT INSTRUCTIONS UI ────────────────────────────────────────
 
 /**
  * buildPaymentInstructionsUI(business, amount, orderId)
@@ -205,7 +205,7 @@ export function buildPaymentInstructionsUI(business, amount, orderId = null) {
   const wavePhone = business?.wavePhone?.trim() ||
                     business?.payment?.wavePhone?.trim() ||
                     'N/A';
-  // [FIX-CUR] Use 'GMD' as fallback to match paymentService.buildPaymentInstructions.
+  // Use 'GMD' as fallback to match paymentService.buildPaymentInstructions.
   // Previously used 'D' which produced "D150" instead of "GMD 150".
   const currency  = business?.payment?.currency || 'GMD';
   const idLine    = orderId ? `\nRef: *#${orderId}*` : '';
@@ -230,7 +230,7 @@ export function buildPaymentInstructionsUI(business, amount, orderId = null) {
   };
 }
 
-// ─── [SA-MB3] PAYMENT STATUS MESSAGES ────────────────────────────────────────
+// ─── PAYMENT STATUS MESSAGES ────────────────────────────────────────
 
 export function buildPaymentProofReceivedUI(business) {
   const msg = getLabel(business, 'paymentProofReceived') ||
@@ -251,11 +251,11 @@ export function buildPaymentRejectedUI(business, reason = null) {
   return { type: 'text', body: clean(base + extra) };
 }
 
-// ─── [SA-MB4] CLARIFICATION UI ───────────────────────────────────────────────
+// ─── CLARIFICATION UI ───────────────────────────────────────────────
 
 /**
  * buildClarificationUI(business)
- * [SA-MB4] One focused question when intent is unknown.
+ * One focused question when intent is unknown.
  * Never dumps the full menu. Mode-aware.
  */
 export function buildClarificationUI(business) {

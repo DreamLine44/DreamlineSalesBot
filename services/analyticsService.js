@@ -46,7 +46,6 @@ export const trackBookingAnalytics = async ({ date, time, phoneNumberId = null }
 
 
 // ================= TRACK FAILED INTERACTION =================
-// ✅ NEW — logs any message the bot couldn't handle (Groq fallback / repeat loops)
 
 export const trackFailedInteraction = async (phone, message, intent = "UNKNOWN", phoneNumberId = null) => {
   try {

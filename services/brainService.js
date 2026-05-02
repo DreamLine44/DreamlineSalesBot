@@ -6,27 +6,27 @@
  * Never touches DB, never sends messages, never runs flow logic.
  *
  * v5.0 IMPROVEMENTS:
- * [B-AI1] AI FALLBACK CHAIN: think() now returns action:'AI_FALLBACK' for
+ * AI FALLBACK CHAIN: think() now returns action:'AI_FALLBACK' for
  *         unresolved messages INSIDE a flow. webhookController calls groqService
  *         with full session context. Groq is STRICTLY blocked from confirming
  *         orders, modifying cart, or changing totals.
- * [B-AI2] AI MEMORY: session context (currentFlow, step, lastIntent, lastMessage)
+ * AI MEMORY: session context (currentFlow, step, lastIntent, lastMessage)
  *         is passed to groqService on every AI call so responses are coherent.
  *         Memory resets automatically on session clear.
- * [B-AI3] PAYMENT CONTEXT: when step=PAYMENT_PROOF and user asks about payment,
+ * PAYMENT CONTEXT: when step=PAYMENT_PROOF and user asks about payment,
  *         brain returns action:'AI_PAYMENT_HELP' → groqService gets payment-aware
  *         prompt ("Wave, after confirming your order").
- * [B-AI4] lastIntent is written to session after every think() so groqService
+ * lastIntent is written to session after every think() so groqService
  *         can reference what the user was trying to do.
- * [B-AI5] DEDUP GUARD: if message === session.lastBotMessage, action:'IGNORE'
+ * DEDUP GUARD: if message === session.lastBotMessage, action:'IGNORE'
  *         prevents echoing the bot's own messages back.
  *
  * Preserved from v3.1:
- * [SA-B1] Clarification-first fallback for short/unknown messages
- * [SA-B2] UPSELL button pass-through
- * [SA-B3] INQUIRY → ABOUT routing
- * [SA-B4] Anti-spam: single-word unknowns get clarification, not AI
- * [SA-B5] Revenue-boosting: ORDER/BOOKING win on ambiguous messages
+ * Clarification-first fallback for short/unknown messages
+ * UPSELL button pass-through
+ * INQUIRY → ABOUT routing
+ * Anti-spam: single-word unknowns get clarification, not AI
+ * Revenue-boosting: ORDER/BOOKING win on ambiguous messages
  */
 
 import levenshtein from 'fast-levenshtein';
@@ -170,7 +170,7 @@ function detectIntent(message, session, business) {
     scores[session.currentFlow] += 3;
   }
 
-  // [SA-B5] Revenue-first: ORDER and BOOKING win on ties
+  // Revenue-first: ORDER and BOOKING win on ties
   if (scores.ORDER   > 0) scores.ORDER   += 3;
   if (scores.BOOKING > 0) scores.BOOKING += 3;
 
@@ -216,7 +216,7 @@ function buildWelcomeStatic(business) {
   );
 }
 
-// ─── [SA-B1] Clarification question ──────────────────────────────────────────
+// ─── Clarification question ──────────────────────────────────────────
 
 function buildClarificationReply(business) {
   const cfg      = getModeConfig(business);
@@ -259,7 +259,7 @@ function isRejectionPhrase(text) {
   return REJECTION_PHRASES.some((phrase) => text.includes(phrase));
 }
 
-// ─── [B-AI3] Payment query detection ─────────────────────────────────────────
+// ─── Payment query detection ─────────────────────────────────────────
 // Detects "how about payment", "how do i pay", "wave", etc.
 
 function isPaymentQuery(text) {
@@ -267,7 +267,7 @@ function isPaymentQuery(text) {
          fuzzyScore(tokenize(text), BASE_KEYWORDS.PAYMENT) >= 4;
 }
 
-// ─── [B-AI5] Dedup guard: detect if message is a bounce of the bot's last reply
+// ─── Dedup guard: detect if message is a bounce of the bot's last reply
 // Only checks short messages (< 80 chars) to avoid false positives
 
 function looksLikeBotEcho(raw, session) {
@@ -283,7 +283,7 @@ function looksLikeBotEcho(raw, session) {
 export const think = async ({ message, session, business, phone }) => {
   const raw = String(message || '').trim();
 
-  // [B-AI5] Dedup guard — ignore if this looks like an echo of the bot's last reply
+  // Dedup guard — ignore if this looks like an echo of the bot's last reply
   if (looksLikeBotEcho(raw, session)) {
     return { action: 'IGNORE' };
   }
@@ -292,7 +292,7 @@ export const think = async ({ message, session, business, phone }) => {
   trackUser(phone, raw, intent).catch(() => {});
   const finalIntent = enforceMode(intent, business);
 
-  // [B-AI4] Persist last intent in session for AI memory
+  // Persist last intent in session for AI memory
   if (intent !== 'UNKNOWN' && session) {
     updateSession(session.customerPhone, session.tenantId, { lastIntent: intent }).catch(() => {});
   }
@@ -305,7 +305,7 @@ export const think = async ({ message, session, business, phone }) => {
       return { action: 'CONTINUE_FLOW' };
     }
 
-    // [SA-B2] UPSELL button responses pass through to flowService
+    // UPSELL button responses pass through to flowService
     if (finalIntent === 'UPSELL_YES' || finalIntent === 'UPSELL_NO') {
       return { action: 'CONTINUE_FLOW' };
     }
@@ -317,7 +317,7 @@ export const think = async ({ message, session, business, phone }) => {
 
     // Protected steps — never interrupt, just continue
     if (PROTECTED_STEPS.has(session.step)) {
-      // [B-AI3] BUT: if user is asking about payment while at PAYMENT_PROOF step,
+      // BUT: if user is asking about payment while at PAYMENT_PROOF step,
       // route to AI payment helper instead of passing to flowService as a raw message
       if (session.step === 'PAYMENT_PROOF' && isPaymentQuery(normalize(raw))) {
         return { action: 'AI_PAYMENT_HELP', intent: 'PAYMENT' };
@@ -328,7 +328,7 @@ export const think = async ({ message, session, business, phone }) => {
     // "0" mid-flow → SHOW_MENU (global escape)
     if (finalIntent === 'SHOW_MENU') return { action: 'SHOW_MENU' };
 
-    // [B-AI3] Payment query mid-flow (any step) → payment help
+    // Payment query mid-flow (any step) → payment help
     if (finalIntent === 'PAYMENT' || isPaymentQuery(normalize(raw))) {
       return { action: 'AI_PAYMENT_HELP', intent: 'PAYMENT' };
     }
@@ -355,7 +355,7 @@ export const think = async ({ message, session, business, phone }) => {
     if (finalIntent === 'CONFIRM' && confidence >= 0.7) return { action: 'CONFIRM' };
     if (finalIntent === 'CANCEL'  && confidence >= 0.6) return { action: 'CANCEL' };
 
-    // [B-AI1] In-flow messages that don't match any button/keyword →
+    // In-flow messages that don't match any button/keyword →
     // route to AI fallback so customer gets a smart, context-aware response.
     // The AI is instructed not to confirm orders or modify cart.
     if (finalIntent === 'INQUIRY' || isAboutQuestion(raw)) {
@@ -393,7 +393,7 @@ export const think = async ({ message, session, business, phone }) => {
     return { action: 'ABOUT', intent: 'INQUIRY' };
   }
 
-  // [SA-B1] Unknown intent → clarify for short messages, AI fallback for longer ones
+  // Unknown intent → clarify for short messages, AI fallback for longer ones
   if (!raw || raw.trim().length < 4) {
     return {
       action: 'CLARIFY',

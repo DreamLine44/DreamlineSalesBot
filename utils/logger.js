@@ -1,9 +1,6 @@
 /**
- * utils/logger.js — DEPRECATED
- *
- * Previously used winston directly. All code now uses config/logger.js.
- * This file is a thin re-export for backward-compat only.
- * Import from '../config/logger.js' in all new code.
+ * utils/logger.js — re-exports config/logger.js for backward compatibility.
+ * Use config/logger.js directly in all new code.
  */
 import logger from '../config/logger.js';
 

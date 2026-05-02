@@ -49,9 +49,11 @@ const tenantSchema = new mongoose.Schema({
     phoneNumberId: {
       type: String,
       unique: true,
-      sparse: true,    // allows null/undefined during PENDING onboarding
+      sparse: true,    // skips indexing when field is absent (undefined) — NEVER set default: null here
       trim: true,
-      default: null
+      // NO default: null — Mongoose would write null explicitly, MongoDB would then index it
+      // and treat all PENDING tenants (without a phoneNumberId yet) as duplicates of each other.
+      // Leaving this undefined means the sparse index only kicks in once a real value is stored.
     },
 
     wabaId: {

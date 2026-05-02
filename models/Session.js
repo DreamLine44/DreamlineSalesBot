@@ -1,10 +1,9 @@
 /**
- * models/Session.js — WhatsBotLyn v15
+ * models/Session.js
  *
- * v15 additions:
- * - loopCount / lastLoopMessage: server-side loop prevention (replaces in-memory Map)
- * - currentFlow enum expanded (note: SALON_BOOKING removed — only ORDER/BOOKING are used)
- * - stepHistory: last 5 steps logged for debugging mid-flow switches
+ * Per-customer conversation state, scoped by composite key "${customerPhone}_${tenantId}".
+ * Includes flow tracking, loop prevention (DB-persisted), step history, and upsell state.
+ * Sessions auto-expire via TTL index on expiresAt (default: 30 minutes).
  */
 
 import mongoose from 'mongoose';
@@ -33,9 +32,9 @@ const sessionSchema = new mongoose.Schema({
 
   lastMessage:   { type: String, default: null },
   lastWamid:     { type: String, default: null },
-  // [B-AI5] Last message the BOT sent — used by dedup guard in brainService
+  // Last message the BOT sent — used by dedup guard in brainService
   lastBotMessage: { type: String, default: null },
-  // [B-AI4] Last detected intent — used by groqService for AI memory context
+  // Last detected intent — used by groqService for AI memory context
   lastIntent:    { type: String, default: null },
 
   tenantId:      { type: String, default: null, index: true },

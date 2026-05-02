@@ -1,8 +1,7 @@
 /**
- * controllers/webhookController.js — WhatsBotLyn v5.1-complete
+ * controllers/webhookController.js — WhatsBotLyn v5.1
  *
- * PIPELINE (strictly sequential, no mixing):
- *
+ * PIPELINE (strictly sequential):
  *   1. Receive & verify (signature, dedup, tenant lookup)
  *   2. Guard (suspended, botEnabled, business hours, human mode)
  *   3. Extract message (text / image / interactive)
@@ -12,26 +11,9 @@
  *   7. Dispatch → WhatsApp API                      [LAYER 3: delivery]
  *
  * CRITICAL RULES:
- * - dispatch() is called EXACTLY ONCE per inbound message (no double-sends).
+ * - dispatch() is called EXACTLY ONCE per inbound message.
  * - When a flow is ACTIVE, ONLY handleFlow() runs — no action switch.
  * - brainService only returns INTERRUPT/CANCEL/SHOW_MENU for active flows.
- *
- * BUG FIXES (v3.1 — merged from v2.6 + v3.0):
- * [FIX-1] Mid-flow: brain result only used for INTERRUPT/CANCEL/SHOW_MENU.
- *         CONTINUE_FLOW → straight to handleFlow(). Eliminates double-routing.
- * [FIX-2] INTERRUPT stores previousStep BEFORE session.step is overwritten.
- * [FIX-3] CANCEL action from brain is NOT honoured when session.step === 'CONFIRM'.
- *         At the CONFIRM step the "❌ Cancel" button sends id:"CANCEL". The brain
- *         classifies it as CANCEL and would clear session before flowService sees it.
- *         We now fall through to handleFlow so cancellation goes through one code path.
- *         *** THIS WAS THE ROOT CAUSE OF "We're having a little trouble right now" ***
- *         (Ported from v2.6 — was missing in v3.0)
- * [FIX-4] List reply IDs go directly to handleFlow without brain re-classification.
- * [FIX-5] Session re-fetched from DB after wamid write to avoid stale data.
- * [FIX-6] Payment proof only accepted when step === 'PAYMENT_PROOF'.
- * [FIX-7] No accidental welcome screen during confirmed order completion.
- * [FIX-H] REJECT_FLOW: clone UI before mutation — never mutate shared builder object.
- * [FIX-G] Expired session shows welcome, never "session expired" jargon.
  */
 
 import { getSession, createSession, updateSession, clearSession } from '../services/sessionService.js';
@@ -95,7 +77,7 @@ function extractMessage(msgObj) {
 
 // ─── Wamid deduplication ──────────────────────────────────────────────────────
 //
-// [FIX-DUP] The previous implementation had a race condition:
+// The previous implementation had a race condition:
 //   1. _wamidCache.set() was called BEFORE the DB write
 //   2. lastWamid was only written to the session AFTER all processing (line ~235)
 //   3. If Meta retried within milliseconds (before DB write), both requests would
@@ -177,6 +159,9 @@ export const verifyWebhook = async (req, res) => {
   if (mode !== 'subscribe' || !token || !challenge) return res.sendStatus(403);
   const phoneNumberId = req.params.phoneNumberId;
   if (phoneNumberId) {
+    // Phone-scoped verification: ONLY accept the token registered for this phoneNumberId.
+    // Do NOT fall through to the global META_WEBHOOK_VERIFY_TOKEN — that would allow
+    // the global token to verify any phone number's webhook (security hole).
     try {
       const tenant = await Tenant.findOne(
         { 'whatsapp.phoneNumberId': phoneNumberId },
@@ -188,7 +173,11 @@ export const verifyWebhook = async (req, res) => {
     } catch (err) {
       logger.error('[verifyWebhook] DB error', { err: err.message });
     }
+    // phoneNumberId present but no tenant matched or token mismatch → reject.
+    return res.sendStatus(403);
   }
+  // No phoneNumberId in URL (bare /webhook GET from Meta's app setup panel).
+  // Fall back to the global verify token.
   if (token === process.env.META_WEBHOOK_VERIFY_TOKEN) return res.status(200).send(challenge);
   return res.sendStatus(403);
 };
@@ -207,7 +196,7 @@ export const handleWebhook = async (req, res) => {
     const body = req.body;
     if (!body?.object) return;
 
-    // [FIX-MULTI] Meta may bundle multiple entries or changes in a single POST.
+    // Meta may bundle multiple entries or changes in a single POST.
     // Previously only entry[0].changes[0] was processed — all others were silently
     // dropped. Now we iterate every entry → every change → every message.
     const entries = body.entry;
@@ -218,7 +207,7 @@ export const handleWebhook = async (req, res) => {
       if (!Array.isArray(changes)) continue;
       for (const change of changes) {
         const value = change?.value;
-        // [FIX-STATUS] Explicitly skip delivery/read status updates from WhatsApp.
+        // Explicitly skip delivery/read status updates from WhatsApp.
         // WhatsApp sends statuses (sent, delivered, read) as value.statuses — if we
         // don't filter these early they could theoretically reach processing code.
         if (value?.statuses?.length && !value?.messages?.length) continue;
@@ -252,8 +241,8 @@ export const handleWebhook = async (req, res) => {
     if (tenantDoc.status === 'SUSPENDED') continue;
 
     // ── STEP 3: Deduplication ─────────────────────────────────────────────
-    // [FIX-DUP] Use tenantId-scoped atomic dedup
-    // [FIX-WAMID] Guard: malformed payloads may omit msgObj.id — skip dedup
+    // Use tenantId-scoped atomic dedup
+    // Guard: malformed payloads may omit msgObj.id — skip dedup
     // (fail-open) rather than crashing on an undefined wamid.
     if (wamid && await isDuplicate(wamid, tenantId)) {
       logger.debug('[Webhook] Duplicate wamid skipped', { wamid });
@@ -318,13 +307,13 @@ export const handleWebhook = async (req, res) => {
       session = await createSession(from, tenantId, { customerPhone: from, phoneNumberId });
     }
 
-    // [FIX-DUP] Dedup is now handled by ProcessedMessage collection (atomic).
+    // Dedup is now handled by ProcessedMessage collection (atomic).
     // We no longer need to write lastWamid to the session for dedup purposes.
     // Re-fetch session to get the latest DB state after createSession upsert.
     session = (await getSession(from, tenantId)) || session;
 
     if (wasExpired) {
-      // [FIX-G] Never show "session expired" — show welcome so user knows what to do.
+      // Never show "session expired" — show welcome so user knows what to do.
       await dispatch(from, buildWelcomeUI(business), tenantDoc);
       continue;
     }
@@ -334,9 +323,9 @@ export const handleWebhook = async (req, res) => {
 
     // ── STEP 6: Image handling ────────────────────────────────────────────
     if (imageUrl) {
-      // [FIX-6] Only process payment proof when explicitly in that step
+      // Only process payment proof when explicitly in that step
       if (session.currentFlow === 'ORDER' && session.step === 'PAYMENT_PROOF') {
-        // [PAY-PROOF] Delegate to paymentService — handles DB update, 24h cutoff,
+        // Delegate to paymentService — handles DB update, 24h cutoff,
         // duplicate-proof guard, and admin WhatsApp notification via adminPaymentHandler.
         // Pass tenantDoc + business so receiveProof can notify admin in-process.
         const replyText = await receiveProof(from, tenantId, imageUrl, tenantDoc, business);
@@ -361,7 +350,7 @@ export const handleWebhook = async (req, res) => {
     }
 
     // ── STEP 7b: DONE payment (no-proof flow) ───────────────────────────
-    // [PAY-7] When requireProof=false, customer types DONE to confirm payment.
+    // When requireProof=false, customer types DONE to confirm payment.
     if (
       session.currentFlow === 'ORDER' &&
       session.step === 'PAYMENT_PROOF' &&
@@ -393,7 +382,7 @@ export const handleWebhook = async (req, res) => {
     }
 
     // ── STEP 9: INTERRUPT — store state, send switch prompt, stop ─────────
-    // [FIX-2] Capture session.step BEFORE overwriting it
+    // Capture session.step BEFORE overwriting it
     if (action === 'INTERRUPT') {
       await updateSession(from, tenantId, {
         previousStep:  session.step,
@@ -408,7 +397,7 @@ export const handleWebhook = async (req, res) => {
     // ── STEP 10: REJECT_FLOW — user doesn't want this flow ────────────────
     // e.g. "i dont want to book", "not interested", "never mind"
     if (action === 'REJECT_FLOW' && session.currentFlow) {
-      // [FIX-H] Clone UI before mutation — never modify the shared builder result
+      // Clone UI before mutation — never modify the shared builder result
       await clearSession(from, tenantId);
       await createSession(from, tenantId, { customerPhone: from, phoneNumberId });
       const baseUI = buildWelcomeUI(business);
@@ -419,7 +408,7 @@ export const handleWebhook = async (req, res) => {
 
     // ── STEP 10b: CANCEL from brain mid-flow ──────────────────────────────
     if (action === 'CANCEL' && session.currentFlow) {
-      // [FIX-3] When at the CONFIRM step, the "❌ Cancel" button sends id:"CANCEL".
+      // When at the CONFIRM step, the "❌ Cancel" button sends id:"CANCEL".
       // The brain classifies this as CANCEL and would clear the session BEFORE
       // flowService has a chance to process it — causing the gracefulRetryUI error
       // ("We're having a little trouble right now") shown in the screenshot.
@@ -443,12 +432,12 @@ export const handleWebhook = async (req, res) => {
     }
 
     // ── STEP 12: Active flow → flowService handles EVERYTHING ─────────────
-    // [FIX-1] This is the ONLY place we call handleFlow when a flow is active.
-    // [FIX-4] List reply IDs (isInteractive=true) go straight here, no re-classify.
+    // This is the ONLY place we call handleFlow when a flow is active.
+    // List reply IDs (isInteractive=true) go straight here, no re-classify.
     // We already handled INTERRUPT / REJECT_FLOW / CANCEL / SHOW_MENU above.
     if (session.currentFlow) {
 
-      // [B-AI1] AI_FALLBACK — user sent something unrecognised mid-flow.
+      // AI_FALLBACK — user sent something unrecognised mid-flow.
       // Groq answers the question (about business, general help) WITHOUT touching
       // the cart/order/totals. The flow stays intact.
       if (action === 'AI_FALLBACK') {
@@ -464,7 +453,7 @@ export const handleWebhook = async (req, res) => {
         // AI failed → fall through to flowService to handle natively
       }
 
-      // [B-AI3] AI_PAYMENT_HELP — user asked about payment while mid-flow.
+      // AI_PAYMENT_HELP — user asked about payment while mid-flow.
       // Groq explains Wave payment in context of current order.
       if (action === 'AI_PAYMENT_HELP') {
         let paymentReply = null;
@@ -487,7 +476,7 @@ export const handleWebhook = async (req, res) => {
       const reply = await handleFlow(session, messageText, tenantDoc, isInteractive);
       if (reply) {
         await dispatch(from, reply, tenantDoc);
-        // [B-AI5] Track last bot reply for dedup guard
+        // Track last bot reply for dedup guard
         const replyBody = typeof reply === 'string' ? reply : reply?.body;
         if (replyBody) updateSession(from, tenantId, { lastBotMessage: replyBody }).catch(() => {});
       }
@@ -513,7 +502,7 @@ export const handleWebhook = async (req, res) => {
         let greetMsg = null;
         try { greetMsg = await generateGreeting(business); } catch { /* use static */ }
         const welcomeBase = buildWelcomeUI(business);
-        // [FIX-GREET] Clone the UI object before mutating body — never modify the shared builder result
+        // Clone the UI object before mutating body — never modify the shared builder result
         responseUI = greetMsg ? { ...welcomeBase, body: greetMsg } : welcomeBase;
         break;
       }
@@ -534,7 +523,7 @@ export const handleWebhook = async (req, res) => {
         break;
       }
 
-      // [B-AI3] Payment question with no active flow — explain payment + guide to order
+      // Payment question with no active flow — explain payment + guide to order
       case 'AI_PAYMENT_HELP': {
         let paymentReply = null;
         try {
@@ -550,7 +539,7 @@ export const handleWebhook = async (req, res) => {
         break;
       }
 
-      // [B-AI1] AI_FALLBACK with no active flow — Groq handles it
+      // AI_FALLBACK with no active flow — Groq handles it
       case 'AI_FALLBACK': {
         let aiReply = null;
         try {
@@ -579,7 +568,7 @@ export const handleWebhook = async (req, res) => {
         break;
       }
 
-      // [SA-B1] Unknown intent → ask ONE focused clarification question.
+      // Unknown intent → ask ONE focused clarification question.
       // brainService already built the reply; just send it. Never call AI here.
       case 'CLARIFY': {
         responseUI = brainReply
@@ -604,7 +593,7 @@ export const handleWebhook = async (req, res) => {
     // ── STEP 14: dispatch response ONCE ───────────────────────────────────
     if (responseUI) {
       await dispatch(from, responseUI, tenantDoc);
-      // [B-AI5] Track last bot reply for dedup guard
+      // Track last bot reply for dedup guard
       const respBody = typeof responseUI === 'string' ? responseUI : responseUI?.body;
       if (respBody) updateSession(from, tenantId, { lastBotMessage: respBody }).catch(() => {});
     }
@@ -614,4 +603,7 @@ export const handleWebhook = async (req, res) => {
       }
       } // end for change
     } // end for entry
+  } catch (err) {
+    logger.error('[Webhook] Fatal handler error', { err: err.message, stack: err.stack });
+  }
 };

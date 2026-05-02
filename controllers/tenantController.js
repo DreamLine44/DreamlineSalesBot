@@ -71,7 +71,7 @@ export const connectWhatsApp = async (req, res) => {
       return res.status(404).json({ success: false, message: "Tenant not found" });
     }
 
-    // Ensure whatsapp object exists (🔥 FIX)
+    // Ensure whatsapp object exists
     if (!tenant.whatsapp) {
       tenant.whatsapp = {};
     }
@@ -87,7 +87,7 @@ export const connectWhatsApp = async (req, res) => {
       });
 
       if (duplicate) {
-        return res.status(400).json({
+        return res.status(409).json({
           success: false,
           message: "This phoneNumberId is already registered to another tenant."
         });
@@ -104,8 +104,6 @@ export const connectWhatsApp = async (req, res) => {
       tenant.status = "ACTIVE";
 
       await tenant.save();
-
-      // 🔥 FIX: use upsert instead of find + create (avoids race condition)
       await BusinessConfig.findOneAndUpdate(
         { phoneNumberId },
         { $setOnInsert: { phoneNumberId, tenantId: tenant._id, name: tenant.name, businessMode: "RESTAURANT" } },
@@ -198,21 +196,19 @@ export const connectWhatsApp = async (req, res) => {
     const fetchedPhoneNumberId = firstPhone.id;
     const fetchedPhone = firstPhone.display_phone_number;
 
-    // 🔥 DUPLICATE CHECK
-    const duplicate = await Tenant.findOne({
+        const duplicate = await Tenant.findOne({
       "whatsapp.phoneNumberId": fetchedPhoneNumberId,
       _id: { $ne: id }
     });
 
     if (duplicate) {
-      return res.status(400).json({
+      return res.status(409).json({
         success: false,
         message: "This WhatsApp number is already connected to another tenant."
       });
     }
 
-    // 🔥 SAVE
-    tenant.whatsapp.phone = fetchedPhone || null;
+        tenant.whatsapp.phone = fetchedPhone || null;
     tenant.whatsapp.phoneNumberId = fetchedPhoneNumberId;
     tenant.whatsapp.wabaId = wabaIdResolved;
     tenant.whatsapp.accessToken = userToken;
@@ -306,6 +302,15 @@ export const updateTenant = async (req, res) => {
       if (req.body[field] !== undefined) patch[field] = req.body[field];
     }
 
+    // Validate status before DB write — Mongoose runValidators catches this too,
+    // but returning a clear 400 here is faster and gives a better error message.
+    if (patch.status && !["ACTIVE", "SUSPENDED", "PENDING"].includes(patch.status)) {
+      return res.status(400).json({
+        success: false,
+        message: "status must be ACTIVE, SUSPENDED, or PENDING",
+      });
+    }
+
     if (req.body.accessToken) {
       patch["whatsapp.accessToken"] = req.body.accessToken;
       patch["whatsapp.tokenUpdatedAt"] = new Date();
@@ -333,6 +338,9 @@ export const updateTenant = async (req, res) => {
 
   } catch (error) {
     logger.error("❌ Update Tenant Error:", error);
+    if (error.code === 11000) {
+      return res.status(409).json({ success: false, message: "A tenant with this email already exists." });
+    }
     res.status(500).json({ success: false, message: "Server error" });
   }
 };

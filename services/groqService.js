@@ -4,34 +4,34 @@
  * AI layer — powered by Groq/Llama.
  *
  * v4.0 IMPROVEMENTS (merged from v1.2 + v3.3 + enhancements):
- * [G-RETRY]   Automatic retry with exponential back-off on transient Groq errors
+ * Automatic retry with exponential back-off on transient Groq errors
  *             (rate-limit 429, server error 5xx). Max 2 retries.
- * [G-FALLBK]  Model cascade: tries llama-3.1-8b-instant first (fastest/cheapest),
+ * Model cascade: tries llama-3.1-8b-instant first (fastest/cheapest),
  *             falls back to llama-3.3-70b-versatile on repeated failure so the
  *             bot NEVER silently dies if the small model is overloaded.
- * [G-HEALTH]  exportable groqHealthCheck() — call on startup / cron to validate
+ * exportable groqHealthCheck() — call on startup / cron to validate
  *             the API key is live before the first customer message arrives.
- * [G-LOG]     Structured log for every Groq call: model used, latency, tokens —
+ * Structured log for every Groq call: model used, latency, tokens —
  *             lets you spot regressions in production instantly.
- * [G-SAFE]    GROQ_API_KEY absence is caught in ONE place and surfaced clearly;
+ * GROQ_API_KEY absence is caught in ONE place and surfaced clearly;
  *             every exported function gracefully degrades to standardFallback().
  *
  * Sales-assistant behaviour (preserved from v3.1):
- * [SA-1] System prompt rewritten as focused WhatsApp sales assistant.
+ * System prompt rewritten as focused WhatsApp sales assistant.
  *        NO chatty AI behaviour. Every response drives toward: buy / book / info.
- * [SA-2] Tone: professional, short, action-driven. No long paragraphs.
+ * Tone: professional, short, action-driven. No long paragraphs.
  *        Minimal emojis. Zero unnecessary conversation.
- * [SA-3] FALLBACK prompt attempts ONE clarification question (not a menu dump).
- * [SA-4] ABOUT / GREET prompts redirect to order/booking at the end.
- * [SA-5] standardFallback uses sales-focused language + single CTA.
- * [SA-6] Anti-spam: AI is instructed NEVER to ask follow-up questions unprompted.
+ * FALLBACK prompt attempts ONE clarification question (not a menu dump).
+ * ABOUT / GREET prompts redirect to order/booking at the end.
+ * standardFallback uses sales-focused language + single CTA.
+ * Anti-spam: AI is instructed NEVER to ask follow-up questions unprompted.
  *
  * Mode-awareness (preserved from v3.1):
- * [G1] BOOKING-only businesses never see "Order" as option.
- * [G2] Session context (current step, last message) feeds AI for coherent follow-ups.
- * [G3] Auto-upgrade FALLBACK → ABOUT for about-questions.
- * [G4] generateGreeting for GREET action.
- * [G5] isAboutQuestion exported for brainService routing.
+ * BOOKING-only businesses never see "Order" as option.
+ * Session context (current step, last message) feeds AI for coherent follow-ups.
+ * Auto-upgrade FALLBACK → ABOUT for about-questions.
+ * generateGreeting for GREET action.
+ * isAboutQuestion exported for brainService routing.
  */
 
 import { resolveFaq, buildFaqContext } from './faqService.js';
@@ -44,7 +44,7 @@ const GROQ_API_URL = 'https://api.groq.com/openai/v1/chat/completions';
 
 /**
  * Model cascade — fastest/cheapest first, most capable as fallback.
- * [G-FALLBK] If the primary model is overloaded (503/429 persists), Groq
+ * If the primary model is overloaded (503/429 persists), Groq
  * automatically switches to the secondary so production never goes dark.
  */
 const GROQ_MODELS = [
@@ -92,11 +92,11 @@ const buildSystemPrompt = (business, session, intent = 'FALLBACK') => {
 
   const faqContext = buildFaqContext(business);
 
-  // [B-AI2] Full context assembled in intentInstructions per-intent — built below
+  // Full context assembled in intentInstructions per-intent — built below
   // (currentFlow, currentStep, activeOrderCtx etc are declared there)
 
-  // Intent-specific instructions — [SA-1] sales assistant persona
-  // [B-AI2] Richer session context for AI memory
+  // Intent-specific instructions — sales assistant persona
+  // Richer session context for AI memory
   const currentFlow    = session?.currentFlow;
   const currentStep    = session?.step;
   const lastIntent     = session?.lastIntent;
@@ -214,7 +214,7 @@ const sleep = (ms) => new Promise((res) => setTimeout(res, ms));
 // ─── Single Groq attempt (one model, one try) ────────────────────────────────
 
 /**
- * [G-LOG] Every attempt is timed; structured log includes model, latency, tokens.
+ * Every attempt is timed; structured log includes model, latency, tokens.
  * Returns { ok: true, text } on success or { ok: false, status, error } on failure.
  */
 const _callGroqOnce = async (model, systemPrompt, userMessage) => {
@@ -232,8 +232,8 @@ const _callGroqOnce = async (model, systemPrompt, userMessage) => {
       },
       body: JSON.stringify({
         model,
-        max_tokens:  180,   // [SA-2] Hard cap — prevents long AI rambling on WhatsApp
-        temperature: 0.4,   // [SA-2] Lower = more focused, less creative
+        max_tokens:  180,   // Hard cap — prevents long AI rambling on WhatsApp
+        temperature: 0.4,   // Lower = more focused, less creative
         messages: [
           { role: 'system', content: systemPrompt },
           { role: 'user',   content: userMessage  },
@@ -273,8 +273,8 @@ const _callGroqOnce = async (model, systemPrompt, userMessage) => {
 // ─── Call Groq with retry + model cascade ────────────────────────────────────
 
 /**
- * [G-RETRY]  Retries on 429 / 5xx with exponential back-off.
- * [G-FALLBK] After exhausting retries on primary model, tries the fallback model.
+ * Retries on 429 / 5xx with exponential back-off.
+ * After exhausting retries on primary model, tries the fallback model.
  *
  * Returns the AI text string on success, or null on total failure.
  */
@@ -311,7 +311,7 @@ const callGroq = async (systemPrompt, userMessage) => {
 // ─── Groq health check ────────────────────────────────────────────────────────
 
 /**
- * [G-HEALTH] Validate the Groq API key on startup or via periodic cron.
+ * Validate the Groq API key on startup or via periodic cron.
  * Returns { ok: true, model } on success, { ok: false, error } on failure.
  * Never throws — safe to await in startup without crashing the server.
  */
@@ -336,7 +336,7 @@ export const groqHealthCheck = async () => {
 };
 
 // ─── Standard fallback (no Groq) ─────────────────────────────────────────────
-// [SA-5] Sales-focused language with clear single CTA
+// Sales-focused language with clear single CTA
 
 const standardFallback = (business) => {
   const cfg      = getModeConfig(business);
@@ -352,7 +352,7 @@ const standardFallback = (business) => {
 };
 
 // ─── About-question detection ─────────────────────────────────────────────────
-// [G5] Exported so brainService can route INQUIRY → ABOUT without duplication
+// Exported so brainService can route INQUIRY → ABOUT without duplication
 
 const ABOUT_PATTERNS = [
   /what (do|does|can) (you|this|the business)/i,
@@ -370,7 +370,7 @@ export const isAboutQuestion = (message) =>
   ABOUT_PATTERNS.some((p) => p.test(message));
 
 // ─── Generate greeting ────────────────────────────────────────────────────────
-// [G4] Used by webhookController for GREET action
+// Used by webhookController for GREET action
 
 export const generateGreeting = async (business) => {
   if (business?.settings?.greeting?.trim()) return business.settings.greeting.trim();
@@ -380,7 +380,7 @@ export const generateGreeting = async (business) => {
 };
 
 // ─── Answer about question ────────────────────────────────────────────────────
-// [SA-7] CTA is structurally appended after every ABOUT answer — guarantees
+// CTA is structurally appended after every ABOUT answer — guarantees
 //        redirect to order/booking regardless of what the AI returns.
 
 export const answerAboutQuestion = async (message, business, session) => {
@@ -410,7 +410,7 @@ export const answerAboutQuestion = async (message, business, session) => {
 };
 
 // ─── Main AI reply ────────────────────────────────────────────────────────────
-// [G3] Auto-upgrades FALLBACK → ABOUT for about-questions
+// Auto-upgrades FALLBACK → ABOUT for about-questions
 
 export const getAIReply = async (message, business, session, intent = 'FALLBACK') => {
   // FAQ short-circuit — instant, no Groq cost

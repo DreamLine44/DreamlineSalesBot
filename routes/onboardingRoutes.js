@@ -8,6 +8,10 @@
  *   GET  /register/status       — Check onboarding progress (requires apiKey)
  *   POST /register/business     — Step 2: configure bot   (requires apiKey)
  *   PUT  /register/whatsapp     — Step 3: connect WhatsApp (requires apiKey)
+ *
+ * Additionally mounted in app.js as: app.use('/onboarding', onboardingRoutes)
+ *   GET  /onboarding/callback   — Meta Embedded Signup OAuth redirect target
+ *                                 (no auth — Meta redirects here with ?code=...)
  */
 
 import { Router } from 'express';
@@ -17,6 +21,7 @@ import {
   setupBusiness,
   connectWhatsApp,
   getOnboardingStatus,
+  handleMetaCallback,
 } from '../controllers/onboardingController.js';
 
 const router = Router();
@@ -28,5 +33,11 @@ router.post('/', registerBusiness);
 router.get('/status',    requireApiKeyForOnboarding, getOnboardingStatus);
 router.post('/business', requireApiKeyForOnboarding, setupBusiness);
 router.put('/whatsapp',  requireApiKeyForOnboarding, connectWhatsApp);
+
+// [FIX-CALLBACK] Meta Embedded Signup OAuth redirect — public, no auth.
+// META_REDIRECT_URI in .env points to /onboarding/callback.
+// This route MUST be public — Meta redirects the browser here with ?code=...
+// and the server exchanges the code for an access token server-side.
+router.get('/callback', handleMetaCallback);
 
 export default router;

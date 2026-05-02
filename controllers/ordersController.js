@@ -1,13 +1,8 @@
 /**
  * controllers/ordersController.js
  *
- * FIX [2]: Order/Booking retrieval API — complete implementation.
- *
- * All endpoints are scoped to req.tenant._id (set by authMiddleware),
- * so a business owner can only ever see their own records.
- *
- * Converted to ESM (project uses "type": "module").
- * NOTE: json2csv must be installed: npm i json2csv
+ * Order and booking retrieval, CSV export, Wave payment verification,
+ * and failed-message replay. All endpoints are scoped to req.tenant._id.
  */
 
 import Order from '../models/Order.js';

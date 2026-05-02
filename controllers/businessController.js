@@ -31,8 +31,7 @@ export const createBusiness = async (req, res) => {
       });
     }
 
-    // ✅ UPDATED — includes all new fields: description, botEnabled, adminPhone, customMessages
-    const ALLOWED = [
+        const ALLOWED = [
       "name", "description", "businessMode", "mode", "menu", "services",
       "tone", "settings", "hours", "nlp", "botEnabled", "adminPhone",
       "wavePhone", "payment", "customMessages", "faq"
@@ -41,14 +40,14 @@ export const createBusiness = async (req, res) => {
     const data = { phoneNumberId, tenantId: req.tenant._id };
     for (const field of ALLOWED) {
       if (req.body[field] !== undefined) {
-        // [FIX-2] Uppercase businessMode/mode — 'restaurant' would fail the enum
+        // Uppercase businessMode/mode — 'restaurant' would fail the enum
         data[field] = UPPERCASE_FIELDS.has(field) && typeof req.body[field] === 'string'
           ? req.body[field].toUpperCase()
           : req.body[field];
       }
     }
 
-    // [FIX-4] validateBusinessConfig was imported but never called — run it now
+    // validateBusinessConfig was imported but never called — run it now
     const validation = validateBusinessConfig(data);
     if (!validation.valid) {
       return res.status(400).json({
@@ -100,8 +99,7 @@ export const updateBusiness = async (req, res) => {
     const phoneNumberId = getPhoneNumberId(req, res);
     if (!phoneNumberId) return;
 
-    // ✅ UPDATED — includes all new fields
-    const ALLOWED = [
+        const ALLOWED = [
       "name", "description", "businessMode", "mode", "menu", "services",
       "tone", "settings", "hours", "nlp", "botEnabled", "adminPhone",
       "wavePhone", "payment", "customMessages", "faq"
@@ -110,7 +108,7 @@ export const updateBusiness = async (req, res) => {
     const patch = {};
     for (const field of ALLOWED) {
       if (req.body[field] !== undefined) {
-        // [FIX-3] Uppercase businessMode/mode — 'restaurant' would fail the enum
+        // Uppercase businessMode/mode — 'restaurant' would fail the enum
         patch[field] = UPPERCASE_FIELDS.has(field) && typeof req.body[field] === 'string'
           ? req.body[field].toUpperCase()
           : req.body[field];
@@ -143,7 +141,6 @@ export const updateBusiness = async (req, res) => {
 };
 
 // ================= GET ANALYTICS =================
-// ✅ NEW — GET /business/analytics
 // Returns total orders, bookings, failed interactions, top item, peak hour, daily breakdown.
 
 export const getAnalytics = async (req, res) => {
@@ -165,7 +162,6 @@ export const getAnalytics = async (req, res) => {
 };
 
 // ================= HUMAN MODE TOGGLE =================
-// ✅ NEW — POST /business/human-mode
 // Body: { phone: "2207000000", active: true }
 // Pauses or resumes the bot for a specific customer session.
 
@@ -181,7 +177,7 @@ export const toggleHumanMode = async (req, res) => {
       });
     }
 
-    // [FIX-HM] Normalize phone: strip leading '+' so the key matches how WhatsApp
+    // Normalize phone: strip leading '+' so the key matches how WhatsApp
     // delivers the `from` field (always without '+', e.g. "2207123456").
     // Without this, callers who include the '+' would build a different key and
     // never find the session — humanMode toggle would silently fail.

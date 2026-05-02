@@ -2,14 +2,8 @@
  * models/ProcessedMessage.js
  *
  * Tracks processed WhatsApp message IDs (wamids) to prevent duplicate processing.
- *
- * [FIX-DUP] This collection is the source of truth for deduplication.
- * Using a unique compound index on (wamid, tenantId) with $setOnInsert ensures
- * that only one concurrent request can "claim" a wamid — the second one sees
- * the existing document and skips processing.
- *
- * TTL index on processedAt automatically removes records after 24 hours,
- * keeping the collection small without manual cleanup.
+ * Unique compound index on (wamid, tenantId) — only one request can claim a wamid.
+ * TTL index on processedAt auto-expires records after 24 hours.
  */
 
 import mongoose from 'mongoose';

@@ -2,8 +2,11 @@
  * routes/businessRoutes.js
  *
  * Mounted in app.js as:
- *   app.use('/business',        rateLimiter, requireApiKey, businessRoutes)
- *   app.use('/admin/messages',  rateLimiter, requireApiKey, businessRoutes)
+ *   app.use('/business', rateLimiter, requireApiKey, businessRoutes)
+ *
+ * NOTE: Failed-message replay endpoints are served by adminMessageRoutes.js,
+ *   mounted at /admin/messages — NOT here. This file must NOT register
+ *   /failed-messages routes, as that would incorrectly expose them under /business.
  *
  * Route → full URL mapping:
  *   POST   /              → POST   /business
@@ -11,14 +14,18 @@
  *   PUT    /              → PUT    /business
  *   GET    /analytics     → GET    /business/analytics
  *   POST   /human-mode    → POST   /business/human-mode
+ *   POST   /apply-mode    → POST   /business/apply-mode
+ *   GET    /setup-checklist → GET  /business/setup-checklist
+ *   GET    /default-config  → GET  /business/default-config
  *   GET    /orders/export → GET    /business/orders/export
+ *   GET    /orders/pending-payment → GET /business/orders/pending-payment
  *   GET    /orders        → GET    /business/orders
  *   GET    /orders/:id    → GET    /business/orders/:id
+ *   POST   /orders/:id/confirm-payment → POST /business/orders/:id/confirm-payment
+ *   POST   /orders/:id/reject-payment  → POST /business/orders/:id/reject-payment
  *   GET    /bookings/export → GET  /business/bookings/export
  *   GET    /bookings      → GET    /business/bookings
  *   GET    /bookings/:id  → GET    /business/bookings/:id
- *   GET    /failed-messages         → GET  /admin/messages/failed-messages
- *   POST   /failed-messages/:id/replay → POST /admin/messages/failed-messages/:id/replay
  */
 
 import { Router } from 'express';
@@ -39,8 +46,6 @@ import {
   listBookings,
   getBooking,
   exportBookings,
-  listFailedMessages,
-  replayFailedMessage,
   listPendingPayments,
   confirmPayment,
   rejectPayment,
@@ -87,12 +92,5 @@ router.post('/orders/:id/reject-payment',  rejectPayment);
 router.get('/bookings/export', exportBookings);
 router.get('/bookings',        listBookings);
 router.get('/bookings/:id',    getBooking);
-
-// ── Failed messages (admin replay — Fix [9]) ──────────────────────────────────
-// GET  /admin/failed-messages
-// POST /admin/failed-messages/:id/replay
-// These are mounted via the /admin prefix in app.js
-router.get('/failed-messages',            listFailedMessages);
-router.post('/failed-messages/:id/replay', replayFailedMessage);
 
 export default router;

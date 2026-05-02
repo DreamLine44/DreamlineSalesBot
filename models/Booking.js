@@ -1,11 +1,8 @@
 /**
- * models/Booking.js — WhatsBotLyn v15
+ * models/Booking.js
  *
- * v15 additions:
- * - service: selected service name (Salon mode)
- * - duration: minutes (from services[])
- * - notes: freeform customer note
- * - notifiedAt: when admin was alerted
+ * Stores customer bookings for RESTAURANT (table) and SALON (appointment) modes.
+ * Fields: customerPhone, date, time, service, duration, notes, status, notifiedAt.
  */
 
 import mongoose from 'mongoose';

@@ -87,6 +87,12 @@ app.get('/', (req, res) => res.send('OK'));
 // No SUPER_ADMIN_API_KEY required — businesses self-register here
 app.use("/register", rateLimiter, onboardingRoutes);
 
+// [FIX-CALLBACK] Mount onboardingRoutes under /onboarding too so that
+// GET /onboarding/callback (META_REDIRECT_URI target) resolves correctly.
+// Meta Embedded Signup redirects the browser here with ?code=...
+// Must be public — no rateLimiter or auth middleware (Meta calls it, not the user).
+app.use("/onboarding", onboardingRoutes);
+
 // Business config & orders/bookings — rate limited + tenant auth required
 app.use("/business", rateLimiter, requireApiKey, businessRoutes);
 
@@ -134,7 +140,7 @@ const PORT = process.env.PORT || 5000;
 
   app.listen(PORT, () => {
     logger.info(`WhatsBotLyn v${APP_VERSION} running on port ${PORT}`);
-    logger.info("Routes: /webhook | /business | /register | /admin/tenants");
+    logger.info("Routes: /webhook | /register | /onboarding | /business | /admin/tenants | /admin/messages");
     logger.info("Analytics: GET /business/analytics");
     logger.info("Human mode: POST /business/human-mode");
   });

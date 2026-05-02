@@ -1,13 +1,11 @@
 /**
  * models/FailedMessage.js
  *
- * FIX [9]: Persistent failed-message store.
+ * Persistent store for WhatsApp messages that failed to send permanently
+ * (token expired, all retries exhausted, non-retryable 4xx).
  *
- * When a WhatsApp send fails permanently (token expired, all retries exhausted,
- * non-retryable 4xx), the message is written here instead of being silently dropped.
- *
- * An admin can query GET /admin/failed-messages and replay them via
- * POST /admin/failed-messages/:id/replay once the underlying issue is fixed.
+ * Admin can query GET /admin/messages/failed-messages and replay via
+ * POST /admin/messages/failed-messages/:id/replay once the issue is resolved.
  */
 
 import mongoose from 'mongoose';

@@ -1,15 +1,17 @@
 /**
- * models/BusinessConfig.js — WhatsBotLyn v3.1
+ * models/BusinessConfig.js
  *
- * v3.0 changes:
- * - loopFallback added to customMessages (loop recovery override)
- * - All customMessages fields now have inline comments for non-technical owners
- * - businessMode: replaces the old "mode" field (RESTAURANT | SALON | RETAIL)
- *   Old "mode" kept as a computed virtual for backward-compat.
- * - services[]: Salon-style bookable services with name/duration/price.
- * - customMessages: expanded with welcomeMessage, paymentInstructions keys.
- * - All flow labels overridable via customMessages (read by config/modes.js getLabel()).
- * - NOTHING in flowService is hardcoded — everything flows through here.
+ * Stores all per-tenant bot configuration: business mode, menu/services,
+ * hours, payment, tone, custom messages, and FAQ.
+ *
+ * businessMode (canonical): RESTAURANT | SALON | RETAIL
+ * mode (legacy):            ORDER | BOOKING | BOTH — kept for backward-compat.
+ *
+ * phoneNumberId is NOT required at model level: step 2 of onboarding runs
+ * BEFORE WhatsApp is connected (step 3). Sparse index prevents two tenants
+ * sharing the same phoneNumberId once it is set.
+ *
+ * All user-facing strings flow through customMessages → getLabel() in config/modes.js.
  */
 
 import mongoose from 'mongoose';

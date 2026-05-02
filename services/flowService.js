@@ -6,13 +6,13 @@
  * v3.1 = v3.0 UX improvements + v2.6 critical bug fixes merged:
  *
  * BUG FIXES (from v2.6):
- * [FIX-1] loadBusiness: session.tenantId stored as String but BusinessConfig.tenantId
+ * loadBusiness: session.tenantId stored as String but BusinessConfig.tenantId
  *         is ObjectId in MongoDB — plain string query never matches. Cast to ObjectId.
- * [FIX-2] handleFinalize: added null-guard on business._id (ORDER + BOOKING paths).
+ * handleFinalize: added null-guard on business._id (ORDER + BOOKING paths).
  *         Null business from FIX-1 failure crashes Order.create(); now returns
  *         graceful retry UI instead of unhandled TypeError.
- * [FIX-3] CANCEL at CONFIRM step goes through flowService (not brain short-circuit).
- *         See webhookController [FIX-3].
+ * CANCEL at CONFIRM step goes through flowService (not brain short-circuit).
+ *         See webhookController .
  *
  * v3.0 UX improvements preserved:
  * - buildSmartFallbackUI / buildLoopFallbackUI replace dead-end text fallbacks
@@ -138,7 +138,7 @@ const looksLikeDate = (input) => {
   if (['monday','tuesday','wednesday','thursday','friday','saturday','sunday'].some(d => s.includes(d))) return true;
   if (/^\d{1,2}[\/\-]\d{1,2}([\/\-]\d{2,4})?$/.test(s)) return true;
   if (/\d+\s+\w+/.test(s) || /\w+\s+\d+/.test(s)) return true;
-  // [FIX-DATE-ORD] Ordinal numbers: "6th", "1st", "2nd", "3rd", "6th of this month", etc.
+  // Ordinal numbers: "6th", "1st", "2nd", "3rd", "6th of this month", etc.
   if (/^\d{1,2}(st|nd|rd|th)(\s+.*)?$/.test(s)) return true;
   return false;
 };
@@ -179,7 +179,7 @@ async function loadBusiness(session) {
     const b = await BusinessConfig.findOne({ phoneNumberId: session.phoneNumberId }).catch(() => null);
     if (b) return b;
   }
-  // [FIX-1] session.tenantId is a String (sessionService uses String(tenantId)).
+  // session.tenantId is a String (sessionService uses String(tenantId)).
   // BusinessConfig.tenantId is an ObjectId in Mongo — string query never matches.
   // Cast to ObjectId before querying.
   if (session.tenantId) {
@@ -245,7 +245,7 @@ export const handleFlow = async (session, message, tenant = null, isInteractive 
   }
 
   // ── UPSELL step ───────────────────────────────────────────────────────────
-  // [SA-F1] One-shot add-on suggestion shown after ORDER confirmation.
+  // One-shot add-on suggestion shown after ORDER confirmation.
   // UPSELL_YES / UPSELL_NO button taps arrive here with isInteractive=true.
   if (session.step === 'UPSELL') {
     const { item, quantity, totalPrice } = session.data || {};
@@ -255,7 +255,7 @@ export const handleFlow = async (session, message, tenant = null, isInteractive 
 
     // Quantity never changes on upsell — add-ons don't affect item count
     const updatedQty   = quantity;
-    // [FIX-U] Guard: if totalPrice is null (item had no price), treat as 0 when
+    // Guard: if totalPrice is null (item had no price), treat as 0 when
     // calculating upsell total so payment instructions never show "null".
     const updatedTotal = addOnAccepted && pendingAddOn
       ? (totalPrice || 0) + pendingAddOn.price
@@ -317,7 +317,7 @@ export const handleFlow = async (session, message, tenant = null, isInteractive 
   }
 
 
-  // [FIX-3] CANCEL at CONFIRM also goes through here — no brain short-circuit.
+  // CANCEL at CONFIRM also goes through here — no brain short-circuit.
   if (session.step === 'CONFIRM') {
     if (isBtnConfirm(raw)) return handleFinalize(session, business, tenant);
     if (isBtnReject(raw)) {
@@ -419,7 +419,7 @@ async function handleOrder(session, raw, clean, business, isInteractive = false)
     }
 
     case 'QUANTITY': {
-      // [FIX-Q] Interactive taps at QUANTITY are menu re-selections, not quantities
+      // Interactive taps at QUANTITY are menu re-selections, not quantities
       if (isInteractive) {
         const itemName = session.data?.item;
         return itemName
@@ -431,7 +431,7 @@ async function handleOrder(session, raw, clean, business, isInteractive = false)
       if (qty > 100) return 'Maximum quantity is 100. Please enter a number between *1* and *100*.';
 
       if (!qty || qty < 1) {
-        // [FIX-QG] If the message is long/conversational (complaint, question, off-topic),
+        // If the message is long/conversational (complaint, question, off-topic),
         // route through Groq so the customer gets a real, helpful reply.
         // Short/garbled input just gets the simple nudge.
         if (raw.trim().length >= 6 && !/^\d+$/.test(raw.trim())) {
@@ -543,7 +543,7 @@ async function handleBooking(session, raw, clean, business) {
     case 'SELECT_SERVICE': {
       const services = (business?.services || []).filter(s => s.available !== false);
 
-      // [FIX-5] No services configured — skip to DATE step rather than looping
+      // No services configured — skip to DATE step rather than looping
       if (services.length === 0) {
         await updateSession(session.customerPhone, session.tenantId, { step: 'DATE' });
         const prompt = getLabel(business, 'bookPrompt') || 'What date would you like?';
@@ -582,7 +582,7 @@ async function handleBooking(session, raw, clean, business) {
         return 'I need a *date* for your booking 📅\n\nWhat date works for you?\n(e.g. *25 June*, *next Friday*, *tomorrow*)';
       }
       if (!looksLikeDate(dateInput)) {
-        // [FIX-DG] Long/conversational input → Groq handles it (complaint, question, etc.)
+        // Long/conversational input → Groq handles it (complaint, question, etc.)
         if (dateInput.length >= 8 && !/\d/.test(dateInput)) {
           const aiReply = await getAIReply(dateInput, business, session, 'FALLBACK').catch(() => null);
           if (aiReply) return { type: 'text', body: aiReply };
@@ -640,7 +640,7 @@ async function handleBooking(session, raw, clean, business) {
         return 'I need a *time* for your booking ⏰\n\nWhat time works for you?\n(e.g. *2pm*, *14:00*, *morning*)';
       }
       if (!looksLikeTime(timeInput)) {
-        // [FIX-TG] Long/conversational input → Groq handles it
+        // Long/conversational input → Groq handles it
         if (timeInput.length >= 8 && !/\d/.test(timeInput) && !/am|pm/i.test(timeInput)) {
           const aiReply = await getAIReply(timeInput, business, session, 'FALLBACK').catch(() => null);
           if (aiReply) return { type: 'text', body: aiReply };
@@ -697,7 +697,7 @@ async function handleBooking(session, raw, clean, business) {
     default: {
       const cfg = getModeConfig(business);
       let firstStep = cfg.bookingSteps[0] || 'DATE';
-      // [FIX-4] Skip SELECT_SERVICE when no services are configured
+      // Skip SELECT_SERVICE when no services are configured
       if (firstStep === 'SELECT_SERVICE') {
         const availableSvcs = (business?.services || []).filter(s => s.available !== false);
         if (availableSvcs.length === 0) firstStep = 'DATE';
@@ -734,7 +734,7 @@ async function handleFinalize(session, business, tenant) {
       return gracefulRetryUI('ORDER');
     }
 
-    // [FIX-2] Guard against null/incomplete business object
+    // Guard against null/incomplete business object
     if (!business?._id) {
       logger.error('[flowService] Order finalize: business not found or missing _id', {
         tenantId: session.tenantId, phoneNumberId: session.phoneNumberId, customerPhone: session.customerPhone,
@@ -833,7 +833,7 @@ async function handleFinalize(session, business, tenant) {
       return gracefulRetryUI('BOOKING');
     }
 
-    // [FIX-2] Guard against null business for BOOKING path too
+    // Guard against null business for BOOKING path too
     if (!business?._id) {
       logger.error('[flowService] Booking finalize: business not found or missing _id', {
         tenantId: session.tenantId, phoneNumberId: session.phoneNumberId, customerPhone: session.customerPhone,
@@ -902,7 +902,7 @@ async function handleInterrupt(session, raw, business, tenant) {
     const cfg = getModeConfig(business);
     let firstStep = newFlow === 'ORDER' ? cfg.orderSteps[0] || 'SELECT_ITEM' : cfg.bookingSteps[0] || 'DATE';
 
-    // [FIX-4] Skip SELECT_SERVICE when no services are configured
+    // Skip SELECT_SERVICE when no services are configured
     if (newFlow === 'BOOKING' && firstStep === 'SELECT_SERVICE') {
       const availableSvcs = (business?.services || []).filter(s => s.available !== false);
       if (availableSvcs.length === 0) firstStep = 'DATE';
@@ -979,7 +979,7 @@ export async function startBookingFlow(session, business) {
   const cfg = getModeConfig(business);
   let firstStep = cfg.bookingSteps[0] || 'DATE';
 
-  // [FIX-4] If SELECT_SERVICE is the first step but no services are configured,
+  // If SELECT_SERVICE is the first step but no services are configured,
   // skip straight to DATE so the customer isn't shown an empty/stale services list.
   const availableServices = (business?.services || []).filter(s => s.available !== false);
   if (firstStep === 'SELECT_SERVICE' && availableServices.length === 0) {

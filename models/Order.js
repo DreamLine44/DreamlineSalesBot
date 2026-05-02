@@ -1,17 +1,15 @@
 /**
- * models/Order.js — v3.1
+ * models/Order.js
  *
- * v3.1 fix:
- * - idempotencyKey added as a unique, auto-generated UUID field.
- *   The database has a unique index on (tenantId, customerPhone, idempotencyKey).
- *   Without this field every insert collides on null, causing E11000 duplicate key
- *   errors and the "We're having a little trouble right now" message to customers.
+ * Stores customer orders with full payment lifecycle support.
  *
- * v13 additions (preserved):
- * - paymentMethod: "wave" | "cash" | "card"
- * - paymentStatus: tracks Wave payment lifecycle
- * - paymentProof:  URL/media-id of screenshot the customer uploads
- * - totalPrice:    calculated at order creation from business menu
+ * idempotencyKey: auto-generated UUID per order — prevents duplicate key errors
+ * on the (tenantId, customerPhone, idempotencyKey) compound index.
+ *
+ * paymentStatus tracks Wave payment lifecycle:
+ *   unpaid → payment_pending_verification → paid | payment_failed | refunded
+ *
+ * Note: 'failed' is retained as a backward-compat alias in the enum.
  */
 
 import mongoose from "mongoose";
@@ -34,9 +32,8 @@ const orderSchema = new mongoose.Schema({
   customerPhone: { type: String, required: true, index: true },
   phone:         { type: String, index: true }, // legacy alias
 
-  // Unique key per order attempt — prevents duplicate key errors on the
-  // (tenantId, customerPhone, idempotencyKey) compound index.
-  // Auto-generated at insert time if not provided by the caller.
+  // Auto-generated UUID per order — ensures the unique (tenantId, customerPhone, idempotencyKey)
+  // index is always satisfied. Prevents duplicate orders from button double-taps.
   idempotencyKey: {
     type:    String,
     default: () => randomUUID(),
@@ -63,8 +60,7 @@ const orderSchema = new mongoose.Schema({
 
   paymentStatus: {
     type: String,
-    // [FIX-A] 'payment_failed' is canonical. 'failed' retained as backward-compat alias
-    // for any records written before this fix — do not remove.
+    // 'payment_failed' is canonical. 'failed' is a backward-compat alias — do not remove.
     enum: ["unpaid", "payment_pending_verification", "paid", "payment_failed", "failed", "refunded", null],
     default: "unpaid",
   },
