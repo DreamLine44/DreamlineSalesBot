@@ -1,0 +1,79 @@
+# ===============================
+# Node.js
+# ===============================
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+*.log
+
+# ===============================
+# Environment variables
+# ===============================
+.env
+.env.*
+.env.*.local
+
+# ===============================
+# Runtime data
+# ===============================
+pids
+*.pid
+*.seed
+*.pid.lock
+
+# ===============================
+# Uploads / temp files
+# ===============================
+uploads/
+tmp/
+temp/
+
+# ===============================
+# Coverage / testing
+# ===============================
+coverage/
+.nyc_output
+
+# ===============================
+# Build output
+# ===============================
+dist/
+build/
+.next/
+
+# ===============================
+# Package managers
+# ===============================
+*.tgz
+.yarn-integrity
+jspm_packages/
+bower_components/
+
+# ===============================
+# Cache
+# ===============================
+.eslintcache
+.cache
+.npm
+
+# ===============================
+# REPL history
+# ===============================
+.node_repl_history
+
+# ===============================
+# OS files
+# ===============================
+.DS_Store
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# ===============================
+# IDE / Editor
+# ===============================
+.vscode/
+.idea/
+*.swp
+*.swo
