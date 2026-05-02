@@ -242,7 +242,7 @@ export const handleAdminButtonReply = async (buttonId, adminPhone, tenantId, ten
   if (order.paymentStatus === 'paid') {
     return `ℹ️ Order #${orderId.slice(-6).toUpperCase()} already *approved*. No action taken.`;
   }
-  if (order.paymentStatus === 'payment_failed') { // [FIX-B] was 'failed' which is not in the Order.paymentStatus enum
+  if (order.paymentStatus === 'payment_failed') { // [FIX-B] 'failed' not in enum; use 'payment_failed'
     return `ℹ️ Order #${orderId.slice(-6).toUpperCase()} already *rejected*. No action taken.`;
   }
   if (order.paymentStatus !== 'payment_pending_verification') {

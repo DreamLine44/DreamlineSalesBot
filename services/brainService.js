@@ -31,7 +31,7 @@
 
 import levenshtein from 'fast-levenshtein';
 import { trackUser }                                                  from './learningService.js';
-import { getModeConfig, isFlowEnabled, getModeRestrictionMessage }    from '../config/modes.js';
+import { getModeConfig, getModeRestrictionMessage }                   from '../config/modes.js';
 import { buildInterruptUI }                                           from '../utils/messageBuilders.js';
 import { isAboutQuestion }                                            from './groqService.js';
 import { updateSession }                                              from './sessionService.js';

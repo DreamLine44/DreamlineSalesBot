@@ -63,8 +63,8 @@ const orderSchema = new mongoose.Schema({
 
   paymentStatus: {
     type: String,
-    // [FIX-A] 'failed' added as backward-compat alias — rejectPayment now writes 'payment_failed'
-    // but any records written before the fix may have 'failed' stored in the DB.
+    // [FIX-A] 'payment_failed' is canonical. 'failed' retained as backward-compat alias
+    // for any records written before this fix — do not remove.
     enum: ["unpaid", "payment_pending_verification", "paid", "payment_failed", "failed", "refunded", null],
     default: "unpaid",
   },

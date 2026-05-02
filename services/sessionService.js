@@ -43,6 +43,8 @@ export const createSession = async (customerPhone, tenantId, data = {}) => {
         previousStep:  null,
         lastMessage:   null,
         lastWamid:     null,
+        lastBotMessage: null,
+        lastIntent:    null,
         humanMode:     false,
         expiresAt:     new Date(Date.now() + SESSION_TTL_MS),
       },

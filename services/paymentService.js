@@ -45,8 +45,8 @@ const buildRef = (order) => {
 // ─── BUILD PAYMENT INSTRUCTIONS MESSAGE ──────────────────────────────────────
 export const buildPaymentInstructions = (order, business) => {
   const currency     = business?.payment?.currency    || 'GMD';
-  // [FIX-5] payment.wavePhone is canonical but top-level wavePhone is the legacy fallback
-  // (createBusiness/updateBusiness expose wavePhone as a direct field). Check both.
+  // [FIX-5] payment.wavePhone is canonical; top-level wavePhone is the legacy fallback
+  // used by createBusiness/updateBusiness. Check both so neither path silently fails.
   const wavePhone    = business?.payment?.wavePhone?.trim()
                     || business?.wavePhone?.trim()
                     || 'Not configured — contact the business';
@@ -244,8 +244,8 @@ export const rejectPayment = async (orderId, tenantId, reason, adminIdentifier) 
     { _id: orderId, tenantId },
     {
       $set: {
-        paymentStatus:     'payment_failed', // [FIX-A] 'failed' is NOT in the Order.paymentStatus enum — must use 'payment_failed'
-        status:            'payment_failed', // [FIX-F] 'pending' left the order in limbo; 'payment_failed' is the correct terminal state
+        paymentStatus:     'payment_failed', // [FIX-A] 'failed' NOT in Order.paymentStatus enum
+        status:            'payment_failed', // [FIX-F] 'pending' left order in limbo
         paymentReviewedBy: adminIdentifier || 'admin',
         paymentReviewedAt: new Date(),
         rejectedNote:      reason || null,

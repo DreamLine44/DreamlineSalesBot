@@ -41,14 +41,14 @@ export const createBusiness = async (req, res) => {
     const data = { phoneNumberId, tenantId: req.tenant._id };
     for (const field of ALLOWED) {
       if (req.body[field] !== undefined) {
-        // [FIX-2] Uppercase businessMode/mode before storing — 'restaurant' would fail the enum
+        // [FIX-2] Uppercase businessMode/mode — 'restaurant' would fail the enum
         data[field] = UPPERCASE_FIELDS.has(field) && typeof req.body[field] === 'string'
           ? req.body[field].toUpperCase()
           : req.body[field];
       }
     }
 
-    // [FIX-4] validateBusinessConfig is imported but was never called — run it now
+    // [FIX-4] validateBusinessConfig was imported but never called — run it now
     const validation = validateBusinessConfig(data);
     if (!validation.valid) {
       return res.status(400).json({
@@ -110,7 +110,7 @@ export const updateBusiness = async (req, res) => {
     const patch = {};
     for (const field of ALLOWED) {
       if (req.body[field] !== undefined) {
-        // [FIX-3] Uppercase businessMode/mode — 'restaurant' would fail the enum without this
+        // [FIX-3] Uppercase businessMode/mode — 'restaurant' would fail the enum
         patch[field] = UPPERCASE_FIELDS.has(field) && typeof req.body[field] === 'string'
           ? req.body[field].toUpperCase()
           : req.body[field];
@@ -181,8 +181,14 @@ export const toggleHumanMode = async (req, res) => {
       });
     }
 
+    // [FIX-HM] Normalize phone: strip leading '+' so the key matches how WhatsApp
+    // delivers the `from` field (always without '+', e.g. "2207123456").
+    // Without this, callers who include the '+' would build a different key and
+    // never find the session — humanMode toggle would silently fail.
+    const normalizedPhone = String(phone).replace(/^\+/, '');
+
     // Session key MUST match sessionService format: "${customerPhone}_${tenantId}"
-    const key = `${phone}_${tenantId}`;
+    const key = `${normalizedPhone}_${tenantId}`;
 
     const session = active
       ? await Session.findOneAndUpdate(
@@ -209,23 +215,23 @@ export const toggleHumanMode = async (req, res) => {
       if (active) {
         return res.status(404).json({
           success: false,
-          message: `No active session found for ${phone}. The customer may need to message first.`
+          message: `No active session found for ${normalizedPhone}. The customer may need to message first.`
         });
       }
       // Turning off when no session exists is a no-op — that's fine
       return res.json({
         success: true,
-        message: `No active session for ${phone} — bot is already inactive.`,
-        data: { phone, humanMode: false }
+        message: `No active session for ${normalizedPhone} — bot is already inactive.`,
+        data: { phone: normalizedPhone, humanMode: false }
       });
     }
 
     res.json({
       success: true,
       message: active
-        ? `Bot paused for ${phone}. Human mode ON.`
-        : `Bot resumed for ${phone}. Human mode OFF.`,
-      data: { phone, humanMode: session.humanMode }
+        ? `Bot paused for ${normalizedPhone}. Human mode ON.`
+        : `Bot resumed for ${normalizedPhone}. Human mode OFF.`,
+      data: { phone: normalizedPhone, humanMode: session.humanMode }
     });
 
   } catch (error) {

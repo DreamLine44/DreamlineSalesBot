@@ -35,18 +35,16 @@
  */
 
 import { getSession, createSession, updateSession, clearSession } from '../services/sessionService.js';
-import { dispatch, sendImageMessage }                              from '../services/messageService.js';
+import { dispatch }                                                   from '../services/messageService.js';
 import { getBusiness }                                            from '../services/businessService.js';
 import { think }                                                  from '../services/brainService.js';
 import { handleFlow, startOrderFlow, startBookingFlow }           from '../services/flowService.js';
-import { buildWelcomeUI, buildCancelUI, buildSmartFallbackUI, buildPaymentProofReceivedUI } from '../utils/messageBuilders.js';
+import { buildWelcomeUI, buildCancelUI, buildSmartFallbackUI } from '../utils/messageBuilders.js';
 import { trackFailedInteraction }                                 from '../services/analyticsService.js';
 import { getAIReply, generateGreeting, answerAboutQuestion }      from '../services/groqService.js';
 import { receiveProof, handleDonePayment }                        from '../services/paymentService.js';
 import { isAdminPhone, handleAdminButtonReply, handleAdminTextCommand } from '../services/adminPaymentHandler.js';
 import Tenant  from '../models/Tenant.js';
-import Order   from '../models/Order.js';
-import Session from '../models/Session.js';
 import logger  from '../config/logger.js';
 import { createHmac, timingSafeEqual } from 'crypto';
 
@@ -176,7 +174,7 @@ export const verifyWebhook = async (req, res) => {
   const mode      = req.query['hub.mode'];
   const token     = req.query['hub.verify_token'];
   const challenge = req.query['hub.challenge'];
-  if (mode !== 'subscribe' || !token) return res.sendStatus(403);
+  if (mode !== 'subscribe' || !token || !challenge) return res.sendStatus(403);
   const phoneNumberId = req.params.phoneNumberId;
   if (phoneNumberId) {
     try {
@@ -208,18 +206,31 @@ export const handleWebhook = async (req, res) => {
   try {
     const body = req.body;
     if (!body?.object) return;
-    const value = body.entry?.[0]?.changes?.[0]?.value;
-    // [FIX-STATUS] Explicitly skip delivery/read status updates from WhatsApp.
-    // WhatsApp sends statuses (sent, delivered, read) as value.statuses — if we
-    // don't filter these early they could theoretically reach processing code.
-    if (value?.statuses?.length && !value?.messages?.length) return;
-    if (!value?.messages?.length) return;
 
-    const msgObj        = value.messages[0];
-    const wamid         = msgObj.id;
-    const from          = msgObj.from;
-    const phoneNumberId = value.metadata?.phone_number_id;
-    if (!from || !phoneNumberId) return;
+    // [FIX-MULTI] Meta may bundle multiple entries or changes in a single POST.
+    // Previously only entry[0].changes[0] was processed — all others were silently
+    // dropped. Now we iterate every entry → every change → every message.
+    const entries = body.entry;
+    if (!Array.isArray(entries) || entries.length === 0) return;
+
+    for (const entry of entries) {
+      const changes = entry?.changes;
+      if (!Array.isArray(changes)) continue;
+      for (const change of changes) {
+        const value = change?.value;
+        // [FIX-STATUS] Explicitly skip delivery/read status updates from WhatsApp.
+        // WhatsApp sends statuses (sent, delivered, read) as value.statuses — if we
+        // don't filter these early they could theoretically reach processing code.
+        if (value?.statuses?.length && !value?.messages?.length) continue;
+        if (!value?.messages?.length) continue;
+
+        const msgObj        = value.messages[0];
+        const wamid         = msgObj.id;
+        const from          = msgObj.from;
+        const phoneNumberId = value.metadata?.phone_number_id;
+        if (!from || !phoneNumberId) continue;
+
+        try {
 
     // ── STEP 1: Extract ───────────────────────────────────────────────────
     const { text: messageText, imageUrl, isInteractive } = extractMessage(msgObj);
@@ -228,25 +239,32 @@ export const handleWebhook = async (req, res) => {
     const tenantDoc = await Tenant.findOne({ 'whatsapp.phoneNumberId': phoneNumberId }).lean();
     if (!tenantDoc) {
       logger.warn('[Webhook] Unknown phoneNumberId', { phoneNumberId });
-      return;
+      continue;
     }
 
     const tenantId = tenantDoc._id;
 
+    // ── STEP 2b: Early suspend check ─────────────────────────────────────
+    // Do this BEFORE the dedup write so suspended tenants don't pollute
+    // the ProcessedMessage collection with records that will never be processed.
+    // NOTE: must be `continue` not `return` — we're inside a for-of loop and
+    // `return` would abort the entire handler, dropping all remaining batched messages.
+    if (tenantDoc.status === 'SUSPENDED') continue;
+
     // ── STEP 3: Deduplication ─────────────────────────────────────────────
     // [FIX-DUP] Use tenantId-scoped atomic dedup
-    if (await isDuplicate(wamid, tenantId)) {
+    // [FIX-WAMID] Guard: malformed payloads may omit msgObj.id — skip dedup
+    // (fail-open) rather than crashing on an undefined wamid.
+    if (wamid && await isDuplicate(wamid, tenantId)) {
       logger.debug('[Webhook] Duplicate wamid skipped', { wamid });
-      return;
+      continue;
     }
 
     // ── STEP 4: Guards ────────────────────────────────────────────────────
-    if (tenantDoc.status === 'SUSPENDED') return;
-
     const business = await getBusiness(tenantId);
     if (!business) {
       logger.warn('[Webhook] No BusinessConfig', { tenantId });
-      return;
+      continue;
     }
 
     if (!isBusinessOpen(business)) {
@@ -255,10 +273,11 @@ export const handleWebhook = async (req, res) => {
         business?.settings?.closedMessage ||
         'We are currently closed. Please contact us during business hours.';
       await dispatch(from, { type: 'text', body: closedMsg }, tenantDoc);
-      return;
+      continue;
     }
 
-    if (business.botEnabled === false) return;
+    // NOTE: must be `continue` not `return` — see SUSPENDED check above.
+    if (business.botEnabled === false) continue;
 
     // ── STEP 4b: Admin phone detection ───────────────────────────────────
     // If the sender is an admin, route to the admin payment handler.
@@ -283,7 +302,7 @@ export const handleWebhook = async (req, res) => {
 
       if (adminReply) {
         await dispatch(from, { type: 'text', body: adminReply }, tenantDoc);
-        return; // Admin interaction fully handled — stop here
+        continue; // Admin interaction fully handled — move to next change
       }
 
       // Admin sent something else (e.g. normal chat) — fall through to normal flow
@@ -307,10 +326,11 @@ export const handleWebhook = async (req, res) => {
     if (wasExpired) {
       // [FIX-G] Never show "session expired" — show welcome so user knows what to do.
       await dispatch(from, buildWelcomeUI(business), tenantDoc);
-      return;
+      continue;
     }
 
-    if (session.humanMode === true) return;
+    // NOTE: must be `continue` not `return` — see SUSPENDED check above.
+    if (session.humanMode === true) continue;
 
     // ── STEP 6: Image handling ────────────────────────────────────────────
     if (imageUrl) {
@@ -322,13 +342,13 @@ export const handleWebhook = async (req, res) => {
         const replyText = await receiveProof(from, tenantId, imageUrl, tenantDoc, business);
         await clearSession(from, tenantId);
         await dispatch(from, { type: 'text', body: replyText }, tenantDoc);
-        return;
+        continue;
       }
       const hint = session.currentFlow === 'ORDER'
         ? 'Please complete your order first, then send your payment screenshot when prompted.'
         : 'I can only understand text messages right now 😊\n\nType *Order*, *Book*, or *Hi* to get started.';
       await dispatch(from, { type: 'text', body: hint }, tenantDoc);
-      return;
+      continue;
     }
 
     // ── STEP 7: Non-text guard ────────────────────────────────────────────
@@ -337,7 +357,7 @@ export const handleWebhook = async (req, res) => {
         type: 'text',
         body: 'I can only understand text messages right now 😊\n\nType *Order*, *Book*, or *Hi* to get started.',
       }, tenantDoc);
-      return;
+      continue;
     }
 
     // ── STEP 7b: DONE payment (no-proof flow) ───────────────────────────
@@ -350,7 +370,7 @@ export const handleWebhook = async (req, res) => {
       const replyText = await handleDonePayment(from, tenantId);
       await clearSession(from, tenantId);
       await dispatch(from, { type: 'text', body: replyText }, tenantDoc);
-      return;
+      continue;
     }
 
     // ── STEP 8: Brain (Layer 1 — decision) ───────────────────────────────
@@ -369,7 +389,7 @@ export const handleWebhook = async (req, res) => {
     // ── STEP 8b: IGNORE — dedup guard, message is an echo of bot's last reply ──
     if (action === 'IGNORE') {
       logger.debug('[Webhook] Ignored duplicate/echo message', { from });
-      return;
+      continue;
     }
 
     // ── STEP 9: INTERRUPT — store state, send switch prompt, stop ─────────
@@ -382,7 +402,7 @@ export const handleWebhook = async (req, res) => {
         pendingIntent: intent,
       });
       await dispatch(from, brainUI || (brainReply ? { type: 'text', body: brainReply } : null), tenantDoc);
-      return;
+      continue;
     }
 
     // ── STEP 10: REJECT_FLOW — user doesn't want this flow ────────────────
@@ -394,7 +414,7 @@ export const handleWebhook = async (req, res) => {
       const baseUI = buildWelcomeUI(business);
       const rejectionReply = { ...baseUI, body: 'No problem 👍\n\n' + (baseUI.body || '') };
       await dispatch(from, rejectionReply, tenantDoc);
-      return;
+      continue;
     }
 
     // ── STEP 10b: CANCEL from brain mid-flow ──────────────────────────────
@@ -409,7 +429,7 @@ export const handleWebhook = async (req, res) => {
       if (session.step !== 'CONFIRM') {
         await clearSession(from, tenantId);
         await dispatch(from, buildCancelUI(business), tenantDoc);
-        return;
+        continue;
       }
       // Fall through to handleFlow for CONFIRM step cancellations ↓
     }
@@ -419,7 +439,7 @@ export const handleWebhook = async (req, res) => {
       await clearSession(from, tenantId);
       await createSession(from, tenantId, { customerPhone: from, phoneNumberId });
       await dispatch(from, buildWelcomeUI(business), tenantDoc);
-      return;
+      continue;
     }
 
     // ── STEP 12: Active flow → flowService handles EVERYTHING ─────────────
@@ -439,7 +459,7 @@ export const handleWebhook = async (req, res) => {
         if (aiReply) {
           // Track but don't break the flow — next message continues where they were
           await dispatch(from, { type: 'text', body: aiReply }, tenantDoc);
-          return;
+          continue;
         }
         // AI failed → fall through to flowService to handle natively
       }
@@ -453,7 +473,7 @@ export const handleWebhook = async (req, res) => {
         } catch { /* swallow */ }
         if (paymentReply) {
           await dispatch(from, { type: 'text', body: paymentReply }, tenantDoc);
-          return;
+          continue;
         }
         // Fallback: tell them about payment manually
         const wavePhone = business?.payment?.wavePhone?.trim() || business?.wavePhone?.trim();
@@ -461,7 +481,7 @@ export const handleWebhook = async (req, res) => {
           ? `You can pay via *Wave* to *${wavePhone}* after confirming your order. 💳`
           : `Payment details will be shown after you confirm your order. 📱`;
         await dispatch(from, { type: 'text', body: fallbackMsg }, tenantDoc);
-        return;
+        continue;
       }
 
       const reply = await handleFlow(session, messageText, tenantDoc, isInteractive);
@@ -471,7 +491,7 @@ export const handleWebhook = async (req, res) => {
         const replyBody = typeof reply === 'string' ? reply : reply?.body;
         if (replyBody) updateSession(from, tenantId, { lastBotMessage: replyBody }).catch(() => {});
       }
-      return;
+      continue;
     }
 
     // ── STEP 13: No active flow → action switch ───────────────────────────
@@ -589,7 +609,9 @@ export const handleWebhook = async (req, res) => {
       if (respBody) updateSession(from, tenantId, { lastBotMessage: respBody }).catch(() => {});
     }
 
-  } catch (err) {
-    logger.error('[Webhook] Unhandled error', { err: err.message, stack: err.stack });
-  }
+      } catch (err) {
+        logger.error('[Webhook] Unhandled error', { err: err.message, stack: err.stack });
+      }
+      } // end for change
+    } // end for entry
 };

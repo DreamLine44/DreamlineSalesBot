@@ -312,7 +312,6 @@ export async function dispatch(to, ui, tenant) {
   const body = ui.body ?? (typeof ui === 'string' ? ui : null);
   if (!body) {
     // Nothing to send — log and bail rather than sending garbage
-    const logger = (await import('../config/logger.js')).default;
     logger.warn('[messageService.dispatch] UI object has no body — message suppressed', { ui });
     return;
   }

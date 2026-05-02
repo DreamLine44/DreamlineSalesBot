@@ -14,10 +14,7 @@ import Order from '../models/Order.js';
 import Booking from '../models/Booking.js';
 import FailedMessage from '../models/FailedMessage.js';
 import { sendMessage, dispatch } from '../services/messageService.js';
-import {
-  buildPaymentConfirmedUI,
-  buildPaymentRejectedUI,
-} from '../utils/messageBuilders.js';
+// Note: payment notifications use customerMessage string from paymentService, not UI builders
 import {
   getPendingPayments,
   confirmPayment as svcConfirmPayment,
@@ -233,8 +230,7 @@ export const confirmPayment = async (req, res) => {
     logger.error('[confirmPayment]', err);
     const msg = err.message === 'Order not found or already processed'
       ? err.message : 'Failed to confirm payment';
-    const is404 = typeof err.message === 'string' && err.message.includes('not found');
-    res.status(is404 ? 404 : 500).json({ success: false, error: msg });
+    res.status(err.message.includes('not found') ? 404 : 500).json({ success: false, error: msg });
   }
 };
 
@@ -262,8 +258,7 @@ export const rejectPayment = async (req, res) => {
     logger.error('[rejectPayment]', err);
     const msg = err.message === 'Order not found'
       ? err.message : 'Failed to reject payment';
-    const is404 = typeof err.message === 'string' && err.message.includes('not found');
-    res.status(is404 ? 404 : 500).json({ success: false, error: msg });
+    res.status(err.message.includes('not found') ? 404 : 500).json({ success: false, error: msg });
   }
 };
 
@@ -292,6 +287,9 @@ export const replayFailedMessage = async (req, res) => {
     if (!msg) return res.status(404).json({ success: false, error: 'Not found' });
 
     const tenant = await Tenant.findById(req.tenant._id).lean();
+    if (!tenant) {
+      return res.status(500).json({ success: false, error: 'Tenant not found — cannot replay message' });
+    }
 
     try {
       await sendMessage(msg.to, msg.text, tenant);

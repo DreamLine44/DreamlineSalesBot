@@ -324,13 +324,22 @@ export const handleFlow = async (session, message, tenant = null, isInteractive 
       await clearSession(session.customerPhone, session.tenantId);
       return buildCancelUI(business);
     }
+    const fallbackSummary = session.currentFlow === 'ORDER'
+      ? `🧾 *Order Summary*\n\n🍽️ Item: *${session.data?.item || '?'}*\n🔢 Quantity: *${session.data?.quantity || '?'}*` +
+        (session.data?.totalPrice ? `\n💰 Total: *D${session.data.totalPrice}*` : '')
+      : session.data?.service
+        ? `📋 *Appointment Summary*\n\n💅 Service: *${session.data.service}*\n📅 Date: *${session.data?.date || '?'}*` +
+          (session.data?.time ? `\n⏰ Time: *${session.data.time}*` : '')
+        : `📋 *Booking Summary*\n\n📅 Date: *${session.data?.date || '?'}*` +
+          (session.data?.time ? `\n⏰ Time: *${session.data.time}*` : '');
+
     return buildConfirmUI(
       business,
       session.currentFlow === 'ORDER'
-        ? getLabel(business, 'confirmOrder', session.data?.item, session.data?.quantity, session.data?.totalPrice)
+        ? (getLabel(business, 'confirmOrder', session.data?.item, session.data?.quantity, session.data?.totalPrice) || fallbackSummary)
         : session.data?.service
-            ? getLabel(business, 'confirmBooking', session.data.service, session.data.date, session.data.time)
-            : getLabel(business, 'confirmBooking', session.data?.date, session.data?.time),
+            ? (getLabel(business, 'confirmBooking', session.data.service, session.data.date, session.data.time) || fallbackSummary)
+            : (getLabel(business, 'confirmBooking', session.data?.date, session.data?.time) || fallbackSummary),
     );
   }
 
@@ -448,19 +457,10 @@ async function handleOrder(session, raw, clean, business, isInteractive = false)
       const unitPrice  = menuItem?.price || 0;
       const totalPrice = unitPrice > 0 ? unitPrice * qty : null;
 
-      await updateSession(session.customerPhone, session.tenantId, {
-        data: { ...session.data, quantity: qty, totalPrice }, step: 'CONFIRM',
-      });
-      await pushStep(session, 'CONFIRM');
-
-      // [FLOW-UPSELL] Show order summary first, THEN upsell or confirm.
-      // Step transitions: QUANTITY → SUMMARY_SHOWN → (UPSELL | CONFIRM)
-      // We immediately also decide whether upsell follows, so we set the right next step.
+      // [FLOW-UPSELL] Decide UPSELL vs CONFIRM before writing to DB — only one write needed.
+      // Step transitions: QUANTITY → UPSELL (if add-ons available) OR CONFIRM (direct)
       const cfg    = getModeConfig(business);
       const addOns = cfg.addOns || [];
-      const hasWave = !!(business?.payment?.wavePhone?.trim() || business?.wavePhone?.trim() ||
-                         business?.customMessages?.payment?.trim() ||
-                         business?.customMessages?.paymentInstructions?.trim());
 
       // Build the summary message (no confirm buttons yet — that comes next turn)
       const summaryText =
@@ -788,8 +788,15 @@ async function handleFinalize(session, business, tenant) {
     const effectiveWavePhone = business?.payment?.wavePhone?.trim() || wavePhone;
 
     if (effectiveWavePhone || waveInstr) {
+      // Find the order just created — narrow to last 60s + unpaid to avoid matching stale orders
       const savedOrder = await Order.findOne(
-        { customerPhone, tenantId: tenant._id, status: 'pending' },
+        {
+          customerPhone,
+          tenantId: tenant._id,
+          status: 'pending',
+          paymentStatus: 'unpaid',
+          createdAt: { $gte: new Date(Date.now() - 60_000) },
+        },
         null,
         { sort: { createdAt: -1 } }
       ).catch(() => null);

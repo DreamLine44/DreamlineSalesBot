@@ -17,9 +17,14 @@ export const registerTenant = async (req, res) => {
       });
     }
 
-    const existingEmail = await Tenant.findOne({ email });
+    const cleanEmail = email.toLowerCase().trim();
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) {
+      return res.status(400).json({ success: false, message: "Invalid email address." });
+    }
+
+    const existingEmail = await Tenant.findOne({ email: cleanEmail });
     if (existingEmail) {
-      return res.status(400).json({
+      return res.status(409).json({
         success: false,
         message: "A tenant with this email already exists."
       });
@@ -27,7 +32,7 @@ export const registerTenant = async (req, res) => {
 
     const tenant = await Tenant.create({
       name,
-      email,
+      email: cleanEmail,
       plan: plan || "FREE",
       status: "PENDING"
     });
@@ -48,6 +53,9 @@ export const registerTenant = async (req, res) => {
 
   } catch (error) {
     logger.error("❌ Register Tenant Error:", error);
+    if (error.code === 11000) {
+      return res.status(409).json({ success: false, message: "A tenant with this email already exists." });
+    }
     res.status(500).json({ success: false, message: "Server error" });
   }
 };
@@ -90,7 +98,7 @@ export const connectWhatsApp = async (req, res) => {
       tenant.whatsapp.accessToken = accessToken;
       tenant.whatsapp.wabaId = wabaId || null;
       tenant.whatsapp.verifyToken = verifyToken || crypto.randomBytes(16).toString("hex");
-      tenant.whatsapp.apiVersion = apiVersion || process.env.WA_API_VERSION || "v18.0";
+      tenant.whatsapp.apiVersion = apiVersion || process.env.WA_API_VERSION || "v21.0";
       tenant.whatsapp.connected = true;
       tenant.whatsapp.tokenUpdatedAt = new Date();
       tenant.status = "ACTIVE";
@@ -100,7 +108,7 @@ export const connectWhatsApp = async (req, res) => {
       // 🔥 FIX: use upsert instead of find + create (avoids race condition)
       await BusinessConfig.findOneAndUpdate(
         { phoneNumberId },
-        { $setOnInsert: { phoneNumberId, tenantId: tenant._id, name: tenant.name, businessMode: 'RESTAURANT' } }, // [FIX-C] 'mode' is legacy; 'businessMode' is the v15 field
+        { $setOnInsert: { phoneNumberId, tenantId: tenant._id, name: tenant.name, businessMode: "RESTAURANT" } },
         { upsert: true, new: true }
       );
 
@@ -130,7 +138,7 @@ export const connectWhatsApp = async (req, res) => {
     }
 
     const { META_APP_ID, META_APP_SECRET, META_REDIRECT_URI } = process.env;
-    const WA_API_VERSION = process.env.WA_API_VERSION || "v18.0";
+    const WA_API_VERSION = process.env.WA_API_VERSION || "v21.0";
 
     if (!META_APP_ID || !META_APP_SECRET || !META_REDIRECT_URI) {
       return res.status(500).json({
@@ -218,7 +226,7 @@ export const connectWhatsApp = async (req, res) => {
 
     await BusinessConfig.findOneAndUpdate(
       { phoneNumberId: fetchedPhoneNumberId },
-      { $setOnInsert: { phoneNumberId: fetchedPhoneNumberId, tenantId: tenant._id, name: tenant.name, businessMode: 'RESTAURANT' } }, // [FIX-C] 'mode' is legacy; 'businessMode' is the v15 field
+      { $setOnInsert: { phoneNumberId: fetchedPhoneNumberId, tenantId: tenant._id, name: tenant.name, businessMode: "RESTAURANT" } },
       { upsert: true }
     );
 
@@ -239,6 +247,9 @@ export const connectWhatsApp = async (req, res) => {
 
   } catch (error) {
     logger.error("❌ Connect WhatsApp Error:", error);
+    if (error.code === 11000) {
+      return res.status(409).json({ success: false, message: "This WhatsApp number is already connected to another account." });
+    }
     res.status(500).json({ success: false, message: "Server error" });
   }
 };

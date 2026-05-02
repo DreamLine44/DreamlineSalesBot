@@ -205,7 +205,9 @@ export function buildPaymentInstructionsUI(business, amount, orderId = null) {
   const wavePhone = business?.wavePhone?.trim() ||
                     business?.payment?.wavePhone?.trim() ||
                     'N/A';
-  const currency  = business?.payment?.currency || 'D';
+  // [FIX-CUR] Use 'GMD' as fallback to match paymentService.buildPaymentInstructions.
+  // Previously used 'D' which produced "D150" instead of "GMD 150".
+  const currency  = business?.payment?.currency || 'GMD';
   const idLine    = orderId ? `\nRef: *#${orderId}*` : '';
 
   // Try custom label first, then build structured message

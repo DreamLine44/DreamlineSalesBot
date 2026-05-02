@@ -222,15 +222,12 @@ export function validateBusinessConfig(data) {
     }
   }
 
-  // [FIX-8] Strip leading '+' AND spaces before the digit-only check so E.164 numbers
-  // like "+2203532423" pass. The old regex rejected any number with a leading '+',
-  // which is the standard international format used in the sampleBody.
-  if (data.adminPhone && !/^\d{7,15}$/.test(data.adminPhone.replace(/[\s+]/g, ''))) {
-    errors.push('Admin phone number should only contain digits, optionally starting with + (e.g. +2207000000 or 2207000000).');
+  if (data.adminPhone && !/^\d{7,15}$/.test(data.adminPhone.replace(/\s/g, ''))) {
+    errors.push('Admin phone number should only contain digits (e.g. 2207000000). No spaces or dashes.');
   }
 
-  if (data.wavePhone && !/^\d{7,15}$/.test(data.wavePhone.replace(/[\s+]/g, ''))) {
-    errors.push('Wave phone number should only contain digits, optionally starting with + (e.g. +2207000000 or 2207000000).');
+  if (data.wavePhone && !/^\d{7,15}$/.test(data.wavePhone.replace(/\s/g, ''))) {
+    errors.push('Wave phone number should only contain digits (e.g. 2207000000). No spaces or dashes.');
   }
 
   return { valid: errors.length === 0, errors };
@@ -282,11 +279,7 @@ export function buildSetupChecklist(business) {
       tip:   'Personalise the greeting customers see when they first message you.',
     },
     {
-      // [FIX-6] payment.wavePhone is canonical; top-level wavePhone is the legacy fallback.
-      // Check both so the checklist agrees with what paymentService actually uses.
-      done:  mode !== 'SALON'
-               ? !!(business?.payment?.wavePhone?.trim() || business?.wavePhone?.trim())
-               : true,
+      done:  mode !== 'SALON' ? !!business?.wavePhone?.trim() : true,
       label: mode !== 'SALON' ? '✅ Wave payment number set (optional)' : '✅ N/A for salon mode',
       tip:   mode !== 'SALON'
                ? 'Add your Wave mobile money number so customers can pay digitally.'

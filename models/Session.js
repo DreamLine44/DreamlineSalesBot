@@ -3,7 +3,7 @@
  *
  * v15 additions:
  * - loopCount / lastLoopMessage: server-side loop prevention (replaces in-memory Map)
- * - currentFlow enum expanded: SALON_BOOKING added
+ * - currentFlow enum expanded (note: SALON_BOOKING removed — only ORDER/BOOKING are used)
  * - stepHistory: last 5 steps logged for debugging mid-flow switches
  */
 
@@ -19,7 +19,7 @@ const sessionSchema = new mongoose.Schema({
 
   currentFlow: {
     type: String,
-    enum: ['ORDER', 'BOOKING', null], // [FIX-E] 'WELCOME' was in enum but is never set by any service; removed
+    enum: ['ORDER', 'BOOKING', null], // 'WELCOME' removed — never set by any service
     default: null,
   },
 
@@ -35,6 +35,8 @@ const sessionSchema = new mongoose.Schema({
   lastWamid:     { type: String, default: null },
   // [B-AI5] Last message the BOT sent — used by dedup guard in brainService
   lastBotMessage: { type: String, default: null },
+  // [B-AI4] Last detected intent — used by groqService for AI memory context
+  lastIntent:    { type: String, default: null },
 
   tenantId:      { type: String, default: null, index: true },
 
