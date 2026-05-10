@@ -26,7 +26,16 @@ const { version: APP_VERSION } = _require("./package.json");
 
 const app = express();
 
-app.use(helmet());
+app.use(helmet({
+  contentSecurityPolicy: {
+    directives: {
+      ...helmet.contentSecurityPolicy.getDefaultDirectives(),
+      "script-src": ["'self'", "'unsafe-inline'", "https://connect.facebook.net"],
+      "frame-src": ["'self'", "https://www.facebook.com"],
+      "img-src": ["'self'", "data:", "https:"],
+    },
+  },
+}));
 
 // CORS — restrict to known origins in production
 // No-origin requests (same-origin server fetches, curl, mobile apps) are always allowed.
