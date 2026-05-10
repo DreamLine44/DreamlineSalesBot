@@ -27,8 +27,13 @@ function sessionKey(customerPhone, tenantId) {
  */
 export const createSession = async (customerPhone, tenantId, data = {}) => {
   const key = sessionKey(customerPhone, tenantId);
+  // [FIX] Include tenantId in the filter so the upsert never matches a stale
+  // document where tenantId is null (left over from old sessions before the
+  // composite key format was introduced). Without this, two different tenants
+  // receiving a message from the same phone number could share a session document,
+  // and the E11000 duplicate key error on key_1 (null) would crash the handler.
   return await Session.findOneAndUpdate(
-    { phone: key },
+    { phone: key, tenantId: String(tenantId) },
     {
       $set: {
         phone:         key,
@@ -47,6 +52,20 @@ export const createSession = async (customerPhone, tenantId, data = {}) => {
         lastIntent:    null,
         humanMode:     false,
         expiresAt:     new Date(Date.now() + SESSION_TTL_MS),
+        // ── Loop-prevention & upsell state ──────────────────────────────
+        // These must be explicitly reset so returning customers start clean.
+        // Without this reset:
+        //   - loopCount/lastLoopMessage/lastLoopStep persist from old sessions,
+        //     causing false loop-threshold hits for returning users.
+        //   - upsellSent=true persists forever, permanently disabling upsells
+        //     after the first order even across entirely new sessions.
+        //   - stepHistory is polluted with steps from prior flows.
+        loopCount:       0,
+        lastLoopMessage: null,
+        lastLoopStep:    null,
+        stepHistory:     [],
+        upsellSent:      false,
+        pendingAddOn:    null,
       },
     },
     { upsert: true, new: true }
@@ -56,7 +75,9 @@ export const createSession = async (customerPhone, tenantId, data = {}) => {
 // ─── GET ──────────────────────────────────────────────────────────────────────
 export const getSession = async (customerPhone, tenantId) => {
   const key = sessionKey(customerPhone, tenantId);
-  return await Session.findOne({ phone: key });
+  // Guard against MongoDB TTL lag — expired sessions stay in collection
+  // for up to 60s after expiry. Filter them out explicitly.
+  return await Session.findOne({ phone: key, expiresAt: { $gt: new Date() } });
 };
 
 // ─── UPDATE ───────────────────────────────────────────────────────────────────
@@ -70,8 +91,9 @@ export const updateSession = async (customerPhone, tenantId, updates = {}) => {
     patch.expiresAt = new Date(Date.now() + SESSION_TTL_MS);
   }
 
+  // [FIX] Include tenantId in filter to prevent null-key collisions (E11000)
   return await Session.findOneAndUpdate(
-    { phone: key },
+    { phone: key, tenantId: String(tenantId) },
     { $set: patch },
     { new: true }
   );

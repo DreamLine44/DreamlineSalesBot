@@ -76,7 +76,7 @@ export async function sendMessage(to, text, tenant) {
       // ── [FIX 9] Non-retryable 4xx ──────────────────────────────────────
       const isRetryable = status == null || status >= 500;
       if (!isRetryable) {
-        logger.error(`[MessageService] Non-retryable error (${status}) sending to ${to}:`, err.message);
+        logger.error(`[MessageService] Non-retryable error (${status}) sending to ${to}: ${err?.response?.data?.error?.message || err.message}`);
         await persistFailedMessage({ to, text, tenantId: tenant._id, reason: 'NON_RETRYABLE', status });
         return;
       }
@@ -158,7 +158,7 @@ export async function sendButtonMessage(to, bodyText, buttons, tenant) {
     return true;
   } catch (err) {
     // Log but don't throw — caller will fall back to plain text
-    logger.warn('[MessageService] Button message failed, caller should fall back to text:', err?.response?.data?.error?.message || err.message);
+    logger.warn(`[MessageService] Button message failed, falling back to text: ${err?.response?.data?.error?.message || err.message}`);
     return false;
   }
 }
@@ -215,7 +215,7 @@ export async function sendListMessage(to, headerText, bodyText, buttonText, rows
     });
     return true;
   } catch (err) {
-    logger.warn('[MessageService] List message failed:', err?.response?.data?.error?.message || err.message);
+    logger.warn(`[MessageService] List message failed: ${err?.response?.data?.error?.message || err.message}`);
     return false;
   }
 }
@@ -261,7 +261,7 @@ export async function sendImageMessage(to, mediaIdOrUrl, caption = '', tenant) {
     });
     return true;
   } catch (err) {
-    logger.warn('[MessageService] Image message failed:', err?.response?.data?.error?.message || err.message);
+    logger.warn(`[MessageService] Image message failed: ${err?.response?.data?.error?.message || err.message}`);
     return false;
   }
 }

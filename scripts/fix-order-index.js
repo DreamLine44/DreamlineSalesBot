@@ -1,5 +1,5 @@
 /**
- * scripts/fix-order-index.js — WhatsBotLyn v3.1 one-time migration
+ * scripts/fix-order-index.js — Dreamline Sales Bot v3.1 one-time migration
  *
  * PROBLEM:
  *   The `orders` collection has a unique index on:

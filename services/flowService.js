@@ -1,5 +1,5 @@
 /**
- * services/flowService.js — WhatsBotLyn v3.1
+ * services/flowService.js — Dreamline Sales Bot v3.1
  *
  * LAYER 2 — FLOW LOGIC ONLY.
  *
@@ -27,11 +27,12 @@ import Booking        from '../models/Booking.js';
 import BusinessConfig from '../models/BusinessConfig.js';
 import mongoose       from 'mongoose';
 
-import { updateSession, clearSession }                                        from './sessionService.js';
+import { updateSession, clearSession, getSession }                             from './sessionService.js';
 import { trackOrderAnalytics, trackBookingAnalytics, trackFailedInteraction } from './analyticsService.js';
 import { trackUser }                                                          from './learningService.js';
 import { getAIReply }                                                         from './groqService.js';
 import { dispatch }                                                           from './messageService.js';
+import { recordOrderRevenue }                                                 from './revenueEngineService.js';
 import logger                                                                 from '../config/logger.js';
 
 import {
@@ -54,9 +55,11 @@ import {
   buildPaymentInstructionsUI,
   buildAdminOrderAlert,
   buildAdminBookingAlert,
+  buildEnquiryUI,
 } from '../utils/messageBuilders.js';
 
 import { findBestMatch } from '../utils/matchEngine.js';
+import { resolveFaq } from './faqService.js';
 import { initiatePayment } from './paymentService.js';
 
 // ─── Normalisation ────────────────────────────────────────────────────────────
@@ -191,9 +194,17 @@ async function loadBusiness(session) {
 }
 
 // ─── Step history ─────────────────────────────────────────────────────────────
+//
+// [FIX-10] Always read stepHistory from the DB before appending.
+// handleFlow receives `session` at call time. Multiple updateSession() calls
+// between receiving the session and calling pushStep() change DB state but
+// never refresh the in-memory object — so spreading session.stepHistory
+// could miss intermediate pushes. Re-fetching the latest document ensures
+// the history is always accurate before we write the new step.
 
 async function pushStep(session, step) {
-  const history = [...(session.stepHistory || []), step].slice(-5);
+  const fresh   = await getSession(session.customerPhone, session.tenantId);
+  const history = [...((fresh || session).stepHistory || []), step].slice(-5);
   await updateSession(session.customerPhone, session.tenantId, { stepHistory: history });
 }
 
@@ -228,7 +239,14 @@ export const handleFlow = async (session, message, tenant = null, isInteractive 
   }
 
   // ── Global: cancel ────────────────────────────────────────────────────────
-  if (isBtnCancel(raw)) {
+  // [FIX-12] Exclude steps that have their own "No" handling so a user typing
+  // "stop" or "quit" to decline an upsell or re-enter a date/time doesn't
+  // accidentally cancel the entire order/booking.
+  // DATE_CONFIRM and TIME_CONFIRM are already safe because their "re-enter"
+  // buttons now use DATE_BACK / TIME_BACK (not CANCEL), but typed "no"/"stop"
+  // still hits isBtnCancel — so we exclude them here too.
+  const _cancelExcludedSteps = new Set(['UPSELL', 'DATE_CONFIRM', 'TIME_CONFIRM']);
+  if (isBtnCancel(raw) && !_cancelExcludedSteps.has(session.step)) {
     await clearSession(session.customerPhone, session.tenantId);
     return buildCancelUI(business);
   }
@@ -344,7 +362,7 @@ export const handleFlow = async (session, message, tenant = null, isInteractive 
   }
 
   switch (session.currentFlow) {
-    case 'ORDER':   return handleOrder(session, raw, clean, business, isInteractive);
+    case 'ORDER':   return handleOrder(session, raw, clean, business, isInteractive, tenant);
     case 'BOOKING': return handleBooking(session, raw, clean, business);
     default:
       await clearSession(session.customerPhone, session.tenantId);
@@ -353,11 +371,43 @@ export const handleFlow = async (session, message, tenant = null, isInteractive 
 };
 
 
+// ─── Item image side-effect ────────────────────────────────────────────────────
+//
+// Called after an item is confirmed by the customer. Sends a single image
+// (if the item has one and showImageOnSelect is not false) BEFORE the
+// quantity prompt. Uses dispatch() as a non-blocking side-effect so the
+// normal text reply still flows through webhookController unchanged.
+//
+// Rules enforced here (mirrors spec):
+//   - Only 1 image max, only when user selects an item
+//   - Never when listing menus, greeting, or navigating
+//   - Falls back to text-only silently on any failure
+//   - Never throws — image is optional enhancement only
+
+async function _maybeSendItemImage(session, menuItem, tenant) {
+  try {
+    if (!menuItem?.image?.url)                 return; // no image configured
+    if (menuItem.showImageOnSelect === false)   return; // owner opted out
+    if (!tenant)                               return; // no tenant (shouldn't happen)
+
+    const caption = [
+      menuItem.name,
+      menuItem.description ? menuItem.description : null,
+      menuItem.price > 0   ? `Price: D${menuItem.price}` : null,
+    ].filter(Boolean).join('\n');
+
+    const to = session.customerPhone;
+    await dispatch(to, { type: 'image', url: menuItem.image.url, caption }, tenant);
+  } catch (_) {
+    // Silent fail — image is decorative, never block the flow
+  }
+}
+
 // ═════════════════════════════════════════════════════════════════════════════
 // ORDER FLOW
 // ═════════════════════════════════════════════════════════════════════════════
 
-async function handleOrder(session, raw, clean, business, isInteractive = false) {
+async function handleOrder(session, raw, clean, business, isInteractive = false, tenant = null) {
   const menu = (business?.menu || []).filter((i) => i.available !== false);
 
   if (session.suggestion) {
@@ -367,6 +417,9 @@ async function handleOrder(session, raw, clean, business, isInteractive = false)
         data: { ...session.data, item: selected }, step: 'QUANTITY', suggestion: null,
       });
       await pushStep(session, 'QUANTITY');
+      // Send item image if available (side-effect — non-blocking)
+      const suggestedItem = (business?.menu || []).find(m => getName(m).toLowerCase() === selected.toLowerCase());
+      await _maybeSendItemImage(session, suggestedItem, tenant);
       return `Great choice 👍\n\nHow many *${selected}* would you like?\n\n(Enter a number, e.g. *1*, *2*)`;
     }
     if (isBtnReject(raw)) {
@@ -382,11 +435,14 @@ async function handleOrder(session, raw, clean, business, isInteractive = false)
       const index = parseInt(raw, 10);
       if (!isNaN(index) && index > 0) {
         if (!menu[index - 1]) return `Please choose a number between *1* and *${menu.length}*.`;
-        const item = getName(menu[index - 1]);
+        const menuItem = menu[index - 1];
+        const item     = getName(menuItem);
         await updateSession(session.customerPhone, session.tenantId, {
           data: { ...session.data, item }, step: 'QUANTITY',
         });
         await pushStep(session, 'QUANTITY');
+        // Send item image if available (side-effect — fires before text reply)
+        await _maybeSendItemImage(session, menuItem, tenant);
         return `Great choice 👍\n\nHow many *${item}* would you like?\n\n(Enter a number, e.g. *1*, *2*)`;
       }
 
@@ -394,7 +450,23 @@ async function handleOrder(session, raw, clean, business, isInteractive = false)
 
       const { item, confidenceLevel } = findBestMatch(menu, clean);
 
-      if (!item || confidenceLevel === 'NONE') return buildMenuUI(business);
+      // [FIX] Don't re-send the menu for clearly non-menu input (random text, questions).
+      // Re-sending the menu on every unrecognised message causes a frustrating loop.
+      // Instead: use AI to respond helpfully, keeping the flow intact so they can
+      // still select from the menu after getting a real answer.
+      if (!item || confidenceLevel === 'NONE') {
+        // If input looks conversational (4+ chars, not a number), ask AI first
+        if (raw.trim().length >= 4 && !/^\d+$/.test(raw.trim())) {
+          const aiReply = await getAIReply(raw, business, session, 'FALLBACK').catch(() => null);
+          if (aiReply) return { type: 'text', body: aiReply };
+        }
+        // Short/garbled or AI failed → show menu with a gentle prompt
+        const menuNames = menu.slice(0, 5).map((m, i) => `${i + 1}. ${getName(m)}`).join('\n');
+        return {
+          type: 'text',
+          body: `I didn't quite catch that 😊\n\nHere are our options:\n${menuNames}\n\nReply with a *number* or item name to choose.`,
+        };
+      }
 
       const name = getName(item);
 
@@ -403,6 +475,8 @@ async function handleOrder(session, raw, clean, business, isInteractive = false)
           data: { ...session.data, item: name }, step: 'QUANTITY',
         });
         await pushStep(session, 'QUANTITY');
+        // Send item image if available (side-effect — fires before text reply)
+        await _maybeSendItemImage(session, item, tenant);
         return `Great choice 👍\n\nHow many *${name}* would you like?\n\n(Enter a number, e.g. *1*, *2*)`;
       }
 
@@ -428,7 +502,6 @@ async function handleOrder(session, raw, clean, business, isInteractive = false)
       }
 
       const qty = parseQuantity(raw);
-      if (qty > 100) return 'Maximum quantity is 100. Please enter a number between *1* and *100*.';
 
       if (!qty || qty < 1) {
         // If the message is long/conversational (complaint, question, off-topic),
@@ -446,6 +519,9 @@ async function handleOrder(session, raw, clean, business, isInteractive = false)
           ? `How many *${session.data.item}* would you like? Reply with a number (e.g. *1*, *2*, *3*).`
           : 'Please enter a *number* for the quantity (e.g. *1*, *2*, *3*).';
       }
+
+      // Bounds check comes after null guard — qty is guaranteed a positive number here
+      if (qty > 100) return 'Maximum quantity is 100. Please enter a number between *1* and *100*.';
 
       const itemName = session.data?.item;
       if (!itemName) {
@@ -588,9 +664,10 @@ async function handleBooking(session, raw, clean, business) {
           if (aiReply) return { type: 'text', body: aiReply };
         }
         return (
-          `Sorry, I couldn't understand "*${dateInput}*" as a date 📅\n\n` +
-          `Please give me a clearer date, for example:\n` +
-          `• *25 June*\n• *tomorrow*\n• *next Friday*\n• *25/06/2025*`
+          `I need a *date* for your booking 📅\n\n` +
+          `Please give me a date, for example:\n` +
+          `• *25 June*\n• *tomorrow*\n• *next Friday*\n• *25/06/2025*\n\n` +
+          `💡 Type *0* for the main menu or *cancel* to start over.`
         );
       }
       await updateSession(session.customerPhone, session.tenantId, {
@@ -600,7 +677,7 @@ async function handleBooking(session, raw, clean, business) {
       return {
         type:    'buttons',
         body:    `Just to confirm — did you mean *${dateInput}*? 📅`,
-        buttons: [{ id: 'CONFIRM', title: '✅ Yes, that date' }, { id: 'CANCEL', title: '❌ No, re-enter' }],
+        buttons: [{ id: 'CONFIRM', title: '✅ Yes, that date' }, { id: 'DATE_BACK', title: '❌ No, re-enter' }],
       };
     }
 
@@ -611,7 +688,10 @@ async function handleBooking(session, raw, clean, business) {
         const timePrompt = getLabel(business, 'timePrompt') || 'What time would you prefer?';
         return `Got it — *${session.data?.date}* ✅\n\n${timePrompt} ⏰\n\n(e.g. *2pm*, *14:00*, *morning*)`;
       }
-      if (isReject(clean) || isBtnReject(raw)) {
+      // DATE_BACK is the "❌ No, re-enter" button ID — send back to DATE step.
+      // NOTE: raw === 'CANCEL' is intentionally NOT handled here; that falls
+      // through to the global cancel guard above which clears the whole session.
+      if (raw === 'DATE_BACK' || isReject(clean)) {
         await updateSession(session.customerPhone, session.tenantId, {
           data: { ...session.data, date: null }, step: 'DATE',
         });
@@ -625,7 +705,7 @@ async function handleBooking(session, raw, clean, business) {
         return {
           type:    'buttons',
           body:    `Just to confirm — did you mean *${newDate}*? 📅`,
-          buttons: [{ id: 'CONFIRM', title: '✅ Yes, that date' }, { id: 'CANCEL', title: '❌ No, re-enter' }],
+          buttons: [{ id: 'CONFIRM', title: '✅ Yes, that date' }, { id: 'DATE_BACK', title: '❌ No, re-enter' }],
         };
       }
       return `Please tap *Yes* to confirm *${session.data?.date}* or *No* to change it.`;
@@ -646,9 +726,10 @@ async function handleBooking(session, raw, clean, business) {
           if (aiReply) return { type: 'text', body: aiReply };
         }
         return (
-          `Sorry, I couldn't understand "*${timeInput}*" as a time ⏰\n\n` +
-          `Please give me a clearer time, for example:\n` +
-          `• *2pm* or *2:00pm*\n• *14:00*\n• *morning*\n• *6 in the morning*`
+          `I need a *time* for your booking ⏰\n\n` +
+          `Please give me a time, for example:\n` +
+          `• *2pm* or *2:00pm*\n• *14:00*\n• *morning*\n• *6 in the morning*\n\n` +
+          `💡 Type *0* for the main menu or *cancel* to start over.`
         );
       }
       await updateSession(session.customerPhone, session.tenantId, {
@@ -658,7 +739,7 @@ async function handleBooking(session, raw, clean, business) {
       return {
         type:    'buttons',
         body:    `Just to confirm — did you mean *${timeInput}*? ⏰`,
-        buttons: [{ id: 'CONFIRM', title: '✅ Yes, that time' }, { id: 'CANCEL', title: '❌ No, re-enter' }],
+        buttons: [{ id: 'CONFIRM', title: '✅ Yes, that time' }, { id: 'TIME_BACK', title: '❌ No, re-enter' }],
       };
     }
 
@@ -674,7 +755,10 @@ async function handleBooking(session, raw, clean, business) {
             || `📋 *Booking Summary*\n\n📅 Date: *${date || 'Not specified'}*${time ? `\n⏰ Time: *${time}*` : ''}`;
         return buildConfirmUI(business, summaryText);
       }
-      if (isReject(clean) || isBtnReject(raw)) {
+      // TIME_BACK is the "❌ No, re-enter" button ID — send back to TIME step.
+      // NOTE: raw === 'CANCEL' is intentionally NOT handled here; that falls
+      // through to the global cancel guard above which clears the whole session.
+      if (raw === 'TIME_BACK' || isReject(clean)) {
         await updateSession(session.customerPhone, session.tenantId, {
           data: { ...session.data, time: null }, step: 'TIME',
         });
@@ -688,7 +772,7 @@ async function handleBooking(session, raw, clean, business) {
         return {
           type:    'buttons',
           body:    `Just to confirm — did you mean *${newTime}*? ⏰`,
-          buttons: [{ id: 'CONFIRM', title: '✅ Yes, that time' }, { id: 'CANCEL', title: '❌ No, re-enter' }],
+          buttons: [{ id: 'CONFIRM', title: '✅ Yes, that time' }, { id: 'TIME_BACK', title: '❌ No, re-enter' }],
         };
       }
       return `Please tap *Yes* to confirm *${session.data?.time}* or *No* to change it.`;
@@ -751,8 +835,22 @@ async function handleFinalize(session, business, tenant) {
 
     const customerPhone = session.customerPhone || session.phone;
 
+    // [FIX-6a] Determine paymentMethod BEFORE Order.create.
+    // Hardcoding 'wave' stamped every order with paymentMethod='wave' even for
+    // businesses using cash, card, or no payment — breaking all payment filtering.
+    const _wavePhone = business?.payment?.wavePhone?.trim() || business?.wavePhone?.trim();
+    const _waveInstr = business?.customMessages?.payment?.trim() ||
+                       business?.customMessages?.paymentInstructions?.trim();
+    const _hasPaymentConfig = !!(_wavePhone || _waveInstr);
+
+    // [FIX-3] Capture the return value of Order.create() directly.
+    // The original code discarded it and then did a second Order.findOne() to
+    // retrieve the saved doc — opening a race window where a retry tap from the
+    // same customer within 60 seconds could cause findOne to return the WRONG
+    // (older) order and trigger initiatePayment on that stale record.
+    let savedOrder;
     try {
-      await Order.create({
+      savedOrder = await Order.create({
         phone:         customerPhone,
         customerPhone,
         businessId:    business._id,
@@ -761,7 +859,7 @@ async function handleFinalize(session, business, tenant) {
         quantity,
         totalPrice:    totalPrice || null,
         status:        'pending',
-        paymentMethod: 'wave',
+        paymentMethod: _hasPaymentConfig ? 'wave' : null,
         paymentStatus: 'unpaid',
       });
     } catch (err) {
@@ -770,43 +868,24 @@ async function handleFinalize(session, business, tenant) {
       return gracefulRetryUI('ORDER');
     }
 
-    trackOrderAnalytics(item, session.phoneNumberId, quantity).catch(() => {});
+    trackOrderAnalytics(item, session.phoneNumberId, quantity, totalPrice || 0).catch(() => {});
+    recordOrderRevenue({ item, quantity, totalPrice: totalPrice || 0, phoneNumberId: session.phoneNumberId, customerPhone }).catch(() => {});
     trackUser(customerPhone, item, 'ORDER', { item }).catch(() => {});
 
-    if (business.adminPhone) {
+    // [FIX-6b] Fall back to tenant.adminPhone when business.adminPhone is not set.
+    const _orderAlertPhone = business.adminPhone || tenant?.adminPhone;
+    if (_orderAlertPhone) {
       const alert = buildAdminOrderAlert(customerPhone, item, quantity, business, totalPrice);
-      dispatch(business.adminPhone, { type: 'text', body: alert }, tenant).catch((err) =>
+      dispatch(_orderAlertPhone, { type: 'text', body: alert }, tenant).catch((err) =>
         logger.error('[flowService] Admin order alert failed', { err: err.message }));
     }
 
-    // [FLOW-UPSELL] Upsell now fires at QUANTITY step, NOT here.
-    // handleFinalize receives the final confirmed item/quantity/totalPrice from session.data.
     // ── Wave payment flow ─────────────────────────────────────────────────
-    const wavePhone = business.wavePhone?.trim();
-    const waveInstr = business.customMessages?.payment?.trim() ||
-                      business.customMessages?.paymentInstructions?.trim();
-    const effectiveWavePhone = business?.payment?.wavePhone?.trim() || wavePhone;
-
-    if (effectiveWavePhone || waveInstr) {
-      // Find the order just created — narrow to last 60s + unpaid to avoid matching stale orders
-      const savedOrder = await Order.findOne(
-        {
-          customerPhone,
-          tenantId: tenant._id,
-          status: 'pending',
-          paymentStatus: 'unpaid',
-          createdAt: { $gte: new Date(Date.now() - 60_000) },
-        },
-        null,
-        { sort: { createdAt: -1 } }
-      ).catch(() => null);
-
+    if (_hasPaymentConfig) {
       let paymentMsg;
-      if (savedOrder) {
-        try {
-          paymentMsg = await initiatePayment(savedOrder._id, business);
-        } catch { /* fallback to builder */ }
-      }
+      try {
+        paymentMsg = await initiatePayment(savedOrder._id, business);
+      } catch { /* fallback to builder */ }
 
       await updateSession(session.customerPhone, session.tenantId, {
         currentFlow: 'ORDER', step: 'PAYMENT_PROOF', data: { item, quantity, totalPrice },
@@ -818,10 +897,14 @@ async function handleFinalize(session, business, tenant) {
 
     // No payment configured — clear session and confirm
     await clearSession(session.customerPhone, session.tenantId);
-    const successMsg =
-      getLabel(business, 'afterOrder') ||
-      `✅ *Order confirmed.* We're preparing it now. 🙏`;
-    return { type: 'text', body: successMsg };
+    // Use buildOrderSuccessUI for a structured, mode-aware confirmation — mirrors
+    // the BOOKING path which correctly calls buildBookingSuccessUI. The plain
+    // afterOrder label is still honoured as the body if the owner configured it.
+    const afterOrderLabel = getLabel(business, 'afterOrder');
+    if (afterOrderLabel) {
+      return { type: 'text', body: afterOrderLabel };
+    }
+    return buildOrderSuccessUI(business, item, quantity);
   }
 
   if (session.currentFlow === 'BOOKING') {
@@ -872,9 +955,11 @@ async function handleFinalize(session, business, tenant) {
     trackBookingAnalytics({ date, time, phoneNumberId: session.phoneNumberId }).catch(() => {});
     trackUser(customerPhone, date || service, 'BOOKING', {}).catch(() => {});
 
-    if (business.adminPhone) {
+    // [FIX-6d] Same tenant.adminPhone fallback as the ORDER path above.
+    const _bookingAlertPhone = business.adminPhone || tenant?.adminPhone;
+    if (_bookingAlertPhone) {
       const alert = buildAdminBookingAlert(customerPhone, date || 'TBD', time, business, service);
-      dispatch(business.adminPhone, { type: 'text', body: alert }, tenant).catch((err) =>
+      dispatch(_bookingAlertPhone, { type: 'text', body: alert }, tenant).catch((err) =>
         logger.error('[flowService] Admin booking alert failed', { err: err.message }));
     }
 
@@ -933,7 +1018,7 @@ async function handleInterrupt(session, raw, business, tenant) {
         return {
           type:    'buttons',
           body:    `No problem! Continuing your booking.\n\nJust to confirm — did you mean *${session.data?.date}*? 📅`,
-          buttons: [{ id: 'CONFIRM', title: '✅ Yes, that date' }, { id: 'CANCEL', title: '❌ No, re-enter' }],
+          buttons: [{ id: 'CONFIRM', title: '✅ Yes, that date' }, { id: 'DATE_BACK', title: '❌ No, re-enter' }],
         };
       }
       if (prevStep === 'SELECT_SERVICE') return buildServicesUI(business);
@@ -995,4 +1080,43 @@ export async function startBookingFlow(session, business) {
   if (firstStep === 'SELECT_SERVICE') return buildServicesUI(business);
   const prompt = getLabel(business, 'bookPrompt') || 'What date would you like to book?';
   return { type: 'text', body: `Sure 👍\n\n${prompt} 📅\n\n(e.g. *25 June*, *tomorrow*, *next Monday*)` };
+}
+
+// ─── Enquiry handler ──────────────────────────────────────────────────────────
+//
+// Called when brainService detects action:'ENQUIRY' — meaning the user typed
+// something like "enquiry", "I don't understand", "help", "i have a question"
+// EITHER inside a protected flow step (DATE, TIME, QUANTITY…) OR with no
+// active flow at all.
+//
+// Behaviour:
+//   - Does NOT clear the session — user can continue their flow after.
+//   - Shows a friendly topic menu + the standard flow action buttons.
+//   - If an FAQ entry matches, shows that answer first.
+//   - Falls back to Groq for a context-aware answer if configured.
+//
+// This is the function that fixes the screenshot bug:
+//   User: "Enquiry" (mid-booking DATE step)
+//   Old:  "Sorry, I couldn't understand 'Enquiry' as a date 📅"
+//   New:  "Sure! 😊 What would you like to know? You can ask about: …"
+
+export async function handleEnquiry(session, raw, business, tenant) {
+  // 1. Check FAQ first — instant, no AI cost
+  const faqAnswer = resolveFaq(raw, business);
+  if (faqAnswer) {
+    return { type: 'text', body: faqAnswer };
+  }
+
+  // 2. Try Groq for a context-aware answer if the message is long enough
+  //    to be a real question (>= 6 chars). Keep session intact so the user
+  //    can continue ordering/booking after getting their answer.
+  if (raw.trim().length >= 6) {
+    try {
+      const aiReply = await getAIReply(raw, business, session, 'ENQUIRY');
+      if (aiReply) return { type: 'text', body: aiReply };
+    } catch (_) { /* fall through to static UI */ }
+  }
+
+  // 3. Static enquiry menu — always friendly, never a dead-end
+  return buildEnquiryUI(business);
 }

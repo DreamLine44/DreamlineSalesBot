@@ -5,8 +5,7 @@ const analyticsSchema = new mongoose.Schema(
     // 🎯 TYPE
     type: {
       type: String,
-      // ✅ NEW — "FAILED" type for unhandled / Groq-fallback interactions
-      enum: ["ORDER", "BOOKING", "FAILED"],
+      enum: ["ORDER", "BOOKING", "FAILED", "REVENUE"],
       required: true,
       index: true
     },
@@ -16,6 +15,14 @@ const analyticsSchema = new mongoose.Schema(
     phoneNumberId: {
       type: String,
       index: true
+    },
+
+    // tenantId for direct cross-collection joins and platform-level queries
+    tenantId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Tenant",
+      index: true,
+      default: null,
     },
 
     // 👤 USER
@@ -33,6 +40,16 @@ const analyticsSchema = new mongoose.Schema(
     quantity: {
       type: Number,
       default: 1
+    },
+
+    // 💰 REVENUE — amount collected for this order (in local currency, e.g. GMD)
+    // Populated only for type === "ORDER" or type === "REVENUE".
+    // Zero-price orders (free samples, etc.) are stored as 0, not null.
+    revenue: {
+      type:    Number,
+      default: 0,
+      min:     0,
+      index:   true,
     },
 
     // 📅 BOOKING DATA
@@ -82,5 +99,15 @@ const analyticsSchema = new mongoose.Schema(
     timestamps: true
   }
 );
+
+// Compound indexes for the most common analytics query patterns:
+//   getTopItem:          { type: "ORDER", phoneNumberId }  → sorted by quantity
+//   getPeakHour:         { phoneNumberId, hour }
+//   getDailyStats:       { phoneNumberId } → grouped by day
+//   getAnalyticsSummary: { phoneNumberId, type }
+//   trackRevenue:        { type: "REVENUE", phoneNumberId, revenue }
+analyticsSchema.index({ phoneNumberId: 1, type: 1, createdAt: -1 });
+analyticsSchema.index({ phoneNumberId: 1, type: 1, revenue: 1 });
+analyticsSchema.index({ type: 1, item: 1 });
 
 export default mongoose.model("Analytics", analyticsSchema);

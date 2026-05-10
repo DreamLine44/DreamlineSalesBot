@@ -1,138 +1,268 @@
-# WhatsBotLyn v03 — Bug Fix Integration Guide
+# Dreamline Sales Bot v10 — Integration Guide
 
-All 9 missing/incomplete items from the audit have been implemented.
-Below is how each file maps to each fix and how to integrate them.
-
----
-
-## Fix Summary
-
-| # | Issue | File(s) Changed |
-|---|-------|----------------|
-| 1 | Business hours enforcement | `webhookController.js` |
-| 2 | Order/Booking retrieval API | `routes/businessRoutes.js`, `controllers/ordersController.js` |
-| 3 | Cold start recovery message | `webhookController.js` |
-| 4 | Webhook deduplication (wamid) | `webhookController.js` |
-| 5 | Token expiry detection | `services/messageService.js` |
-| 6 | "Done." raw string bug | `webhookController.js` |
-| 7 | Bot OFF per business hours | `webhookController.js` (same as Fix 1) |
-| 8 | FAQ map / custom Q&A | `services/faqService.js`, `services/groqService.patch.js`, `config/BusinessConfig.js` |
-| 9 | Persistent failed message log | `models/FailedMessage.js`, `services/messageService.js`, `controllers/ordersController.js` |
+Multi-tenant WhatsApp Business SaaS Platform.
 
 ---
 
-## Integration Steps
+## What's New in v10
 
-### Step 1 — Copy new files into your project
+| Feature | Details |
+|---------|---------|
+| Revenue Engine | Upsell add-ons after order summary, revenue analytics tracking |
+| Admin Payment Flow | WhatsApp-native Approve/Reject buttons for Wave payment verification |
+| Cloudinary Image Uploads | Menu item images sent to customers on selection |
+| Groq AI (model cascade) | `llama-3.1-8b-instant` → `llama-3.3-70b-versatile` failover |
+| Atomic deduplication | `ProcessedMessage` collection prevents duplicate webhook processing |
+| Full CRUD for orders/bookings | PATCH + DELETE endpoints for admin management |
+| Platform notify | `POST /platform/tenants/:id/notify` — push WhatsApp message to any tenant's admin |
+| shortId indexing | O(1) admin command lookups (`APPROVE ABC123`) via indexed `shortId` field |
+| API key hashing | SHA-256 hashed keys — run `npm run migrate-apikey` then set `APIKEY_MIGRATION_DONE=true` |
 
-```
-fixes/controllers/webhookController.js   → src/controllers/webhookController.js
-fixes/controllers/ordersController.js    → src/controllers/ordersController.js  (new)
-fixes/services/messageService.js         → src/services/messageService.js
-fixes/services/faqService.js             → src/services/faqService.js           (new)
-fixes/models/FailedMessage.js            → src/models/FailedMessage.js          (new)
-fixes/routes/businessRoutes.js           → src/routes/businessRoutes.js         (merge)
-fixes/config/BusinessConfig.js           → reference only — merge fields
-```
+---
 
-### Step 2 — Apply groqService patch
+## Quick Start
 
-Open `src/services/groqService.js` and make these 3 changes:
-
-1. **Add import** at the top:
-   ```js
-   const { resolveFaq, buildFaqContext } = require('./faqService');
-   ```
-
-2. **Add FAQ short-circuit** at the start of `processMessage()`:
-   ```js
-   const faqReply = resolveFaq(messageText, business);
-   if (faqReply) return { type: 'FAQ', message: faqReply };
-   ```
-
-3. **Replace the loose `customMessages` dump** in `buildSystemPrompt()` with:
-   ```js
-   const faqContext = buildFaqContext(business);
-   // ... include faqContext in the prompt string
-   ```
-
-### Step 3 — Add routes to app.js
-
-```js
-const businessRoutes = require('./routes/businessRoutes');
-const adminRoutes    = require('./routes/adminRoutes'); // if separate
-
-// Authenticated business owner routes
-app.use('/business', authMiddleware, businessRoutes);
-
-// Admin replay endpoints (add to existing admin router or new one)
-app.get('/admin/failed-messages',       authMiddleware, ordersController.listFailedMessages);
-app.post('/admin/failed-messages/:id/replay', authMiddleware, ordersController.replayFailedMessage);
-```
-
-### Step 4 — Add faq field to your Business/Tenant Mongoose schema
-
-```js
-// In your existing schema file, add:
-faq: [
-  {
-    trigger: { type: String, required: true },
-    reply:   { type: String, required: true },
-    enabled: { type: Boolean, default: true },
-  }
-]
-```
-
-### Step 5 — Install json2csv (needed for CSV export)
+### 1. Install dependencies
 
 ```bash
-npm install json2csv
+npm install
 ```
 
-### Step 6 — Verify environment variables
+### 2. Set up environment
 
-The following must be set:
+```bash
+cp .env.development.local.example .env.development.local
+# Edit .env.development.local and fill in your values
 ```
-WEBHOOK_VERIFY_TOKEN=...     # already exists
-WA_API_VERSION=v18.0         # optional, defaults to v18.0
+
+Required vars for development:
+
+```
+MONGODB_URI=mongodb://127.0.0.1:27017/DreamlineSalesBot?replicaSet=rs0
+SUPER_ADMIN_API_KEY=<generate with: npm run gen-key>
+META_APP_SECRET=<from Meta Developer Console>
+META_WHATSAPP_TOKEN=<from Meta Developer Console>
+META_PHONE_NUMBER_ID=<from Meta Developer Console>
+GROQ_API_KEY=<from https://console.groq.com — free>
+```
+
+### 3. Seed the database (development only)
+
+```bash
+npm run seed
+```
+
+This creates a tenant + BusinessConfig and drops the stale `key_1` session index if present.
+
+### 4. Run migrations (first deploy or upgrade)
+
+```bash
+# Hash existing plaintext API keys
+npm run migrate-apikey
+
+# Back-fill shortId on existing orders (for admin APPROVE/REJECT commands)
+npm run migrate-shortid
+```
+
+After running `migrate-apikey`, set `APIKEY_MIGRATION_DONE=true` in your env to disable the plaintext fallback.
+
+### 5. Start the server
+
+```bash
+npm run dev   # development (nodemon + debug logging)
+npm start     # production
 ```
 
 ---
 
-## Behavior Changes by Fix
+## Onboarding Flows
 
-### Fix 1 & 7 — Business Hours
-- When `business.hours.enabled = true` and the current time is outside `open`/`close`, the bot sends `closedMessage` and stops.
-- Per-day overrides via `hours.days.monday = false` etc. are respected.
-- Timezone-aware using `hours.timezone` (IANA, e.g. `"Africa/Banjul"`).
+### Simple (2 requests)
 
-### Fix 2 — Order/Booking API
-- `GET /business/orders` — paginated list with optional `status`, `from`, `to` filters.
-- `GET /business/orders/:id` — single order.
-- `GET /business/orders/export` — CSV download.
-- Same 3 endpoints for `/business/bookings`.
+```
+PUT  /register/whatsapp     → Step 1: validate Meta credentials + create tenant → returns apiKey (ONCE)
+POST /register/business     → Step 2: configure bot (requires x-api-key header)
+GET  /register/status       → check onboarding progress (requires x-api-key)
+```
 
-### Fix 3 — Cold Start Recovery
-- If a customer sends an unrecognised message after their session expired (e.g. `"jollof rice"` with no active session), they receive: *"Your session has expired. Please type Order or Book to start again…"* before the brain processes the message.
+### Unified (1 request)
 
-### Fix 4 — Webhook Deduplication
-- Incoming messages are deduplicated by `wamid` (WhatsApp message ID) using an in-memory TTL map with 5-minute expiry.
-- For multi-process deployments, replace `processedWamids` Map with a Redis SET with TTL.
+```
+POST /register/full         → Step 1 + 2 combined → returns apiKey (ONCE)
+```
 
-### Fix 5 — Token Expiry
-- 401 responses from the Graph API trigger: admin WhatsApp alert + `FailedMessage` record + no retry.
-- `tokenUpdatedAt` on the Tenant model can be used in future to proactively warn before expiry.
+### Meta Embedded Signup (OAuth)
 
-### Fix 6 — "Done." Bug
-- `handleConfirm()` no longer returns the raw string `"Done."`.
-- Unknown `currentFlow` now clears the session and sends `buildWelcome(business)`.
+```
+GET  /onboarding/callback   → Meta redirects here after user grants access
+GET  /register/callback     → Same handler, aliased for backward compat
+```
 
-### Fix 8 — FAQ
-- Business owners can add FAQ entries to `business.faq` array: `{ trigger: "wifi", reply: "Password is GuestPass" }`.
-- Comma-separated triggers supported: `"wifi, wi-fi, password"`.
-- FAQ is checked before Groq — matching entries are returned instantly, saving API calls.
+### Legacy (backward compat)
 
-### Fix 9 — Persistent Failed Messages
-- All terminal send failures write a `FailedMessage` document to MongoDB.
-- Admin can list unplayed failures at `GET /admin/failed-messages`.
-- Admin can replay individual messages at `POST /admin/failed-messages/:id/replay`.
+```
+POST /register              → Old email/name-first registration
+```
+
+---
+
+## Route Reference
+
+### Webhook
+```
+GET  /webhook                  → Meta webhook verification (bare URL)
+GET  /webhook/:phoneNumberId   → Meta webhook verification (phone-scoped)
+POST /webhook                  → Incoming messages
+POST /webhook/:phoneNumberId   → Incoming messages (phone-scoped)
+```
+
+### Business Config (requires x-api-key)
+```
+POST   /business                        → Create business config
+GET    /business                        → Get business config
+PUT    /business                        → Update business config
+GET    /business/analytics              → Analytics summary
+POST   /business/human-mode            → Toggle human mode { phone, active: bool }
+POST   /business/apply-mode            → Apply mode preset { mode: RESTAURANT|SALON|RETAIL }
+GET    /business/setup-checklist        → Setup completion status
+GET    /business/default-config?mode=  → Starter config template
+
+POST   /business/menu                   → Update full menu array
+POST   /business/menu/upload-image      → Upload menu item image (multipart, field: image)
+POST   /business/hours                  → Update business hours
+POST   /business/payment               → Update payment config
+POST   /business/faq                   → Update FAQ entries
+POST   /business/settings              → Update settings/tone/nlp/botEnabled
+
+GET    /business/orders                 → List orders (paginated)
+GET    /business/orders/export          → CSV export
+GET    /business/orders/pending-payment → Orders awaiting Wave verification
+GET    /business/orders/:id             → Single order
+PATCH  /business/orders/:id             → Update order (status, paymentStatus, notes)
+DELETE /business/orders/:id             → Delete order
+POST   /business/orders/:id/confirm-payment → Confirm Wave payment
+POST   /business/orders/:id/reject-payment  → Reject Wave payment
+
+GET    /business/bookings               → List bookings (paginated)
+GET    /business/bookings/export        → CSV export
+GET    /business/bookings/:id           → Single booking
+PATCH  /business/bookings/:id           → Update booking (status, date, time, notes)
+DELETE /business/bookings/:id           → Delete booking
+```
+
+### Dashboard (requires x-api-key, allows PENDING tenants)
+```
+GET    /dashboard                → Overview summary
+GET    /dashboard/profile        → Tenant profile
+PUT    /dashboard/profile        → Update name/adminPhone
+GET    /dashboard/bot            → Business config
+PUT    /dashboard/bot            → Update bot config
+PUT    /dashboard/bot/menu       → Replace full menu
+POST   /dashboard/bot/menu       → Add menu item
+DELETE /dashboard/bot/menu/:id   → Remove menu item
+PUT    /dashboard/bot/hours      → Update hours
+POST   /dashboard/bot/faq        → Add FAQ entry
+DELETE /dashboard/bot/faq/:id    → Remove FAQ entry
+GET    /dashboard/stats          → Orders/bookings/revenue stats
+POST   /dashboard/rotate-key     → Generate new API key
+```
+
+### Platform (requires SUPER_ADMIN_API_KEY)
+```
+GET    /platform/stats                  → Platform-wide stats
+POST   /platform/reset-usage            → Reset monthly usage counters
+GET    /platform/tenants                → List tenants (paginated, filterable)
+GET    /platform/tenants/:id            → Tenant detail
+PUT    /platform/tenants/:id/plan       → Change plan { plan: FREE|STARTER|PRO|ENTERPRISE }
+PUT    /platform/tenants/:id/status     → Change status { status: ACTIVE|SUSPENDED|PENDING }
+POST   /platform/tenants/:id/notify     → Send WhatsApp message to tenant's admin { message }
+```
+
+### Admin Tenant Management (requires SUPER_ADMIN_API_KEY)
+```
+GET    /admin/tenants/                      → List all tenants
+POST   /admin/tenants/register              → Register new tenant
+POST   /admin/tenants/:id/connect-whatsapp  → Connect WhatsApp manually
+GET    /admin/tenants/:id                   → Get tenant
+PUT    /admin/tenants/:id                   → Update tenant
+POST   /admin/tenants/:id/rotate-key        → Rotate API key
+PUT    /admin/tenants/:id/status            → Set status
+DELETE /admin/tenants/:id                   → Delete tenant + all data
+```
+
+### Admin Messages (requires x-api-key)
+```
+GET    /admin/messages/failed-messages            → List unreplayed failed messages
+POST   /admin/messages/failed-messages/:id/replay → Replay a failed message
+```
+
+---
+
+## Business Modes
+
+| Mode | Flows | Use Case |
+|------|-------|----------|
+| `RESTAURANT` | ORDER + BOOKING | Food ordering + table reservations |
+| `SALON` | BOOKING only | Appointment booking |
+| `RETAIL` | ORDER only | Product/item sales |
+
+Set via `POST /business/apply-mode` with `{ mode: "RESTAURANT" }`.
+
+---
+
+## Payment Flow (Wave Mobile Money)
+
+1. Customer confirms order → bot sends Wave payment instructions
+2. Customer sends payment screenshot → `receiveProof()` stores it
+3. Admin receives WhatsApp notification with Approve/Reject buttons
+4. Admin taps button (or types `APPROVE <shortId>` / `REJECT <shortId>`)
+5. Customer receives real-time confirmation
+
+Configure Wave phone: `POST /business/payment` with `{ payment: { wavePhone: "2207XXXXXX" } }`.
+
+---
+
+## Environment Variables
+
+See `.env.development.local.example` and `.env.production.local.example` for the full list.
+
+Key vars:
+
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `MONGODB_URI` | ✅ | MongoDB connection string |
+| `SUPER_ADMIN_API_KEY` | ✅ | Platform-owner API key |
+| `META_APP_SECRET` | ✅ (prod) | HMAC webhook signature verification |
+| `GROQ_API_KEY` | Recommended | AI fallback replies |
+| `CLOUDINARY_*` | Optional | Menu image uploads |
+| `ADMIN_PHONES` | Optional | Global admin phone list for payment alerts |
+| `SKIP_WEBHOOK_SIGNATURE` | Dev only | Skip HMAC check for local testing |
+| `APIKEY_MIGRATION_DONE` | After migration | Disable plaintext API key fallback |
+
+---
+
+## MongoDB — First Deploy Notes
+
+The `key_1` index on the `sessions` collection is a stale artifact from an older schema version. Run `npm run seed` once (dev) or manually drop it in production:
+
+```js
+// In mongosh:
+db.sessions.dropIndex("key_1")
+```
+
+All other required indexes are defined in the Mongoose schemas and created automatically on first connect.
+
+---
+
+## Scripts
+
+```bash
+npm start                       # Start production server
+npm run dev                     # Start with nodemon (auto-restart)
+npm run seed                    # Seed dev database
+npm run gen-key                 # Generate a new random API key
+npm run migrate-apikey          # Hash existing plaintext API keys → apiKeyHash
+npm run migrate-shortid         # Back-fill shortId on existing orders
+npm run fix-orders              # Fix order compound index issues
+npm run fix-phonenumber-index   # Fix phoneNumberId index issues
+```

@@ -1,5 +1,5 @@
 /**
- * config/logger.js — WhatsBotLyn v12
+ * config/logger.js — Dreamline Sales Bot v12
  *
  * Structured logger. Zero dependencies — works out of the box.
  * Replace console.log/warn/error everywhere with this.

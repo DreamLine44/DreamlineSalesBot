@@ -136,7 +136,10 @@ export const getRecommendation = async (phone) => {
       return null;
     }
 
-    const sorted = user.preferences.favoriteItems.sort(
+    // [FIX-7] Spread before sort — Array.prototype.sort() mutates in place.
+    // Mutating the live Mongoose document array before save() permanently re-sorts
+    // favoriteItems in the DB on every call, corrupting count-based ranking over time.
+    const sorted = [...user.preferences.favoriteItems].sort(
       (a, b) => b.count - a.count
     );
 

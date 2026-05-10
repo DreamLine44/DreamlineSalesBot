@@ -22,6 +22,19 @@ const menuItemSchema = new mongoose.Schema({
   description: { type: String, default: '', trim: true },
   keywords:    { type: [String], default: [] },
   available:   { type: Boolean, default: true },
+
+  // ── Optional image (Cloudinary) ────────────────────────────────────────
+  // All image fields are optional. The bot works perfectly with no images.
+  // image.url         → https://res.cloudinary.com/... (direct WhatsApp link)
+  // image.public_id   → cloudinary asset ID (for deletion / replacement)
+  // showImageOnSelect → when false, image is stored but never auto-sent
+  // tags              → ["popular", "new", "special"] — drives upsell logic
+  image: {
+    url:       { type: String, default: null, trim: true },
+    public_id: { type: String, default: null, trim: true },
+  },
+  tags:              { type: [String], default: [] },  // e.g. ["popular", "new", "special"]
+  showImageOnSelect: { type: Boolean,  default: true },
 }, { _id: true });
 
 const serviceSchema = new mongoose.Schema({
@@ -135,6 +148,8 @@ const businessConfigSchema = new mongoose.Schema({
     fallback:            { type: String, default: '', trim: true },
     // Loop recovery message (shown when customer repeats same message 3x)
     loopFallback:        { type: String, default: '', trim: true },
+    // Human mode message (shown when humanMode=true so customer knows a human will reply)
+    humanMode:           { type: String, default: '', trim: true },
   },
 
   faq: [faqSchema],

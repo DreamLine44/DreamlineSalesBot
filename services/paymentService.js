@@ -1,5 +1,5 @@
 /**
- * services/paymentService.js — WhatsBotLyn v5.0
+ * services/paymentService.js — Dreamline Sales Bot v5.0
  *
  * Wave mobile money payment flow — WhatsApp only.
  *
@@ -15,7 +15,7 @@
  *  6. On reject:  order = payment_failed, customer asked to retry
  *
  * v5.0 improvements:
- * [PAY-1] Payment reference includes date prefix (e.g. WBL-0501-AB12) for easier tracking.
+ * [PAY-1] Payment reference includes date prefix (e.g. DSB-0501-AB12) for easier tracking.
  * [PAY-2] initiatePayment is idempotent — calling it twice doesn't double-create.
  * [PAY-3] receiveProof auto-expires stale unpaid orders older than 24h.
  * [PAY-4] confirmPayment broadcasts to admin channel (log) with reviewer identity.
@@ -27,19 +27,18 @@
 import Order          from '../models/Order.js';
 import BusinessConfig from '../models/BusinessConfig.js';
 import Tenant         from '../models/Tenant.js';
-import { updateSession } from './sessionService.js';
 import { getLabel }   from '../config/modes.js';
 import logger         from '../config/logger.js';
 // Lazy import to avoid circular dep (adminPaymentHandler → messageService → paymentService)
 const getAdminHandler = () => import('./adminPaymentHandler.js');
 
 // ─── Payment reference generator ─────────────────────────────────────────────
-// [PAY-1] Format: WBL-MMDD-XXXX (date + last 4 of ObjectId)
+// [PAY-1] Format: DSB-MMDD-XXXX (date + last 4 of ObjectId)
 const buildRef = (order) => {
   const now   = new Date();
   const mmdd  = String(now.getMonth() + 1).padStart(2, '0') + String(now.getDate()).padStart(2, '0');
   const tail  = String(order._id).slice(-4).toUpperCase();
-  return `WBL-${mmdd}-${tail}`;
+  return `DSB-${mmdd}-${tail}`;
 };
 
 // ─── BUILD PAYMENT INSTRUCTIONS MESSAGE ──────────────────────────────────────
@@ -108,10 +107,14 @@ export const receiveProof = async (customerPhone, tenantId, imageUrl, tenant = n
     {
       tenantId,
       customerPhone,
-      // [A-2] Only accept proof when order is unpaid or already pending (idempotent re-upload)
+      // Accept proof when:
+      //   - unpaid (normal first upload)
+      //   - payment_pending_verification AND paymentProof is still null
+      //     (edge case: order transitioned to pending_verification by another path
+      //      but the proof image itself was never stored — allow the customer to upload)
+      // paymentProof: null guards against overwriting an already-accepted screenshot.
       paymentStatus: { $in: ['unpaid', 'payment_pending_verification'] },
-      // [A-2] Prevent re-uploading proof if already accepted
-      paymentProof:  null,
+      paymentProof:  null,   // only update if no proof stored yet
       createdAt:     { $gte: cutoff },
     },
     {
@@ -223,7 +226,13 @@ export const confirmPayment = async (orderId, tenantId, adminIdentifier) => {
     { new: true }
   );
 
-  if (!order) throw new Error('Order not found or already processed');
+  if (!order) {
+    // [FIX-F] Attach statusCode so ordersController can set the correct HTTP status
+    // without fragile err.message substring matching.
+    const err = new Error('Order not found or already processed');
+    err.statusCode = 404;
+    throw err;
+  }
 
   let business = null;
   try { business = await BusinessConfig.findOne({ tenantId }).lean(); } catch { /* use default */ }
@@ -254,7 +263,11 @@ export const rejectPayment = async (orderId, tenantId, reason, adminIdentifier) 
     { new: true }
   );
 
-  if (!order) throw new Error('Order not found');
+  if (!order) {
+    const err = new Error('Order not found');
+    err.statusCode = 404;
+    throw err;
+  }
 
   let business = null;
   try { business = await BusinessConfig.findOne({ tenantId }).lean(); } catch { /* use default */ }

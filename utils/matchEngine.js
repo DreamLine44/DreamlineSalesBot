@@ -1,5 +1,5 @@
 /**
- * matchEngine.js — WhatsBotLyn v10
+ * matchEngine.js — Dreamline Sales Bot v10
  *
  * STRICT MATCHING ALGORITHM
  * ─────────────────────────────────────────────────────────────────────────────

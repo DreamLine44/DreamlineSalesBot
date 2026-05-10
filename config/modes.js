@@ -1,5 +1,5 @@
 /**
- * config/modes.js — WhatsBotLyn v3.1
+ * config/modes.js — Dreamline Sales Bot v3.1
  *
  * BUSINESS MODES — each a complete pre-packaged config bundle.
  * A business owner picks a mode; everything (flows, labels, UI) is pre-configured.
@@ -109,8 +109,9 @@ export const MODES = {
 
     ui: {
       welcomeButtons: [
-        { id: 'ORDER', title: '🍔 Order Food' },
-        { id: 'BOOK',  title: '📅 Book a Table' },
+        { id: 'ORDER',    title: '🍔 Order Food' },
+        { id: 'BOOK',     title: '📅 Book a Table' },
+        { id: 'QUESTION', title: '❓ Ask a Question' },
       ],
       confirmButtons: [
         { id: 'CONFIRM', title: '✅ Confirm' },
@@ -121,8 +122,9 @@ export const MODES = {
         { id: 'SWITCH_NO',  title: '❌ No, continue' },
       ],
       fallbackButtons: [
-        { id: 'ORDER', title: '🍔 Order' },
-        { id: 'BOOK',  title: '📅 Book' },
+        { id: 'ORDER',    title: '🍔 Order' },
+        { id: 'BOOK',     title: '📅 Book' },
+        { id: 'QUESTION', title: '❓ Question' },
       ],
       upsellButtons: [
         { id: 'UPSELL_YES', title: '✅ Yes, add it' },
@@ -192,7 +194,8 @@ export const MODES = {
 
     ui: {
       welcomeButtons: [
-        { id: 'BOOK', title: '💇 Book Appointment' },
+        { id: 'BOOK',     title: '💇 Book Appointment' },
+        { id: 'QUESTION', title: '❓ Ask a Question' },
       ],
       confirmButtons: [
         { id: 'CONFIRM', title: '✅ Confirm' },
@@ -203,7 +206,8 @@ export const MODES = {
         { id: 'SWITCH_NO',  title: '❌ No, continue' },
       ],
       fallbackButtons: [
-        { id: 'BOOK', title: '💇 Book Appointment' },
+        { id: 'BOOK',     title: '💇 Book Appointment' },
+        { id: 'QUESTION', title: '❓ Question' },
       ],
       upsellButtons: [], // Disabled for salon
     },
@@ -264,7 +268,8 @@ export const MODES = {
 
     ui: {
       welcomeButtons: [
-        { id: 'ORDER', title: '🛍️ View Products' },
+        { id: 'ORDER',    title: '🛍️ View Products' },
+        { id: 'QUESTION', title: '❓ Ask a Question' },
       ],
       confirmButtons: [
         { id: 'CONFIRM', title: '✅ Confirm Order' },
@@ -275,7 +280,8 @@ export const MODES = {
         { id: 'SWITCH_NO',  title: '❌ No, continue' },
       ],
       fallbackButtons: [
-        { id: 'ORDER', title: '🛍️ View Products' },
+        { id: 'ORDER',    title: '🛍️ View Products' },
+        { id: 'QUESTION', title: '❓ Question' },
       ],
       upsellButtons: [],
     },

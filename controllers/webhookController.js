@@ -1,5 +1,5 @@
 /**
- * controllers/webhookController.js — WhatsBotLyn v5.1
+ * controllers/webhookController.js — Dreamline Sales Bot v5.1
  *
  * PIPELINE (strictly sequential):
  *   1. Receive & verify (signature, dedup, tenant lookup)
@@ -20,7 +20,7 @@ import { getSession, createSession, updateSession, clearSession } from '../servi
 import { dispatch }                                                   from '../services/messageService.js';
 import { getBusiness }                                            from '../services/businessService.js';
 import { think }                                                  from '../services/brainService.js';
-import { handleFlow, startOrderFlow, startBookingFlow }           from '../services/flowService.js';
+import { handleFlow, startOrderFlow, startBookingFlow, handleEnquiry } from '../services/flowService.js';
 import { buildWelcomeUI, buildCancelUI, buildSmartFallbackUI } from '../utils/messageBuilders.js';
 import { trackFailedInteraction }                                 from '../services/analyticsService.js';
 import { getAIReply, generateGreeting, answerAboutQuestion }      from '../services/groqService.js';
@@ -34,14 +34,29 @@ import { createHmac, timingSafeEqual } from 'crypto';
 
 function verifySignature(rawBody, signatureHeader) {
   const secret = process.env.META_APP_SECRET;
+
+  // No secret set → skip verification (warn so dev knows)
   if (!secret) {
     logger.warn('[Webhook] META_APP_SECRET not set — skipping signature verification');
     return true;
   }
+
+  // [FIX] In development mode, allow unsigned requests so you can test
+  // with curl / Bruno / Postman without having to compute HMAC manually.
+  // NEVER set this in production.
+  if (process.env.NODE_ENV === 'development' && process.env.SKIP_WEBHOOK_SIGNATURE === 'true') {
+    logger.warn('[Webhook] SKIP_WEBHOOK_SIGNATURE=true — skipping signature check (dev only)');
+    return true;
+  }
+
   if (!signatureHeader) return false;
   const [scheme, theirHex] = signatureHeader.split('=');
   if (scheme !== 'sha256' || !theirHex) return false;
-  const body   = Buffer.isBuffer(rawBody) ? rawBody : Buffer.from(String(rawBody));
+
+  // [FIX] Guard against empty/missing rawBody — if express.raw() didn't run
+  // (e.g. wrong Content-Type header from Meta) rawBody may be undefined.
+  // Fall back to empty buffer so HMAC still runs and fails gracefully.
+  const body   = Buffer.isBuffer(rawBody) ? rawBody : Buffer.from(rawBody ? String(rawBody) : '');
   const ourHex = createHmac('sha256', secret).update(body).digest('hex');
   try {
     return timingSafeEqual(Buffer.from(ourHex, 'hex'), Buffer.from(theirHex, 'hex'));
@@ -122,8 +137,13 @@ async function isDuplicate(wamid, tenantId) {
     logger.error('[Webhook] isDuplicate DB error — allowing message through', { wamid, err: err.message });
   }
 
-  // Add to in-memory cache (trim if overgrown)
-  if (_wamidCache.size >= WAMID_CACHE_MAX) _wamidCache.clear();
+  // Add to in-memory cache — evict the oldest entry when at capacity.
+  // Set preserves insertion order, so values().next().value is always the
+  // oldest entry. Deleting one-at-a-time avoids the thundering-herd of DB
+  // dedup writes that a full _wamidCache.clear() would cause under high load.
+  if (_wamidCache.size >= WAMID_CACHE_MAX) {
+    _wamidCache.delete(_wamidCache.values().next().value);
+  }
   _wamidCache.add(wamid);
   return false;
 }
@@ -139,7 +159,9 @@ function isBusinessOpen(business) {
   const day = now.toLocaleDateString('en-US', { timeZone: tz, weekday: 'long' }).toLowerCase();
   const localStr = now.toLocaleString('en-US', { timeZone: tz, hour12: false, hour: '2-digit', minute: '2-digit' });
   const [rawH, rawM] = localStr.split(':');
-  const currentMinutes = (parseInt(rawH, 10) % 24) * 60 + parseInt(rawM, 10);
+  // toLocaleString with hour12:false and hour:'2-digit' always returns "00"–"23".
+  // The previous `% 24` was dead code and has been removed.
+  const currentMinutes = parseInt(rawH, 10) * 60 + parseInt(rawM, 10);
   const dayConfig = (hours.days instanceof Map) ? hours.days.get(day) : (hours.days?.[day] ?? null);
   if (dayConfig) {
     if (dayConfig.closed === true) return false;
@@ -213,11 +235,28 @@ export const handleWebhook = async (req, res) => {
         if (value?.statuses?.length && !value?.messages?.length) continue;
         if (!value?.messages?.length) continue;
 
-        const msgObj        = value.messages[0];
+        // [FIX-4] Iterate ALL messages in this change, not just messages[0].
+        // Meta can batch multiple messages in a single change payload; previously
+        // only the first was processed and all others were silently dropped.
+        for (const msgObj of value.messages) {
         const wamid         = msgObj.id;
         const from          = msgObj.from;
         const phoneNumberId = value.metadata?.phone_number_id;
         if (!from || !phoneNumberId) continue;
+
+        // ── [FIX] Inbound-only guard ─────────────────────────────────────
+        // Bot ONLY reacts to genuine customer messages — never its own echoes,
+        // system events, or reactions. Zero proactive/unsolicited messages.
+        const skipTypes = new Set(['message_echo', 'system', 'reaction']);
+        if (skipTypes.has(msgObj.type)) {
+          logger.debug('[Webhook] Skipping non-customer message type', { type: msgObj.type, from });
+          continue;
+        }
+        // Meta echoes outbound messages back with context.from === phoneNumberId
+        if (msgObj.context?.from === phoneNumberId) {
+          logger.debug('[Webhook] Skipping echo (context.from matches bot)', { from });
+          continue;
+        }
 
         try {
 
@@ -239,6 +278,27 @@ export const handleWebhook = async (req, res) => {
     // NOTE: must be `continue` not `return` — we're inside a for-of loop and
     // `return` would abort the entire handler, dropping all remaining batched messages.
     if (tenantDoc.status === 'SUSPENDED') continue;
+
+    // ── STEP 2c: Plan message limit enforcement ───────────────────────────
+    // Increment usage counter atomically. If the tenant has exceeded their
+    // monthly message limit, send a polite over-limit reply and stop processing.
+    // Fire-and-forget the increment so it never blocks the message pipeline.
+    const monthlyLimit = tenantDoc.limits?.messagesPerMonth ?? 500;
+    const currentUsage = tenantDoc.usage?.messagesThisMonth ?? 0;
+    if (currentUsage >= monthlyLimit) {
+      // Over limit — notify customer and skip processing (don't send from bot)
+      logger.warn('[Webhook] Tenant over message limit', {
+        tenantId, usage: currentUsage, limit: monthlyLimit,
+      });
+      await dispatch(from, {
+        type: 'text',
+        body: `We're currently experiencing high demand and cannot process your message right now. Please try again later or contact us directly. 🙏`,
+      }, tenantDoc);
+      continue;
+    }
+    // Increment usage — atomic, non-blocking
+    Tenant.findByIdAndUpdate(tenantId, { $inc: { 'usage.messagesThisMonth': 1 } })
+      .catch(err => logger.warn('[Webhook] Usage increment failed', { err: err.message, tenantId }));
 
     // ── STEP 3: Deduplication ─────────────────────────────────────────────
     // Use tenantId-scoped atomic dedup
@@ -278,15 +338,22 @@ export const handleWebhook = async (req, res) => {
 
       if (isInteractive) {
         // Admin tapped a button (Approve / Reject)
-        const buttonId = value.messages[0]?.interactive?.button_reply?.id;
+        const buttonId = msgObj?.interactive?.button_reply?.id;
         if (buttonId) {
           adminReply = await handleAdminButtonReply(buttonId, from, tenantId, tenantDoc, business);
         }
       }
 
       // Fallback: admin typed "APPROVE <id>" or "REJECT <id>"
+      // [FIX-9] Guard with a cheap prefix check before calling handleAdminTextCommand.
+      // Previously every admin text — including casual chat — triggered a
+      // BusinessConfig.findOne + Order.find inside handleAdminTextCommand.
+      // Only APPROVE/REJECT commands need that path.
       if (!adminReply && messageText) {
-        adminReply = await handleAdminTextCommand(messageText, tenantId, from, tenantDoc, business);
+        const upperMsg = messageText.trim().toUpperCase();
+        if (upperMsg.startsWith('APPROVE') || upperMsg.startsWith('REJECT')) {
+          adminReply = await handleAdminTextCommand(messageText, tenantId, from, tenantDoc, business);
+        }
       }
 
       if (adminReply) {
@@ -299,27 +366,42 @@ export const handleWebhook = async (req, res) => {
 
     // ── STEP 5: Session ───────────────────────────────────────────────────
     let session    = await getSession(from, tenantId);
-    let wasExpired = false;
+    const isNewSession = !session;
 
     if (!session) {
-      const KNOWN_STARTS = new Set(['hi', 'hello', 'menu', 'start', 'order', 'book', '0', '1', '2']);
-      if (!isInteractive && !KNOWN_STARTS.has(messageText.toLowerCase())) wasExpired = true;
       session = await createSession(from, tenantId, { customerPhone: from, phoneNumberId });
     }
 
-    // Dedup is now handled by ProcessedMessage collection (atomic).
-    // We no longer need to write lastWamid to the session for dedup purposes.
     // Re-fetch session to get the latest DB state after createSession upsert.
     session = (await getSession(from, tenantId)) || session;
 
-    if (wasExpired) {
-      // Never show "session expired" — show welcome so user knows what to do.
+    // If this is a brand-new customer and their first message is unrecognisable
+    // (e.g. a forwarded paragraph, a random emoji, or something that won't match
+    // any brain intent), respond with the friendly welcome menu so they always
+    // know what the bot can do — never silently ignore a first contact.
+    // NOTE: the bot NEVER sends a message unless the customer wrote first.
+    // There are zero proactive / unsolicited messages in this codebase.
+    if (isNewSession && !isInteractive && !messageText) {
+      // Image or unsupported type on very first contact — show friendly welcome
       await dispatch(from, buildWelcomeUI(business), tenantDoc);
       continue;
     }
 
     // NOTE: must be `continue` not `return` — see SUSPENDED check above.
-    if (session.humanMode === true) continue;
+    if (session.humanMode === true) {
+      // Human mode is ON — a live agent is handling this conversation.
+      // Only send the acknowledgement on the FIRST message so we don't spam
+      // the customer with the same notice on every text they send.
+      const alreadyNotified = session.humanModeNotified === true;
+      if (!alreadyNotified) {
+        const humanModeMsg =
+          business?.customMessages?.humanMode?.trim() ||
+          '👤 You\'re now chatting with our team directly. We\'ll reply shortly — thanks for your patience! 😊\n\nType *menu* or *0* anytime to return to the bot.';
+        await dispatch(from, { type: 'text', body: humanModeMsg }, tenantDoc);
+        updateSession(from, tenantId, { humanModeNotified: true }).catch(() => {});
+      }
+      continue;
+    }
 
     // ── STEP 6: Image handling ────────────────────────────────────────────
     if (imageUrl) {
@@ -329,8 +411,13 @@ export const handleWebhook = async (req, res) => {
         // duplicate-proof guard, and admin WhatsApp notification via adminPaymentHandler.
         // Pass tenantDoc + business so receiveProof can notify admin in-process.
         const replyText = await receiveProof(from, tenantId, imageUrl, tenantDoc, business);
-        await clearSession(from, tenantId);
+        // [FIX-5] dispatch BEFORE clearSession.
+        // Previously clearSession was called before dispatch — if dispatch threw,
+        // the session was already gone and the customer received no confirmation.
+        // The order IS recorded and admin IS notified regardless; the customer
+        // just silently lost their "Payment proof received" reply.
         await dispatch(from, { type: 'text', body: replyText }, tenantDoc);
+        await clearSession(from, tenantId);
         continue;
       }
       const hint = session.currentFlow === 'ORDER'
@@ -357,13 +444,17 @@ export const handleWebhook = async (req, res) => {
       messageText.trim().toUpperCase() === 'DONE'
     ) {
       const replyText = await handleDonePayment(from, tenantId);
-      await clearSession(from, tenantId);
+      // [FIX-5b] dispatch BEFORE clearSession — mirrors the same fix applied
+      // to the image proof path above. If dispatch throws (network error,
+      // expired token), the session must still be intact so the customer
+      // can retry. Clearing first left them with no session AND no reply.
       await dispatch(from, { type: 'text', body: replyText }, tenantDoc);
+      await clearSession(from, tenantId);
       continue;
     }
 
     // ── STEP 8: Brain (Layer 1 — decision) ───────────────────────────────
-    const { action, ui: brainUI, reply: brainReply, intent } = await think({
+    const { action, ui: brainUI, reply: brainReply, intent, suggestion: brainSuggestion } = await think({
       message: messageText, session, business, phone: from,
     });
 
@@ -408,19 +499,17 @@ export const handleWebhook = async (req, res) => {
 
     // ── STEP 10b: CANCEL from brain mid-flow ──────────────────────────────
     if (action === 'CANCEL' && session.currentFlow) {
-      // When at the CONFIRM step, the "❌ Cancel" button sends id:"CANCEL".
-      // The brain classifies this as CANCEL and would clear the session BEFORE
-      // flowService has a chance to process it — causing the gracefulRetryUI error
-      // ("We're having a little trouble right now") shown in the screenshot.
-      //
-      // Fix: only honour brain-level CANCEL for non-CONFIRM steps.
-      // At CONFIRM, fall through to handleFlow which processes CANCEL correctly.
-      if (session.step !== 'CONFIRM') {
+      // When at CONFIRM, DATE_CONFIRM, or TIME_CONFIRM, the confirmation buttons
+      // use specific IDs (CONFIRM / DATE_BACK / TIME_BACK). If the brain ever
+      // sees a stray CANCEL at these steps, fall through to handleFlow so the
+      // step-specific logic can decide what to do rather than nuking the session.
+      const confirmSteps = new Set(['CONFIRM', 'DATE_CONFIRM', 'TIME_CONFIRM']);
+      if (!confirmSteps.has(session.step)) {
         await clearSession(from, tenantId);
         await dispatch(from, buildCancelUI(business), tenantDoc);
         continue;
       }
-      // Fall through to handleFlow for CONFIRM step cancellations ↓
+      // Fall through to handleFlow for confirm-family step cancellations ↓
     }
 
     // ── STEP 11: SHOW_MENU mid-flow ───────────────────────────────────────
@@ -436,6 +525,22 @@ export const handleWebhook = async (req, res) => {
     // List reply IDs (isInteractive=true) go straight here, no re-classify.
     // We already handled INTERRUPT / REJECT_FLOW / CANCEL / SHOW_MENU above.
     if (session.currentFlow) {
+
+      // [FIX] Re-fetch session once at the top of the active-flow block.
+      // Several updateSession() calls above (lastIntent, lastMessage) change
+      // DB state but not the local `session` object.
+      session = (await getSession(from, tenantId)) || session;
+
+      // ENQUIRY — user signalled confusion or asked for help mid-flow.
+      // ("enquiry", "i don't understand", "help", "i have a question", etc.)
+      // We answer without clearing the session so they can continue their flow.
+      if (action === 'ENQUIRY') {
+        const enquiryReply = await handleEnquiry(session, messageText, business, tenantDoc);
+        await dispatch(from, enquiryReply, tenantDoc);
+        const replyBody = typeof enquiryReply === 'string' ? enquiryReply : enquiryReply?.body;
+        if (replyBody) updateSession(from, tenantId, { lastBotMessage: replyBody }).catch(() => {});
+        continue;
+      }
 
       // AI_FALLBACK — user sent something unrecognised mid-flow.
       // Groq answers the question (about business, general help) WITHOUT touching
@@ -489,16 +594,35 @@ export const handleWebhook = async (req, res) => {
     switch (action) {
 
       case 'START_ORDER': {
-        responseUI = await startOrderFlow(session, business);
+        // [FIX] If a flow is already active (e.g. Meta delivered 3 copies of the same
+        // message and all three hit this case), don't restart — just continue from where
+        // they are. Without this, rapid-fire messages cause 3x menu sends.
+        const existingSession = await getSession(from, tenantId);
+        if (existingSession?.currentFlow === 'ORDER') {
+          responseUI = await handleFlow(existingSession, messageText, tenantDoc, isInteractive);
+        } else {
+          responseUI = await startOrderFlow(session, business);
+        }
         break;
       }
 
       case 'START_BOOKING': {
-        responseUI = await startBookingFlow(session, business);
+        // [FIX] Same dedup guard as START_ORDER above.
+        const existingSession = await getSession(from, tenantId);
+        if (existingSession?.currentFlow === 'BOOKING') {
+          responseUI = await handleFlow(existingSession, messageText, tenantDoc, isInteractive);
+        } else {
+          responseUI = await startBookingFlow(session, business);
+        }
         break;
       }
 
       case 'GREET': {
+        // [FIX] Clear any stale session state so a returning customer who says
+        // "hi" after an abandoned flow doesn't inherit old step/data.
+        // SHOW_MENU already does this — GREET must too for consistency.
+        await clearSession(from, tenantId);
+        await createSession(from, tenantId, { customerPhone: from, phoneNumberId });
         let greetMsg = null;
         try { greetMsg = await generateGreeting(business); } catch { /* use static */ }
         const welcomeBase = buildWelcomeUI(business);
@@ -520,6 +644,12 @@ export const handleWebhook = async (req, res) => {
         responseUI = aboutReply
           ? { type: 'text', body: aboutReply }
           : buildWelcomeUI(business);
+        break;
+      }
+
+      // Explicit enquiry / help signal with no active flow
+      case 'ENQUIRY': {
+        responseUI = await handleEnquiry(session, messageText, business, tenantDoc);
         break;
       }
 
@@ -568,12 +698,32 @@ export const handleWebhook = async (req, res) => {
         break;
       }
 
-      // Unknown intent → ask ONE focused clarification question.
-      // brainService already built the reply; just send it. Never call AI here.
+      // Unknown intent → show welcome UI so user sees their options clearly.
+      // [FIX] Plain text clarification ("Would you like to order?") is not enough —
+      // user needs to see buttons. Use buildWelcomeUI so they can tap to proceed.
       case 'CLARIFY': {
+        // Show clean welcome UI — brainReply is already the options list
         responseUI = brainReply
           ? { type: 'text', body: brainReply }
-          : buildSmartFallbackUI(business);
+          : buildWelcomeUI(business);
+        break;
+      }
+
+      // Similarity suggestion — "Did you mean X?" — NEVER triggers a flow.
+      // brainSuggestion = { intent, phrase } from brainService.
+      // User must tap YES to confirm — only then does the flow start.
+      case 'SUGGEST': {
+        const suggestBody = brainReply || 'Did I understand you correctly?';
+        const yesId = brainSuggestion?.intent === 'ORDER'   ? 'ORDER' :
+                      brainSuggestion?.intent === 'BOOKING' ? 'BOOK'  : 'QUESTION';
+        responseUI = {
+          type:    'buttons',
+          body:    suggestBody,
+          buttons: [
+            { id: yesId,    title: '✅ Yes, that one' },
+            { id: 'CANCEL', title: '❌ No, show options' },
+          ],
+        };
         break;
       }
 
@@ -601,6 +751,7 @@ export const handleWebhook = async (req, res) => {
       } catch (err) {
         logger.error('[Webhook] Unhandled error', { err: err.message, stack: err.stack });
       }
+        } // end for msgObj (messages)
       } // end for change
     } // end for entry
   } catch (err) {

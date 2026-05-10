@@ -1,5 +1,5 @@
 /**
- * utils/messageBuilders.js — WhatsBotLyn v3.1
+ * utils/messageBuilders.js — Dreamline Sales Bot v3.1
  *
  * LAYER 3 — DELIVERY STRUCTURE ONLY.
  * Builds WhatsApp-ready UI objects. NEVER imports messageService.
@@ -42,14 +42,19 @@ const formatPrice = (price) => (price != null && price > 0 ? ` (D${price})` : ''
  */
 export function buildWelcomeUI(business) {
   const cfg     = getModeConfig(business);
-  const body    = getLabel(business, 'welcomeMessage') || getLabel(business, 'welcome') || '👋 Welcome! How can we help?';
+  const body    = getLabel(business, 'welcomeMessage') || getLabel(business, 'welcome') || `👋 Hi there! Welcome to *${business?.name || 'us'}*. How can we help you today?`;
   const buttons = cfg.ui.welcomeButtons;
 
   if (buttons.length === 1) {
+    // Single-button modes: render as text with clear options
+    // (WhatsApp requires ≥2 buttons for button messages)
     return {
       type: 'text',
       body: clean(
-        `${body}\n\nTap *${buttons[0].id}* to get started.\n\nType *0* anytime to return here.`,
+        `${body}\n\n` +
+        `Tap *${buttons[0].title || buttons[0].id}* to get started, ` +
+        `or type *question* to ask us anything.\n\n` +
+        `Type *0* anytime to return here.`
       ),
     };
   }
@@ -215,7 +220,7 @@ export function buildPaymentInstructionsUI(business, amount, orderId = null) {
   if (custom) return { type: 'text', body: clean(custom) };
 
   const totalLine = (amount != null && amount > 0)
-    ? `Total: *${currency}${amount}*\n`
+    ? `Total: *${currency} ${amount}*\n`  // [FIX-8] space between currency code and amount
     : '';
 
   return {
@@ -362,6 +367,40 @@ export function buildBookingSuccessUI(business, date, time, service = null) {
 // Backward-compat plain strings
 export const orderSuccess   = (item, qty) => `✅ *Order confirmed!*\n\n${qty > 1 ? `${qty}× ` : ''}*${item}* — we're preparing it now.\nThank you! 😊`;
 export const bookingSuccess = (date, time) => `✅ *Booking confirmed!*\n\n📅 Date: *${date}*${time ? `\n⏰ Time: *${time}*` : ''}\n\nWe look forward to seeing you!`;
+
+// ─── ENQUIRY UI ───────────────────────────────────────────────────────────────
+// Shown when user signals confusion or asks for help mid-flow or out-of-flow.
+// Gives them a clear menu of things to ask about + escape buttons.
+
+export function buildEnquiryUI(business) {
+  const cfg     = getModeConfig(business);
+  const hours   = business?.openingHours
+    ? `• *Opening hours* — ${typeof business.openingHours === 'string' ? business.openingHours : 'Ask us!'}`
+    : '• *Opening hours*';
+  const canOrder = cfg.flows.includes('ORDER');
+  const canBook  = cfg.flows.includes('BOOKING');
+
+  const topics = [
+    hours,
+    canOrder  ? '• *Menu / Prices* — what we offer'          : null,
+    canBook   ? '• *Booking* — how to reserve a table/slot'  : null,
+    '• *Location / Directions*',
+    '• *Payment methods*',
+  ].filter(Boolean).join('\n');
+
+  const body = clean(
+    `Sure! 😊 What would you like to know?\n\nYou can ask about:\n${topics}\n\n` +
+    `Just type your question and I'll do my best to help.\n\n` +
+    `Or use the buttons below to get started 👇`,
+  );
+
+  const buttons = cfg.ui.fallbackButtons.slice(0, 3);
+
+  if (buttons.length < 2) {
+    return { type: 'text', body: clean(body + '\n\nType *0* to see the main menu.') };
+  }
+  return { type: 'buttons', body, buttons };
+}
 
 // ─── CANCEL ───────────────────────────────────────────────────────────────────
 

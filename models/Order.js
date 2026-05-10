@@ -84,6 +84,14 @@ const orderSchema = new mongoose.Schema({
   verifiedAt:   { type: Date,   default: null },
   rejectedNote: { type: String, default: null },
 
+  // Free-text notes — editable via PATCH /business/orders/:id
+  notes: { type: String, default: null },
+
+  // Last 6 hex chars of _id, stored at creation time for O(1) admin lookups.
+  // Admin commands like "APPROVE ABC123" resolve against this field via an index
+  // instead of an unindexed $expr/$regexMatch scan on the ObjectId string.
+  shortId: { type: String, index: true, default: null },
+
 }, { timestamps: true });
 
 // Compound index for admin queries: all pending-verification orders per tenant
@@ -92,5 +100,19 @@ orderSchema.index({ tenantId: 1, paymentStatus: 1, createdAt: -1 });
 // Idempotency index — must be unique so duplicate button taps don't create double orders.
 // The default: randomUUID() on the field means this is always populated and always unique.
 orderSchema.index({ tenantId: 1, customerPhone: 1, idempotencyKey: 1 }, { unique: true });
+
+// Compound index for fast admin commands: "APPROVE <shortId>" / "REJECT <shortId>".
+// Covers the (tenantId, paymentStatus, shortId) triple used in adminPaymentHandler.
+orderSchema.index({ tenantId: 1, paymentStatus: 1, shortId: 1 });
+
+// Populate shortId (last 6 hex chars of _id) before the first save so admin commands
+// like "APPROVE ABC123" can resolve via a simple indexed findOne({ shortId }) instead
+// of an unindexed $expr/$regexMatch scan across the _id string.
+orderSchema.pre('save', function (next) {
+  if (!this.shortId) {
+    this.shortId = String(this._id).slice(-6).toUpperCase();
+  }
+  next();
+});
 
 export default mongoose.model("Order", orderSchema);

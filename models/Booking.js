@@ -40,4 +40,12 @@ const bookingSchema = new mongoose.Schema({
 
 }, { timestamps: true });
 
+// [FIX-D] Compound indexes for the two most common query patterns.
+// listBookings: Booking.find({ tenantId, status?, createdAt range }).sort({ createdAt: -1 })
+// Without a compound index this does a full collection scan scoped only by tenantId.
+bookingSchema.index({ tenantId: 1, status: 1, createdAt: -1 });
+
+// exportBookings / getBooking: common lookup by tenantId + customerPhone
+bookingSchema.index({ tenantId: 1, customerPhone: 1, createdAt: -1 });
+
 export default mongoose.model('Booking', bookingSchema);

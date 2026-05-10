@@ -1,5 +1,11 @@
 import Tenant from "../models/Tenant.js";
 import BusinessConfig from "../models/BusinessConfig.js";
+import Order from "../models/Order.js";
+import Booking from "../models/Booking.js";
+import Session from "../models/Session.js";
+import FailedMessage from "../models/FailedMessage.js";
+import ProcessedMessage from "../models/ProcessedMessage.js";
+import Analytics from "../models/Analytics.js";
 import crypto from "crypto";
 import logger from "../config/logger.js";
 
@@ -46,6 +52,12 @@ export const registerTenant = async (req, res) => {
         email: tenant.email,
         plan: tenant.plan,
         status: tenant.status,
+        // ⚠️  SUPER-ADMIN ONLY ENDPOINT — this is the provisioning path used by
+        // the platform owner to set up a new client account. The apiKey is
+        // returned once here so the admin can hand it to the client.
+        // This is the ONLY admin route that returns apiKey.
+        // Client-facing onboarding (PUT /register/whatsapp) handles its own
+        // one-time apiKey delivery independently.
         apiKey: tenant.apiKey,
         nextStep: `POST /admin/tenants/${tenant._id}/connect-whatsapp`
       }
@@ -254,7 +266,7 @@ export const connectWhatsApp = async (req, res) => {
 // ================= LIST ALL TENANTS =================
 export const listTenants = async (req, res) => {
   try {
-    const tenants = await Tenant.find({}, "-whatsapp.accessToken -__v")
+    const tenants = await Tenant.find({}, "-whatsapp.accessToken -apiKey -__v")
       .sort({ createdAt: -1 });
 
     res.json({
@@ -275,7 +287,7 @@ export const getTenant = async (req, res) => {
   try {
     const { id } = req.params;
 
-    const tenant = await Tenant.findById(id, "-whatsapp.accessToken -__v");
+    const tenant = await Tenant.findById(id, "-whatsapp.accessToken -apiKey -__v");
 
     if (!tenant) {
       return res.status(404).json({ success: false, message: "Tenant not found" });
@@ -327,7 +339,7 @@ export const updateTenant = async (req, res) => {
     const tenant = await Tenant.findByIdAndUpdate(
       id,
       { $set: patch },
-      { new: true, runValidators: true, select: "-whatsapp.accessToken -__v" }
+      { new: true, runValidators: true, select: "-whatsapp.accessToken -apiKey -__v" }
     );
 
     if (!tenant) {
@@ -351,11 +363,16 @@ export const rotateApiKey = async (req, res) => {
   try {
     const { id } = req.params;
 
-    const newKey = crypto.randomBytes(32).toString("hex");
+    const newKey    = crypto.randomBytes(32).toString("hex");
+    // [FIX] findByIdAndUpdate bypasses Mongoose middleware, so the pre-validate
+    // hook that keeps apiKeyHash in sync never runs. We must hash the new key
+    // here and write both fields atomically in a single $set so authMiddleware's
+    // hash-first lookup continues to work immediately after rotation.
+    const newHash   = crypto.createHash("sha256").update(newKey).digest("hex");
 
     const tenant = await Tenant.findByIdAndUpdate(
       id,
-      { $set: { apiKey: newKey } },
+      { $set: { apiKey: newKey, apiKeyHash: newHash } },
       { new: true, select: "name email apiKey" }
     );
 
@@ -418,22 +435,36 @@ export const deleteTenant = async (req, res) => {
     const { id } = req.params;
 
     const tenant = await Tenant.findById(id);
-
     if (!tenant) {
       return res.status(404).json({ success: false, message: "Tenant not found" });
     }
 
-    if (tenant.whatsapp?.phoneNumberId) {
-      await BusinessConfig.deleteMany({
-        phoneNumberId: tenant.whatsapp.phoneNumberId
-      });
-    }
+    // [FIX-3] Delete ALL tenant-scoped data before removing the Tenant document.
+    // Previously only BusinessConfig was cleaned up, leaving Orders, Bookings,
+    // Sessions, FailedMessages, ProcessedMessages, and Analytics permanently
+    // orphaned — they grew forever with no tenant to attribute them to.
+    // Session and ProcessedMessage store tenantId as String; others as ObjectId.
+    const tenantIdStr = String(id);
+
+    await Promise.allSettled([
+      BusinessConfig.deleteMany({ tenantId: id }),
+      Order.deleteMany({ tenantId: id }),
+      Booking.deleteMany({ tenantId: id }),
+      Session.deleteMany({ tenantId: tenantIdStr }),
+      FailedMessage.deleteMany({ tenantId: id }),
+      ProcessedMessage.deleteMany({ tenantId: tenantIdStr }),
+      // Analytics is keyed by phoneNumberId (not tenantId) — clean up if WA was connected
+      tenant.whatsapp?.phoneNumberId
+        ? Analytics.deleteMany({ phoneNumberId: tenant.whatsapp.phoneNumberId })
+        : Promise.resolve(),
+    ]);
 
     await Tenant.findByIdAndDelete(id);
 
+    logger.info(`[tenantController] Deleted tenant ${id} and all associated data.`);
     res.json({
       success: true,
-      message: "Tenant and associated config deleted."
+      message: "Tenant and all associated data deleted.",
     });
 
   } catch (error) {

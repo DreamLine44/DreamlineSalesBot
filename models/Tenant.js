@@ -25,6 +25,16 @@ const tenantSchema = new mongoose.Schema({
     unique: true,
     index: true
   },
+  // [FIX-6] Hashed version of apiKey for safe DB lookups.
+  // authMiddleware looks up tenants by apiKeyHash (SHA-256 of the raw key)
+  // so the plaintext key is never stored in or queried from MongoDB.
+  // Run `node scripts/migrate-apikey-hash.js` to populate this for existing tenants,
+  // then set APIKEY_MIGRATION_DONE=true in your env to disable the plaintext fallback.
+  apiKeyHash: {
+    type: String,
+    index: true,
+    sparse: true,  // allows null/missing (pre-migration tenants)
+  },
 
   // ================= WHATSAPP CREDENTIALS =================
   // These are all provided/returned by Meta — NOT entered manually by the client.
@@ -121,14 +131,26 @@ const tenantSchema = new mongoose.Schema({
     default: "PENDING"     // starts PENDING until WhatsApp is connected
   },
 
+  // ================= ONBOARDING STEP =================
+  // 0 = not started (legacy email-only registration)
+  // 1 = WhatsApp connected (tenant created via PUT /register/whatsapp)
+  // 2 = basic business setup complete (name, businessMode, adminPhone)
+  // 3 = advanced setup complete (menu, hours, payment, faq, settings)
+  onboardingStep: {
+    type:    Number,
+    default: 0,
+    min:     0,
+    max:     3,
+  },
+
   // ================= ADMIN CONTACT =================
   // Phone number for receiving platform alerts (e.g. token expiry) via WhatsApp.
   // This is the TENANT OWNER's number — separate from BusinessConfig.adminPhone
   // which is the per-business contact for order/booking alerts.
   adminPhone: {
-    type: String,
+    type:    String,
     default: null,
-    trim: true
+    trim:    true,
   },
 
   // ================= META =================
@@ -136,18 +158,26 @@ const tenantSchema = new mongoose.Schema({
 
 }, { timestamps: true });
 
-// Auto-generate apiKey before saving
+// Auto-generate apiKey before saving, and always keep apiKeyHash in sync.
 tenantSchema.pre("validate", function (next) {
   if (!this.apiKey) {
     this.apiKey = crypto.randomBytes(32).toString("hex");
+  }
+  // Keep apiKeyHash in sync whenever apiKey is set/changed.
+  // This means new tenants always get a hash without needing to run the migration.
+  if (!this.apiKeyHash || this.isModified("apiKey")) {
+    this.apiKeyHash = crypto.createHash("sha256").update(this.apiKey).digest("hex");
   }
   next();
 });
 
 tenantSchema.set("toJSON", {
   transform: (doc, ret) => {
-    // Never expose accessToken in API responses
+    // Never expose credentials in API responses.
+    // apiKey is returned explicitly ONLY by createTenant (reads the field directly).
+    // All other serialisation paths (list, get, update) must never expose it.
     if (ret.whatsapp) delete ret.whatsapp.accessToken;
+    delete ret.apiKey;
     delete ret.__v;
     return ret;
   }

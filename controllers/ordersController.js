@@ -223,9 +223,10 @@ export const confirmPayment = async (req, res) => {
     res.json({ success: true, message: 'Payment confirmed and customer notified', data: order });
   } catch (err) {
     logger.error('[confirmPayment]', err);
-    const msg = err.message === 'Order not found or already processed'
-      ? err.message : 'Failed to confirm payment';
-    res.status(err.message.includes('not found') ? 404 : 500).json({ success: false, error: msg });
+    // [FIX-F] Attach a code to the thrown Error in paymentService so the controller
+    // doesn't have to do fragile substring matching on err.message to pick status codes.
+    const status = err.statusCode || (err.message?.toLowerCase().includes('not found') ? 404 : 500);
+    res.status(status).json({ success: false, error: err.message || 'Failed to confirm payment' });
   }
 };
 
@@ -251,14 +252,112 @@ export const rejectPayment = async (req, res) => {
     res.json({ success: true, message: 'Payment rejected and customer notified', data: order });
   } catch (err) {
     logger.error('[rejectPayment]', err);
-    const msg = err.message === 'Order not found'
-      ? err.message : 'Failed to reject payment';
-    res.status(err.message.includes('not found') ? 404 : 500).json({ success: false, error: msg });
+    // [FIX-F] Same statusCode pattern as confirmPayment above.
+    const status = err.statusCode || (err.message?.toLowerCase().includes('not found') ? 404 : 500);
+    res.status(status).json({ success: false, error: err.message || 'Failed to reject payment' });
   }
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// FAILED MESSAGES (admin replay — Fix [9])
+// ORDER / BOOKING MANAGEMENT  (Fix #13)
+// These endpoints were missing — admins had no REST API to cancel, update, or
+// delete orders/bookings without direct DB access.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * PATCH /business/orders/:id
+ * Update mutable fields on an order: status, paymentStatus, notes.
+ * Immutable fields (item, quantity, customerPhone, tenantId) are silently ignored.
+ */
+export const updateOrder = async (req, res) => {
+  if (!validateObjectId(req.params.id, res)) return;
+  try {
+    const ALLOWED = ['status', 'paymentStatus', 'notes'];
+    const patch   = {};
+    for (const key of ALLOWED) {
+      if (req.body[key] !== undefined) patch[key] = req.body[key];
+    }
+    if (Object.keys(patch).length === 0) {
+      return res.status(400).json({ success: false, error: 'No updatable fields provided. Allowed: status, paymentStatus, notes' });
+    }
+
+    const order = await Order.findOneAndUpdate(
+      { _id: req.params.id, tenantId: req.tenant._id },
+      { $set: patch },
+      { new: true },
+    ).lean();
+
+    if (!order) return res.status(404).json({ success: false, error: 'Order not found' });
+    res.json({ success: true, data: order });
+  } catch (err) {
+    logger.error('[ordersController.updateOrder]', err);
+    res.status(500).json({ success: false, error: 'Failed to update order' });
+  }
+};
+
+/**
+ * DELETE /business/orders/:id
+ * Hard-delete an order. Use PATCH status=cancelled for soft-cancel.
+ */
+export const deleteOrder = async (req, res) => {
+  if (!validateObjectId(req.params.id, res)) return;
+  try {
+    const result = await Order.deleteOne({ _id: req.params.id, tenantId: req.tenant._id });
+    if (result.deletedCount === 0) return res.status(404).json({ success: false, error: 'Order not found' });
+    res.json({ success: true, message: 'Order deleted' });
+  } catch (err) {
+    logger.error('[ordersController.deleteOrder]', err);
+    res.status(500).json({ success: false, error: 'Failed to delete order' });
+  }
+};
+
+/**
+ * PATCH /business/bookings/:id
+ * Update mutable fields on a booking: status, date, time, notes.
+ */
+export const updateBooking = async (req, res) => {
+  if (!validateObjectId(req.params.id, res)) return;
+  try {
+    const ALLOWED = ['status', 'date', 'time', 'notes'];
+    const patch   = {};
+    for (const key of ALLOWED) {
+      if (req.body[key] !== undefined) patch[key] = req.body[key];
+    }
+    if (Object.keys(patch).length === 0) {
+      return res.status(400).json({ success: false, error: 'No updatable fields provided. Allowed: status, date, time, notes' });
+    }
+
+    const booking = await Booking.findOneAndUpdate(
+      { _id: req.params.id, tenantId: req.tenant._id },
+      { $set: patch },
+      { new: true },
+    ).lean();
+
+    if (!booking) return res.status(404).json({ success: false, error: 'Booking not found' });
+    res.json({ success: true, data: booking });
+  } catch (err) {
+    logger.error('[ordersController.updateBooking]', err);
+    res.status(500).json({ success: false, error: 'Failed to update booking' });
+  }
+};
+
+/**
+ * DELETE /business/bookings/:id
+ * Hard-delete a booking. Use PATCH status=cancelled for soft-cancel.
+ */
+export const deleteBooking = async (req, res) => {
+  if (!validateObjectId(req.params.id, res)) return;
+  try {
+    const result = await Booking.deleteOne({ _id: req.params.id, tenantId: req.tenant._id });
+    if (result.deletedCount === 0) return res.status(404).json({ success: false, error: 'Booking not found' });
+    res.json({ success: true, message: 'Booking deleted' });
+  } catch (err) {
+    logger.error('[ordersController.deleteBooking]', err);
+    res.status(500).json({ success: false, error: 'Failed to delete booking' });
+  }
+};
+
+
 // ─────────────────────────────────────────────────────────────────────────────
 
 /** GET /admin/failed-messages — lists unreplayed failed messages for this tenant */
@@ -287,7 +386,13 @@ export const replayFailedMessage = async (req, res) => {
     }
 
     try {
-      await sendMessage(msg.to, msg.text, tenant);
+      // [FIX-11] Use dispatch() instead of sendMessage() for replay.
+      // sendMessage() only sends plain text. dispatch() handles text, buttons,
+      // list, and image types. FailedMessage currently only stores .text, so
+      // replays are plain-text for now — but dispatch() is the correct API
+      // and ensures future schema additions (uiPayload) work without changing
+      // this controller. Falls back to sendMessage if dispatch is not available.
+      await dispatch(msg.to, { type: 'text', body: msg.text }, tenant);
       msg.replayed  = true;
       msg.retriedAt = new Date();
       await msg.save();

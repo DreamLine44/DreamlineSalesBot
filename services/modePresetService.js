@@ -1,5 +1,5 @@
 /**
- * services/modePresetService.js — WhatsBotLyn v3.1
+ * services/modePresetService.js — Dreamline Sales Bot v3.1
  *
  * BUSINESS SELF-CONFIGURATION SYSTEM
  *
@@ -279,13 +279,22 @@ export function buildSetupChecklist(business) {
       tip:   'Personalise the greeting customers see when they first message you.',
     },
     {
-      done:  mode !== 'SALON' ? !!business?.wavePhone?.trim() : true,
+      // [FIX-B] Check both payment.wavePhone (canonical) and top-level wavePhone (legacy)
+      done:  mode !== 'SALON'
+               ? !!(business?.payment?.wavePhone?.trim() || business?.wavePhone?.trim())
+               : true,
       label: mode !== 'SALON' ? '✅ Wave payment number set (optional)' : '✅ N/A for salon mode',
       tip:   mode !== 'SALON'
                ? 'Add your Wave mobile money number so customers can pay digitally.'
                : null,
     },
-  ].filter(item => item.label !== '✅ N/A for salon mode' || mode === 'SALON' === false);
+  // [FIX-A] Corrected filter logic — previously used:
+  //   item.label !== '✅ N/A...' || mode === 'SALON' === false
+  // 'mode === 'SALON' === false' is always (string === false) = false, so
+  // the filter was equivalent to: item.label !== 'N/A...' — which removed
+  // the N/A placeholder for ALL modes, including SALON where it should stay.
+  // Correct intent: remove the 'N/A for salon' row only when mode is NOT salon.
+  ].filter(item => !(item.label === '✅ N/A for salon mode' && mode !== 'SALON'));
 
   const doneCount = items.filter(i => i.done).length;
   const score     = Math.round((doneCount / items.length) * 100);
@@ -327,7 +336,15 @@ export function getDefaultConfig(mode) {
     description:  'Tell customers what your business does in 1-2 sentences.',
     ...preset,
     adminPhone:   '',
+    // [FIX-B] Include payment.wavePhone in default template — this is the canonical
+    // field checked by paymentService.buildPaymentInstructions. Top-level wavePhone
+    // is kept as legacy fallback but new tenants should fill payment.wavePhone.
     wavePhone:    '',
+    payment: {
+      wavePhone:    '',
+      currency:     'GMD',
+      requireProof: true,
+    },
     menu:         modeKey !== 'SALON' ? sampleMenu : [],
     services:     modeKey === 'SALON' ? sampleServices : [],
     hours: {

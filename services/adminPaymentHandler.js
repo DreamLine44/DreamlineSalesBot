@@ -1,5 +1,5 @@
 /**
- * services/adminPaymentHandler.js — WhatsBotLyn v5.1
+ * services/adminPaymentHandler.js — Dreamline Sales Bot v5.1
  *
  * WhatsApp-only admin payment approval flow.
  * NO frontend required — admins approve/reject via WhatsApp button messages.
@@ -25,6 +25,7 @@ import Tenant         from '../models/Tenant.js';
 import BusinessConfig from '../models/BusinessConfig.js';
 import { confirmPayment, rejectPayment } from './paymentService.js';
 import { sendMessage, sendButtonMessage, dispatch } from './messageService.js';
+import axios          from 'axios';
 import logger from '../config/logger.js';
 
 // ─── ADMIN PHONE LIST ─────────────────────────────────────────────────────────
@@ -191,7 +192,6 @@ async function forwardProofImage(adminPhone, mediaIdOrUrl, order, tenant) {
   };
 
   try {
-    const axios = (await import('axios')).default;
     await axios.post(
       `https://graph.facebook.com/${apiVersion}/${phoneNumberId}/messages`,
       payload,
@@ -350,27 +350,31 @@ function collectAdmins(tenant, business) {
 export const handleAdminTextCommand = async (messageText, tenantId, adminPhone, tenant, business) => {
   const upper = (messageText || '').trim().toUpperCase();
 
-  const approveMatch = upper.match(/^APPROVE\s+([A-F0-9]{6,24})$/i);
-  const rejectMatch  = upper.match(/^REJECT\s+([A-F0-9]{6,24})$/i);
+  // [FIX-13] Use [a-fA-F0-9] instead of /i on [A-F0-9].
+  // The /i flag does NOT expand character classes — [A-F0-9] only matches
+  // uppercase hex regardless of the /i flag. The code works today because
+  // `upper = ...toUpperCase()` is applied first, but the /i was a false safety
+  // net that would silently fail if the pre-processing was ever removed.
+  // Now the regex is self-documenting and correct without relying on caller behaviour.
+  const approveMatch = upper.match(/^APPROVE\s+([a-fA-F0-9]{6,24})$/);
+  const rejectMatch  = upper.match(/^REJECT\s+([a-fA-F0-9]{6,24})$/);
 
   if (!approveMatch && !rejectMatch) return null;
 
   const shortId  = (approveMatch || rejectMatch)[1].toUpperCase();
   const action   = approveMatch ? 'APPROVE' : 'REJECT';
 
-  // Find order by last-6 suffix match within this tenant
+  // [FIX-8 v2] Use the pre-stored `shortId` field (last 6 hex chars of _id, indexed)
+  // for O(1) admin lookups. The previous approach used $expr/$regexMatch on the
+  // ObjectId string, which is a post-filter scan that cannot use any index.
+  // shortId is populated by the Order pre-save hook and indexed on { tenantId, shortId }.
   let order;
   try {
-    // We store the full ObjectId; match orders where last 6 chars of _id match
-    const allPending = await Order.find({
+    order = await Order.findOne({
       tenantId,
       paymentStatus: 'payment_pending_verification',
+      shortId: shortId,  // fully indexed — no $expr needed
     }).select('_id customerPhone item quantity totalPrice paymentStatus').lean();
-
-    order = allPending.find((o) =>
-      String(o._id).toUpperCase().endsWith(shortId) ||
-      String(o._id).toUpperCase() === shortId,
-    );
   } catch (err) {
     return `⚠️ DB error: ${err.message}`;
   }

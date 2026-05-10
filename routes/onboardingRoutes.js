@@ -1,43 +1,61 @@
 /**
- * routes/onboardingRoutes.js — WhatsBotLyn v12
+ * routes/onboardingRoutes.js — Dreamline Sales Bot v7.0
  *
- * Public self-serve onboarding. No SUPER_ADMIN_API_KEY required.
  * Mounted in app.js as: app.use('/register', rateLimiter, onboardingRoutes)
  *
- *   POST /register              — Step 1: create account → returns apiKey
- *   GET  /register/status       — Check onboarding progress (requires apiKey)
- *   POST /register/business     — Step 2: configure bot   (requires apiKey)
- *   PUT  /register/whatsapp     — Step 3: connect WhatsApp (requires apiKey)
+ * ── SIMPLE FLOW (2 requests) ──────────────────────────────────────────────────
+ *   PUT  /register/whatsapp   → Step 1: validate Meta + create tenant + return apiKey (ONCE)
+ *   POST /register/business   → Step 2: configure bot (requires x-api-key)
  *
- * Additionally mounted in app.js as: app.use('/onboarding', onboardingRoutes)
- *   GET  /onboarding/callback   — Meta Embedded Signup OAuth redirect target
- *                                 (no auth — Meta redirects here with ?code=...)
+ * ── UNIFIED FLOW (1 request) ──────────────────────────────────────────────────
+ *   POST /register/full       → Step 1 + Step 2 in one shot (returns apiKey ONCE)
+ *
+ * ── STATUS ────────────────────────────────────────────────────────────────────
+ *   GET  /register/status     → onboarding progress (requires x-api-key)
+ *
+ * ── LEGACY (backward compat) ──────────────────────────────────────────────────
+ *   POST /register            → old email/name registration (kept so existing integrations don't break)
+ *
+ * ── META OAUTH (also mounted at /onboarding/callback in app.js) ───────────────
+ *   GET  /register/callback   → Meta Embedded Signup redirect (public, no auth)
  */
 
 import { Router } from 'express';
-import { requireApiKeyForOnboarding } from '../middlewares/authMiddleware.js';
+import { requireApiKeyForOnboarding, optionalApiKey } from '../middlewares/authMiddleware.js';
 import {
   registerBusiness,
   setupBusiness,
   connectWhatsApp,
+  fullOnboardingHandler,
   getOnboardingStatus,
   handleMetaCallback,
 } from '../controllers/onboardingController.js';
 
 const router = Router();
 
-// Step 1 — public (no auth)
+// ── Public (no auth) ──────────────────────────────────────────────────────────
+
+// Step 1: Connect WhatsApp → creates tenant → returns apiKey ONCE
+// Also handles Step 3 of the email-first flow: if x-api-key is present,
+// updates the existing tenant's WhatsApp credentials instead of creating a new one.
+router.put('/whatsapp', optionalApiKey, connectWhatsApp);
+
+// Unified: Step 1 + Step 2 in one request → returns apiKey ONCE
+// (No auth: includes WhatsApp connect = registration)
+router.post('/full', fullOnboardingHandler);
+
+// Legacy email/name registration (backward compat)
 router.post('/', registerBusiness);
 
-// Steps 2, 3 and status — require the apiKey returned from step 1
-router.get('/status',    requireApiKeyForOnboarding, getOnboardingStatus);
-router.post('/business', requireApiKeyForOnboarding, setupBusiness);
-router.put('/whatsapp',  requireApiKeyForOnboarding, connectWhatsApp);
-
-// [FIX-CALLBACK] Meta Embedded Signup OAuth redirect — public, no auth.
-// META_REDIRECT_URI in .env points to /onboarding/callback.
-// This route MUST be public — Meta redirects the browser here with ?code=...
-// and the server exchanges the code for an access token server-side.
+// Meta OAuth callback (public — Meta redirects here)
 router.get('/callback', handleMetaCallback);
+
+// ── Authenticated (requires x-api-key from Step 1) ────────────────────────────
+
+// Step 2: Configure bot
+router.post('/business', requireApiKeyForOnboarding, setupBusiness);
+
+// Onboarding progress check
+router.get('/status', requireApiKeyForOnboarding, getOnboardingStatus);
 
 export default router;

@@ -5,7 +5,8 @@ import logger from "../config/logger.js";
 
 // [FIX 4] Accept actual `quantity` so analytics reflects real order volumes
 // instead of always recording 1.
-export const trackOrderAnalytics = async (item, phoneNumberId = null, quantity = 1) => {
+// [FIX R] Accept `revenue` (totalPrice) so we can aggregate sales revenue.
+export const trackOrderAnalytics = async (item, phoneNumberId = null, quantity = 1, revenue = 0) => {
   try {
     const now = new Date();
     await Analytics.create({
@@ -13,6 +14,7 @@ export const trackOrderAnalytics = async (item, phoneNumberId = null, quantity =
       phoneNumberId,
       item,
       quantity: quantity > 0 ? quantity : 1,
+      revenue:  revenue  > 0 ? revenue  : 0,
       hour: now.getHours(),
       dayOfWeek: now.getDay()
     });
@@ -61,6 +63,39 @@ export const trackFailedInteraction = async (phone, message, intent = "UNKNOWN",
     });
   } catch (err) {
     logger.error("Failed Interaction Tracking Error:", err.message);
+  }
+};
+
+
+// ================= TRACK REVENUE =================
+//
+// Called by revenueEngineService after every confirmed order.
+// Stores a dedicated REVENUE record so revenue can be aggregated
+// independently of order counts (e.g. cancelled orders don't inflate revenue).
+//
+// Parameters:
+//   item          — item name (or "item + add-on" string)
+//   quantity      — number of units ordered
+//   revenue       — total order value in local currency (e.g. GMD)
+//   phoneNumberId — tenant identifier
+//   customerPhone — customer's phone number (for unique customer count)
+//
+export const trackRevenue = async ({ item, quantity, revenue, phoneNumberId = null, customerPhone = null } = {}) => {
+  if (!revenue || revenue <= 0) return;
+  try {
+    const now = new Date();
+    await Analytics.create({
+      type:         'REVENUE',
+      phoneNumberId,
+      phone:        customerPhone,
+      item,
+      quantity:     quantity > 0 ? quantity : 1,
+      revenue,
+      hour:         now.getHours(),
+      dayOfWeek:    now.getDay(),
+    });
+  } catch (err) {
+    logger.error('Revenue Tracking Error:', err.message);
   }
 };
 
@@ -129,8 +164,13 @@ export const getDailyStats = async (phoneNumberId) => {
 
     pipeline.push(
       {
+        // [FIX-G] Keep phoneNumberId in $project so the subsequent $group
+        // doesn't accidentally merge records from different tenants when
+        // the $match stage is empty (no phoneNumberId provided).
+        // Also keep type so the $group can distinguish ORDER vs BOOKING vs FAILED.
         $project: {
           type: 1,
+          phoneNumberId: 1,
           day: {
             $dateToString: {
               format: "%Y-%m-%d",
@@ -163,6 +203,19 @@ export const getAnalyticsSummary = async (phoneNumberId) => {
   try {
     const filter = phoneNumberId ? { phoneNumberId } : {};
 
+    // Revenue aggregation — sum all REVENUE records for this tenant
+    const revenueAgg = Analytics.aggregate([
+      { $match: { ...filter, type: 'REVENUE', revenue: { $gt: 0 } } },
+      { $group: { _id: null, total: { $sum: '$revenue' } } },
+    ]);
+
+    // Unique customers — distinct phone values across ORDER records
+    const uniqueCustomersAgg = Analytics.distinct('phone', {
+      ...filter,
+      type:  'ORDER',
+      phone: { $ne: null },
+    });
+
     const [
       topItem,
       peakHour,
@@ -170,6 +223,8 @@ export const getAnalyticsSummary = async (phoneNumberId) => {
       totalOrders,
       totalBookings,
       totalFailed,
+      revenueResult,
+      uniqueCustomers,
     ] = await Promise.all([
       getTopItem(phoneNumberId),
       getPeakHour(phoneNumberId),
@@ -177,12 +232,18 @@ export const getAnalyticsSummary = async (phoneNumberId) => {
       Analytics.countDocuments({ ...filter, type: "ORDER" }),
       Analytics.countDocuments({ ...filter, type: "BOOKING" }),
       Analytics.countDocuments({ ...filter, type: "FAILED" }),
+      revenueAgg,
+      uniqueCustomersAgg,
     ]);
+
+    const totalRevenue = revenueResult[0]?.total ?? 0;
 
     return {
       totalOrders,
       totalBookings,
       totalFailed,
+      totalRevenue,
+      uniqueCustomers: uniqueCustomers.length,
       topItem,
       peakHour: peakHour !== null ? `${peakHour}:00` : null,
       dailyStats,

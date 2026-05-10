@@ -1,5 +1,5 @@
 /**
- * services/groqService.js — WhatsBotLyn v5.0
+ * services/groqService.js — Dreamline Sales Bot v5.0
  *
  * AI layer — powered by Groq/Llama.
  *
@@ -80,6 +80,26 @@ const buildSystemPrompt = (business, session, intent = 'FALLBACK') => {
     canBook  ? 'booking services' : null,
   ].filter(Boolean).join(' and ');
 
+  // ── STRICT GROQ RULES (enforced via system prompt) ────────────────────────
+  // Groq is a CONTROLLED FALLBACK ONLY. It must NEVER:
+  //   - trigger order/booking flows
+  //   - guess commands or interpret intents as actions
+  //   - override system routing decisions
+  //   - send unsolicited follow-ups
+  // It MUST always end responses with the options menu so the user knows next steps.
+
+  // Strict Groq enforcement — injected into every system prompt
+  const STRICT_GROQ_RULE = `
+CRITICAL CONSTRAINTS (non-negotiable):
+- You are a safe information assistant ONLY.
+- NEVER say you will place an order, make a booking, or execute any action.
+- NEVER trigger, confirm, or guess commands.
+- ONLY answer factual questions about ${name}: menu, prices, hours, location, payment.
+- Maximum 3 short sentences per response.
+- Always end with: "Type *order*, *book*, or *question* to continue."
+- If the question is not about ${name}, respond: "I can only assist with ${name} questions. Type *order*, *book*, or *question*."
+`;
+
   const cta = [
     canOrder ? 'type *Order* to buy' : null,
     canBook  ? 'type *Book* to schedule' : null,
@@ -136,11 +156,12 @@ const buildSystemPrompt = (business, session, intent = 'FALLBACK') => {
   const intentInstructions = {
 
     GREET: `
-Task: Write a SHORT welcome message for "${name}".
-- 2 sentences max.
-- End with ONE clear call to action: what the customer can do right now.
-- Do not list everything. Pick the most important action.
-Example ending: "Type *Order* to see our menu."`,
+Task: Write a SHORT, warm, and friendly welcome message for "${name}".
+- Be conversational and welcoming — like a helpful shop assistant greeting a customer.
+- 1-2 sentences max. Use a friendly emoji if it suits the business tone.
+- End with ONE clear, inviting call to action so the customer knows what they can do.
+- Do NOT list every option. Pick the single most useful next step.
+Example: "Welcome to ${name}! 😊 Type *Order* to browse our menu, or *Hi* to see everything we offer."`,
 
     ABOUT: `
 Task: Answer the customer's question about the business briefly.
@@ -177,6 +198,7 @@ ${currentFlow === 'ORDER'
   }[intent] || 'Respond helpfully in 1-2 sentences. Never expose technical errors.';
 
   return (
+    STRICT_GROQ_RULE + '\n\n' +
     `You are a WhatsApp sales assistant for "${name}", a ${industry.toLowerCase()} business.\n` +
     `Your ONLY job is to help customers with: ${capabilities}.\n\n` +
     (currentFlow
@@ -203,7 +225,8 @@ ${currentFlow === 'ORDER'
     `- Keep responses SHORT — this is WhatsApp. Max 3 sentences unless listing items.\n` +
     `- Do NOT ask multiple questions. Ask ONE at most.\n` +
     `- ${toneRule}\n` +
-    `- Always end by guiding to the next action: ${cta || 'ask a question'}.`
+    `- Always end by guiding to the next action: ${cta || 'ask a question'}.\n` +
+    `- Your FINAL sentence must always be: "Type *order*, *book*, or *question* to continue."`
   );
 };
 

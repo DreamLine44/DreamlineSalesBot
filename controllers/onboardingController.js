@@ -1,83 +1,312 @@
 /**
- * controllers/onboardingController.js — WhatsBotLyn v5.0
+ * controllers/onboardingController.js — Dreamline Sales Bot v7.0
  *
- * Public self-serve onboarding — no SUPER_ADMIN_API_KEY required.
- * Rate-limited by the global rateLimiter middleware.
+ * Thin controller — all business logic lives in services/onboardingService.js.
  *
- * Flow:
- *   Step 1: POST /register          → creates Tenant, returns apiKey + tenantId
- *   Step 2: POST /register/business → creates/updates BusinessConfig (requires apiKey)
- *   Step 3: PUT  /register/whatsapp → links WhatsApp credentials (phoneNumberId + accessToken)
- *   GET    /register/status         → returns current onboarding progress
+ * Onboarding flows:
  *
- * v5.0 improvements:
- * Step 2 no longer requires WhatsApp to be connected first —
- *         businesses can configure menu, hours, tone WHILE waiting for Meta approval.
- * Better validation messages with actionable guidance.
- * Status endpoint now includes % complete and per-step guidance.
- * Duplicate email returns existing tenantId hint (not just "already exists").
- * Plan validation defaults gracefully to FREE with a note.
- * WhatsApp connect step auto-creates BusinessConfig if not yet done.
- * Status endpoint checks Groq health as optional indicator.
+ * ── SIMPLE (2 requests) ─────────────────────────────────────────────────────
+ *   PUT  /register/whatsapp   → Step 1: validate Meta + create tenant → returns apiKey (ONCE)
+ *   POST /register/business   → Step 2: configure bot (basic or full)
+ *
+ * ── UNIFIED (1 request) ─────────────────────────────────────────────────────
+ *   POST /onboarding/full     → Step 1 + Step 2 in one request → returns apiKey (ONCE)
+ *
+ * ── STATUS ──────────────────────────────────────────────────────────────────
+ *   GET  /register/status     → onboarding progress (requires x-api-key)
+ *
+ * ── META OAUTH ──────────────────────────────────────────────────────────────
+ *   GET  /onboarding/callback → Meta Embedded Signup redirect target (public)
+ *
+ * Security rules enforced here:
+ *   - apiKey is returned ONLY from connectWhatsApp and fullOnboarding — never again
+ *   - accessToken is NEVER returned in any response
+ *   - All responses use the Tenant toJSON transform (strips accessToken automatically)
  */
 
+import crypto         from 'crypto';
 import Tenant         from '../models/Tenant.js';
 import BusinessConfig from '../models/BusinessConfig.js';
 import logger         from '../config/logger.js';
-import crypto         from 'crypto';
+import {
+  connectWhatsAppAndCreateTenant,
+  setupBusinessConfig,
+  fullOnboarding,
+  getOnboardingStatusData,
+} from '../services/onboardingService.js';
 
-const VALID_PLANS         = ['FREE', 'STARTER', 'PRO', 'ENTERPRISE'];
-const VALID_MODES         = ['ORDER', 'BOOKING', 'BOTH'];           // legacy flow-control field
-const VALID_BUSINESS_MODES = ['RESTAURANT', 'SALON', 'RETAIL'];     // canonical v15 business type
-
-// ─── Duplicate-key error helper ───────────────────────────────────────────────
-// MongoDB E11000 fires when a unique index is violated.
-// Returns a human-readable response payload, or null if not a dup-key error.
+// ─── Duplicate-key error parser ───────────────────────────────────────────────
 function parseDuplicateKeyError(err) {
   if (err.code !== 11000) return null;
+  const kp = err.keyPattern || {};
+  const kv = err.keyValue   || {};
 
-  const keyPattern = err.keyPattern || {};
-  const keyValue   = err.keyValue   || {};
+  if (kp.email || kv.email)
+    return { status: 409, message: 'An account with this email already exists.' };
 
-  if (keyPattern.email || keyValue.email) {
-    return {
-      status:  409,
-      message: 'An account with this email already exists.',
-      hint:    'Check your email for your API key. If you lost it, contact support.',
-    };
+  if (kp['whatsapp.phoneNumberId'] || kv['whatsapp.phoneNumberId'] !== undefined) {
+    if (kv['whatsapp.phoneNumberId'] === null)
+      return { status: 500, message: 'A rare registration conflict occurred. Please try again.' };
+    return { status: 409, message: 'This WhatsApp number is already connected to another account.' };
   }
 
-  if (keyPattern['whatsapp.phoneNumberId'] || keyValue['whatsapp.phoneNumberId'] !== undefined) {
-    // Only show the WA-conflict message when an actual non-null phoneNumberId collided.
-    // If keyValue is null it means the sparse index is incorrectly indexing null values —
-    // that is a server-side schema misconfiguration, not a user error.
-    if (keyValue['whatsapp.phoneNumberId'] === null) {
-      return {
-        status:  500,
-        message: 'A rare registration conflict occurred. Please try again.',
-      };
-    }
-    return {
-      status:  409,
-      message: 'This WhatsApp number is already connected to another account.',
-    };
-  }
+  if (kp.apiKey || kv.apiKey)
+    return { status: 500, message: 'A rare key collision occurred. Please try again.' };
 
-  if (keyPattern.apiKey || keyValue.apiKey) {
-    return {
-      status:  500,
-      message: 'A rare key collision occurred. Please try again.',
-    };
-  }
-
-  const field = Object.keys(keyPattern)[0] || 'unknown field';
-  return {
-    status:  409,
-    message: `Duplicate value on field: ${field}.`,
-  };
+  return { status: 409, message: `Duplicate value: ${Object.keys(kp)[0] || 'unknown field'}.` };
 }
 
-// ─── Step 1: Register ─────────────────────────────────────────────────────────
+// ─── Step 1: Connect WhatsApp → creates tenant → returns apiKey (ONCE) ────────
+// Also handles Step 3 of the legacy email-first flow: when a tenant already
+// exists (identified by x-api-key auth from requireApiKeyForOnboarding or by
+// passing the apiKey in body), this updates the existing tenant with WhatsApp
+// credentials instead of creating a new one.
+export const connectWhatsApp = async (req, res) => {
+  try {
+    const { phoneNumberId, accessToken, phone } = req.body;
+
+    // ── If this request is authenticated (Step 3 of email-first flow) ──────────
+    // req.tenant is populated by requireApiKeyForOnboarding middleware when
+    // the client sends x-api-key. In that case, update the existing tenant.
+    if (req.tenant) {
+      const { validateMetaCredentials } = await import('../services/onboardingService.js');
+      const WA_API_VERSION = process.env.WA_API_VERSION || process.env.META_API_VERSION || 'v21.0';
+
+      if (!phoneNumberId?.trim() || !accessToken?.trim()) {
+        return res.status(400).json({ success: false, message: 'phoneNumberId and accessToken are required.' });
+      }
+
+      // Check if this phoneNumberId is already used by a DIFFERENT tenant
+      const duplicate = await Tenant.findOne({
+        'whatsapp.phoneNumberId': phoneNumberId.trim(),
+        _id: { $ne: req.tenant._id },
+      });
+      if (duplicate) {
+        return res.status(409).json({ success: false, message: 'This WhatsApp number is already connected to another account.' });
+      }
+
+      // Validate with Meta
+      const validation = await validateMetaCredentials(phoneNumberId.trim(), accessToken.trim());
+      if (!validation.valid) {
+        return res.status(400).json({
+          success: false,
+          message: `Meta rejected these credentials: ${validation.error}`,
+          hint: 'Ensure accessToken is valid and phoneNumberId belongs to your WhatsApp Business Account.',
+        });
+      }
+
+      const crypto       = (await import('crypto')).default;
+      const verifyToken  = req.tenant.whatsapp?.verifyToken || crypto.randomBytes(16).toString('hex');
+      const cleanPhone   = phone?.trim() || validation.displayPhone || null;
+
+      req.tenant.whatsapp = {
+        ...req.tenant.whatsapp?.toObject?.() || {},
+        phone:          cleanPhone,
+        phoneNumberId:  phoneNumberId.trim(),
+        wabaId:         validation.wabaId || req.tenant.whatsapp?.wabaId || null,
+        accessToken:    accessToken.trim(),
+        verifyToken,
+        apiVersion:     WA_API_VERSION,
+        connected:      true,
+        tokenUpdatedAt: new Date(),
+      };
+      req.tenant.status         = 'ACTIVE';
+      req.tenant.onboardingStep = Math.max(req.tenant.onboardingStep || 0, 1);
+      await req.tenant.save();
+
+      await BusinessConfig.findOneAndUpdate(
+        { tenantId: req.tenant._id },
+        {
+          $set:         { phoneNumberId: phoneNumberId.trim() },
+          $setOnInsert: { tenantId: req.tenant._id, name: '', businessMode: 'RESTAURANT', botEnabled: true },
+        },
+        { upsert: true, new: true },
+      );
+
+      const webhookUrl = `${process.env.BASE_URL || 'https://your-domain.com'}/webhook/${phoneNumberId.trim()}`;
+      logger.info('[Onboarding] connectWhatsApp: updated existing tenant', { tenantId: req.tenant._id, phoneNumberId });
+
+      return res.json({
+        success: true,
+        message: '✅ WhatsApp connected to your existing account!',
+        data: {
+          tenantId: req.tenant._id,
+          onboardingStep: req.tenant.onboardingStep,
+          whatsapp: {
+            phone:         cleanPhone,
+            phoneNumberId: phoneNumberId.trim(),
+            wabaId:        validation.wabaId || null,
+            connected:     true,
+          },
+          webhook: {
+            callbackUrl: webhookUrl,
+            verifyToken,
+            instructions: [
+              `1. Go to Meta → Your App → WhatsApp → Configuration`,
+              `2. Set Callback URL: ${webhookUrl}`,
+              `3. Set Verify Token: ${verifyToken}`,
+              `4. Subscribe to: messages`,
+            ],
+          },
+        },
+      });
+    }
+
+    // ── No auth header: fresh registration (Step 1 of WhatsApp-first flow) ─────
+    const result = await connectWhatsAppAndCreateTenant({ phoneNumberId, accessToken, phone });
+
+    if (!result.success) {
+      return res.status(result.status || 400).json({ success: false, message: result.message, hint: result.hint, guide: result.guide });
+    }
+
+    const { tenant, apiKey, verifyToken, webhookUrl } = result;
+
+    return res.status(201).json({
+      success: true,
+      message: '✅ WhatsApp connected! Your tenant account is created.',
+      // ⚠️  apiKey is returned EXACTLY ONCE — store it securely, it will never be shown again.
+      data: {
+        tenantId:       tenant._id,
+        apiKey,
+        onboardingStep: 1,
+        whatsapp: {
+          phone:         tenant.whatsapp.phone,
+          phoneNumberId: tenant.whatsapp.phoneNumberId,
+          wabaId:        tenant.whatsapp.wabaId,
+          connected:     true,
+        },
+        webhook: {
+          callbackUrl: webhookUrl,
+          verifyToken,
+          instructions: [
+            `1. Go to Meta → Your App → WhatsApp → Configuration`,
+            `2. Set Callback URL: ${webhookUrl}`,
+            `3. Set Verify Token: ${verifyToken}`,
+            `4. Subscribe to: messages`,
+          ],
+        },
+        nextStep: {
+          step:     2,
+          action:   'Configure your bot (name, menu, hours, etc.)',
+          method:   'POST',
+          endpoint: '/register/business',
+          headers:  { 'x-api-key': '(your apiKey above)' },
+        },
+      },
+    });
+
+  } catch (err) {
+    logger.error('[Onboarding] connectWhatsApp error', { err: err.message });
+    const dup = parseDuplicateKeyError(err);
+    if (dup) return res.status(dup.status).json({ success: false, message: dup.message });
+    res.status(500).json({ success: false, message: 'Server error. Please try again.' });
+  }
+};
+
+// ─── Step 2: Configure business ───────────────────────────────────────────────
+export const setupBusiness = async (req, res) => {
+  try {
+    if (!req.body || typeof req.body !== 'object' || Array.isArray(req.body)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Request body must be a JSON object.',
+        hint:    'Set Content-Type: application/json header.',
+      });
+    }
+
+    const result = await setupBusinessConfig(req.tenant, req.body);
+
+    if (!result.success) {
+      return res.status(result.status || 400).json({ success: false, message: result.message });
+    }
+
+    const { business, onboardingStep, isFullMode } = result;
+
+    return res.json({
+      success: true,
+      message: isFullMode
+        ? '✅ Full bot configuration saved! Your bot is ready to use.'
+        : '✅ Basic bot setup complete. Add menu, hours, and payment when ready.',
+      data: {
+        onboardingStep,
+        business,
+        ...(onboardingStep < 3 ? {
+          tip: 'Use POST /business/menu, /business/hours, /business/payment to complete advanced config.',
+        } : {}),
+      },
+    });
+
+  } catch (err) {
+    logger.error('[Onboarding] setupBusiness error', { err: err.message });
+    const dup = parseDuplicateKeyError(err);
+    if (dup) return res.status(dup.status).json({ success: false, message: dup.message });
+    res.status(500).json({ success: false, message: 'Server error. Please try again.' });
+  }
+};
+
+// ─── Unified: Step 1 + Step 2 in one request ─────────────────────────────────
+export const fullOnboardingHandler = async (req, res) => {
+  try {
+    const { whatsapp, business } = req.body || {};
+
+    const result = await fullOnboarding({ whatsapp, business });
+
+    if (!result.success) {
+      return res.status(result.status || 400).json({ success: false, message: result.message, hint: result.hint });
+    }
+
+    const { tenant, apiKey, verifyToken, webhookUrl, business: biz, onboardingStep } = result;
+
+    return res.status(201).json({
+      success: true,
+      message: '🎉 Full onboarding complete! Your bot is live.',
+      data: {
+        tenantId: tenant._id,
+        // ⚠️  apiKey returned ONCE only — store it securely
+        apiKey,
+        onboardingStep,
+        whatsapp: {
+          phone:         tenant.whatsapp.phone,
+          phoneNumberId: tenant.whatsapp.phoneNumberId,
+          wabaId:        tenant.whatsapp.wabaId,
+          connected:     true,
+        },
+        business: biz || null,
+        webhook: {
+          callbackUrl: webhookUrl,
+          verifyToken,
+          instructions: [
+            `1. Go to Meta → Your App → WhatsApp → Configuration`,
+            `2. Set Callback URL: ${webhookUrl}`,
+            `3. Set Verify Token: ${verifyToken}`,
+            `4. Subscribe to: messages`,
+          ],
+        },
+      },
+    });
+
+  } catch (err) {
+    logger.error('[Onboarding] fullOnboarding error', { err: err.message });
+    const dup = parseDuplicateKeyError(err);
+    if (dup) return res.status(dup.status).json({ success: false, message: dup.message });
+    res.status(500).json({ success: false, message: 'Server error. Please try again.' });
+  }
+};
+
+// ─── Status ───────────────────────────────────────────────────────────────────
+export const getOnboardingStatus = async (req, res) => {
+  try {
+    const data = await getOnboardingStatusData(req.tenant);
+    res.json({ success: true, data });
+  } catch (err) {
+    logger.error('[Onboarding] getStatus error', { err: err.message });
+    res.status(500).json({ success: false, message: 'Server error' });
+  }
+};
+
+// ─── Legacy: Step 1 email/name registration (kept for backward compat) ────────
+// Previously POST /register — still works if clients use it, but WhatsApp-first
+// is now the recommended flow.
 export const registerBusiness = async (req, res) => {
   try {
     const { name, email, businessName, phone, plan } = req.body;
@@ -86,541 +315,192 @@ export const registerBusiness = async (req, res) => {
       return res.status(400).json({
         success: false,
         message: 'Required fields: name, email, businessName, phone',
-        required: {
-          name:         'Your full name',
-          email:        'Your email address',
-          businessName: 'Your business name',
-          phone:        'Your WhatsApp phone number (e.g. +2207000000)',
-        },
+        hint:    'Or use PUT /register/whatsapp to onboard directly with your WhatsApp credentials.',
       });
     }
 
     const cleanEmail = email.toLowerCase().trim();
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) {
-      return res.status(400).json({ success: false, message: 'Invalid email address' });
+      return res.status(400).json({ success: false, message: 'Invalid email address.' });
     }
-
-    // Basic phone validation — must start with + and contain only digits after that
     const cleanPhone = phone.trim();
     if (!/^\+\d{7,15}$/.test(cleanPhone)) {
-      return res.status(400).json({
-        success: false,
-        message: 'Invalid phone number. Use international format starting with + (e.g. +2207000000)',
-      });
+      return res.status(400).json({ success: false, message: 'Use international format: +2207000000' });
     }
 
-    // Duplicate email — hint without exposing full account
     const existing = await Tenant.findOne({ email: cleanEmail });
     if (existing) {
       return res.status(409).json({
         success: false,
         message: 'An account with this email already exists.',
-        hint: 'Check your email for your API key. If you lost it, contact support with your email address.',
+        hint:    'Check your email for your API key.',
       });
     }
 
-    // Plan validation — default to FREE with a note
+    const VALID_PLANS  = ['FREE', 'STARTER', 'PRO', 'ENTERPRISE'];
     const resolvedPlan = VALID_PLANS.includes(plan?.toUpperCase()) ? plan.toUpperCase() : 'FREE';
-    const planNote     = plan && !VALID_PLANS.includes(plan?.toUpperCase())
-      ? `Plan "${plan}" not recognised — defaulted to FREE. Valid plans: ${VALID_PLANS.join(', ')}.`
-      : null;
 
     const tenant = await Tenant.create({
-      name:   name.trim(),
-      email:  cleanEmail,
-      plan:   resolvedPlan,
-      status: 'PENDING',
-      // Store the user's own phone number (not the Meta phoneNumberId) so it's
-      // available for admin notifications before WhatsApp is fully connected.
+      name:          name.trim(),
+      email:         cleanEmail,
+      plan:          resolvedPlan,
+      status:        'PENDING',
+      onboardingStep: 0,
+      adminPhone:    cleanPhone,
       'whatsapp.phone': cleanPhone,
     });
 
-    logger.info('[Onboarding] New tenant registered', { tenantId: tenant._id, email: cleanEmail, plan: resolvedPlan });
+    logger.info('[Onboarding] Legacy account created', { tenantId: tenant._id, email: cleanEmail });
 
     return res.status(201).json({
       success: true,
-      message: '✅ Account created! Complete the next steps to go live.',
-      ...(planNote ? { note: planNote } : {}),
+      message: '✅ Account created! Now connect your WhatsApp number.',
       data: {
         tenantId: tenant._id,
         apiKey:   tenant.apiKey,
         plan:     tenant.plan,
         status:   tenant.status,
-        phone:    cleanPhone,
-        nextSteps: [
-          {
-            step:        2,
-            action:      'Configure your bot (menu, hours, tone)',
-            method:      'POST',
-            endpoint:    '/register/business',
-            headers:     { 'x-api-key': tenant.apiKey },
-            tip:         'You can do this now — even before connecting WhatsApp.',
-            sampleBody: {
-              name:         businessName.trim(),
-              businessMode: 'RESTAURANT',  // RESTAURANT | SALON | RETAIL
-              description:  'A short description of your business (used by AI for smart replies)',
-              adminPhone:   cleanPhone,
-              menu: [
-                { name: 'Item 1', price: 50, available: true },
-                { name: 'Item 2', price: 100, available: true },
-              ],
-              hours: {
-                enabled: false,
-                open:    8,   // integer hour 0–23
-                close:   18,
-              },
-              payment: {
-                wavePhone:    cleanPhone,
-                currency:     'GMD',
-                requireProof: true,
-              },
-            },
-          },
-          {
-            step:        3,
-            action:      'Connect WhatsApp',
-            method:      'PUT',
-            endpoint:    '/register/whatsapp',
-            headers:     { 'x-api-key': tenant.apiKey },
-            tip:         'Get phoneNumberId and accessToken from your Meta Developer dashboard.',
-            guide:       'https://developers.facebook.com/docs/whatsapp/cloud-api/get-started',
-            sampleBody: {
-              phoneNumberId: 'from Meta dashboard',
-              accessToken:   'from Meta dashboard',
-              phone:         cleanPhone,
-            },
-          },
-        ],
+        nextStep: {
+          step:     1,
+          action:   'Connect WhatsApp (recommended: use PUT /register/whatsapp directly instead)',
+          method:   'PUT',
+          endpoint: '/register/whatsapp',
+          headers:  { 'x-api-key': tenant.apiKey },
+        },
       },
     });
 
   } catch (err) {
     logger.error('[Onboarding] registerBusiness error', { err: err.message });
-
-    const dupError = parseDuplicateKeyError(err);
-    if (dupError) {
-      logger.warn('[Onboarding] Duplicate key on register', { key: err.keyPattern, hint: dupError.hint });
-      return res.status(dupError.status).json({ success: false, message: dupError.message, ...(dupError.hint ? { hint: dupError.hint } : {}) });
-    }
-
+    const dup = parseDuplicateKeyError(err);
+    if (dup) return res.status(dup.status).json({ success: false, message: dup.message, hint: dup.hint });
     res.status(500).json({ success: false, message: 'Server error. Please try again.' });
-  }
-};
-// No longer requires WhatsApp to be connected first.
-export const setupBusiness = async (req, res) => {
-  try {
-    const tenant = req.tenant;
-
-    // Guard against missing or non-object body.
-    // Without Content-Type: application/json, express.json() leaves req.body as
-    // undefined, and the first req.body.mode access below would crash the handler
-    // with "Cannot read properties of undefined (reading 'mode')".
-    if (!req.body || typeof req.body !== 'object' || Array.isArray(req.body)) {
-      return res.status(400).json({
-        success: false,
-        message: 'Request body must be a JSON object.',
-        hint: 'Set the Content-Type: application/json header and send a valid JSON body.',
-      });
-    }
-
-    const ALLOWED = [
-      'name', 'description', 'mode', 'businessMode', 'menu', 'services', 'tone', 'hours',
-      'adminPhone', 'customMessages', 'faq', 'payment', 'settings',
-    ];
-
-    // Array-type fields sent as null crash Mongoose's array caster
-    // with "Cannot read properties of null (reading 'length')" when runValidators:true
-    // is active. Catch them early and return a helpful 400 instead.
-    const ARRAY_FIELDS = new Set(['menu', 'services', 'faq']);
-    for (const field of ARRAY_FIELDS) {
-      if (req.body[field] === null) {
-        return res.status(400).json({
-          success: false,
-          message: `"${field}" cannot be null — send an empty array [] to clear it.`,
-        });
-      }
-    }
-
-    // Validate mode if provided (legacy flow-control field: ORDER / BOOKING / BOTH)
-    if (req.body.mode && !VALID_MODES.includes(req.body.mode?.toUpperCase())) {
-      return res.status(400).json({
-        success: false,
-        message: `Invalid mode "${req.body.mode}". Valid values: ${VALID_MODES.join(', ')}. To set business type use "businessMode" instead.`,
-      });
-    }
-
-    // Validate businessMode if provided (RESTAURANT / SALON / RETAIL)
-    if (req.body.businessMode && !VALID_BUSINESS_MODES.includes(req.body.businessMode?.toUpperCase())) {
-      return res.status(400).json({
-        success: false,
-        message: `Invalid businessMode "${req.body.businessMode}". Valid values: ${VALID_BUSINESS_MODES.join(', ')}`,
-      });
-    }
-
-    // Build update payload — uppercase mode/businessMode to prevent enum failures
-    const UPPERCASE_FIELDS = new Set(['mode', 'businessMode']);
-    const data = { tenantId: tenant._id };
-    for (const field of ALLOWED) {
-      if (req.body[field] !== undefined) {
-        data[field] = UPPERCASE_FIELDS.has(field) && typeof req.body[field] === 'string'
-          ? req.body[field].toUpperCase()
-          : req.body[field];
-      }
-    }
-
-    // If WhatsApp is already connected, link the phoneNumberId
-    if (tenant?.whatsapp?.phoneNumberId) {
-      data.phoneNumberId = tenant.whatsapp.phoneNumberId;
-    }
-
-    // Upsert by tenantId — works whether WhatsApp is connected yet or not
-    const business = await BusinessConfig.findOneAndUpdate(
-      { tenantId: tenant._id },
-      { $set: data },
-      { new: true, upsert: true, runValidators: true }
-    );
-
-    logger.info('[Onboarding] Business configured', { tenantId: tenant._id });
-
-    const isLive = tenant.whatsapp?.connected === true;
-
-    return res.status(200).json({
-      success: true,
-      message: isLive
-        ? '✅ Bot updated and live!'
-        : '✅ Bot configured! Now connect WhatsApp (step 3) to go live.',
-      data: business,
-      ...(isLive ? {} : {
-        nextStep: {
-          step:     3,
-          action:   'Connect WhatsApp',
-          method:   'PUT',
-          endpoint: '/register/whatsapp',
-        },
-      }),
-    });
-
-  } catch (err) {
-    logger.error('[Onboarding] setupBusiness error', { err: err.message });
-
-    const dupError = parseDuplicateKeyError(err);
-    if (dupError) {
-      return res.status(dupError.status).json({ success: false, message: dupError.message, ...(dupError.hint ? { hint: dupError.hint } : {}) });
-    }
-
-    res.status(500).json({ success: false, message: 'Server error. Please try again.' });
-  }
-};
-
-// ─── Step 3: Connect WhatsApp ────────────────────────────────────────────────
-// Auto-creates BusinessConfig if step 2 was skipped.
-export const connectWhatsApp = async (req, res) => {
-  try {
-    const tenant = req.tenant;
-    const { phoneNumberId, accessToken, phone, verifyToken, apiVersion } = req.body;
-
-    if (!phoneNumberId?.trim() || !accessToken?.trim()) {
-      return res.status(400).json({
-        success: false,
-        message: 'Required: phoneNumberId and accessToken (from Meta Developer dashboard)',
-        guide:   'https://developers.facebook.com/docs/whatsapp/cloud-api/get-started',
-      });
-    }
-
-    // Check for duplicate across other tenants
-    const duplicate = await Tenant.findOne({
-      'whatsapp.phoneNumberId': phoneNumberId.trim(),
-      _id: { $ne: tenant._id },
-    });
-    if (duplicate) {
-      return res.status(409).json({
-        success: false,
-        message: 'This WhatsApp number is already connected to another account.',
-      });
-    }
-
-    const resolvedVerifyToken = verifyToken?.trim() || crypto.randomBytes(16).toString('hex');
-
-    tenant.whatsapp = {
-      ...tenant.whatsapp,
-      phone:          phone?.trim() || null,
-      phoneNumberId:  phoneNumberId.trim(),
-      accessToken:    accessToken.trim(),
-      verifyToken:    resolvedVerifyToken,
-      apiVersion:     apiVersion?.trim() || process.env.WA_API_VERSION || 'v21.0',
-      connected:      true,
-      tokenUpdatedAt: new Date(),
-    };
-    tenant.status = 'ACTIVE';
-    await tenant.save();
-
-    // Ensure BusinessConfig exists + phoneNumberId is linked
-    await BusinessConfig.findOneAndUpdate(
-      { tenantId: tenant._id },
-      {
-        $set:      { phoneNumberId: phoneNumberId.trim() },
-        $setOnInsert: {
-          tenantId:     tenant._id,
-          name:         tenant.name,
-          businessMode: 'RESTAURANT', // was mode:'BOTH' (legacy); businessMode is the v15 canonical field
-        },
-      },
-      { upsert: true, new: true }
-    );
-
-    logger.info('[Onboarding] WhatsApp connected', { tenantId: tenant._id, phoneNumberId });
-
-    const webhookUrl = `${process.env.BASE_URL || 'https://your-domain.com'}/webhook/${phoneNumberId.trim()}`;
-
-    return res.json({
-      success: true,
-      message: '🎉 WhatsApp connected! Your bot is now LIVE.',
-      data: {
-        status:      'ACTIVE',
-        webhookUrl,
-        verifyToken: resolvedVerifyToken,
-        instructions: [
-          `1. Go to: https://developers.facebook.com → Your App → WhatsApp → Configuration`,
-          `2. Set Callback URL to: ${webhookUrl}`,
-          `3. Set Verify Token to: ${resolvedVerifyToken}`,
-          `4. Subscribe to: messages, message_deliveries`,
-          `5. Send "Hi" to your WhatsApp number to test!`,
-        ],
-      },
-    });
-
-  } catch (err) {
-    logger.error('[Onboarding] connectWhatsApp error', { err: err.message });
-
-    const dupError = parseDuplicateKeyError(err);
-    if (dupError) {
-      return res.status(dupError.status).json({ success: false, message: dupError.message, ...(dupError.hint ? { hint: dupError.hint } : {}) });
-    }
-
-    res.status(500).json({ success: false, message: 'Server error. Please try again.' });
-  }
-};
-
-// ─── Status check ─────────────────────────────────────────────────────────────
-// Richer status with % complete and per-step guidance.
-export const getOnboardingStatus = async (req, res) => {
-  try {
-    const tenant   = req.tenant;
-    const business = await BusinessConfig.findOne({ tenantId: tenant._id })
-      .select('name menu mode businessMode adminPhone description payment')
-      .lean();
-
-    const hasName    = !!business?.name;
-    const hasMenu    = Array.isArray(business?.menu) && business.menu.length > 0;
-    const hasAdmin   = !!business?.adminPhone;
-    const hasWA      = tenant.whatsapp?.connected === true;
-    const hasPayment = !!business?.payment?.wavePhone;
-    const hasAI      = !!process.env.GROQ_API_KEY;
-
-    const steps = [
-      {
-        step:   1,
-        label:  'Account created',
-        done:   true,
-        detail: `Registered as ${tenant.email}`,
-      },
-      {
-        step:   2,
-        label:  'Bot configured',
-        done:   hasName && hasAdmin,
-        detail: hasName && hasAdmin
-          ? `Mode: ${business?.businessMode || 'RESTAURANT'}, Menu items: ${business?.menu?.length || 0}` // businessMode is canonical
-          : 'POST /register/business with name, adminPhone, menu, etc.',
-        subChecks: {
-          name:        hasName,
-          adminPhone:  hasAdmin,
-          menu:        hasMenu,
-          payment:     hasPayment,
-          description: !!business?.description,
-        },
-      },
-      {
-        step:   3,
-        label:  'WhatsApp connected',
-        done:   hasWA,
-        detail: hasWA
-          ? `Connected: ${tenant.whatsapp?.phone || tenant.whatsapp?.phoneNumberId}`
-          : 'PUT /register/whatsapp with phoneNumberId + accessToken from Meta',
-      },
-    ];
-
-    const doneCount  = steps.filter(s => s.done).length;
-    const allDone    = doneCount === steps.length;
-    const pctComplete = Math.round((doneCount / steps.length) * 100);
-
-    res.json({
-      success: true,
-      data: {
-        status:      tenant.status,
-        allDone,
-        pctComplete,
-        steps,
-        extras: {
-          paymentConfigured: hasPayment,
-          groqActive:        hasAI,
-          groqNote:          hasAI ? 'AI replies active ✅' : 'Set GROQ_API_KEY for smart AI replies',
-        },
-        ...(allDone
-          ? { message: '🎉 Your bot is fully set up and live!' }
-          : { nextStep: steps.find(s => !s.done) }
-        ),
-      },
-    });
-
-  } catch (err) {
-    logger.error('[Onboarding] getStatus error', { err: err.message });
-    res.status(500).json({ success: false, message: 'Server error' });
   }
 };
 
 // ─── Meta Embedded Signup OAuth Callback ──────────────────────────────────────
-// GET /onboarding/callback?code=...&state=<tenantId>
-// 
-// Meta redirects here after the user completes Embedded Signup.
-// `code` is exchanged for an access token; WABA + phone are auto-fetched and
-// saved against the tenant identified by `state` (tenantId).
-// 
-// [CALLBACK-1] This route was MISSING — META_REDIRECT_URI pointed here but no
-//              handler existed → "Cannot GET /onboarding/callback".
-// [CALLBACK-2] On Meta OAuth error, returns structured JSON (API-friendly).
-// [CALLBACK-3] On success, redirects to FRONTEND_URL if set, else JSON.
 export const handleMetaCallback = async (req, res) => {
   try {
+    // ── [FIX] Webhook verification — Meta sends this when you click "Verify and save"
+    // in the developer dashboard. Must be handled BEFORE the OAuth code check,
+    // otherwise Meta gets "Missing code" and verification always fails.
+    // NOTE: Webhook verification belongs at /webhook — this handler exists at
+    // /onboarding/callback which is the OAuth redirect URI. If you see this
+    // path being hit for webhook verification it means the Meta dashboard
+    // "Callback URL" is set to /onboarding/callback instead of /webhook.
+    // Fix that in Meta dashboard → Configuration → Callback URL → use /webhook.
+    // This guard prevents a confusing 400 in the meantime.
+    if (req.query['hub.mode'] === 'subscribe') {
+      const token     = req.query['hub.verify_token'];
+      const challenge = req.query['hub.challenge'];
+      if (token === process.env.META_WEBHOOK_VERIFY_TOKEN && challenge) {
+        logger.warn(
+          '[OnboardingCallback] Webhook verification hit /onboarding/callback — ' +
+          'update Meta dashboard Callback URL to /webhook instead.'
+        );
+        return res.status(200).send(challenge);
+      }
+      return res.sendStatus(403);
+    }
+
     const { code, state, error: oauthError, error_description } = req.query;
 
-    // OAuth error returned by Meta
     if (oauthError) {
-      logger.warn('[Onboarding/callback] Meta OAuth error', { oauthError, error_description });
       return res.status(400).json({
         success: false,
         message: 'Meta OAuth failed.',
-        error:   oauthError,
-        detail:  error_description || 'No additional detail from Meta.',
+        error: oauthError,
+        detail: error_description || 'No additional detail.',
       });
     }
 
     if (!code) {
-      return res.status(400).json({
-        success: false,
-        message: 'Missing "code" query parameter from Meta OAuth redirect.',
-      });
-    }
-
-    // Resolve tenant from `state` (tenantId passed when starting OAuth flow)
-    let tenant = null;
-    if (state) {
-      try { tenant = await Tenant.findById(state); } catch (_) {}
+      return res.status(400).json({ success: false, message: 'Missing "code" query parameter from Meta OAuth redirect.' });
     }
 
     const { META_APP_ID, META_APP_SECRET, META_REDIRECT_URI } = process.env;
     const WA_API_VERSION = process.env.WA_API_VERSION || 'v21.0';
 
     if (!META_APP_ID || !META_APP_SECRET || !META_REDIRECT_URI) {
-      return res.status(500).json({
-        success: false,
-        message: 'Server misconfiguration: META_APP_ID, META_APP_SECRET, or META_REDIRECT_URI is not set.',
-      });
+      return res.status(500).json({ success: false, message: 'Server misconfiguration: META env vars missing.' });
     }
 
-    // Step 1: Exchange code for access token
+    // Exchange code for token
     const tokenRes  = await fetch(
       `https://graph.facebook.com/${WA_API_VERSION}/oauth/access_token` +
-      `?client_id=${META_APP_ID}` +
-      `&client_secret=${META_APP_SECRET}` +
-      `&redirect_uri=${encodeURIComponent(META_REDIRECT_URI)}` +
-      `&code=${code}`
+      `?client_id=${META_APP_ID}&client_secret=${META_APP_SECRET}` +
+      `&redirect_uri=${encodeURIComponent(META_REDIRECT_URI)}&code=${code}`
     );
     const tokenData = await tokenRes.json();
 
     if (!tokenData.access_token) {
-      logger.error('[Onboarding/callback] Token exchange failed', { tokenData });
       return res.status(400).json({
         success: false,
-        message: 'Failed to exchange Meta authorisation code for an access token.',
+        message: 'Failed to exchange Meta code for access token.',
         detail:  tokenData.error?.message || 'No detail from Meta.',
       });
     }
 
     const userToken = tokenData.access_token;
 
-    // Step 2: Fetch WABA
+    // Fetch WABA
     const wabaRes  = await fetch(
       `https://graph.facebook.com/${WA_API_VERSION}/me/whatsapp_business_accounts?access_token=${userToken}`
     );
     const wabaData = await wabaRes.json();
     const wabaId   = wabaData.data?.[0]?.id;
+    if (!wabaId) return res.status(400).json({ success: false, message: 'No WhatsApp Business Account found.' });
 
-    if (!wabaId) {
-      return res.status(400).json({
-        success: false,
-        message: 'No WhatsApp Business Account found for this Meta account.',
-      });
-    }
-
-    // Step 3: Fetch phone numbers
+    // Fetch phone numbers
     const phonesRes  = await fetch(
       `https://graph.facebook.com/${WA_API_VERSION}/${wabaId}/phone_numbers?access_token=${userToken}`
     );
     const phonesData = await phonesRes.json();
     const firstPhone = phonesData.data?.[0];
-
-    if (!firstPhone?.id) {
-      return res.status(400).json({
-        success: false,
-        message: 'No phone number found in the WhatsApp Business Account.',
-      });
-    }
+    if (!firstPhone?.id) return res.status(400).json({ success: false, message: 'No phone number found in WABA.' });
 
     const phoneNumberId = firstPhone.id;
     const phone         = firstPhone.display_phone_number || null;
 
-    // Step 4: Persist if tenant was resolved from state
+    // Resolve tenant from state
+    let tenant = null;
+    if (state) {
+      try { tenant = await Tenant.findById(state); } catch (_) {}
+    }
+
     if (tenant) {
       const duplicate = await Tenant.findOne({
         'whatsapp.phoneNumberId': phoneNumberId,
         _id: { $ne: tenant._id },
       });
-
       if (duplicate) {
-        return res.status(409).json({
-          success: false,
-          message: 'This WhatsApp number is already connected to another account.',
-        });
+        return res.status(409).json({ success: false, message: 'This WhatsApp number is already registered.' });
       }
 
       const resolvedVerifyToken = tenant.whatsapp?.verifyToken || crypto.randomBytes(16).toString('hex');
-
       tenant.whatsapp = {
         ...tenant.whatsapp,
-        phone,
-        phoneNumberId,
-        wabaId,
+        phone, phoneNumberId, wabaId,
         accessToken:    userToken,
         verifyToken:    resolvedVerifyToken,
         apiVersion:     WA_API_VERSION,
         connected:      true,
         tokenUpdatedAt: new Date(),
       };
-      tenant.status = 'ACTIVE';
+      tenant.status        = 'ACTIVE';
+      tenant.onboardingStep = Math.max(tenant.onboardingStep || 0, 1);
       await tenant.save();
 
       await BusinessConfig.findOneAndUpdate(
         { tenantId: tenant._id },
         {
           $set:         { phoneNumberId },
-          $setOnInsert: { tenantId: tenant._id, name: tenant.name, businessMode: 'RESTAURANT' },
+          $setOnInsert: { tenantId: tenant._id, name: '', businessMode: 'RESTAURANT', botEnabled: true },
         },
         { upsert: true, new: true }
       );
 
-      logger.info('[Onboarding/callback] WhatsApp auto-linked via Meta callback', {
-        tenantId: tenant._id, phoneNumberId,
-      });
+      logger.info('[Onboarding/callback] WhatsApp linked', { tenantId: tenant._id, phoneNumberId });
 
       const webhookUrl  = `${process.env.BASE_URL || 'https://your-domain.com'}/webhook/${phoneNumberId}`;
       const frontendUrl = process.env.FRONTEND_URL;
@@ -633,42 +513,24 @@ export const handleMetaCallback = async (req, res) => {
 
       return res.json({
         success: true,
-        message: '🎉 WhatsApp connected via Meta Embedded Signup! Your bot is now LIVE.',
+        message: '🎉 WhatsApp connected via Meta Embedded Signup!',
         data: {
-          tenantId:    tenant._id,
-          status:      'ACTIVE',
-          phone,
-          phoneNumberId,
-          wabaId,
-          verifyToken: resolvedVerifyToken,
-          webhookUrl,
-          instructions: [
-            `1. Go to: https://developers.facebook.com → Your App → WhatsApp → Configuration`,
-            `2. Set Callback URL to: ${webhookUrl}`,
-            `3. Set Verify Token to: ${resolvedVerifyToken}`,
-            `4. Subscribe to: messages, message_deliveries`,
-            `5. Send "Hi" to your WhatsApp number to test!`,
-          ],
+          tenantId: tenant._id, status: 'ACTIVE', phone, phoneNumberId, wabaId,
+          verifyToken: resolvedVerifyToken, webhookUrl,
         },
       });
     }
 
-    // No valid state/tenantId — return raw data for manual linking
-    logger.warn('[Onboarding/callback] No valid tenantId in state — returning raw data');
+    // No state — return safe partial data (no accessToken)
+    logger.warn('[Onboarding/callback] No tenantId in state');
     return res.json({
       success: true,
-      message: 'Meta authorisation successful. Link this to your tenant via PUT /register/whatsapp.',
-      data: {
-        phone,
-        phoneNumberId,
-        wabaId,
-        accessToken: userToken,
-        hint: 'Pass these values in PUT /register/whatsapp with your x-api-key header.',
-      },
+      message: 'Meta authorisation successful but no tenantId in state. Re-trigger with ?state=<tenantId>.',
+      data: { phone, phoneNumberId, wabaId },
     });
 
   } catch (err) {
-    logger.error('[Onboarding/callback] Unexpected error', { err: err.message });
+    logger.error('[Onboarding/callback] Error', { err: err.message });
     res.status(500).json({ success: false, message: 'Server error processing Meta callback.' });
   }
 };

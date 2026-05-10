@@ -9,7 +9,8 @@
  *   /failed-messages routes, as that would incorrectly expose them under /business.
  *
  * Route → full URL mapping:
- *   POST   /              → POST   /business
+ *   POST   /menu/upload-image → POST   /business/menu/upload-image (multipart/form-data, field: image)
+ *   POST   /menu      → POST   /business/menu
  *   GET    /              → GET    /business
  *   PUT    /              → PUT    /business
  *   GET    /analytics     → GET    /business/analytics
@@ -29,6 +30,7 @@
  */
 
 import { Router } from 'express';
+import multer from 'multer';
 import {
   createBusiness,
   getBusiness,
@@ -38,20 +40,75 @@ import {
   applyMode,
   getSetupChecklist,
   getDefaultConfig,
+  updateMenu,
+  updateHours,
+  updatePayment,
+  updateFaq,
+  updateSettings,
+  uploadMenuImage,
 } from '../controllers/businessController.js';
 import {
   listOrders,
   getOrder,
   exportOrders,
+  updateOrder,
+  deleteOrder,
   listBookings,
   getBooking,
   exportBookings,
+  updateBooking,
+  deleteBooking,
   listPendingPayments,
   confirmPayment,
   rejectPayment,
 } from '../controllers/ordersController.js';
 
 const router = Router();
+
+// ── Image upload (multer — in-memory, 5 MB limit, images only) ────────────────
+// Configured here so businessController stays dependency-free from multer.
+// The file lands in req.file.buffer — we pipe it straight to Cloudinary.
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits:  { fileSize: 5 * 1024 * 1024 }, // 5 MB
+  fileFilter: (_req, file, cb) => {
+    if (file.mimetype.startsWith('image/')) return cb(null, true);
+    cb(new Error('Only image files are accepted.'));
+  },
+});
+
+// ── Advanced config (granular section updates) ────────────────────────────────
+// These patch a single section of the business config incrementally.
+// Preferred over sending a full payload to POST /business when building a
+// step-by-step frontend wizard.
+//
+//   POST /business/menu      → update menu items array
+//   POST /business/hours     → update operating hours
+//   POST /business/payment   → update payment details
+//   POST /business/faq       → update FAQ entries
+//   POST /business/settings  → update tone, nlp, botEnabled, customMessages
+//
+// NOTE: static section paths must be declared BEFORE /:id-style routes.
+// CRITICAL: /menu/upload-image must come BEFORE /menu (POST) — Express matches
+// routes in declaration order; if /menu matches first, upload-image is unreachable.
+// Multer error handler: converts multer-specific errors (LIMIT_FILE_SIZE, wrong type)
+// into clean 400 JSON responses instead of falling through to the generic 500 handler.
+function multerErrorHandler(err, req, res, next) {
+  if (err && err.code === 'LIMIT_FILE_SIZE') {
+    return res.status(400).json({ success: false, message: 'File too large. Maximum size is 5 MB.' });
+  }
+  if (err) {
+    return res.status(400).json({ success: false, message: err.message || 'File upload error.' });
+  }
+  next();
+}
+
+router.post('/menu/upload-image', upload.single('image'), multerErrorHandler, uploadMenuImage);
+router.post('/menu',     updateMenu);
+router.post('/hours',    updateHours);
+router.post('/payment',  updatePayment);
+router.post('/faq',      updateFaq);
+router.post('/settings', updateSettings);
 
 // ── Business config ───────────────────────────────────────────────────────────
 router.post('/',    createBusiness);
@@ -85,6 +142,8 @@ router.get('/orders/export',           exportOrders);
 router.get('/orders/pending-payment',  listPendingPayments);
 router.get('/orders',                  listOrders);
 router.get('/orders/:id',              getOrder);
+router.patch('/orders/:id',            updateOrder);
+router.delete('/orders/:id',           deleteOrder);
 router.post('/orders/:id/confirm-payment', confirmPayment);
 router.post('/orders/:id/reject-payment',  rejectPayment);
 
@@ -92,5 +151,7 @@ router.post('/orders/:id/reject-payment',  rejectPayment);
 router.get('/bookings/export', exportBookings);
 router.get('/bookings',        listBookings);
 router.get('/bookings/:id',    getBooking);
+router.patch('/bookings/:id',  updateBooking);
+router.delete('/bookings/:id', deleteBooking);
 
 export default router;

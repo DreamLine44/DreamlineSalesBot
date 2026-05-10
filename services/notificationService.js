@@ -10,6 +10,7 @@
  */
 
 import axios from 'axios';
+import logger from '../config/logger.js';
 
 const FALLBACK_API_VERSION = process.env.WA_API_VERSION || 'v21.0';
 
@@ -38,20 +39,31 @@ export async function notifyAdmin(tenant, message, adminPhone) {
 
   const url = `https://graph.facebook.com/${apiVersion}/${phoneNumberId}/messages`;
 
-  await axios.post(
-    url,
-    {
-      messaging_product: 'whatsapp',
-      to: recipient,
-      type: 'text',
-      text: { body: message },
-    },
-    {
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-        'Content-Type': 'application/json',
+  // [FIX-1] Wrap in try/catch — any network or API failure must NEVER propagate.
+  // notifyAdmin is fire-and-forget. If it throws, it bypasses persistFailedMessage
+  // in messageService's retry loop, silently dropping the failure record.
+  // All failures are logged here; the caller is never disrupted.
+  try {
+    await axios.post(
+      url,
+      {
+        messaging_product: 'whatsapp',
+        to: recipient,
+        type: 'text',
+        text: { body: message },
       },
-      timeout: 8_000,
-    }
-  );
+      {
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          'Content-Type': 'application/json',
+        },
+        timeout: 8_000,
+      }
+    );
+  } catch (err) {
+    const status = err.response?.status;
+    const detail = err.response?.data?.error?.message || err.message;
+    logger.error(`[notificationService] Admin notification failed (${status ?? 'network'}): ${detail}`);
+    // Do NOT re-throw — notification failures are non-critical
+  }
 }
