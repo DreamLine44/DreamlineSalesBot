@@ -239,9 +239,11 @@ export const confirmPayment = async (orderId, tenantId, adminIdentifier) => {
 
   const customerMessage =
     getLabel(business, 'paymentConfirmed') ||
-    `🎉 *Payment confirmed!*\n\n` +
-    `Your order *${order.item} × ${order.quantity}* has been verified and confirmed!\n\n` +
-    `We're now preparing it for you. Thank you! 😊`;
+    `✅ *Payment Confirmed*\n\n` +
+    `Thank you — your payment has been verified successfully.\n\n` +
+    `🍽️ Your order *${order.item} × ${order.quantity}* is now being prepared.\n` +
+    `📦 Estimated preparation time: *20–30 minutes*.\n\n` +
+    `We'll notify you once your order is ready. Thank you for choosing us! 🙏`;
 
   logger.info('[PaymentService] Payment confirmed', { orderId, reviewer: adminIdentifier });
   return { order, customerMessage };
@@ -273,11 +275,17 @@ export const rejectPayment = async (orderId, tenantId, reason, adminIdentifier) 
   try { business = await BusinessConfig.findOne({ tenantId }).lean(); } catch { /* use default */ }
 
   const base = getLabel(business, 'paymentRejected') ||
-    `❌ *Payment not verified*\n\nWe couldn't verify your Wave payment for *${order.item}*.`;
+    `❌ *Payment Could Not Be Verified*\n\nUnfortunately, we could not confirm your payment for *${order.item} × ${order.quantity}* (Order #${String(order._id).slice(-6).toUpperCase()}).`;
 
-  const customerMessage = reason
-    ? `${base}\n\n📋 Reason: ${reason}\n\nPlease retry or type *Order* to start again.`
-    : `${base}\n\nPlease check the amount and Wave number, then send your screenshot again.`;
+  const options =
+    `\n\nPlease choose one of the options below:\n\n` +
+    `1️⃣  *Resend Payment Proof* — reply with a new screenshot\n` +
+    `2️⃣  *Contact Support* — type *support* to speak with our team\n` +
+    `3️⃣  *Cancel Order* — type *cancel* to cancel this order`;
+
+  const reasonLine = reason ? `\n\n📋 *Reason:* ${reason}` : '';
+
+  const customerMessage = `${base}${reasonLine}${options}`;
 
   logger.warn('[PaymentService] Payment rejected', { orderId, reason, reviewer: adminIdentifier });
   return { order, customerMessage };

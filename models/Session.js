@@ -48,6 +48,12 @@ const sessionSchema = new mongoose.Schema({
   lastLoopMessage:  { type: String, default: null },
   lastLoopStep:     { type: String, default: null },
 
+  // ── Conversation mode — tracks special waiting states ────────────────────
+  // 'awaiting_question'         : bot asked "what would you like to know?" — next msg is the question
+  // 'awaiting_rejection_action' : payment was rejected — customer must choose resend/support/cancel
+  // null                        : normal operation
+  mode: { type: String, default: null },
+
   // ── Step history (last 5, for debugging) ─────────────────────────────────
   stepHistory: { type: [String], default: [] },
 

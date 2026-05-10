@@ -56,6 +56,7 @@ import {
   buildAdminOrderAlert,
   buildAdminBookingAlert,
   buildEnquiryUI,
+  buildAskQuestionPromptUI,
 } from '../utils/messageBuilders.js';
 
 import { findBestMatch } from '../utils/matchEngine.js';
@@ -1100,17 +1101,60 @@ export async function startBookingFlow(session, business) {
 //   Old:  "Sorry, I couldn't understand 'Enquiry' as a date 📅"
 //   New:  "Sure! 😊 What would you like to know? You can ask about: …"
 
+/**
+ * handleEnquiry — Two-phase question flow.
+ *
+ * PHASE 1 — "Ask a Question" button tapped (no real question yet):
+ *   • Set session.mode = 'awaiting_question'
+ *   • Reply with a prompt asking WHAT they want to know
+ *   • DO NOT call Groq. DO NOT show business info. Just ask.
+ *
+ * PHASE 2 — Customer sends their actual question:
+ *   • session.mode === 'awaiting_question'  →  treat message as the question
+ *   • FAQ first, then Groq, then static menu
+ *   • Clear awaiting_question state
+ *
+ * Called from webhookController for both the initial button press AND the
+ * follow-up message (via the ENQUIRY action path).
+ */
 export async function handleEnquiry(session, raw, business, tenant) {
+  const customerPhone = session?.customerPhone;
+  const tenantId      = session?.tenantId;
+
+  // ── PHASE 1: Customer just tapped "Ask a Question" (raw is the button label,
+  //    e.g. "Ask a Question", "question", "help", "enquiry" — none of these are
+  //    real questions). Set awaiting_question and ask what they want to know.
+  const triggerPhrases = new Set([
+    'ask a question', 'question', 'ask', 'enquiry', 'enquire',
+    'help', 'i have a question', 'i want to ask', 'i need help',
+  ]);
+  const normalizedRaw = raw.trim().toLowerCase().replace(/[^a-z0-9 ]/g, '');
+
+  const isEnquiryTrigger = triggerPhrases.has(normalizedRaw);
+
+  if (isEnquiryTrigger && session?.mode !== 'awaiting_question') {
+    // Store state so next message is treated as the actual question
+    if (customerPhone && tenantId) {
+      await updateSession(customerPhone, tenantId, { mode: 'awaiting_question' });
+    }
+    return buildAskQuestionPromptUI(business);
+  }
+
+  // ── PHASE 2: We are awaiting their question and they've now sent it.
+  //    raw IS the real question — answer it.
+  if (customerPhone && tenantId) {
+    // Clear awaiting_question so we don't loop
+    await updateSession(customerPhone, tenantId, { mode: null });
+  }
+
   // 1. Check FAQ first — instant, no AI cost
   const faqAnswer = resolveFaq(raw, business);
   if (faqAnswer) {
     return { type: 'text', body: faqAnswer };
   }
 
-  // 2. Try Groq for a context-aware answer if the message is long enough
-  //    to be a real question (>= 6 chars). Keep session intact so the user
-  //    can continue ordering/booking after getting their answer.
-  if (raw.trim().length >= 6) {
+  // 2. Try Groq for a context-aware answer if it's a real question (>= 4 chars)
+  if (raw.trim().length >= 4) {
     try {
       const aiReply = await getAIReply(raw, business, session, 'ENQUIRY');
       if (aiReply) return { type: 'text', body: aiReply };

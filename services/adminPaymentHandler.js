@@ -25,6 +25,7 @@ import Tenant         from '../models/Tenant.js';
 import BusinessConfig from '../models/BusinessConfig.js';
 import { confirmPayment, rejectPayment } from './paymentService.js';
 import { sendMessage, sendButtonMessage, dispatch } from './messageService.js';
+import { updateSession, createSession, getSession } from './sessionService.js';
 import axios          from 'axios';
 import logger from '../config/logger.js';
 
@@ -127,12 +128,12 @@ export const notifyAdminOfPayment = async (order, imageUrl, tenant, business) =>
   const qty        = order.quantity || 1;
 
   const alertText =
-    `📥 *New Payment Proof*\n\n` +
+    `💳 *New Payment Submission*\n\n` +
     `🆔 Order: #${orderId.slice(-6).toUpperCase()}\n` +
     `👤 Customer: ${customer}\n` +
-    `🛒 ${item} × ${qty}\n` +
+    `🛒 Items: ${item} × ${qty}\n` +
     `💰 Amount: *${amount}*\n\n` +
-    `Tap a button to approve or reject:`;
+    `Please review this payment and tap a button to approve or reject:`;
 
   const buttons = [
     { id: buildApproveId(orderId), title: '✅ Approve' },
@@ -277,9 +278,9 @@ async function processApproval(orderId, tenantId, adminPhone, tenant, business, 
     });
 
     return (
-      `✅ *Approved!*\n\n` +
-      `Order #${orderId.slice(-6).toUpperCase()} confirmed.\n` +
-      `Customer ${updatedOrder.customerPhone} has been notified.`
+      `✅ *Order Approved*\n\n` +
+      `Order #${orderId.slice(-6).toUpperCase()} approved successfully.\n` +
+      `Customer notification sent to ${updatedOrder.customerPhone}.`
     );
   } catch (err) {
     logger.error('[AdminPaymentHandler] Approval failed', { orderId, err: err.message });
@@ -298,16 +299,36 @@ async function processRejection(orderId, tenantId, adminPhone, tenant, business,
       adminPhone,
     );
 
-    // Notify customer
+    // Notify customer with the improved rejection message
     await sendMessage(updatedOrder.customerPhone, customerMessage, tenant);
+
+    // ── Set awaiting_rejection_action state ──────────────────────────────
+    // This prevents the bot from jumping to unrelated flows (menus, ordering)
+    // when the customer's next message arrives. The webhookController will
+    // check this mode and handle Resend / Support / Cancel options correctly.
+    try {
+      let sess = await getSession(updatedOrder.customerPhone, String(tenantId));
+      if (!sess) {
+        sess = await createSession(updatedOrder.customerPhone, String(tenantId), {
+          customerPhone: updatedOrder.customerPhone,
+        });
+      }
+      await updateSession(updatedOrder.customerPhone, String(tenantId), {
+        mode:    'awaiting_rejection_action',
+        data:    { ...(sess?.data || {}), rejectedOrderId: orderId },
+      });
+    } catch (sessErr) {
+      logger.warn('[AdminPaymentHandler] Could not set awaiting_rejection_action', { sessErr: sessErr.message });
+    }
+
     logger.info('[AdminPaymentHandler] Payment rejected — customer notified', {
       orderId, customer: updatedOrder.customerPhone, admin: adminPhone,
     });
 
     return (
-      `❌ *Rejected.*\n\n` +
-      `Order #${orderId.slice(-6).toUpperCase()} marked as failed.\n` +
-      `Customer ${updatedOrder.customerPhone} has been asked to retry.`
+      `❌ *Order Rejected*\n\n` +
+      `Order #${orderId.slice(-6).toUpperCase()} has been marked as unverified.\n` +
+      `Customer ${updatedOrder.customerPhone} has been notified and given options to retry or cancel.`
     );
   } catch (err) {
     logger.error('[AdminPaymentHandler] Rejection failed', { orderId, err: err.message });

@@ -52,6 +52,7 @@ export const createSession = async (customerPhone, tenantId, data = {}) => {
         lastIntent:    null,
         humanMode:     false,
         expiresAt:     new Date(Date.now() + SESSION_TTL_MS),
+        mode:          null,  // clear any awaiting_question / awaiting_rejection_action state
         // ── Loop-prevention & upsell state ──────────────────────────────
         // These must be explicitly reset so returning customers start clean.
         // Without this reset:

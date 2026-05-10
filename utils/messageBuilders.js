@@ -368,6 +368,33 @@ export function buildBookingSuccessUI(business, date, time, service = null) {
 export const orderSuccess   = (item, qty) => `✅ *Order confirmed!*\n\n${qty > 1 ? `${qty}× ` : ''}*${item}* — we're preparing it now.\nThank you! 😊`;
 export const bookingSuccess = (date, time) => `✅ *Booking confirmed!*\n\n📅 Date: *${date}*${time ? `\n⏰ Time: *${time}*` : ''}\n\nWe look forward to seeing you!`;
 
+// ─── ASK QUESTION PROMPT UI ──────────────────────────────────────────────────
+// Phase 1 of the question flow: customer just tapped "Ask a Question".
+// DO NOT answer anything yet. Simply ask what they want to know.
+// No AI. No business info dump. Just an open prompt.
+
+export function buildAskQuestionPromptUI(business) {
+  const cfg     = getModeConfig(business);
+  const canOrder = cfg.flows.includes('ORDER');
+  const canBook  = cfg.flows.includes('BOOKING');
+
+  const topics = [
+    '• menu items & prices',
+    canOrder ? '• ordering & delivery'    : null,
+    canBook  ? '• reservations & bookings' : null,
+    '• opening hours',
+    '• location & directions',
+    '• payment methods',
+    '• or anything else',
+  ].filter(Boolean).join('\n');
+
+  const body = clean(
+    `Sure — what would you like to know? 😊\n\nYou can ask about:\n${topics}\n\nJust type your question below 👇`,
+  );
+
+  return { type: 'text', body };
+}
+
 // ─── ENQUIRY UI ───────────────────────────────────────────────────────────────
 // Shown when user signals confusion or asks for help mid-flow or out-of-flow.
 // Gives them a clear menu of things to ask about + escape buttons.

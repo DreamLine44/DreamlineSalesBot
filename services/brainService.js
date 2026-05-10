@@ -162,17 +162,37 @@ function looksLikeBotEcho(raw, session) {
   return rn === ln || ln.startsWith(rn.slice(0, 20));
 }
 
-// ─── Static welcome for clarification ────────────────────────────────────────
+// ─── Options UI for clarification — always buttons, never "type X" text ──────
+//
+// Returns a { type, body, buttons } object ready for dispatch().
+// WhatsApp requires ≥2 buttons — guaranteed here since we always include
+// at least QUESTION alongside ORDER/BOOK.
+// This replaces the old text-only buildOptionsText() which generated
+// "Please choose an option: 🛒 Order Now — type "order"…" messages.
 
-function buildOptionsText(business) {
+function buildOptionsUI(business) {
   const cfg      = getModeConfig(business);
   const canOrder = cfg.flows.includes('ORDER');
   const canBook  = cfg.flows.includes('BOOKING');
-  const lines    = [];
-  if (canOrder) lines.push('🛒 *Order Now* — type "order"');
-  if (canBook)  lines.push('📅 *Book Service* — type "book"');
-  lines.push('❓ *Ask Question* — type "question"');
-  return `Please choose an option:\n\n${lines.join('\n')}`;
+
+  // Use the same button definitions as the welcome screen for consistency
+  const buttons = cfg.ui.welcomeButtons;
+
+  const body = `How can we help you today? Please choose an option below 👇`;
+
+  if (buttons && buttons.length >= 2) {
+    return { type: 'buttons', body, buttons: buttons.slice(0, 3) };
+  }
+
+  // Absolute last resort (single-flow business with 1 button)
+  const fallbackLines = [];
+  if (canOrder) fallbackLines.push('• *Order* — place an order');
+  if (canBook)  fallbackLines.push('• *Book* — make a reservation');
+  fallbackLines.push('• *Question* — ask us anything');
+  return {
+    type: 'text',
+    body: `How can we help?\n\n${fallbackLines.join('\n')}`,
+  };
 }
 
 // ─── PROTECTED STEPS — never interrupt at these steps ────────────────────────
@@ -255,7 +275,7 @@ export const think = async ({ message, session, business, phone }) => {
   if (isRejection(normalized)) {
     logDecision({ raw, normalized, intent: 'REJECTED', action: 'CLARIFY', flowTriggered: false, source: 'rejection' });
     if (session?.currentFlow) return { action: 'REJECT_FLOW' };
-    return { action: 'CLARIFY', reply: buildOptionsText(business) };
+    return { action: 'CLARIFY', ui: buildOptionsUI(business) };
   }
 
   // ── STEP 5: Active flow ────────────────────────────────────────────────────
@@ -413,7 +433,7 @@ export const think = async ({ message, session, business, phone }) => {
     return {
       action: 'AI_FALLBACK',
       intent: null,
-      reply:  buildOptionsText(business),
+      ui:     buildOptionsUI(business),
     };
   }
 
@@ -421,6 +441,6 @@ export const think = async ({ message, session, business, phone }) => {
   logDecision({ raw, normalized, intent: null, action: 'CLARIFY', flowTriggered: false, source: 'short-unknown' });
   return {
     action: 'CLARIFY',
-    reply:  buildOptionsText(business),
+    ui:     buildOptionsUI(business),
   };
 };

@@ -402,6 +402,19 @@
 
   .menu-item .del-btn:hover { border-color: var(--danger); color: var(--danger); }
 
+  /* ─── BULK IMPORT ─────────────────────────────────────────── */
+  .bulk-btn { background: transparent; border: 1px dashed var(--accent); color: var(--accent); border-radius: 8px; padding: 8px 16px; font-size: 13px; cursor: pointer; margin-left: 10px; }
+  .bulk-btn:hover { background: var(--accent); color: #000; }
+  .bulk-overlay { display:none; position:fixed; inset:0; background:rgba(0,0,0,0.7); z-index:1000; align-items:center; justify-content:center; }
+  .bulk-overlay.open { display:flex; }
+  .bulk-modal { background: var(--card); border-radius: 16px; padding: 28px; width: 520px; max-width: 95vw; }
+  .bulk-modal h3 { margin: 0 0 8px; font-size: 18px; }
+  .bulk-modal p { margin: 0 0 14px; color: var(--text2); font-size: 13px; }
+  .bulk-modal textarea { width: 100%; height: 180px; background: var(--input); border: 1px solid var(--border); border-radius: 8px; padding: 12px; color: var(--text); font-size: 13px; resize: vertical; box-sizing: border-box; }
+  .bulk-modal .bulk-actions { display:flex; gap:10px; margin-top:14px; justify-content:flex-end; }
+  .bulk-modal .bulk-cancel { background:transparent; border:1px solid var(--border); color:var(--text2); border-radius:8px; padding:8px 18px; cursor:pointer; }
+  .bulk-modal .bulk-import { background:var(--accent); color:#000; border:none; border-radius:8px; padding:8px 18px; font-weight:600; cursor:pointer; }
+
   /* ─── FAQ BUILDER ────────────────────────────────────────── */
   .faq-list { display: flex; flex-direction: column; gap: 10px; margin-bottom: 12px; }
 
@@ -840,7 +853,23 @@
     <!-- MENU -->
     <div class="section-label">Menu / Products</div>
     <div class="menu-list" id="menuList"></div>
-    <button class="add-btn" id="addMenuBtn">+ Add item</button>
+    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+      <button class="add-btn" id="addMenuBtn">+ Add item</button>
+      <button class="bulk-btn" id="bulkImportBtn">⚡ Bulk import</button>
+    </div>
+
+    <!-- BULK IMPORT MODAL -->
+    <div class="bulk-overlay" id="bulkOverlay">
+      <div class="bulk-modal">
+        <h3>⚡ Bulk import menu items</h3>
+        <p>One item per line. Format: <strong>Name, Price</strong><br>Example:<br>Benachin (Chicken), 175<br>Domoda (Beef), 200<br>Ginger Juice, 60</p>
+        <textarea id="bulkText" placeholder="Benachin (Chicken), 175&#10;Domoda (Beef), 200&#10;Superkanja, 150"></textarea>
+        <div class="bulk-actions">
+          <button class="bulk-cancel" id="bulkCancel">Cancel</button>
+          <button class="bulk-import" id="bulkImportConfirm">Import items</button>
+        </div>
+      </div>
+    </div>
 
     <!-- HOURS -->
     <div class="section-label">Business Hours</div>
@@ -1504,6 +1533,36 @@ document.addEventListener('DOMContentLoaded', () => {
 
   $('registerBtn')    ?.addEventListener('click', doRegister);
   $('addMenuBtn')     ?.addEventListener('click', addMenuItem);
+
+  // ── Bulk import menu items ──────────────────────────────────
+  $('bulkImportBtn')?.addEventListener('click', () => {
+    $('bulkOverlay').classList.add('open');
+    $('bulkText').focus();
+  });
+  $('bulkCancel')?.addEventListener('click', () => {
+    $('bulkOverlay').classList.remove('open');
+    $('bulkText').value = '';
+  });
+  $('bulkImportConfirm')?.addEventListener('click', () => {
+    const lines = $('bulkText').value.split('\n').map(l => l.trim()).filter(Boolean);
+    let added = 0;
+    lines.forEach(line => {
+      const lastComma = line.lastIndexOf(',');
+      if (lastComma === -1) return;
+      const name  = line.slice(0, lastComma).trim();
+      const price = parseFloat(line.slice(lastComma + 1).trim());
+      if (!name || isNaN(price)) return;
+      state.menuItems.push({ id: Date.now() + Math.random(), name, price, available: true });
+      added++;
+    });
+    renderMenuItems();
+    $('bulkOverlay').classList.remove('open');
+    $('bulkText').value = '';
+    if (added === 0) alert('No valid items found. Use format: Item Name, Price');
+  });
+  $('bulkOverlay')?.addEventListener('click', (e) => {
+    if (e.target === $('bulkOverlay')) $('bulkOverlay').classList.remove('open');
+  });
   $('addFaqBtn')      ?.addEventListener('click', addFaqItem);
   $('skipBizBtn')     ?.addEventListener('click', skipBizConfig);
   $('bizBtn')         ?.addEventListener('click', doBizConfig);

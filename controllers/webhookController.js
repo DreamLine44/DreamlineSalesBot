@@ -453,6 +453,73 @@ export const handleWebhook = async (req, res) => {
       continue;
     }
 
+    // ── STEP 7c: awaiting_question — customer has sent their actual question ──
+    // The ENQUIRY handler already set session.mode = 'awaiting_question' and
+    // asked the customer "What would you like to know?".
+    // The NEXT message they send IS the real question — route directly to
+    // handleEnquiry so the brain doesn't misclassify it as ORDER/BOOKING/etc.
+    if (session.mode === 'awaiting_question' && messageText) {
+      const questionReply = await handleEnquiry(session, messageText, business, tenantDoc);
+      await dispatch(from, questionReply, tenantDoc);
+      const replyBody = typeof questionReply === 'string' ? questionReply : questionReply?.body;
+      if (replyBody) updateSession(from, tenantId, { lastBotMessage: replyBody }).catch(() => {});
+      continue;
+    }
+
+    // ── STEP 7d: awaiting_rejection_action — admin rejected payment, customer must decide ──
+    // The bot has presented 3 options: Resend Proof / Contact Support / Cancel Order.
+    // We intercept the customer's next message here before the brain can misroute it.
+    // Valid responses: "1" or "resend" → guide to resend; "2" or "support" → support;
+    // "3" or "cancel" → cancel order. Anything else → remind them of options.
+    if (session.mode === 'awaiting_rejection_action' && messageText) {
+      const normalized = messageText.trim().toLowerCase().replace(/[^a-z0-9 ]/g, '');
+      let rejectionHandled = true;
+
+      if (['1', 'resend', 'resend payment', 'resend proof', 'retry', 'send again'].includes(normalized)) {
+        // Guide customer to resend proof — put them back in PAYMENT_PROOF step
+        await updateSession(from, tenantId, {
+          mode:        null,
+          currentFlow: 'ORDER',
+          step:        'PAYMENT_PROOF',
+        });
+        await dispatch(from, {
+          type: 'text',
+          body: `No problem — please send a new screenshot of your Wave payment and we'll verify it right away. 📸`,
+        }, tenantDoc);
+
+      } else if (['2', 'support', 'contact support', 'help', 'agent'].includes(normalized)) {
+        await updateSession(from, tenantId, { mode: null });
+        await dispatch(from, {
+          type: 'text',
+          body: `🤝 *Support*\n\nOur team will assist you with your payment issue.\n\nPlease describe your problem and we'll get back to you as soon as possible.`,
+        }, tenantDoc);
+
+      } else if (['3', 'cancel', 'cancel order'].includes(normalized)) {
+        await clearSession(from, tenantId);
+        await dispatch(from, {
+          type: 'text',
+          body: `✅ *Order Cancelled*\n\nYour order has been cancelled.\n\nWhenever you're ready, type *Order* to start a new order or *Hi* for the main menu.`,
+        }, tenantDoc);
+
+      } else {
+        // Unrecognised response — remind them of their options, keep the state
+        rejectionHandled = false;
+        await dispatch(from, {
+          type: 'text',
+          body:
+            `Please choose one of the following options:\n\n` +
+            `1️⃣  Reply *1* to resend your payment proof\n` +
+            `2️⃣  Reply *2* to contact support\n` +
+            `3️⃣  Reply *3* to cancel your order`,
+        }, tenantDoc);
+      }
+
+      if (rejectionHandled) {
+        updateSession(from, tenantId, { lastBotMessage: '' }).catch(() => {});
+      }
+      continue;
+    }
+
     // ── STEP 8: Brain (Layer 1 — decision) ───────────────────────────────
     const { action, ui: brainUI, reply: brainReply, intent, suggestion: brainSuggestion } = await think({
       message: messageText, session, business, phone: from,
@@ -699,13 +766,11 @@ export const handleWebhook = async (req, res) => {
       }
 
       // Unknown intent → show welcome UI so user sees their options clearly.
-      // [FIX] Plain text clarification ("Would you like to order?") is not enough —
-      // user needs to see buttons. Use buildWelcomeUI so they can tap to proceed.
+      // CLARIFY — show interactive buttons, never "type X" plain text.
+      // brainUI is the buildOptionsUI() result (buttons object) from brainService.
+      // Fall back to buildWelcomeUI which also returns buttons.
       case 'CLARIFY': {
-        // Show clean welcome UI — brainReply is already the options list
-        responseUI = brainReply
-          ? { type: 'text', body: brainReply }
-          : buildWelcomeUI(business);
+        responseUI = brainUI || buildWelcomeUI(business);
         break;
       }
 
@@ -732,10 +797,10 @@ export const handleWebhook = async (req, res) => {
         trackFailedInteraction(from, messageText, 'FALLBACK', phoneNumberId).catch(() => {});
         let aiReply = null;
         try { aiReply = await getAIReply(messageText, business, null, 'FALLBACK'); } catch { /* swallow */ }
-        // v3.1: buildSmartFallbackUI shows mode-appropriate buttons — never a dead-end message
+        // Show AI reply if available, otherwise use brainUI buttons (never plain text options)
         responseUI = aiReply
           ? { type: 'text', body: aiReply }
-          : (brainReply ? { type: 'text', body: brainReply } : buildSmartFallbackUI(business));
+          : (brainUI || buildSmartFallbackUI(business));
         break;
       }
     }
