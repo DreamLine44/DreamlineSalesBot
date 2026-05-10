@@ -1167,6 +1167,17 @@ function removeMenuItem(id) {
   renderMenuItems();
 }
 
+function addFaqItem() {
+  const id = Date.now();
+  state.faqItems.push({ id, trigger: '', reply: '' });
+  renderFaqItems();
+}
+
+function removeFaqItem(id) {
+  state.faqItems = state.faqItems.filter(f => f.id !== id);
+  renderFaqItems();
+}
+
 // ─── HTML ESCAPE (prevent XSS in dynamic innerHTML) ─────────
 function esc(str) {
   return String(str ?? '')
