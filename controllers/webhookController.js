@@ -482,7 +482,19 @@ export const handleWebhook = async (req, res) => {
     // asked the customer "What would you like to know?".
     // The NEXT message they send IS the real question — route directly to
     // handleEnquiry so the brain doesn't misclassify it as ORDER/BOOKING/etc.
+    //
+    // [SPEC FIX] Guard: if the customer sends a greeting (hi, hello, hey, start)
+    // instead of a question, exit awaiting state gracefully and show the welcome
+    // menu — never send "hi" to Groq as if it were a business question.
     if (session.mode === 'awaiting_question' && messageText) {
+      const _GREETING_RESET = /^(hi|hello|hey|start|begin|good morning|good afternoon|good evening|menu|home|0|salaam|salam)$/i;
+      if (_GREETING_RESET.test(messageText.trim())) {
+        await updateSession(from, tenantId, { mode: null });
+        await clearSession(from, tenantId);
+        await createSession(from, tenantId, { customerPhone: from, phoneNumberId });
+        await dispatch(from, buildWelcomeUI(business), tenantDoc);
+        continue;
+      }
       const questionReply = await handleEnquiry(session, messageText, business, tenantDoc);
       await dispatch(from, questionReply, tenantDoc);
       const replyBody = typeof questionReply === 'string' ? questionReply : questionReply?.body;

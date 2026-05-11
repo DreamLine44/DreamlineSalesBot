@@ -416,7 +416,7 @@ async function handleOrder(session, raw, clean, business, isInteractive = false,
     if (isBtnConfirm(raw)) {
       const selected = session.suggestion;
       await updateSession(session.customerPhone, session.tenantId, {
-        data: { ...session.data, item: selected }, step: 'QUANTITY', suggestion: null,
+        data: { ...session.data, item: selected }, step: 'QUANTITY', suggestion: null, expectedInputType: 'quantity',
       });
       await pushStep(session, 'QUANTITY');
       // Send item image if available (side-effect — non-blocking)
@@ -439,11 +439,12 @@ async function handleOrder(session, raw, clean, business, isInteractive = false,
     case 'SELECT_ITEM': {
       const index = parseInt(raw, 10);
       if (!isNaN(index) && index > 0) {
-        if (!menu[index - 1]) return `Please choose a number between *1* and *${menu.length}*.`;
+        // [SPEC FIX] Invalid index → re-show the interactive menu, never plain text
+        if (!menu[index - 1]) return buildMenuUI(business);
         const menuItem = menu[index - 1];
         const item     = getName(menuItem);
         await updateSession(session.customerPhone, session.tenantId, {
-          data: { ...session.data, item }, step: 'QUANTITY',
+          data: { ...session.data, item }, step: 'QUANTITY', expectedInputType: 'quantity',
         });
         await pushStep(session, 'QUANTITY');
         // Send item image if available (side-effect — fires before text reply)
@@ -480,7 +481,7 @@ async function handleOrder(session, raw, clean, business, isInteractive = false,
 
       if (confidenceLevel === 'HIGH') {
         await updateSession(session.customerPhone, session.tenantId, {
-          data: { ...session.data, item: name }, step: 'QUANTITY',
+          data: { ...session.data, item: name }, step: 'QUANTITY', expectedInputType: 'quantity',
         });
         await pushStep(session, 'QUANTITY');
         // Send item image if available (side-effect — fires before text reply)
@@ -553,7 +554,17 @@ async function handleOrder(session, raw, clean, business, isInteractive = false,
       }
 
       // Bounds check comes after null guard — qty is guaranteed a positive number here
-      if (qty > 100) return 'Maximum quantity is 100. Please enter a number between *1* and *100*.';
+      // [SPEC FIX] Button-first UX — never plain-text instructions
+      if (qty > 100) {
+        const itemNameForBounds = session.data?.item;
+        return {
+          type: 'buttons',
+          body: itemNameForBounds
+            ? `Maximum quantity is 100 😊\n\nHow many *${itemNameForBounds}* would you like?\n\n(Enter a number, e.g. *1*, *2*, *10*)`
+            : `Maximum quantity is 100 😊\n\nPlease enter a number between *1* and *100*.`,
+          buttons: [{ id: 'CANCEL', title: '❌ Cancel Order' }],
+        };
+      }
 
       const itemName = session.data?.item;
       if (!itemName) {
@@ -622,13 +633,17 @@ async function handleOrder(session, raw, clean, business, isInteractive = false,
       const retryCount = (session.paymentRetryCount || 0) + 1;
       await updateSession(session.customerPhone, session.tenantId, { paymentRetryCount: retryCount });
 
-      // After 3 messages without a screenshot, offer human support
+      // After 3 messages without a screenshot, offer human support with a button escape
       if (retryCount >= 3) {
         const adminPhone = business?.adminPhone || tenant?.adminPhone;
-        const supportMsg = adminPhone
-          ? `It looks like you might need help with your payment. 🙏\n\nPlease contact us directly at *${adminPhone}* and we'll sort it out for you.\n\nOr type *cancel* to start over.`
-          : `Please send your *Wave payment screenshot* to complete your order, or type *cancel* to start over.`;
-        return { type: 'text', body: supportMsg };
+        const supportBody = adminPhone
+          ? `It looks like you might need help with your payment. 🙏\n\nPlease contact us directly at *${adminPhone}* and we'll sort it out for you.`
+          : `Please send your *Wave payment screenshot* to complete your order.`;
+        return {
+          type: 'buttons',
+          body: supportBody,
+          buttons: [{ id: 'CANCEL', title: '❌ Cancel Order' }],
+        };
       }
 
       // Try AI for conversational messages (questions, complaints, etc.)
@@ -670,10 +685,11 @@ async function handleBooking(session, raw, clean, business) {
 
       const index = parseInt(raw, 10);
       if (!isNaN(index) && index > 0) {
-        if (!services[index - 1]) return `Please choose a number between *1* and *${services.length}*.`;
+        // [SPEC FIX] Invalid index → re-show the interactive services list, never plain text
+        if (!services[index - 1]) return buildServicesUI(business);
         const svc = services[index - 1];
         await updateSession(session.customerPhone, session.tenantId, {
-          data: { ...session.data, service: svc.name, serviceDuration: svc.duration }, step: 'DATE',
+          data: { ...session.data, service: svc.name, serviceDuration: svc.duration }, step: 'DATE', expectedInputType: 'date',
         });
         await pushStep(session, 'DATE');
         const prompt = getLabel(business, 'bookPrompt') || 'What date would you like?';
@@ -682,7 +698,7 @@ async function handleBooking(session, raw, clean, business) {
       const { item: svcMatch, confidenceLevel } = findBestMatch(services, clean);
       if (svcMatch && confidenceLevel === 'HIGH') {
         await updateSession(session.customerPhone, session.tenantId, {
-          data: { ...session.data, service: svcMatch.name, serviceDuration: svcMatch.duration }, step: 'DATE',
+          data: { ...session.data, service: svcMatch.name, serviceDuration: svcMatch.duration }, step: 'DATE', expectedInputType: 'date',
         });
         await pushStep(session, 'DATE');
         const prompt = getLabel(business, 'bookPrompt') || 'What date would you like?';
@@ -705,12 +721,15 @@ async function handleBooking(session, raw, clean, business) {
           const aiReply = await getAIReply(dateInput, business, session, 'FALLBACK').catch(() => null);
           if (aiReply) return { type: 'text', body: aiReply };
         }
-        return (
-          `I need a *date* for your booking 📅\n\n` +
-          `Please give me a date, for example:\n` +
-          `• *25 June*\n• *tomorrow*\n• *next Friday*\n• *25/06/2025*\n\n` +
-          `💡 Type *0* for the main menu or *cancel* to start over.`
-        );
+        return {
+          type: 'buttons',
+          body: (
+            `I need a *date* for your booking 📅\n\n` +
+            `Please give me a date, for example:\n` +
+            `• *25 June*\n• *tomorrow*\n• *next Friday*\n• *25/06/2025*`
+          ),
+          buttons: [{ id: 'CANCEL', title: '❌ Cancel Booking' }],
+        };
       }
       await updateSession(session.customerPhone, session.tenantId, {
         data: { ...session.data, date: dateInput }, step: 'DATE_CONFIRM',
@@ -725,7 +744,7 @@ async function handleBooking(session, raw, clean, business) {
 
     case 'DATE_CONFIRM': {
       if (isConfirm(clean) || isBtnConfirm(raw)) {
-        await updateSession(session.customerPhone, session.tenantId, { step: 'TIME' });
+        await updateSession(session.customerPhone, session.tenantId, { step: 'TIME', expectedInputType: 'time' });
         await pushStep(session, 'TIME');
         const timePrompt = getLabel(business, 'timePrompt') || 'What time would you prefer?';
         return `Got it — *${session.data?.date}* ✅\n\n${timePrompt} ⏰\n\n(e.g. *2pm*, *14:00*, *morning*)`;
@@ -767,12 +786,15 @@ async function handleBooking(session, raw, clean, business) {
           const aiReply = await getAIReply(timeInput, business, session, 'FALLBACK').catch(() => null);
           if (aiReply) return { type: 'text', body: aiReply };
         }
-        return (
-          `I need a *time* for your booking ⏰\n\n` +
-          `Please give me a time, for example:\n` +
-          `• *2pm* or *2:00pm*\n• *14:00*\n• *morning*\n• *6 in the morning*\n\n` +
-          `💡 Type *0* for the main menu or *cancel* to start over.`
-        );
+        return {
+          type: 'buttons',
+          body: (
+            `I need a *time* for your booking ⏰\n\n` +
+            `Please give me a time, for example:\n` +
+            `• *2pm* or *2:00pm*\n• *14:00*\n• *morning*\n• *6 in the morning*`
+          ),
+          buttons: [{ id: 'CANCEL', title: '❌ Cancel Booking' }],
+        };
       }
       await updateSession(session.customerPhone, session.tenantId, {
         data: { ...session.data, time: timeInput }, step: 'TIME_CONFIRM',
@@ -788,7 +810,7 @@ async function handleBooking(session, raw, clean, business) {
     case 'TIME_CONFIRM': {
       if (isConfirm(clean) || isBtnConfirm(raw)) {
         const { date, time, service } = session.data || {};
-        await updateSession(session.customerPhone, session.tenantId, { step: 'CONFIRM' });
+        await updateSession(session.customerPhone, session.tenantId, { step: 'CONFIRM', expectedInputType: 'confirmation' });
         await pushStep(session, 'CONFIRM');
         const summaryText = service
           ? getLabel(business, 'confirmBooking', service, date, time)
@@ -930,7 +952,7 @@ async function handleFinalize(session, business, tenant) {
       } catch { /* fallback to builder */ }
 
       await updateSession(session.customerPhone, session.tenantId, {
-        currentFlow: 'ORDER', step: 'PAYMENT_PROOF', data: { item, quantity, totalPrice },
+        currentFlow: 'ORDER', step: 'PAYMENT_PROOF', data: { item, quantity, totalPrice }, expectedInputType: 'image',
       });
       return paymentMsg
         ? { type: 'text', body: paymentMsg }

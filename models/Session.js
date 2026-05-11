@@ -31,6 +31,12 @@ const sessionSchema = new mongoose.Schema({
   data:          { type: Object, default: {} },
   suggestion:    { type: String, default: null },
 
+  // [SPEC] Explicit input type expected at the current step.
+  // flowService sets this on every step transition so external systems
+  // (analytics, admin dashboards) always know what the bot is waiting for.
+  // Values: 'quantity' | 'date' | 'time' | 'address' | 'image' | 'confirmation' | 'text' | null
+  expectedInputType: { type: String, default: null },
+
   pendingIntent: { type: String, default: null },
   previousStep:  { type: String, default: null },
   previousFlow:  { type: String, default: null },

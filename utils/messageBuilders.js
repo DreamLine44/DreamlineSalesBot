@@ -433,8 +433,19 @@ export function buildEnquiryUI(business) {
 // ─── CANCEL ───────────────────────────────────────────────────────────────────
 
 export function buildCancelUI(business) {
-  const msg = getLabel(business, 'cancelMsg') || '✅ Cancelled. Type *Hi* to start again.';
-  return { type: 'text', body: clean(msg) };
+  const cfg = getModeConfig(business);
+  // Custom cancelMsg label is used as the body text (owner can override)
+  const msg = getLabel(business, 'cancelMsg') || '✅ No problem! What would you like to do next?';
+  const buttons = cfg.ui.welcomeButtons;
+
+  // Button-first: show welcome action buttons so the customer can jump straight back in
+  // WhatsApp requires ≥2 buttons — fall back to text for single-button modes
+  if (buttons && buttons.length >= 2) {
+    return { type: 'buttons', body: clean(msg), buttons: buttons.slice(0, 3) };
+  }
+
+  // Single-button mode (e.g. enquiry-only) — minimal text guidance
+  return { type: 'text', body: clean(msg + '\n\nType *Hi* to start again.') };
 }
 
 export const cancelMessage = () =>

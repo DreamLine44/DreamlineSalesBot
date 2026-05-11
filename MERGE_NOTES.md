@@ -95,3 +95,38 @@ cp .env.development.local.example .env
 node seed.js   # Seed a demo tenant
 node app.js    # Start server
 ```
+
+---
+
+## v12.1 — Master Spec Compliance Pass (this build)
+
+All remaining violations of the Master System Repair spec were resolved:
+
+| Fix | File | What changed |
+|-----|------|-------------|
+| Button-first: SELECT_ITEM invalid index | `flowService.js` | Returns `buildMenuUI()` (interactive list) instead of plain "Please choose a number between..." text |
+| Button-first: QUANTITY out-of-bounds (>100) | `flowService.js` | Returns button UI with [❌ Cancel Order] instead of plain text |
+| Button-first: PAYMENT_PROOF retry prompt | `flowService.js` | Returns button UI instead of "type *cancel* to start over" text |
+| Button-first: SELECT_SERVICE invalid index | `flowService.js` | Returns `buildServicesUI()` (interactive list) instead of plain "Please choose..." text |
+| Button-first: DATE invalid input fallback | `flowService.js` | Returns button UI with [❌ Cancel Booking] instead of "Type *0* for the main menu or *cancel*" text |
+| Button-first: TIME invalid input fallback | `flowService.js` | Same as DATE — button UI replaces "Type *0*..." text |
+| Button-first: `buildCancelUI` | `messageBuilders.js` | Returns welcome-action buttons instead of dead-end "Type *Hi* to start again" text |
+| Greeting guard: `awaiting_question` mode | `webhookController.js` | If customer sends "hi/hello/hey/start/menu/0" while awaiting their question, resets to welcome menu instead of sending "hi" to Groq as a business question |
+| State: `expectedInputType` session field | `models/Session.js` | New explicit field tracking what input type the bot is waiting for at each step |
+| State: `expectedInputType` set at transitions | `flowService.js` | Set to `'quantity'`, `'date'`, `'time'`, `'image'`, or `'confirmation'` at every step transition |
+
+### AI boundary compliance (full spec)
+
+The final AI call rules after v12 + v12.1:
+
+| Scenario | AI called? | Threshold |
+|----------|-----------|-----------|
+| Inside PROTECTED step (QUANTITY, DATE, TIME, etc.) | **No** | brainService routes to CONTINUE_FLOW |
+| Button tap | **No** | Button ID → instant action |
+| Greeting | **No** | Regex → GREET |
+| Short input (< 10 chars) in active flow | **No** | CONTINUE_FLOW |
+| Single-word in active flow | **No** | CONTINUE_FLOW |
+| Numeric input in active flow | **No** | CONTINUE_FLOW |
+| Long conversational input (≥ 10 chars, multi-word) in active flow | **Yes** | After AI reply, step is re-prompted |
+| No active flow, known intent | **No** | Strict intent match |
+| No active flow, unknown long message | **Yes** | AI_FALLBACK + CTA buttons |
