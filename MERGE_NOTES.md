@@ -1,4 +1,4 @@
-# DreamLine SalesBot — Final Merged Version (v11 + v7 + v12)
+# DreamLine SalesBot — Final Merged Version (v12 + v12.1)
 
 ## Lineage
 
@@ -6,8 +6,8 @@
 |--------|-------------|
 | `DreamlineSalesBot_final` (v11) | Base: multi-tenant MongoDB, ESM, Groq AI, 10 industry modes, analytics, scheduling, smart recommendations, payment service, circuit breaker, dedup, lead capture |
 | `DreamlineSalesBot_v7_merged` (v7) | Strict deterministic intent engine philosophy (ported into brainService) |
-| `DreamlineSalesBot_v12` (v12) | 6 surgical fixes — see below |
-
+| `DreamlineSalesBot_v12_final` (v12) | 6 surgical fixes — Flow Authority, Button-First UX, AI Boundary Hardening, Step Re-Prompt After AI |
+| `DreamlineSalesBot_v12_1_final` (v12.1) | Master Spec Compliance Pass — 10 additional UX/state/button-first fixes |
 ---
 
 ## Files Changed vs `DreamlineSalesBot_final` (v11 base)
