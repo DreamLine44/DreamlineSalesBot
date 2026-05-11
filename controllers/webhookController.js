@@ -429,12 +429,29 @@ export const handleWebhook = async (req, res) => {
 
     // ── STEP 6: Image handling ────────────────────────────────────────────
     if (imageUrl) {
-      // Only process payment proof when explicitly in that step
-      if (session.currentFlow === 'ORDER' && session.step === 'PAYMENT_PROOF') {
-        // Delegate to paymentService — handles DB update, 24h cutoff,
-        // duplicate-proof guard, and admin WhatsApp notification via adminPaymentHandler.
-        // Pass tenantDoc + business so receiveProof can notify admin in-process.
-        const replyText = await receiveProof(from, tenantId, imageUrl, tenantDoc, business);
+      // Accept payment proof in PAYMENT_PROOF step OR when customer is in the
+      // awaiting_rejection_action state and chooses to resend (they may send
+      // the image directly without tapping the Resend button first).
+      const isPaymentProofStep = session.currentFlow === 'ORDER' && session.step === 'PAYMENT_PROOF';
+      const isRejectionResend  = session.mode === 'awaiting_rejection_action';
+
+      if (isPaymentProofStep || isRejectionResend) {
+        // [FIX-ORDER-TRACK] Pass the stored orderId so receiveProof can query
+        // by _id directly. This is critical for re-uploads after rejection where
+        // the paymentStatus is 'payment_failed' (not in the old phone+status query).
+        const sessionOrderId = session.data?.orderId || session.data?.rejectedOrderId || null;
+
+        // If resending from rejection state, put session back into PAYMENT_PROOF
+        // first so the flow is consistent after this image is processed.
+        if (isRejectionResend && !isPaymentProofStep) {
+          await updateSession(from, tenantId, {
+            mode:        null,
+            currentFlow: 'ORDER',
+            step:        'PAYMENT_PROOF',
+          });
+        }
+
+        const replyText = await receiveProof(from, tenantId, imageUrl, tenantDoc, business, sessionOrderId);
         // [FIX-5] dispatch BEFORE clearSession.
         // Previously clearSession was called before dispatch — if dispatch threw,
         // the session was already gone and the customer received no confirmation.
@@ -531,11 +548,14 @@ export const handleWebhook = async (req, res) => {
       const isCancel  = messageText === 'REJECTION_CANCEL'  || ['3', 'cancel', 'cancel order'].includes(normalized);
 
       if (isResend) {
-        // Put customer back into PAYMENT_PROOF step
+        // Put customer back into PAYMENT_PROOF step.
+        // [FIX-ORDER-TRACK] Preserve session.data (which contains rejectedOrderId)
+        // so receiveProof can query by _id when the screenshot arrives.
         await updateSession(from, tenantId, {
           mode:        null,
           currentFlow: 'ORDER',
           step:        'PAYMENT_PROOF',
+          // data is NOT overwritten — rejectedOrderId and order details remain intact
         });
         await dispatch(from, {
           type: 'text',

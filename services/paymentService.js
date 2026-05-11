@@ -100,23 +100,34 @@ export const initiatePayment = async (orderId, business) => {
 // ─── RECEIVE PROOF (screenshot from customer) ─────────────────────────────────
 // [PAY-3] Ignores orders older than 24h to prevent ghost proof submissions.
 // [PAY-8] Notifies admin via WhatsApp with proof image + Approve/Reject buttons.
-export const receiveProof = async (customerPhone, tenantId, imageUrl, tenant = null, business = null) => {
+export const receiveProof = async (customerPhone, tenantId, imageUrl, tenant = null, business = null, orderId = null) => {
   const cutoff = new Date(Date.now() - 24 * 60 * 60 * 1000);
 
+  // [FIX-ORDER-TRACK] When an orderId is supplied (stored in session.data.orderId
+  // or session.data.rejectedOrderId), query by _id directly. This handles:
+  //   1. Normal first upload (orderId from session.data.orderId)
+  //   2. Re-upload after rejection (orderId from session.data.rejectedOrderId)
+  // Without this, the phone+status query fails after rejection because:
+  //   - paymentStatus is 'payment_failed' (not in the original $in list)
+  //   - paymentProof was already set (now nulled by rejectPayment fix)
+  const query = orderId
+    ? {
+        _id:          orderId,
+        tenantId,
+        customerPhone,
+        paymentProof: null,
+        createdAt:    { $gte: cutoff },
+      }
+    : {
+        tenantId,
+        customerPhone,
+        paymentStatus: { $in: ['unpaid', 'payment_pending_verification', 'payment_failed'] },
+        paymentProof:  null,
+        createdAt:     { $gte: cutoff },
+      };
+
   const order = await Order.findOneAndUpdate(
-    {
-      tenantId,
-      customerPhone,
-      // Accept proof when:
-      //   - unpaid (normal first upload)
-      //   - payment_pending_verification AND paymentProof is still null
-      //     (edge case: order transitioned to pending_verification by another path
-      //      but the proof image itself was never stored — allow the customer to upload)
-      // paymentProof: null guards against overwriting an already-accepted screenshot.
-      paymentStatus: { $in: ['unpaid', 'payment_pending_verification'] },
-      paymentProof:  null,   // only update if no proof stored yet
-      createdAt:     { $gte: cutoff },
-    },
+    query,
     {
       $set: {
         paymentProof:  imageUrl,
@@ -260,6 +271,10 @@ export const rejectPayment = async (orderId, tenantId, reason, adminIdentifier) 
         paymentReviewedBy: adminIdentifier || 'admin',
         paymentReviewedAt: new Date(),
         rejectedNote:      reason || null,
+        // [FIX-ORDER-TRACK] Clear the stored proof so the customer can upload a
+        // fresh screenshot via the REJECTION_RESEND path. receiveProof queries
+        // paymentProof: null — without this the resend silently fails.
+        paymentProof:      null,
       },
     },
     { new: true }

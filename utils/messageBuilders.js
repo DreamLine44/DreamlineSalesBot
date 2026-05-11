@@ -42,24 +42,44 @@ const formatPrice = (price) => (price != null && price > 0 ? ` (D${price})` : ''
  */
 export function buildWelcomeUI(business) {
   const cfg     = getModeConfig(business);
-  const body    = getLabel(business, 'welcomeMessage') || getLabel(business, 'welcome') || `👋 Hi there! Welcome to *${business?.name || 'us'}*. How can we help you today?`;
   const buttons = cfg.ui.welcomeButtons;
 
+  // Strip any "Type X to Y" / "tap X to Z" instructions from the body — the
+  // buttons already communicate available actions, so repeating them as text
+  // is redundant and looks unprofessional. We keep the greeting portion only.
+  const rawBody = getLabel(business, 'welcomeMessage') || getLabel(business, 'welcome') || `👋 Hi there! Welcome to *${business?.name || 'us'}*. How can we help you today?`;
+  const body = sanitiseWelcomeBody(rawBody);
+
   if (buttons.length === 1) {
-    // Single-button modes: render as text with clear options
-    // (WhatsApp requires ≥2 buttons for button messages)
+    // Single-button modes: WhatsApp requires ≥2 buttons, so render as text.
+    // Only the single available action is mentioned — no redundant keyword list.
     return {
       type: 'text',
-      body: clean(
-        `${body}\n\n` +
-        `Tap *${buttons[0].title || buttons[0].id}* to get started, ` +
-        `or type *question* to ask us anything.\n\n` +
-        `Type *0* anytime to return here.`
-      ),
+      body: clean(`${body}\n\nTap *${buttons[0].title || buttons[0].id}* to get started.`),
     };
   }
 
   return { type: 'buttons', body: clean(body), buttons };
+}
+
+/**
+ * sanitiseWelcomeBody(text)
+ * Removes trailing sentences that instruct the user to type keyword commands
+ * (e.g. "Type Order to buy or Book to schedule a table.") when interactive
+ * buttons are rendered — buttons make those instructions redundant.
+ *
+ * Preserves the greeting and any brand/identity copy that precedes the
+ * instruction fragment.
+ */
+function sanitiseWelcomeBody(text) {
+  if (!text) return text;
+  // Pattern: sentences containing "Type <Word>" or "tap <Word>" instructions
+  // that map to bot keywords. Split on sentence boundaries and drop matching ones.
+  const instructionPattern = /[^.!?]*\b(type|tap)\b[^.!?]*(order|book|question|hi|hello|menu|0)\b[^.!?]*[.!?]?\s*/gi;
+  const cleaned = text.replace(instructionPattern, '').trim();
+  // If we stripped everything (e.g. the whole message was an instruction),
+  // fall back to the original so we never return an empty body.
+  return cleaned.length >= 10 ? cleaned : text;
 }
 
 // Backward-compat alias

@@ -952,7 +952,11 @@ async function handleFinalize(session, business, tenant) {
       } catch { /* fallback to builder */ }
 
       await updateSession(session.customerPhone, session.tenantId, {
-        currentFlow: 'ORDER', step: 'PAYMENT_PROOF', data: { item, quantity, totalPrice }, expectedInputType: 'image',
+        currentFlow: 'ORDER', step: 'PAYMENT_PROOF',
+        // [FIX-ORDER-TRACK] Store orderId so payment rejection/approval can
+        // always re-link the session to the correct order regardless of status.
+        data: { item, quantity, totalPrice, orderId: String(savedOrder._id) },
+        expectedInputType: 'image',
       });
       return paymentMsg
         ? { type: 'text', body: paymentMsg }
