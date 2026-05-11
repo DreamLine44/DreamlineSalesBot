@@ -46,6 +46,7 @@ import {
   updateFaq,
   updateSettings,
   uploadMenuImage,
+  getLeads,
 } from '../controllers/businessController.js';
 import {
   listOrders,
@@ -153,5 +154,10 @@ router.get('/bookings',        listBookings);
 router.get('/bookings/:id',    getBooking);
 router.patch('/bookings/:id',  updateBooking);
 router.delete('/bookings/:id', deleteBooking);
+
+// ── Lead capture results ─────────────────────────────────────────────────────
+// GET /business/leads — returns all captured leads for this tenant
+// Only available when business.leadCapture.enabled = true
+router.get('/leads', getLeads);
 
 export default router;

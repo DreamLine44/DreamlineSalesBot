@@ -355,8 +355,9 @@ export function buildOrderSuccessUI(business, item, quantity) {
 }
 
 export function buildBookingSuccessUI(business, date, time, service = null) {
+  // [v11] Pass (date, time, service) — modes.js bookingSuccess label accepts all 3
   const base = service
-    ? getLabel(business, 'bookingSuccess', service, date || service, time)
+    ? getLabel(business, 'bookingSuccess', date || service, time, service)
       || `✅ Appointment confirmed!\n\n💅 *${service}*${date ? `\n📅 *${date}*` : ''}${time ? `\n⏰ *${time}*` : ''}\n\nSee you soon! ✨`
     : getLabel(business, 'bookingSuccess', date, time)
       || `✅ Booking confirmed!\n\n📅 *${date}*${time ? `\n⏰ *${time}*` : ''}\n\nLooking forward to it! 😊`;

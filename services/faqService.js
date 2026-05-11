@@ -13,8 +13,6 @@
  * Matching is case-insensitive substring match against each trigger keyword.
  * The FIRST matching FAQ entry wins (order matters — put specific before generic).
  *
- * In groqService.js, remove the loose `customMessages` dump from the prompt.
- * Instead call resolveFaq() first; if it returns a reply, send it without hitting Groq.
  */
 
 /**
@@ -41,10 +39,15 @@ function resolveFaq(messageText, business) {
       .filter(Boolean);
 
     for (const t of triggers) {
-      if (lower.includes(t)) {
-        return entry.reply;
+        // [v11] Prefer word-boundary match to avoid "price" matching "prices" partially
+        // Falls back to simple includes() for multi-word triggers like "opening hours"
+        const wordMatch = t.includes(' ')
+          ? lower.includes(t)
+          : new RegExp(`\\b${t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`).test(lower);
+        if (wordMatch) {
+          return entry.reply;
+        }
       }
-    }
   }
 
   return null; // No match — let Groq handle it

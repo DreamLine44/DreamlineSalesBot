@@ -87,6 +87,12 @@ const orderSchema = new mongoose.Schema({
   // Free-text notes — editable via PATCH /business/orders/:id
   notes: { type: String, default: null },
 
+  // Set by schedulerService when an abandoned-cart WhatsApp template is sent.
+  // Acts as an idempotency flag — without this in the schema, Mongoose strict
+  // mode drops the $set, causing the scheduler to re-message the same customer
+  // on every run.
+  abandonedCartAt: { type: Date, default: null },
+
   // Last 6 hex chars of _id, stored at creation time for O(1) admin lookups.
   // Admin commands like "APPROVE ABC123" resolve against this field via an index
   // instead of an unindexed $expr/$regexMatch scan on the ObjectId string.

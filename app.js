@@ -20,6 +20,7 @@ import { errorHandler } from "./middlewares/errorHandler.js";
 import logger from "./config/logger.js";
 import { requireApiKey, requireSuperAdminKey, requireApiKeyForDashboard } from "./middlewares/authMiddleware.js";
 import { groqHealthCheck }                    from "./services/groqService.js";
+import { startScheduler }                     from "./services/schedulerService.js";
 
 const _require = createRequire(import.meta.url);
 const { version: APP_VERSION } = _require("./package.json");
@@ -81,7 +82,8 @@ app.use(
   // [FIX] Accept all content types — Meta sometimes sends without Content-Type header.
   // express.raw({ type: "application/json" }) silently skips those requests,
   // leaving rawBody undefined and causing all HMAC signature checks to fail (403).
-  express.raw({ type: "*/*" }),
+  // [UPGRADE] 1mb limit prevents memory exhaustion from crafted oversized payloads.
+  express.raw({ type: "*/*", limit: "1mb" }),
   (req, _res, next) => {
     // Store raw bytes for signature verification in webhookController.
     // Guard: Buffer.isBuffer check handles GET requests (webhook verification)
@@ -194,6 +196,10 @@ const PORT = process.env.PORT || 5000;
   // ── GROQ HEALTH CHECK ──
   // Validate the Groq API key is live before the first customer message arrives.
   const groqStatus = await groqHealthCheck();
+
+  // Start background scheduler (abandoned cart, booking reminders, payment nudges)
+  // Controlled by SCHEDULER_ENABLED=true env var — off by default.
+  startScheduler();
   if (groqStatus.ok) {
     logger.info(`[Groq] Ready — model: ${groqStatus.model}`);
   } else {

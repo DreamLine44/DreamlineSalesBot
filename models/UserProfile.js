@@ -82,7 +82,18 @@ const userProfileSchema = new mongoose.Schema({
   activity: {
     lastSeen: { type: Date, default: Date.now },
     firstSeen: { type: Date, default: Date.now }
-  }
+  },
+
+  // ================= 🎯 LEAD CAPTURE =================
+  // Populated by leadCaptureService when business.leadCapture.enabled = true.
+  // All fields are optional — the capture flow accepts "skip" at every step.
+  lead: {
+    captured:   { type: Boolean, default: false },
+    name:       { type: String,  default: null },
+    contact:    { type: String,  default: null }, // email or phone
+    interest:   { type: String,  default: null },
+    capturedAt: { type: Date,    default: null },
+  },
 
 }, {
   timestamps: true,

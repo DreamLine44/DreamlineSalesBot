@@ -4,6 +4,7 @@ import Session        from "../models/Session.js";
 import Tenant         from "../models/Tenant.js";
 import { getAnalyticsSummary } from "../services/analyticsService.js";
 import logger from "../config/logger.js";
+import { getLeadsForTenant } from '../services/leadCaptureService.js';
 import { v2 as cloudinary } from 'cloudinary';
 
 
@@ -601,6 +602,18 @@ async function _advanceStepIfComplete(tenant) {
 // GET /business/default-config?mode=RESTAURANT
 // Returns a ready-to-use starter config template for a business mode.
 // Business owners can use this as the body for POST /business.
+
+
+export const getLeads = async (req, res) => {
+  try {
+    const tenantId = req.tenant._id;
+    const leads = await getLeadsForTenant(tenantId);
+    res.json({ success: true, data: leads, total: leads.length });
+  } catch (err) {
+    logger.error('[Business] getLeads error', { err: err.message });
+    res.status(500).json({ success: false, message: 'Server error' });
+  }
+};
 
 export const getDefaultConfig = async (req, res) => {
   try {

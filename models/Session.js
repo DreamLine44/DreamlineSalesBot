@@ -1,24 +1,29 @@
 /**
- * models/Session.js
+ * models/Session.js — v11.0
  *
- * Per-customer conversation state, scoped by composite key "${customerPhone}_${tenantId}".
- * Includes flow tracking, loop prevention (DB-persisted), step history, and upsell state.
- * Sessions auto-expire via TTL index on expiresAt (default: 30 minutes).
+ * Upgrades:
+ * - TTL index via expiresAt (already present) + configurable SESSION_TTL_MS
+ * - customerName capture for personalised replies
+ * - retryCount for payment proof reminders (max 2)
+ * - lastSeen timestamp for analytics
+ * - abandonedAt for abandoned-cart detection
+ * - messageCount for per-session usage tracking
  */
 
 import mongoose from 'mongoose';
 
-const SESSION_TTL_MS = 30 * 60 * 1000;
+// TTL controlled by env var — default 30 min, configurable per deployment
+const SESSION_TTL_MS = (parseInt(process.env.SESSION_TTL_MINUTES, 10) || 30) * 60 * 1000;
 
 const sessionSchema = new mongoose.Schema({
-  // Composite lookup key: "${customerPhone}_${tenantId}"
   phone:         { type: String, required: true, index: true },
   customerPhone: { type: String, default: null },
+  customerName:  { type: String, default: null },   // [v11] captured during flow
   phoneNumberId: { type: String, default: null },
 
   currentFlow: {
     type: String,
-    enum: ['ORDER', 'BOOKING', null], // 'WELCOME' removed — never set by any service
+    enum: ['ORDER', 'BOOKING', null],
     default: null,
   },
 
@@ -28,38 +33,45 @@ const sessionSchema = new mongoose.Schema({
 
   pendingIntent: { type: String, default: null },
   previousStep:  { type: String, default: null },
-  previousFlow:  { type: String, default: null }, // for mid-flow switches
+  previousFlow:  { type: String, default: null },
 
-  lastMessage:   { type: String, default: null },
-  lastWamid:     { type: String, default: null },
-  // Last message the BOT sent — used by dedup guard in brainService
+  lastMessage:    { type: String, default: null },
+  lastWamid:      { type: String, default: null },
   lastBotMessage: { type: String, default: null },
-  // Last detected intent — used by groqService for AI memory context
-  lastIntent:    { type: String, default: null },
+  lastIntent:     { type: String, default: null },
+  lastSeen:       { type: Date,   default: null },   // [v11] updated on every message
 
   tenantId:      { type: String, default: null, index: true },
 
-  isCompleted:   { type: Boolean, default: false },
-  humanMode:          { type: Boolean, default: false },
-  humanModeNotified:  { type: Boolean, default: false }, // true after first human-mode acknowledgement is sent
+  isCompleted:          { type: Boolean, default: false },
+  humanMode:            { type: Boolean, default: false },
+  humanModeNotified:    { type: Boolean, default: false },
 
-  // ── Loop prevention (DB-persisted, safe across restarts) ─────────────────
+  // Loop prevention
   loopCount:        { type: Number, default: 0 },
   lastLoopMessage:  { type: String, default: null },
   lastLoopStep:     { type: String, default: null },
 
-  // ── Conversation mode — tracks special waiting states ────────────────────
-  // 'awaiting_question'         : bot asked "what would you like to know?" — next msg is the question
-  // 'awaiting_rejection_action' : payment was rejected — customer must choose resend/support/cancel
-  // null                        : normal operation
+  // Conversation mode
   mode: { type: String, default: null },
 
-  // ── Step history (last 5, for debugging) ─────────────────────────────────
+  // Step history
   stepHistory: { type: [String], default: [] },
 
-  // ── Upsell state (v3.1) — ensures add-on is suggested at most ONCE ───────
+  // Upsell state
   upsellSent:   { type: Boolean, default: false },
   pendingAddOn: { type: Object,  default: null  },
+
+  // [v11] Payment retry tracking — max 2 proof reminders before suggesting human support
+  paymentRetryCount: { type: Number, default: 0 },
+
+  // [v11] Message count for session-level usage analytics
+  messageCount: { type: Number, default: 0 },
+
+  // [v11] Abandoned cart — set when session expires mid-flow; used for follow-up campaigns
+  abandonedAt:  { type: Date, default: null },
+  abandonedFlow: { type: String, default: null },
+  abandonedItem: { type: String, default: null },
 
   expiresAt: {
     type: Date,
@@ -68,28 +80,13 @@ const sessionSchema = new mongoose.Schema({
 
 }, { timestamps: true });
 
+// TTL index — MongoDB auto-expires documents after expiresAt
 sessionSchema.index({ expiresAt: 1 }, { expireAfterSeconds: 0 });
 
-// [FIX-9] Compound unique index on (phone, tenantId).
-// The `phone` field already encodes both customerPhone and tenantId as a composite
-// key ("${customerPhone}_${tenantId}"), so a unique index on phone alone is the
-// primary dedup guard. The compound index also protects against a future refactor
-// where the composite key format changes, and speeds up admin queries by tenantId.
-// Under concurrent webhook retries, two simultaneous upserts for the same customer
-// could race and create duplicate sessions, causing split or corrupted flow state.
-// [FIX] The old schema had a separate unique index named `key_1` (from a previous
-// field called `key`) that is still sitting in MongoDB. When tenantId is null it
-// causes E11000 duplicate key errors because null == null in a unique index.
-//
-// Fix 1: compound index is sparse: true — MongoDB skips documents where EITHER
-//         field is null, so null-tenantId docs never collide.
-// Fix 2: phone alone is already unique per composite key, so the compound index
-//         uses sparse to avoid fighting the legacy key_1 index during migration.
-//
-// IMPORTANT: After deploying this fix, drop the old stale index once manually:
-//   In mongosh:  db.sessions.dropIndex("key_1")
-//   The app will work fine before you do — sparse:true prevents the crash —
-//   but dropping the dead index keeps your DB clean.
+// Compound unique index — sparse so null-tenantId docs never collide
 sessionSchema.index({ phone: 1, tenantId: 1 }, { unique: true, sparse: true });
+
+// [v11] Partial index for abandoned flow queries (analytics / re-engagement)
+sessionSchema.index({ abandonedAt: 1, tenantId: 1 }, { sparse: true });
 
 export default mongoose.model('Session', sessionSchema);

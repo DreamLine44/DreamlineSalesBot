@@ -1,5 +1,5 @@
 /**
- * controllers/webhookController.js — Dreamline Sales Bot v5.1
+ * controllers/webhookController.js — Dreamline Sales Bot v11.0
  *
  * PIPELINE (strictly sequential):
  *   1. Receive & verify (signature, dedup, tenant lookup)
@@ -26,6 +26,7 @@ import { trackFailedInteraction }                                 from '../servi
 import { getAIReply, generateGreeting, answerAboutQuestion }      from '../services/groqService.js';
 import { receiveProof, handleDonePayment }                        from '../services/paymentService.js';
 import { isAdminPhone, handleAdminButtonReply, handleAdminTextCommand } from '../services/adminPaymentHandler.js';
+import { shouldCaptureLead, startLeadCapture, handleLeadCapture } from '../services/leadCaptureService.js';
 import Tenant  from '../models/Tenant.js';
 import logger  from '../config/logger.js';
 import { createHmac, timingSafeEqual } from 'crypto';
@@ -387,6 +388,29 @@ export const handleWebhook = async (req, res) => {
       continue;
     }
 
+    // ── STEP 5b: Lead Capture ─────────────────────────────────────────────
+    // Intercept new customers before routing to the normal brain pipeline.
+    // Only fires when business.leadCapture.enabled=true AND triggerOn='FIRST_MESSAGE'.
+    if (isNewSession && messageText && !isInteractive) {
+      const captureNow = await shouldCaptureLead(business, session, 'FIRST_MESSAGE').catch(() => false);
+      if (captureNow) {
+        const leadMsg = await startLeadCapture(session, business);
+        await dispatch(from, leadMsg, tenantDoc);
+        continue;
+      }
+    }
+
+    // Route active LEAD_CAPTURE flow before anything else so the brain never
+    // misclassifies the customer's name/email as an ORDER or BOOKING intent.
+    if (session.currentFlow === 'LEAD_CAPTURE') {
+      const leadReply = await handleLeadCapture(session, messageText || '', business, tenantDoc).catch(err => {
+        logger.error('[Webhook] Lead capture error', { from, err: err.message });
+        return { type: 'text', body: 'Sorry, something went wrong. Please try again.' };
+      });
+      await dispatch(from, leadReply, tenantDoc);
+      continue;
+    }
+
     // NOTE: must be `continue` not `return` — see SUSPENDED check above.
     if (session.humanMode === true) {
       // Human mode is ON — a live agent is handling this conversation.
@@ -685,16 +709,46 @@ export const handleWebhook = async (req, res) => {
       }
 
       case 'GREET': {
-        // [FIX] Clear any stale session state so a returning customer who says
-        // "hi" after an abandoned flow doesn't inherit old step/data.
-        // SHOW_MENU already does this — GREET must too for consistency.
         await clearSession(from, tenantId);
         await createSession(from, tenantId, { customerPhone: from, phoneNumberId });
         let greetMsg = null;
-        try { greetMsg = await generateGreeting(business); } catch { /* use static */ }
+        try { greetMsg = await generateGreeting(business, session); } catch { /* use static */ }
         const welcomeBase = buildWelcomeUI(business);
-        // Clone the UI object before mutating body — never modify the shared builder result
+        // [v11] Personalise greeting if customer name is known
+        const knownName = session?.customerName;
+        if (knownName && !greetMsg) {
+          const { getLabel } = await import('../config/modes.js');
+          const personalMsg = getLabel(business, 'welcomePersonalised', knownName);
+          if (personalMsg) greetMsg = personalMsg;
+        }
         responseUI = greetMsg ? { ...welcomeBase, body: greetMsg } : welcomeBase;
+        break;
+      }
+
+      // [v11] Track order status — bot informs customer and provides admin contact
+      case 'TRACK_ORDER': {
+        const { getLabel: getLbl } = await import('../config/modes.js');
+        const adminContact = business?.adminPhone || tenantDoc?.adminPhone || null;
+        const trackMsg = getLbl(business, 'trackOrderMsg', adminContact)
+          || `To track your order, please contact us directly.${adminContact ? `\n\n📞 *${adminContact}*` : ''}`;
+        responseUI = { type: 'text', body: trackMsg };
+        break;
+      }
+
+      // [v11] Repeat order — show last ordered item if known, guide to order flow
+      case 'REPEAT_ORDER': {
+        const { getLabel: getLbl2 } = await import('../config/modes.js');
+        const lastItem = session?.data?.item || null;
+        const repeatMsg = getLbl2(business, 'repeatOrderMsg', lastItem)
+          || `Tap *Order* to place a new order!`;
+        responseUI = {
+          type: 'buttons',
+          body: repeatMsg,
+          buttons: [
+            { id: 'ORDER',    title: '🍔 Order Now' },
+            { id: 'QUESTION', title: '❓ Question' },
+          ],
+        };
         break;
       }
 

@@ -35,7 +35,9 @@ import logger            from '../config/logger.js';
 //  - Returns { name, price } or null
 //  - Caller decides when to show it — this service never sends messages
 
-export function selectUpsell(business, session) {
+// selectUpsell and applyUpsell are handled inline in flowService.
+// Kept here as internal helpers in case they are needed in future.
+function selectUpsell(business, session) {
   // Guard: already shown this session
   if (session?.upsellSent) return null;
 
@@ -57,7 +59,7 @@ export function selectUpsell(business, session) {
 // Returns { item, totalPrice } with updated values.
 // Safe: if pendingAddOn is null, returns original values unchanged.
 
-export function applyUpsell(item, totalPrice, pendingAddOn) {
+function applyUpsell(item, totalPrice, pendingAddOn) {
   if (!pendingAddOn) return { item, totalPrice };
 
   const updatedTotal = (totalPrice || 0) + (pendingAddOn.price || 0);
@@ -108,7 +110,8 @@ export async function recordOrderRevenue({ item, quantity, totalPrice, phoneNumb
 // Returns a human-readable revenue summary string for admin alerts.
 // Example: "D450 (3× Jollof Rice + Soft Drink)"
 
-export function buildRevenueSummary(item, quantity, totalPrice, currency = 'GMD') {
+// buildRevenueSummary: exported but never called externally — kept internal.
+function buildRevenueSummary(item, quantity, totalPrice, currency = 'GMD') {
   if (!totalPrice) return null;
   return `${currency} ${totalPrice} (${quantity}× ${item})`;
 }

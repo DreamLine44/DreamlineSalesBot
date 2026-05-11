@@ -1,5 +1,5 @@
 /**
- * services/flowService.js — Dreamline Sales Bot v3.1
+ * services/flowService.js — Dreamline Sales Bot v11.0
  *
  * LAYER 2 — FLOW LOGIC ONLY.
  *
@@ -62,6 +62,7 @@ import {
 import { findBestMatch } from '../utils/matchEngine.js';
 import { resolveFaq } from './faqService.js';
 import { initiatePayment } from './paymentService.js';
+import { getSmartRecommendation } from './smartRecommendationService.js';
 
 // ─── Normalisation ────────────────────────────────────────────────────────────
 
@@ -421,7 +422,10 @@ async function handleOrder(session, raw, clean, business, isInteractive = false,
       // Send item image if available (side-effect — non-blocking)
       const suggestedItem = (business?.menu || []).find(m => getName(m).toLowerCase() === selected.toLowerCase());
       await _maybeSendItemImage(session, suggestedItem, tenant);
-      return `Great choice 👍\n\nHow many *${selected}* would you like?\n\n(Enter a number, e.g. *1*, *2*)`;
+      // Smart recommendation (non-blocking — never delays order flow)
+      const recoA = await getSmartRecommendation(business, selected, session).catch(() => null);
+      const qtyA  = `Great choice 👍\n\nHow many *${selected}* would you like?\n\n(Enter a number, e.g. *1*, *2*)`;
+      return recoA ? { type: 'text', body: `${recoA}\n\n${qtyA}` } : qtyA;
     }
     if (isBtnReject(raw)) {
       await updateSession(session.customerPhone, session.tenantId, { suggestion: null });
@@ -444,7 +448,10 @@ async function handleOrder(session, raw, clean, business, isInteractive = false,
         await pushStep(session, 'QUANTITY');
         // Send item image if available (side-effect — fires before text reply)
         await _maybeSendItemImage(session, menuItem, tenant);
-        return `Great choice 👍\n\nHow many *${item}* would you like?\n\n(Enter a number, e.g. *1*, *2*)`;
+        // Smart recommendation (non-blocking)
+        const recoB = await getSmartRecommendation(business, item, session).catch(() => null);
+        const qtyB  = `Great choice 👍\n\nHow many *${item}* would you like?\n\n(Enter a number, e.g. *1*, *2*)`;
+        return recoB ? { type: 'text', body: `${recoB}\n\n${qtyB}` } : qtyB;
       }
 
       if (!clean) return buildMenuUI(business);
@@ -478,7 +485,10 @@ async function handleOrder(session, raw, clean, business, isInteractive = false,
         await pushStep(session, 'QUANTITY');
         // Send item image if available (side-effect — fires before text reply)
         await _maybeSendItemImage(session, item, tenant);
-        return `Great choice 👍\n\nHow many *${name}* would you like?\n\n(Enter a number, e.g. *1*, *2*)`;
+        // Smart recommendation (non-blocking)
+        const recoC = await getSmartRecommendation(business, name, session).catch(() => null);
+        const qtyC  = `Great choice 👍\n\nHow many *${name}* would you like?\n\n(Enter a number, e.g. *1*, *2*)`;
+        return recoC ? { type: 'text', body: `${recoC}\n\n${qtyC}` } : qtyC;
       }
 
       // LOW confidence — buttons (v3.0)
@@ -585,15 +595,25 @@ async function handleOrder(session, raw, clean, business, isInteractive = false,
     }
 
     case 'PAYMENT_PROOF': {
-      // Client sent text while waiting to upload screenshot — do NOT reset the flow.
-      // Answer their question via AI if possible, then re-show the payment instructions.
+      // [v11] Payment retry tracking — after 2 text messages during PAYMENT_PROOF,
+      // suggest contacting the business directly for support.
       const { totalPrice } = session.data || {};
+      const retryCount = (session.paymentRetryCount || 0) + 1;
+      await updateSession(session.customerPhone, session.tenantId, { paymentRetryCount: retryCount });
+
+      // After 3 messages without a screenshot, offer human support
+      if (retryCount >= 3) {
+        const adminPhone = business?.adminPhone || tenant?.adminPhone;
+        const supportMsg = adminPhone
+          ? `It looks like you might need help with your payment. 🙏\n\nPlease contact us directly at *${adminPhone}* and we'll sort it out for you.\n\nOr type *cancel* to start over.`
+          : `Please send your *Wave payment screenshot* to complete your order, or type *cancel* to start over.`;
+        return { type: 'text', body: supportMsg };
+      }
 
       // Try AI for conversational messages (questions, complaints, etc.)
       if (raw.trim().length >= 4) {
         const aiReply = await getAIReply(raw, business, session, 'FALLBACK').catch(() => null);
         if (aiReply) {
-          // Append a short reminder so client knows they still need to send the screenshot
           const reminder = '\n\n💳 Reminder: please send your *Wave payment screenshot* to complete your order.';
           return { type: 'text', body: aiReply + reminder };
         }
@@ -965,6 +985,7 @@ async function handleFinalize(session, business, tenant) {
     }
 
     await clearSession(session.customerPhone, session.tenantId);
+    // [v11] Pass service as 3rd arg so bookingSuccess label can include it
     return buildBookingSuccessUI(business, date || null, time, service || null);
   }
 

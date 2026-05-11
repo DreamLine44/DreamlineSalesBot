@@ -128,7 +128,9 @@ export const trackUser = async (
 };
 
 // ================= GET RECOMMENDATION =================
-export const getRecommendation = async (phone) => {
+// getRecommendation: data is collected via trackUser() but recommendations
+// are not yet consumed by any flow. Kept internal for future use.
+async function getRecommendation(phone) {
   try {
     const user = await UserProfile.findOne({ phone });
 

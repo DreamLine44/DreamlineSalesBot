@@ -1,7 +1,7 @@
 {
   "name": "dreamlinesalesbot",
-  "version": "10.0.0",
-  "description": "Multi-tenant WhatsApp Business SaaS Platform — v10.0 (Revenue Engine + Upsell + Admin Payment Flow)",
+  "version": "11.0.0",
+  "description": "Multi-tenant WhatsApp Business SaaS Platform \u2014 v11.0 (Expanded Intents + Emoji Detection + Name Personalisation + Track Order + Repeat Order + SALON/RETAIL Upsells + Payment Retry + Word-boundary FAQ)",
   "main": "app.js",
   "type": "module",
   "scripts": {
