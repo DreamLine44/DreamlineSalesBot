@@ -504,31 +504,52 @@ async function handleOrder(session, raw, clean, business, isInteractive = false,
     }
 
     case 'QUANTITY': {
-      // Interactive taps at QUANTITY are menu re-selections, not quantities
+      // [v12] Interactive taps at QUANTITY — a button was tapped while awaiting
+      // a quantity. Show a clear prompt with the item name and cancel option.
       if (isInteractive) {
         const itemName = session.data?.item;
-        return itemName
-          ? `Please *type* a number for the quantity of *${itemName}* 😊\n\n(e.g. *1*, *2*, *3*)`
+        const promptBody = itemName
+          ? `How many *${itemName}* would you like? 🛒\n\nPlease *type* a number (e.g. *1*, *2*, *3*).`
           : 'Please *type* a number for the quantity (e.g. *1*, *2*, *3*).';
+        return {
+          type: 'buttons',
+          body: promptBody,
+          buttons: [{ id: 'CANCEL', title: '❌ Cancel Order' }],
+        };
       }
 
       const qty = parseQuantity(raw);
 
       if (!qty || qty < 1) {
-        // If the message is long/conversational (complaint, question, off-topic),
-        // route through Groq so the customer gets a real, helpful reply.
-        // Short/garbled input just gets the simple nudge.
-        if (raw.trim().length >= 6 && !/^\d+$/.test(raw.trim())) {
-          const itemName = session.data?.item;
-          const aiReply  = await getAIReply(raw, business, session, 'FALLBACK').catch(() => null);
-          if (aiReply) return { type: 'text', body: aiReply };
-          return itemName
-            ? `How many *${itemName}* would you like? Please reply with a number (e.g. *1*, *2*, *3*).`
-            : 'Please reply with a *number* for the quantity (e.g. *1*, *2*, *3*).';
-        }
-        return session.data?.item
-          ? `How many *${session.data.item}* would you like? Reply with a number (e.g. *1*, *2*, *3*).`
+        const itemName = session.data?.item;
+        const nudgeBody = itemName
+          ? `How many *${itemName}* would you like? 🛒\n\nPlease type a number (e.g. *1*, *2*, *3*).`
           : 'Please enter a *number* for the quantity (e.g. *1*, *2*, *3*).';
+
+        // [v12 FIX] Only call AI for clearly conversational, off-topic messages
+        // (not short garble, not negation-filtered inputs).
+        // This prevents AI from misinterpreting "twelve" or "two" as something
+        // other than a quantity, and prevents Groq from generating open-ended
+        // replies that break flow context.
+        if (raw.trim().length >= 10 && !/^\d+$/.test(raw.trim()) && !/^\w{1,6}$/.test(raw.trim())) {
+          const aiReply = await getAIReply(raw, business, session, 'FALLBACK').catch(() => null);
+          if (aiReply) {
+            // After the AI answer, re-prompt for quantity with a button nudge
+            return [
+              { type: 'text', body: aiReply },
+              {
+                type: 'buttons',
+                body: nudgeBody,
+                buttons: [{ id: 'CANCEL', title: '❌ Cancel Order' }],
+              },
+            ];
+          }
+        }
+        return {
+          type: 'buttons',
+          body: nudgeBody,
+          buttons: [{ id: 'CANCEL', title: '❌ Cancel Order' }],
+        };
       }
 
       // Bounds check comes after null guard — qty is guaranteed a positive number here

@@ -302,6 +302,24 @@ async function processRejection(orderId, tenantId, adminPhone, tenant, business,
     // Notify customer with the improved rejection message
     await sendMessage(updatedOrder.customerPhone, customerMessage, tenant);
 
+    // [v12 FIX] Follow the rejection text with WhatsApp action buttons.
+    // This replaces the old typed-number instructions (1/2/3) with a
+    // button-first UX consistent with the rest of the platform.
+    try {
+      await sendButtonMessage(
+        updatedOrder.customerPhone,
+        `What would you like to do?`,
+        [
+          { id: 'REJECTION_RESEND',  title: '📸 Resend Proof'    },
+          { id: 'REJECTION_SUPPORT', title: '🤝 Contact Support' },
+          { id: 'REJECTION_CANCEL',  title: '❌ Cancel Order'    },
+        ],
+        tenant,
+      );
+    } catch (btnErr) {
+      logger.warn('[AdminPaymentHandler] Could not send rejection buttons — plain text already sent', { btnErr: btnErr.message });
+    }
+
     // ── Set awaiting_rejection_action state ──────────────────────────────
     // This prevents the bot from jumping to unrelated flows (menus, ordering)
     // when the customer's next message arrives. The webhookController will

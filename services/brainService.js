@@ -1,34 +1,40 @@
 /**
- * services/brainService.js — v11.0
+ * services/brainService.js — DreamLine SalesBot (Perfect Merged v11+v7+v12)
  *
- * UPGRADES:
- * - Expanded STRICT_INTENTS: more natural language, African English variants,
- *   typos, and shorthand (e.g. "pls", "lemme", "i wan", "dey", "abeg")
- * - TRACK_ORDER intent: customers can check their order status mid-flow
- * - REPEAT_ORDER intent: "same as last time" / "the usual"
- * - Greeting detection handles "watsup", "salam", "greetings", "yo", "sup"
- * - Number shortcuts extended: context-aware for SALON (only Book/Question)
- * - customerName extraction: "my name is X" / "i am X" captured and saved
- * - Emoji intent detection: 🍔→ORDER, 📅→BOOK, ❓→QUESTION
- * - Improved rejection phrases — fewer false positives on "not sure" type input
- * - PAYMENT intent extended: more natural phrases
- * - SHOW_MENU extended: "start over", "reset", "beginning"
+ * ╔══════════════════════════════════════════════════════════════════════╗
+ * ║  STRICT DETERMINISTIC INTENT ENGINE  ·  AI STRICTLY LAST RESORT    ║
+ * ║                                                                      ║
+ * ║  GOLDEN RULES (merged from v7 intentEngine + v11 + v12 fixes):      ║
+ * ║  1. Button ID / emoji → instant action, ZERO AI involvement         ║
+ * ║  2. Active flow → flow OWNS the message completely                  ║
+ * ║     PROTECTED steps: only CANCEL/CONFIRM can escape                 ║
+ * ║     Other steps: only CANCEL/CONFIRM/SHOW_MENU/QUESTION/PAYMENT     ║
+ * ║     can escape; a different flow intent → INTERRUPT (user decides)  ║
+ * ║  3. Greeting always snaps to welcome — even inside active flows     ║
+ * ║  4. Strict exact match → triggers flow, no AI ever                  ║
+ * ║  5. Levenshtein similarity → SUGGEST only, NEVER execute            ║
+ * ║  6. [v12 Fix 1] AI fallback inside active flows ONLY for messages   ║
+ * ║     that are ≥10 chars, non-numeric, and multi-word. Short inputs   ║
+ * ║     (word-numbers, single words, digits) → CONTINUE_FLOW so        ║
+ * ║     flowService parses them natively (e.g. qty "twelve" = 12)      ║
+ * ║  7. AI NEVER triggers flows. It answers + shows CTA options.        ║
+ * ╚══════════════════════════════════════════════════════════════════════╝
  */
 
 import levenshtein   from 'fast-levenshtein';
 import { trackUser } from './learningService.js';
 import { getModeConfig, getModeRestrictionMessage } from '../config/modes.js';
-import { buildInterruptUI } from '../utils/messageBuilders.js';
+import { buildInterruptUI, buildOptionsUI } from '../utils/messageBuilders.js';
 import { isAboutQuestion }  from './groqService.js';
 import { updateSession }    from './sessionService.js';
 import logger               from '../config/logger.js';
 
-// ─── Normalization ────────────────────────────────────────────────────────────
+// ─── Normalisation ────────────────────────────────────────────────────────────
 
 export const normalizeInput = (text = '') =>
   text.toLowerCase().replace(/[^\w\s]/g, ' ').replace(/\s+/g, ' ').trim();
 
-// ─── Emoji → intent map ───────────────────────────────────────────────────────
+// ─── Emoji intent map ─────────────────────────────────────────────────────────
 
 const EMOJI_INTENT_MAP = {
   '🍔': 'ORDER', '🛍': 'ORDER', '🛒': 'ORDER', '🍕': 'ORDER', '🥘': 'ORDER',
@@ -49,7 +55,7 @@ function detectEmojiIntent(raw) {
 
 const NAME_PATTERNS = [
   /(?:my name is|i am|i'm|call me|name's|its|it's)\s+([a-z][a-z\s]{1,30})/i,
-  /^([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)$/, // Proper cased name on its own
+  /^([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)$/,
 ];
 
 export function extractCustomerName(raw) {
@@ -57,7 +63,6 @@ export function extractCustomerName(raw) {
     const m = raw.match(pattern);
     if (m) {
       const candidate = m[1].trim();
-      // Reject if it looks like a sentence (contains common words)
       const badWords = ['want', 'like', 'need', 'have', 'know', 'think', 'going', 'looking'];
       if (badWords.some(w => candidate.toLowerCase().includes(w))) continue;
       if (candidate.length >= 2 && candidate.length <= 40) return candidate;
@@ -67,30 +72,29 @@ export function extractCustomerName(raw) {
 }
 
 // ─── STRICT_INTENTS ───────────────────────────────────────────────────────────
+// Merged from v7 intentEngine + v11 brainService (African English, shorthand,
+// natural variants). ONLY exact matches (after normalization) trigger flows.
 
 const STRICT_INTENTS = {
   ORDER: [
-    'order', 'order now', 'buy', 'i want to order', 'place order',
-    'i want food', 'get food', 'order food', 'i want to buy',
-    // Natural variants
+    'order', 'order now', 'buy', 'i want to order', 'place order', 'i want to buy',
+    'purchase', 'i want food', 'get food', 'order food', 'i want to eat',
+    'add to cart', 'buy now', 'shop', 'shop now', 'i want to shop', 'i want',
     'i want to get', 'i would like to order', 'can i order',
     'let me order', 'i need food', 'food please', 'give me food',
     'i want something', 'i want to get food', 'buy something',
-    // African English / shorthand
     'i wan order', 'i wan buy', 'i wan food', 'abeg let me order',
     'pls let me order', 'i dey hungry', 'bring food', 'order pls',
     'i want make order', 'lemme order', 'order make',
-    // Short triggers
-    'food', 'buy now', 'shop', 'get', 'purchase',
+    'food', 'get', 'purchase',
   ],
   BOOKING: [
-    'book', 'book service', 'book now', 'reserve', 'appointment',
-    'i want to book', 'make a booking', 'book a table', 'make appointment',
-    // Natural variants
-    'i would like to book', 'can i book', 'schedule', 'reservation',
+    'book', 'book service', 'book now', 'reserve', 'reservation',
+    'i want to book', 'make a booking', 'book a table', 'make reservation',
+    'book a seat', 'table reservation', 'appointment', 'book appointment',
+    'i would like to book', 'can i book', 'schedule',
     'i want an appointment', 'set appointment', 'i need appointment',
-    'book for me', 'make reservation', 'i want to reserve',
-    // African English / shorthand
+    'book for me', 'i want to reserve',
     'i wan book', 'abeg book for me', 'pls book', 'book am',
     'i want schedule', 'make booking', 'booking please',
   ],
@@ -98,70 +102,62 @@ const STRICT_INTENTS = {
     'question', 'ask', 'ask question', 'enquiry', 'enquire',
     'i have a question', 'i want to ask', 'i need help', 'help',
     'what', 'how', 'info', 'about', 'hours', 'location', 'address',
-    'contact', 'price', 'cost', 'open', 'close',
-    // Natural variants
+    'contact', 'price', 'cost', 'open', 'close', 'deliver', 'available',
+    'do you have', 'is there', 'tell me',
     'i want to know', 'can you tell me', 'please tell me',
-    'i have a query', 'do you have', 'i need information',
-    'can i ask', 'quick question', 'one question',
-    // Shorthand
-    'info pls', 'details', 'tell me', 'i wanna know',
+    'i have a query', 'i need information', 'can i ask',
+    'quick question', 'one question', 'info pls', 'details', 'i wanna know',
   ],
   CONFIRM: [
     'yes', 'ok', 'okay', 'confirm', 'yep', 'sure', 'yup', 'yeah',
     'go ahead', 'sounds good', 'correct', 'proceed',
-    // Natural variants
     'definitely', 'absolutely', 'of course', 'alright', 'agreed',
     'thats correct', 'that is correct', 'yes please', 'confirmed',
     'right', 'exactly', 'perfect', 'great', 'do it',
-    // Shorthand
     'yh', 'ye', 'k', 'kk', 'affirmative', 'aye',
   ],
   CANCEL: [
     'cancel', 'stop', 'exit', 'quit', 'no', 'nope', 'nah',
-    'never mind', 'nevermind', 'forget it', 'i changed my mind',
-    // Natural variants
+    'never mind', 'nevermind', 'forget it', 'i changed my mind', 'restart',
     'i dont want', 'i do not want', 'not interested', 'not now',
     'maybe later', 'not today', 'start over', 'scratch that',
     'remove', 'clear', 'reset it',
   ],
   GREETING: [
     'hi', 'hello', 'hey', 'start', 'begin', 'good morning',
-    'good afternoon', 'good evening', 'howdy',
-    // More greetings
-    'greetings', 'hiya', 'yo', 'sup', 'wassup', 'watsup', 'what up',
+    'good afternoon', 'good evening', 'howdy', 'hiya', 'salaam', 'hola',
+    'greetings', 'yo', 'sup', 'wassup', 'watsup', 'what up',
     'morning', 'afternoon', 'evening', 'good day', 'hi there',
     'hello there', 'hey there', 'helo', 'helo there',
-    // African / Islamic greetings
-    'salam', 'salaam', 'assalam', 'asalamu', 'asalam',
-    'peace', 'bless up',
+    'salam', 'assalam', 'asalamu', 'asalam', 'peace', 'bless up',
   ],
   SHOW_MENU: [
-    'menu', 'options', 'home', 'main menu', 'back', '0', 'restart',
-    'show menu', 'show options', 'go back', 'main',
-    // Additional
+    'menu', 'options', 'home', 'main menu', 'back', '0', 'show menu',
+    'show options', 'go back', 'main', 'return to menu',
     'start over', 'beginning', 'go home', 'main page',
     'show me the menu', 'what do you have', 'what can i get',
     'what is available', "what's available", 'see menu',
     'view menu', 'see options', 'list', 'show list',
-    // Shorthand
-    'menu pls', 'see all',
+    'menu pls', 'see all', 'restart',
   ],
   PAYMENT: [
     'payment', 'pay', 'wave', 'how to pay', 'how do i pay',
-    'total', 'amount', 'wave payment', 'send payment',
-    // Natural variants
-    'how much', 'price', 'how much is it', 'what is the total',
+    'total', 'amount', 'mobile money', 'send payment',
+    'how much', 'how much is it', 'what is the total',
     'payment method', 'how can i pay', 'do you accept',
-    'mobile money', 'transfer', 'bank', 'cash', 'fee',
-    // Shorthand
-    'pay now', 'make payment', 'cost', 'charges',
+    'transfer', 'bank', 'cash', 'fee', 'pay now', 'make payment',
+    'cost', 'charges', 'wave payment',
   ],
   TRACK_ORDER: [
-    'track', 'track order', 'where is my order', 'order status',
-    'my order', 'check order', 'order update',
-    'where is it', 'status', 'has my order', 'when will',
-    'track my order', 'order tracking', 'delivery status',
+    'track', 'tracking', 'where is my order', 'order status',
+    'delivery status', 'my order', 'track order',
+    'check order', 'order update', 'where is it', 'status',
+    'has my order', 'when will', 'track my order', 'order tracking',
     'is my order ready', 'when is my order',
+  ],
+  SUPPORT: [
+    'support', 'agent', 'human', 'speak to someone', 'talk to someone',
+    'contact support', 'complaint', 'problem', 'issue',
   ],
   REPEAT_ORDER: [
     'same as before', 'same again', 'the usual', 'same as last time',
@@ -200,7 +196,22 @@ const BUTTON_ID_MAP = {
   'REPEAT_ORDER': 'REPEAT_ORDER',
 };
 
-// ─── Strict exact match ───────────────────────────────────────────────────────
+// ─── Protected steps — flow LOCKS these completely ────────────────────────────
+// v7 principle: structured input steps (image, number, date, time, address)
+// cannot be interrupted by AI or a mis-fired intent. Only CANCEL/CONFIRM escape.
+
+const PROTECTED_STEPS = new Set([
+  'DATE', 'DATE_CONFIRM', 'TIME', 'TIME_CONFIRM',
+  'QUANTITY', 'SELECT_ITEM', 'SELECT_SERVICE',
+  'CONFIRM', 'INTERRUPT', 'PAYMENT_PROOF', 'UPSELL',
+]);
+
+// ─── Greeting regex (fast path, mirrors v7) ───────────────────────────────────
+
+const GREETING_REGEX =
+  /^(hi|hello|hey|good morning|good evening|good afternoon|salaam|salam|hola|start|begin|greetings|yo|sup|wassup|watsup|hiya|helo)\b/i;
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
 
 function strictMatch(normalized) {
   for (const [intent, phrases] of Object.entries(STRICT_INTENTS)) {
@@ -209,28 +220,30 @@ function strictMatch(normalized) {
   return null;
 }
 
-// ─── Similarity suggestion (Levenshtein) ─────────────────────────────────────
+function isRejection(normalized) {
+  return REJECTION_PHRASES.some(p =>
+    p.length <= 4 ? normalized === p : normalized.includes(p)
+  );
+}
+
+function isPaymentQuery(normalized) {
+  return STRICT_INTENTS.PAYMENT.some(p => normalized.includes(p));
+}
 
 function buildSuggestion(normalized) {
   if (normalized.length < 3) return null;
-
-  let bestIntent = null;
-  let bestPhrase = null;
-  let bestDist   = Infinity;
+  let bestIntent = null, bestPhrase = null, bestDist = Infinity;
 
   for (const [intent, phrases] of Object.entries(STRICT_INTENTS)) {
     if (['CONFIRM', 'CANCEL', 'GREETING', 'SHOW_MENU'].includes(intent)) continue;
     for (const phrase of phrases) {
-      const dist = levenshtein.get(normalized, phrase);
+      const dist    = levenshtein.get(normalized, phrase);
       const maxDist = phrase.length <= 5 ? 1 : phrase.length <= 10 ? 2 : 3;
       if (dist <= maxDist && dist < bestDist) {
-        bestDist   = dist;
-        bestIntent = intent;
-        bestPhrase = phrase;
+        bestDist = dist; bestIntent = intent; bestPhrase = phrase;
       }
     }
   }
-
   if (!bestIntent) return null;
 
   const displayPhrase = {
@@ -240,12 +253,11 @@ function buildSuggestion(normalized) {
     PAYMENT:      'Payment Info',
     TRACK_ORDER:  'Track My Order',
     REPEAT_ORDER: 'Repeat Last Order',
+    SUPPORT:      'Contact Support',
   }[bestIntent] || bestPhrase;
 
   return { intent: bestIntent, phrase: displayPhrase, distance: bestDist };
 }
-
-// ─── Mode enforcement ─────────────────────────────────────────────────────────
 
 function enforceMode(intent, business) {
   const cfg = getModeConfig(business);
@@ -253,20 +265,6 @@ function enforceMode(intent, business) {
   if (intent === 'BOOKING' && !cfg.flows.includes('BOOKING')) return 'RESTRICT_BOOKING';
   return intent;
 }
-
-// ─── Rejection check ─────────────────────────────────────────────────────────
-
-function isRejection(normalized) {
-  return REJECTION_PHRASES.some(p => normalized === p || normalized.includes(p));
-}
-
-// ─── Payment query check ──────────────────────────────────────────────────────
-
-function isPaymentQuery(normalized) {
-  return STRICT_INTENTS.PAYMENT.some(p => normalized.includes(p));
-}
-
-// ─── Bot echo guard ───────────────────────────────────────────────────────────
 
 function looksLikeBotEcho(raw, session) {
   const last = session?.lastBotMessage;
@@ -276,41 +274,9 @@ function looksLikeBotEcho(raw, session) {
   return rn === ln || ln.startsWith(rn.slice(0, 20));
 }
 
-// ─── Options UI ───────────────────────────────────────────────────────────────
-
-function buildOptionsUI(business) {
-  const cfg     = getModeConfig(business);
-  const buttons = cfg.ui.welcomeButtons;
-  const body    = `How can we help you today? Please choose an option below 👇`;
-
-  if (buttons && buttons.length >= 2) {
-    return { type: 'buttons', body, buttons: buttons.slice(0, 3) };
-  }
-
-  const cfg2     = getModeConfig(business);
-  const canOrder = cfg2.flows.includes('ORDER');
-  const canBook  = cfg2.flows.includes('BOOKING');
-  const fallbackLines = [];
-  if (canOrder) fallbackLines.push('• *Order* — place an order');
-  if (canBook)  fallbackLines.push('• *Book* — make a reservation');
-  fallbackLines.push('• *Question* — ask us anything');
-  return { type: 'text', body: `How can we help?\n\n${fallbackLines.join('\n')}` };
-}
-
-// ─── Protected steps ──────────────────────────────────────────────────────────
-
-const PROTECTED_STEPS = new Set([
-  'DATE', 'DATE_CONFIRM', 'TIME', 'TIME_CONFIRM',
-  'QUANTITY', 'SELECT_ITEM', 'SELECT_SERVICE',
-  'CONFIRM', 'INTERRUPT', 'PAYMENT_PROOF', 'UPSELL',
-]);
-
-// ─── Decision logger ──────────────────────────────────────────────────────────
-
 function logDecision({ raw, normalized, intent, flowTriggered, suggestion, aiUsed, action, source }) {
   logger.info('[Brain] Decision', {
-    raw,
-    normalized,
+    raw, normalized,
     intent:        intent  || 'null',
     action,
     flowTriggered: !!flowTriggered,
@@ -321,25 +287,48 @@ function logDecision({ raw, normalized, intent, flowTriggered, suggestion, aiUse
 }
 
 // ─── Main think() ─────────────────────────────────────────────────────────────
+//
+// Returns a decision object. NEVER calls AI directly.
+//
+// Decision shapes:
+//   { action: 'IGNORE' }
+//   { action: 'GREET' }
+//   { action: 'SHOW_MENU' }
+//   { action: 'START_ORDER' }
+//   { action: 'START_BOOKING' }
+//   { action: 'CONFIRM' }
+//   { action: 'CANCEL' }
+//   { action: 'ENQUIRY', intent }
+//   { action: 'TRACK_ORDER', intent }
+//   { action: 'REPEAT_ORDER', intent }
+//   { action: 'AI_PAYMENT_HELP', intent }
+//   { action: 'RESTRICT_ORDER' | 'RESTRICT_BOOKING', reply }
+//   { action: 'CONTINUE_FLOW' }
+//   { action: 'INTERRUPT', intent, ui, reply }
+//   { action: 'REJECT_FLOW' }
+//   { action: 'CLARIFY', ui? }
+//   { action: 'SUGGEST', suggestion, reply }
+//   { action: 'ABOUT', intent }
+//   { action: 'AI_FALLBACK', intent, ui? }
 
 export const think = async ({ message, session, business, phone }) => {
   const raw        = String(message || '').trim();
   const normalized = normalizeInput(raw);
 
-  // ── Dedup guard ────────────────────────────────────────────────────────────
+  // 0. Echo guard — ignore bot-echoed messages
   if (looksLikeBotEcho(raw, session)) {
     logDecision({ raw, normalized, intent: 'IGNORE', action: 'IGNORE', source: 'echo' });
     return { action: 'IGNORE' };
   }
 
-  // ── [v11] Customer name capture ────────────────────────────────────────────
+  // 0b. Name capture (async, non-blocking)
   const extractedName = extractCustomerName(raw);
   if (extractedName && session && !session.customerName) {
     updateSession(session.customerPhone, session.tenantId, { customerName: extractedName }).catch(() => {});
     logger.info('[Brain] Customer name captured', { name: extractedName, phone });
   }
 
-  // ── [v11] Increment message count ─────────────────────────────────────────
+  // 0c. Message count / lastSeen (async, non-blocking)
   if (session) {
     updateSession(session.customerPhone, session.tenantId, {
       messageCount: (session.messageCount || 0) + 1,
@@ -347,156 +336,199 @@ export const think = async ({ message, session, business, phone }) => {
     }).catch(() => {});
   }
 
-  // ── STEP 1: Button ID (highest priority) ───────────────────────────────────
+  // 1. Button ID — highest priority, no AI ever
   const buttonIntentRaw = BUTTON_ID_MAP[raw.toUpperCase()];
   if (buttonIntentRaw) {
     const finalBtn = enforceMode(buttonIntentRaw, business);
     logDecision({ raw, normalized, intent: finalBtn, action: finalBtn, flowTriggered: true, source: 'button' });
     trackUser(phone, raw, finalBtn).catch(() => {});
-    if (session?.currentFlow) return { action: 'CONTINUE_FLOW' };
-    if (finalBtn === 'ORDER')         return { action: 'START_ORDER' };
-    if (finalBtn === 'BOOKING')       return { action: 'START_BOOKING' };
-    if (finalBtn === 'CONFIRM')       return { action: 'CONFIRM' };
-    if (finalBtn === 'CANCEL')        return { action: 'CANCEL' };
-    if (finalBtn === 'SWITCH_YES' || finalBtn === 'SWITCH_NO') return { action: 'CONTINUE_FLOW' };
-    if (finalBtn === 'UPSELL_YES' || finalBtn === 'UPSELL_NO') return { action: 'CONTINUE_FLOW' };
-    if (finalBtn === 'QUESTION')      return { action: 'ENQUIRY', intent: 'QUESTION' };
-    if (finalBtn === 'TRACK_ORDER')   return { action: 'TRACK_ORDER', intent: 'TRACK_ORDER' };
-    if (finalBtn === 'REPEAT_ORDER')  return { action: 'REPEAT_ORDER', intent: 'REPEAT_ORDER' };
+
+    if (['SWITCH_YES', 'SWITCH_NO', 'UPSELL_YES', 'UPSELL_NO'].includes(finalBtn)) return { action: 'CONTINUE_FLOW' };
+    if (session?.currentFlow && !['CANCEL', 'CONFIRM', 'SHOW_MENU'].includes(finalBtn)) return { action: 'CONTINUE_FLOW' };
+
+    if (finalBtn === 'ORDER')        return { action: 'START_ORDER' };
+    if (finalBtn === 'BOOKING')      return { action: 'START_BOOKING' };
+    if (finalBtn === 'CONFIRM')      return { action: 'CONFIRM' };
+    if (finalBtn === 'CANCEL')       return { action: 'CANCEL' };
+    if (finalBtn === 'QUESTION')     return { action: 'ENQUIRY', intent: 'QUESTION' };
+    if (finalBtn === 'TRACK_ORDER')  return { action: 'TRACK_ORDER', intent: 'TRACK_ORDER' };
+    if (finalBtn === 'REPEAT_ORDER') return { action: 'REPEAT_ORDER', intent: 'REPEAT_ORDER' };
     return { action: 'CONTINUE_FLOW' };
   }
 
-  // ── STEP 2: "0" → always show menu ─────────────────────────────────────────
+  // 2. "0" shortcut → always show menu
   if (raw === '0') {
-    logDecision({ raw, normalized, intent: 'SHOW_MENU', action: 'SHOW_MENU', flowTriggered: false, source: 'shortcut' });
+    logDecision({ raw, normalized, intent: 'SHOW_MENU', action: 'SHOW_MENU', source: 'shortcut' });
     return { action: 'SHOW_MENU' };
   }
 
-  // ── STEP 3: Emoji intent detection ────────────────────────────────────────
+  // 3. Greeting — ALWAYS resets to welcome, even inside active flows (v7 rule)
+  if (GREETING_REGEX.test(raw)) {
+    logDecision({ raw, normalized, intent: 'GREETING', action: 'GREET', source: 'greeting-regex' });
+    return { action: 'GREET' };
+  }
+
+  // 4. Emoji intent (only outside flows to avoid polluting flow state)
   const emojiIntent = detectEmojiIntent(raw);
   if (emojiIntent && !session?.currentFlow) {
     const finalEmoji = enforceMode(emojiIntent, business);
     logDecision({ raw, normalized, intent: finalEmoji, action: finalEmoji, flowTriggered: true, source: 'emoji' });
-    if (finalEmoji === 'ORDER')   return { action: 'START_ORDER' };
-    if (finalEmoji === 'BOOKING') return { action: 'START_BOOKING' };
-    if (finalEmoji === 'QUESTION') return { action: 'ENQUIRY', intent: 'QUESTION' };
-    if (finalEmoji === 'PAYMENT') return { action: 'AI_PAYMENT_HELP', intent: 'PAYMENT' };
+    if (finalEmoji === 'ORDER')     return { action: 'START_ORDER' };
+    if (finalEmoji === 'BOOKING')   return { action: 'START_BOOKING' };
+    if (finalEmoji === 'QUESTION')  return { action: 'ENQUIRY', intent: 'QUESTION' };
+    if (finalEmoji === 'PAYMENT')   return { action: 'AI_PAYMENT_HELP', intent: 'PAYMENT' };
     if (finalEmoji === 'SHOW_MENU') return { action: 'SHOW_MENU' };
   }
 
-  // ── STEP 4: Number shortcuts (context-aware per mode) ─────────────────────
+  // 5. Number shortcuts (context-aware per mode, only outside flows)
   if (!session?.currentFlow) {
-    const num = parseInt(raw, 10);
-    const cfg = getModeConfig(business);
+    const num      = parseInt(raw, 10);
+    const cfg      = getModeConfig(business);
     const canOrder = cfg.flows.includes('ORDER');
     const canBook  = cfg.flows.includes('BOOKING');
 
     if (canOrder && canBook) {
-      if (num === 1) { logDecision({ raw, normalized, intent: 'ORDER', action: 'START_ORDER', flowTriggered: true, source: 'number' }); return { action: 'START_ORDER' }; }
-      if (num === 2) { logDecision({ raw, normalized, intent: 'BOOKING', action: 'START_BOOKING', flowTriggered: true, source: 'number' }); return { action: 'START_BOOKING' }; }
-      if (num === 3) { logDecision({ raw, normalized, intent: 'QUESTION', action: 'ENQUIRY', flowTriggered: false, source: 'number' }); return { action: 'ENQUIRY', intent: 'QUESTION' }; }
+      if (num === 1) return { action: 'START_ORDER' };
+      if (num === 2) return { action: 'START_BOOKING' };
+      if (num === 3) return { action: 'ENQUIRY', intent: 'QUESTION' };
     } else if (canOrder) {
-      if (num === 1) { logDecision({ raw, normalized, intent: 'ORDER', action: 'START_ORDER', flowTriggered: true, source: 'number' }); return { action: 'START_ORDER' }; }
-      if (num === 2) { logDecision({ raw, normalized, intent: 'QUESTION', action: 'ENQUIRY', flowTriggered: false, source: 'number' }); return { action: 'ENQUIRY', intent: 'QUESTION' }; }
+      if (num === 1) return { action: 'START_ORDER' };
+      if (num === 2) return { action: 'ENQUIRY', intent: 'QUESTION' };
     } else if (canBook) {
-      if (num === 1) { logDecision({ raw, normalized, intent: 'BOOKING', action: 'START_BOOKING', flowTriggered: true, source: 'number' }); return { action: 'START_BOOKING' }; }
-      if (num === 2) { logDecision({ raw, normalized, intent: 'QUESTION', action: 'ENQUIRY', flowTriggered: false, source: 'number' }); return { action: 'ENQUIRY', intent: 'QUESTION' }; }
+      if (num === 1) return { action: 'START_BOOKING' };
+      if (num === 2) return { action: 'ENQUIRY', intent: 'QUESTION' };
     }
   }
 
-  // ── STEP 5: Rejection check ───────────────────────────────────────────────
+  // 6. Rejection
   if (isRejection(normalized)) {
-    logDecision({ raw, normalized, intent: 'REJECTED', action: 'CLARIFY', flowTriggered: false, source: 'rejection' });
+    logDecision({ raw, normalized, intent: 'REJECTED', action: 'CLARIFY', source: 'rejection' });
     if (session?.currentFlow) return { action: 'REJECT_FLOW' };
     return { action: 'CLARIFY', ui: buildOptionsUI(business) };
   }
 
-  // ── STEP 6: Active flow ───────────────────────────────────────────────────
+  // 7. Active flow — flow owns this message
   if (session?.currentFlow) {
 
+    // Internal flow signals pass straight through
     if (['SWITCH_YES','SWITCH_NO','UPSELL_YES','UPSELL_NO'].includes(normalized.toUpperCase())) {
       return { action: 'CONTINUE_FLOW' };
     }
 
+    // PROTECTED steps — only CANCEL/CONFIRM escape; everything else is owned by the flow
     if (PROTECTED_STEPS.has(session.step)) {
+      // Exception: payment queries in PAYMENT_PROOF step can get AI help
       if (session.step === 'PAYMENT_PROOF' && isPaymentQuery(normalized)) {
+        logDecision({ raw, normalized, intent: 'PAYMENT', action: 'AI_PAYMENT_HELP', aiUsed: true, source: 'payment-in-proof' });
         return { action: 'AI_PAYMENT_HELP', intent: 'PAYMENT' };
       }
       const strictHere = strictMatch(normalized);
-      if (strictHere === 'QUESTION') {
-        return { action: 'ENQUIRY', intent: 'QUESTION' };
-      }
-      if (strictHere === 'TRACK_ORDER') {
-        return { action: 'TRACK_ORDER', intent: 'TRACK_ORDER' };
-      }
+      if (strictHere === 'CANCEL')    return { action: 'CANCEL' };
+      if (strictHere === 'CONFIRM')   return { action: 'CONFIRM' };
+      if (strictHere === 'SHOW_MENU') return { action: 'SHOW_MENU' };
+      // Everything else — flow owns it, no AI
+      logDecision({ raw, normalized, intent: null, action: 'CONTINUE_FLOW', source: 'protected-step' });
       return { action: 'CONTINUE_FLOW' };
     }
 
+    // Non-protected flow steps — limited safe exits
     const strictInFlow = strictMatch(normalized);
 
-    if (strictInFlow === 'CANCEL')     return { action: 'CANCEL' };
-    if (strictInFlow === 'CONFIRM')    return { action: 'CONFIRM' };
-    if (strictInFlow === 'SHOW_MENU')  return { action: 'SHOW_MENU' };
-    if (strictInFlow === 'QUESTION')   return { action: 'ENQUIRY', intent: 'QUESTION' };
-    if (strictInFlow === 'PAYMENT')    return { action: 'AI_PAYMENT_HELP', intent: 'PAYMENT' };
+    if (strictInFlow === 'CANCEL')      return { action: 'CANCEL' };
+    if (strictInFlow === 'CONFIRM')     return { action: 'CONFIRM' };
+    if (strictInFlow === 'SHOW_MENU')   return { action: 'SHOW_MENU' };
+    if (strictInFlow === 'QUESTION')    return { action: 'ENQUIRY', intent: 'QUESTION' };
+    if (strictInFlow === 'PAYMENT')     return { action: 'AI_PAYMENT_HELP', intent: 'PAYMENT' };
     if (strictInFlow === 'TRACK_ORDER') return { action: 'TRACK_ORDER', intent: 'TRACK_ORDER' };
 
-    if (strictInFlow && strictInFlow !== session.currentFlow &&
-        !['CONFIRM','CANCEL','GREETING','SHOW_MENU','PAYMENT','TRACK_ORDER','REPEAT_ORDER'].includes(strictInFlow)) {
+    // Different flow intent → ask user to confirm switch (never auto-switch)
+    if (
+      strictInFlow &&
+      !['CONFIRM','CANCEL','GREETING','SHOW_MENU','PAYMENT','TRACK_ORDER','REPEAT_ORDER'].includes(strictInFlow)
+    ) {
       const enforced = enforceMode(strictInFlow, business);
       if (!['RESTRICT_ORDER','RESTRICT_BOOKING'].includes(enforced)) {
         const uiObj = buildInterruptUI(business, session.currentFlow, enforced);
+        logDecision({ raw, normalized, intent: enforced, action: 'INTERRUPT', source: 'flow-switch' });
         return { action: 'INTERRUPT', intent: enforced, ui: uiObj, reply: uiObj.body };
       }
     }
 
-    if (isPaymentQuery(normalized))  return { action: 'AI_PAYMENT_HELP', intent: 'PAYMENT' };
-    if (isAboutQuestion(raw))        return { action: 'AI_FALLBACK', intent: 'ABOUT' };
-    if (raw.trim().length >= 4)      return { action: 'AI_FALLBACK', intent: 'FALLBACK' };
+    // Payment query anywhere in flow → AI payment help (non-destructive)
+    if (isPaymentQuery(normalized)) {
+      logDecision({ raw, normalized, intent: 'PAYMENT', action: 'AI_PAYMENT_HELP', aiUsed: true, source: 'payment-in-flow' });
+      return { action: 'AI_PAYMENT_HELP', intent: 'PAYMENT' };
+    }
 
+    // About/info question in flow → AI info only, flow resumes after
+    // [v12 Fix 1] Only for genuinely about-business questions (not short/garbled inputs)
+    if (raw.trim().length >= 10 && isAboutQuestion(raw)) {
+      logDecision({ raw, normalized, intent: 'ABOUT', action: 'AI_FALLBACK', aiUsed: true, source: 'about-in-flow' });
+      return { action: 'AI_FALLBACK', intent: 'ABOUT' };
+    }
+
+    // [v12 Fix 1] Unknown free text in flow → AI fallback ONLY when clearly conversational.
+    // Short messages, numbers, word-numbers ("twelve", "four"), and single-word inputs
+    // route to CONTINUE_FLOW so flowService can parse them natively (e.g. as quantities).
+    // Threshold: >= 10 chars AND not a pure digit AND not a single word (<=6 chars).
+    if (
+      raw.trim().length >= 10 &&
+      !/^\d+$/.test(raw.trim()) &&
+      !/^\w{1,6}$/.test(raw.trim())
+    ) {
+      logDecision({ raw, normalized, intent: null, action: 'AI_FALLBACK', aiUsed: true, source: 'unknown-in-flow' });
+      return { action: 'AI_FALLBACK', intent: 'FALLBACK' };
+    }
+
+    // Short / single-word / numeric unknown → flow owns it (quantity, item name, etc.)
     return { action: 'CONTINUE_FLOW' };
   }
 
-  // ── STEP 7: No active flow — strict match ─────────────────────────────────
+  // 8. No active flow — strict exact match
   const strictIntent = strictMatch(normalized);
 
   if (strictIntent) {
     const finalIntent = enforceMode(strictIntent, business);
     trackUser(phone, raw, finalIntent).catch(() => {});
+    logDecision({ raw, normalized, intent: finalIntent, action: finalIntent, source: 'strict' });
 
-    if (finalIntent === 'ORDER')   return { action: 'START_ORDER' };
-    if (finalIntent === 'BOOKING') return { action: 'START_BOOKING' };
+    if (finalIntent === 'ORDER')          return { action: 'START_ORDER' };
+    if (finalIntent === 'BOOKING')        return { action: 'START_BOOKING' };
     if (finalIntent === 'QUESTION') {
       if (session) updateSession(session.customerPhone, session.tenantId, { lastIntent: 'QUESTION' }).catch(() => {});
       return { action: 'ENQUIRY', intent: 'QUESTION' };
     }
     if (finalIntent === 'GREETING' || finalIntent === 'SHOW_MENU') return { action: 'GREET' };
-    if (finalIntent === 'PAYMENT')      return { action: 'AI_PAYMENT_HELP', intent: 'PAYMENT' };
-    if (finalIntent === 'TRACK_ORDER')  return { action: 'TRACK_ORDER', intent: 'TRACK_ORDER' };
-    if (finalIntent === 'REPEAT_ORDER') return { action: 'REPEAT_ORDER', intent: 'REPEAT_ORDER' };
+    if (finalIntent === 'PAYMENT')        return { action: 'AI_PAYMENT_HELP', intent: 'PAYMENT' };
+    if (finalIntent === 'TRACK_ORDER')    return { action: 'TRACK_ORDER', intent: 'TRACK_ORDER' };
+    if (finalIntent === 'REPEAT_ORDER')   return { action: 'REPEAT_ORDER', intent: 'REPEAT_ORDER' };
+    if (finalIntent === 'SUPPORT')        return { action: 'ENQUIRY', intent: 'SUPPORT' };
     if (finalIntent === 'CONFIRM' || finalIntent === 'CANCEL') return { action: 'SHOW_MENU' };
-    if (finalIntent === 'RESTRICT_ORDER')   return { action: 'RESTRICT_ORDER', reply: getModeRestrictionMessage(business, 'ORDER') };
+
+    if (finalIntent === 'RESTRICT_ORDER')   return { action: 'RESTRICT_ORDER',   reply: getModeRestrictionMessage(business, 'ORDER') };
     if (finalIntent === 'RESTRICT_BOOKING') return { action: 'RESTRICT_BOOKING', reply: getModeRestrictionMessage(business, 'BOOKING') };
   }
 
-  // ── STEP 8: Similarity suggestion ────────────────────────────────────────
+  // 9. Similarity suggestion — SUGGEST only, NEVER execute
   const suggestion = buildSuggestion(normalized);
   if (suggestion) {
-    return {
-      action:     'SUGGEST',
-      suggestion,
-      reply:      `Did you mean *${suggestion.phrase}*?`,
-    };
+    logDecision({ raw, normalized, intent: null, action: 'SUGGEST', source: 'similarity', suggestion });
+    return { action: 'SUGGEST', suggestion, reply: `Did you mean *${suggestion.phrase}*?` };
   }
 
-  // ── STEP 9: Groq AI fallback ───────────────────────────────────────────────
+  // 10. About-question → AI answers, then shows options (no flow trigger)
   if (raw.trim().length >= 4 && isAboutQuestion(raw)) {
+    logDecision({ raw, normalized, intent: 'ABOUT', action: 'ABOUT', aiUsed: true, source: 'about-question' });
     return { action: 'ABOUT', intent: 'INQUIRY' };
   }
 
+  // 11. Long unknown → AI fallback (info only + CTA options, no flow trigger)
   if (raw.trim().length >= 4) {
+    logDecision({ raw, normalized, intent: null, action: 'AI_FALLBACK', aiUsed: true, source: 'unknown-long' });
     return { action: 'AI_FALLBACK', intent: null, ui: buildOptionsUI(business) };
   }
 
+  // 12. Short unknown → clarify with options
+  logDecision({ raw, normalized, intent: null, action: 'CLARIFY', source: 'short-unknown' });
   return { action: 'CLARIFY', ui: buildOptionsUI(business) };
 };

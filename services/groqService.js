@@ -139,10 +139,12 @@ Task: Answer the customer's question directly and helpfully.
 - End with ONE next step.`,
 
     FALLBACK: `
-Task: The customer said something unclear.
-- Ask ONE short clarifying question to understand what they need.
-- Do not list all options at length.
-- Max 2 sentences.`,
+Task: The customer said something unclear while ${currentFlow ? `in the middle of ${currentFlow === 'ORDER' ? 'an order' : 'a booking'}` : 'chatting with the bot'}.
+${currentFlow && currentStep ? `- They are currently at step: ${currentStep}. After answering, remind them to continue.` : ''}
+- Answer any genuine question about the business briefly (1 sentence max).
+- Then redirect them back to the next required action in 1 short sentence.
+- NEVER ask open-ended questions. NEVER abandon the flow context.
+- Max 2 sentences total.`,
 
     REPEAT: `
 Task: The customer has sent the same message multiple times.

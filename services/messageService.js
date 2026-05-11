@@ -345,6 +345,15 @@ export async function sendImageMessage(to, mediaIdOrUrl, caption = '', tenant) {
 export async function dispatch(to, ui, tenant) {
   if (!ui) return;
 
+  // [v12] Array of UI objects — send each one sequentially.
+  // Used by QUANTITY step when an AI clarification is followed by a nudge button.
+  if (Array.isArray(ui)) {
+    for (const item of ui) {
+      await dispatch(to, item, tenant);
+    }
+    return;
+  }
+
   // Plain string shortcut
   if (typeof ui === 'string') {
     await sendMessage(to, ui, tenant);

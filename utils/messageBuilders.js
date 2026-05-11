@@ -489,3 +489,25 @@ export const buildWelcomeButtons  = (business) => buildWelcome(business);
 export const greeting              = (business) => buildWelcome(business);
 export const invalidOption         = (menuLength) =>
   `That doesn't match anything.\n\nPlease reply with a valid item *name* or *number*${menuLength ? ` between 1 and ${menuLength}` : ''}.`;
+
+// ─── buildOptionsUI — exported for brainService ───────────────────────────────
+// Returns an interactive button UI showing the business's core options.
+// Used in CLARIFY and AI_FALLBACK decisions so users always get tappable buttons.
+
+export function buildOptionsUI(business) {
+  const cfg      = getModeConfig(business);
+  const buttons  = cfg?.ui?.welcomeButtons;
+  const body     = `How can we help you today? Please choose an option below 👇`;
+
+  if (buttons && buttons.length >= 2) {
+    return { type: 'buttons', body, buttons: buttons.slice(0, 3) };
+  }
+
+  const canOrder = cfg.flows.includes('ORDER');
+  const canBook  = cfg.flows.includes('BOOKING');
+  const fallbackLines = [];
+  if (canOrder) fallbackLines.push('• *Order* — place an order');
+  if (canBook)  fallbackLines.push('• *Book* — make a reservation');
+  fallbackLines.push('• *Question* — ask us anything');
+  return { type: 'text', body: `How can we help?\n\n${fallbackLines.join('\n')}` };
+}

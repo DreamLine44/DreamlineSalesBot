@@ -491,16 +491,35 @@ export const handleWebhook = async (req, res) => {
     }
 
     // ── STEP 7d: awaiting_rejection_action — admin rejected payment, customer must decide ──
-    // The bot has presented 3 options: Resend Proof / Contact Support / Cancel Order.
-    // We intercept the customer's next message here before the brain can misroute it.
-    // Valid responses: "1" or "resend" → guide to resend; "2" or "support" → support;
-    // "3" or "cancel" → cancel order. Anything else → remind them of options.
-    if (session.mode === 'awaiting_rejection_action' && messageText) {
-      const normalized = messageText.trim().toLowerCase().replace(/[^a-z0-9 ]/g, '');
-      let rejectionHandled = true;
+    // [v12 FIX] Button-first UX: button IDs (REJECTION_RESEND / REJECTION_SUPPORT /
+    // REJECTION_CANCEL) are the primary path. Text fallbacks still supported for
+    // customers who type instead of tap.
+    if (session.mode === 'awaiting_rejection_action') {
+      // Build the button UI helper — used for re-prompts and first presentation
+      const rejectionButtonUI = {
+        type: 'buttons',
+        body: `What would you like to do?`,
+        buttons: [
+          { id: 'REJECTION_RESEND',  title: '📸 Resend Proof'    },
+          { id: 'REJECTION_SUPPORT', title: '🤝 Contact Support' },
+          { id: 'REJECTION_CANCEL',  title: '❌ Cancel Order'    },
+        ],
+      };
 
-      if (['1', 'resend', 'resend payment', 'resend proof', 'retry', 'send again'].includes(normalized)) {
-        // Guide customer to resend proof — put them back in PAYMENT_PROOF step
+      if (!messageText) {
+        // Non-text (image at wrong state, etc.) — re-show buttons
+        await dispatch(from, rejectionButtonUI, tenantDoc);
+        continue;
+      }
+
+      const normalized = messageText.trim().toLowerCase().replace(/[^a-z0-9 ]/g, '');
+
+      const isResend  = messageText === 'REJECTION_RESEND'  || ['1', 'resend', 'resend payment', 'resend proof', 'retry', 'send again'].includes(normalized);
+      const isSupport = messageText === 'REJECTION_SUPPORT' || ['2', 'support', 'contact support', 'help', 'agent'].includes(normalized);
+      const isCancel  = messageText === 'REJECTION_CANCEL'  || ['3', 'cancel', 'cancel order'].includes(normalized);
+
+      if (isResend) {
+        // Put customer back into PAYMENT_PROOF step
         await updateSession(from, tenantId, {
           mode:        null,
           currentFlow: 'ORDER',
@@ -510,37 +529,25 @@ export const handleWebhook = async (req, res) => {
           type: 'text',
           body: `No problem — please send a new screenshot of your Wave payment and we'll verify it right away. 📸`,
         }, tenantDoc);
+        updateSession(from, tenantId, { lastBotMessage: '' }).catch(() => {});
 
-      } else if (['2', 'support', 'contact support', 'help', 'agent'].includes(normalized)) {
+      } else if (isSupport) {
         await updateSession(from, tenantId, { mode: null });
         await dispatch(from, {
           type: 'text',
           body: `🤝 *Support*\n\nOur team will assist you with your payment issue.\n\nPlease describe your problem and we'll get back to you as soon as possible.`,
         }, tenantDoc);
+        updateSession(from, tenantId, { lastBotMessage: '' }).catch(() => {});
 
-      } else if (['3', 'cancel', 'cancel order'].includes(normalized)) {
+      } else if (isCancel) {
         await clearSession(from, tenantId);
-        await dispatch(from, {
-          type: 'text',
-          body: `✅ *Order Cancelled*\n\nYour order has been cancelled.\n\nWhenever you're ready, type *Order* to start a new order or *Hi* for the main menu.`,
-        }, tenantDoc);
+        await dispatch(from, buildCancelUI(business), tenantDoc);
 
       } else {
-        // Unrecognised response — remind them of their options, keep the state
-        rejectionHandled = false;
-        await dispatch(from, {
-          type: 'text',
-          body:
-            `Please choose one of the following options:\n\n` +
-            `1️⃣  Reply *1* to resend your payment proof\n` +
-            `2️⃣  Reply *2* to contact support\n` +
-            `3️⃣  Reply *3* to cancel your order`,
-        }, tenantDoc);
+        // Unrecognised — re-show action buttons (never dead-end text)
+        await dispatch(from, rejectionButtonUI, tenantDoc);
       }
 
-      if (rejectionHandled) {
-        updateSession(from, tenantId, { lastBotMessage: '' }).catch(() => {});
-      }
       continue;
     }
 
@@ -642,8 +649,13 @@ export const handleWebhook = async (req, res) => {
           aiReply = await getAIReply(messageText, business, session, intent || 'FALLBACK');
         } catch { /* swallow */ }
         if (aiReply) {
-          // Track but don't break the flow — next message continues where they were
+          // Send the AI answer, then re-prompt the current step so the customer
+          // knows exactly what to do next — flow stays intact.
           await dispatch(from, { type: 'text', body: aiReply }, tenantDoc);
+          // Re-prompt the current step (fire handleFlow with a synthetic "re-show" trigger)
+          const freshSession = (await getSession(from, tenantId)) || session;
+          const stepReprompt = await handleFlow(freshSession, '', tenantDoc, false).catch(() => null);
+          if (stepReprompt) await dispatch(from, stepReprompt, tenantDoc);
           continue;
         }
         // AI failed → fall through to flowService to handle natively
