@@ -27,10 +27,12 @@ import { getAIReply, generateGreeting, answerAboutQuestion }      from '../servi
 import { receiveProof, handleDonePayment }                        from '../services/paymentService.js';
 import { isAdminPhone, handleAdminButtonReply, handleAdminTextCommand } from '../services/adminPaymentHandler.js';
 import { shouldCaptureLead, startLeadCapture, handleLeadCapture } from '../services/leadCaptureService.js';
+import Tenant      from '../models/Tenant.js';
 import UserProfile from '../models/UserProfile.js';
-import Tenant  from '../models/Tenant.js';
 import logger  from '../config/logger.js';
 import { createHmac, timingSafeEqual } from 'crypto';
+// [v13] Persistent order memory for proof uploads across session expiry
+import { findActiveOrderForProof } from '../services/conversationMemoryService.js';
 
 // ─── Signature verification ───────────────────────────────────────────────────
 
@@ -430,40 +432,46 @@ export const handleWebhook = async (req, res) => {
 
     // ── STEP 6: Image handling ────────────────────────────────────────────
     if (imageUrl) {
-      // Accept payment proof in PAYMENT_PROOF step OR when customer is in the
-      // awaiting_rejection_action state and chooses to resend (they may send
-      // the image directly without tapping the Resend button first).
+      // Path A: session is active and explicitly in PAYMENT_PROOF step (normal flow)
       const isPaymentProofStep = session.currentFlow === 'ORDER' && session.step === 'PAYMENT_PROOF';
       const isRejectionResend  = session.mode === 'awaiting_rejection_action';
 
       if (isPaymentProofStep || isRejectionResend) {
-        // [FIX-ORDER-TRACK] Pass the stored orderId so receiveProof can query
-        // by _id directly. This is critical for re-uploads after rejection where
-        // the paymentStatus is 'payment_failed' (not in the old phone+status query).
         const sessionOrderId = session.data?.orderId || session.data?.rejectedOrderId || null;
 
         // If resending from rejection state, put session back into PAYMENT_PROOF
-        // first so the flow is consistent after this image is processed.
         if (isRejectionResend && !isPaymentProofStep) {
+          // [v13 SES-1] Pass _stepHint to extend TTL to 4h for payment
           await updateSession(from, tenantId, {
             mode:        null,
             currentFlow: 'ORDER',
             step:        'PAYMENT_PROOF',
+            _stepHint:   'PAYMENT_PROOF',
           });
         }
 
         const replyText = await receiveProof(from, tenantId, imageUrl, tenantDoc, business, sessionOrderId);
         // [FIX-5] dispatch BEFORE clearSession.
-        // Previously clearSession was called before dispatch — if dispatch threw,
-        // the session was already gone and the customer received no confirmation.
-        // The order IS recorded and admin IS notified regardless; the customer
-        // just silently lost their "Payment proof received" reply.
         await dispatch(from, { type: 'text', body: replyText }, tenantDoc);
-        await clearSession(from, tenantId);
+        // [v13 SES-1] Do NOT clear session here — session expires via TTL.
+        // Clearing it prevents the customer from sending another screenshot
+        // if the first one is rejected. TTL handles cleanup naturally.
         continue;
       }
+
+      // [v13 PAY-F3] Path B: no active session OR session exists but not in PAYMENT_PROOF.
+      // A customer whose session TTL expired sends their screenshot here.
+      // Use conversationMemoryService to find their active order and process proof.
+      const memOrder = await findActiveOrderForProof(from, tenantId);
+      if (memOrder) {
+        const replyText = await receiveProof(from, tenantId, imageUrl, tenantDoc, business);
+        await dispatch(from, { type: 'text', body: replyText }, tenantDoc);
+        continue;
+      }
+
+      // Path C: image sent at wrong time — give a helpful nudge
       const hint = session.currentFlow === 'ORDER'
-        ? 'Please complete your order first, then send your payment screenshot when prompted.'
+        ? 'Please complete your order first, then send your payment screenshot when prompted. 📸'
         : 'I can only understand text messages right now 😊\n\nType *Order*, *Book*, or *Hi* to get started.';
       await dispatch(from, { type: 'text', body: hint }, tenantDoc);
       continue;
@@ -552,10 +560,12 @@ export const handleWebhook = async (req, res) => {
         // Put customer back into PAYMENT_PROOF step.
         // [FIX-ORDER-TRACK] Preserve session.data (which contains rejectedOrderId)
         // so receiveProof can query by _id when the screenshot arrives.
+        // [v13 SES-1] Pass _stepHint so sessionService extends TTL to 4h for payment
         await updateSession(from, tenantId, {
           mode:        null,
           currentFlow: 'ORDER',
           step:        'PAYMENT_PROOF',
+          _stepHint:   'PAYMENT_PROOF',
           // data is NOT overwritten — rejectedOrderId and order details remain intact
         });
         await dispatch(from, {
@@ -783,7 +793,8 @@ export const handleWebhook = async (req, res) => {
       // [v11] Repeat order — show last ordered item if known, guide to order flow
       case 'REPEAT_ORDER': {
         const { getLabel: getLbl2 } = await import('../config/modes.js');
-        // session.data is cleared after every order — read persistent UserProfile instead
+        // [FIX-LAST-ITEM] session.data is cleared after every order — read persistent
+        // UserProfile.favoriteItems so returning customers see their top item.
         let lastItem = null;
         try {
           const profile = await UserProfile.findOne({ phone: from }, 'preferences.favoriteItems').lean();
@@ -791,9 +802,7 @@ export const handleWebhook = async (req, res) => {
           lastItem = sorted[0]?.name || null;
         } catch { /* non-fatal */ }
         const repeatMsg = getLbl2(business, 'repeatOrderMsg', lastItem)
-          || (lastItem
-            ? `Last time you ordered *${lastItem}* — would you like the same? 😊`
-            : `Tap *Order* to place a new order!`);
+          || `Tap *Order* to place a new order!`;
         responseUI = {
           type: 'buttons',
           body: repeatMsg,
@@ -824,6 +833,38 @@ export const handleWebhook = async (req, res) => {
       // Explicit enquiry / help signal with no active flow
       case 'ENQUIRY': {
         responseUI = await handleEnquiry(session, messageText, business, tenantDoc);
+        break;
+      }
+
+      // [v13 Bug-5] Dedicated SUPPORT action — sets humanMode and notifies admin
+      // instead of routing to FAQ bot (the old ENQUIRY handler path).
+      case 'SUPPORT': {
+        await updateSession(from, tenantId, {
+          humanMode:         true,
+          humanModeNotified: false,
+        });
+
+        // Notify admin (fire-and-forget)
+        try {
+          const { notifyAdmin } = await import('../services/notificationService.js');
+          const adminPhone = business?.adminPhone || tenantDoc?.adminPhone;
+          if (adminPhone && tenantDoc) {
+            const customerName = session?.customerName ? ` (${session.customerName})` : '';
+            notifyAdmin(
+              tenantDoc,
+              `🆘 Support request from ${from}${customerName}:\n\n"${messageText || 'No message'}"`,
+              adminPhone
+            ).catch(() => {});
+          }
+        } catch { /* non-critical */ }
+
+        responseUI = {
+          type: 'text',
+          body:
+            `🤝 *Support*\n\n` +
+            `I've flagged your message for our team — someone will be with you shortly.\n\n` +
+            `In the meantime, feel free to describe your issue here and we'll address it as soon as possible. 🙏`,
+        };
         break;
       }
 

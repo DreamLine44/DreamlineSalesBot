@@ -21,8 +21,58 @@
  * ╚══════════════════════════════════════════════════════════════════╝
  */
 
+import { getModeConfig } from '../config/modes.js';
 import { trackRevenue }  from './analyticsService.js';
 import logger            from '../config/logger.js';
+
+// ─── Upsell selection ─────────────────────────────────────────────────────────
+//
+// Picks one random add-on from the mode's configured addOns list.
+// Returns null if no add-ons configured, or session already had upsell shown.
+//
+// RULES:
+//  - Called ONCE per order (upsellSent guards re-show)
+//  - Returns { name, price } or null
+//  - Caller decides when to show it — this service never sends messages
+
+// selectUpsell and applyUpsell are handled inline in flowService.
+// Kept here as internal helpers in case they are needed in future.
+function selectUpsell(business, session) {
+  // Guard: already shown this session
+  if (session?.upsellSent) return null;
+
+  const cfg    = getModeConfig(business);
+  const addOns = cfg?.addOns || [];
+  if (!addOns.length) return null;
+
+  // Pick a random add-on from the mode preset list
+  const addOn = addOns[Math.floor(Math.random() * addOns.length)];
+  return { name: addOn.name, price: addOn.price };
+}
+
+// ─── Apply upsell to order data ───────────────────────────────────────────────
+//
+// When customer accepts the upsell, merge it into the order:
+//   - Append add-on name to item string (e.g. "Jollof Rice + Soft Drink")
+//   - Add price to running total
+//
+// Returns { item, totalPrice } with updated values.
+// Safe: if pendingAddOn is null, returns original values unchanged.
+
+function applyUpsell(item, totalPrice, pendingAddOn) {
+  if (!pendingAddOn) return { item, totalPrice };
+
+  const updatedTotal = (totalPrice || 0) + (pendingAddOn.price || 0);
+  const updatedItem  = `${item} + ${pendingAddOn.name}`;
+
+  logger.info('[RevenueEngine] Upsell accepted', {
+    addOn:    pendingAddOn.name,
+    addedAmt: pendingAddOn.price,
+    newTotal: updatedTotal,
+  });
+
+  return { item: updatedItem, totalPrice: updatedTotal };
+}
 
 // ─── Track order revenue ──────────────────────────────────────────────────────
 //
@@ -55,5 +105,13 @@ export async function recordOrderRevenue({ item, quantity, totalPrice, phoneNumb
   }
 }
 
+// ─── Revenue summary helper ───────────────────────────────────────────────────
+//
+// Returns a human-readable revenue summary string for admin alerts.
+// Example: "D450 (3× Jollof Rice + Soft Drink)"
 
-
+// buildRevenueSummary: exported but never called externally — kept internal.
+function buildRevenueSummary(item, quantity, totalPrice, currency = 'GMD') {
+  if (!totalPrice) return null;
+  return `${currency} ${totalPrice} (${quantity}× ${item})`;
+}

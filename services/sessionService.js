@@ -1,37 +1,65 @@
 /**
- * services/sessionService.js
+ * services/sessionService.js — DreamLine SalesBot v13.0
  *
- * Session store backed by MongoDB with a 30-minute TTL.
+ * v13.0 changes over v11.0:
  *
- * KEY FORMAT: "${customerPhone}_${tenantId}"
- * This composite key scopes sessions per-tenant so two different businesses
- * receiving a message from the same customer number never share a session.
+ * [SES-1] PAYMENT_PROOF step extends session TTL to 4 hours (configurable via
+ *         PAYMENT_SESSION_TTL_HOURS). Wave payments in West Africa often take
+ *         30–90 minutes. The old 30-minute TTL was expiring sessions before
+ *         the customer had a chance to send their screenshot, causing the
+ *         webhookController to route the image as "unknown" and reply with
+ *         "I can only understand text messages."
  *
- * All exported functions accept (customerPhone, tenantId) and build the
- * composite key internally — callers never construct it themselves.
+ * [SES-2] updateSession() accepts a `stepHint` option. flowService passes
+ *         the incoming step name when transitioning to PAYMENT_PROOF so the
+ *         TTL extension triggers at the right moment without requiring the
+ *         caller to know the TTL internals.
+ *
+ * [SES-3] createSession() preserves customerName across session resets when
+ *         the name is passed explicitly. Prevents the bot from forgetting the
+ *         customer's name after a GREET reset.
+ *
+ * All other behaviour (composite key, upsert logic, expiresAt TTL index) is
+ * unchanged from v11.0.
  */
 
 import Session from '../models/Session.js';
 
-const SESSION_TTL_MS = 30 * 60 * 1000; // 30 minutes
+// Standard conversation TTL (30 min default, configurable)
+const SESSION_TTL_MS = (parseInt(process.env.SESSION_TTL_MINUTES, 10) || 30) * 60 * 1000;
+
+// [SES-1] Extended TTL for payment-proof step (4 hours default, configurable)
+const PAYMENT_TTL_MS = (parseInt(process.env.PAYMENT_SESSION_TTL_HOURS, 10) || 4) * 60 * 60 * 1000;
+
+// Steps that warrant the extended payment TTL
+const PAYMENT_STEPS = new Set(['PAYMENT_PROOF', 'PAYMENT_CONFIRM', 'AWAITING_PAYMENT']);
 
 /** Build the composite lookup key stored in Session.phone */
 function sessionKey(customerPhone, tenantId) {
   return `${customerPhone}_${tenantId}`;
 }
 
+/**
+ * Determine the correct TTL for a given step transition.
+ * Returns the TTL in milliseconds.
+ */
+function resolveTTL(step) {
+  if (step && PAYMENT_STEPS.has(step)) return PAYMENT_TTL_MS;
+  return SESSION_TTL_MS;
+}
+
 // ─── CREATE / RESET ───────────────────────────────────────────────────────────
 /**
  * Create or fully reset a session for (customerPhone, tenantId).
- * data may include: { currentFlow, step, data, phoneNumberId }
+ * data may include: { currentFlow, step, data, phoneNumberId, customerName }
+ *
+ * [SES-3] customerName is preserved if passed in data — allows the welcome
+ *         flow to restore the name after a GREET reset without re-asking.
  */
 export const createSession = async (customerPhone, tenantId, data = {}) => {
   const key = sessionKey(customerPhone, tenantId);
-  // [FIX] Include tenantId in the filter so the upsert never matches a stale
-  // document where tenantId is null (left over from old sessions before the
-  // composite key format was introduced). Without this, two different tenants
-  // receiving a message from the same phone number could share a session document,
-  // and the E11000 duplicate key error on key_1 (null) would crash the handler.
+  const ttl = resolveTTL(data.step);
+
   return await Session.findOneAndUpdate(
     { phone: key, tenantId: String(tenantId) },
     {
@@ -39,7 +67,7 @@ export const createSession = async (customerPhone, tenantId, data = {}) => {
         phone:         key,
         customerPhone,
         tenantId:      String(tenantId),
-        phoneNumberId: data.phoneNumberId  || null,  // needed by flowService to look up BusinessConfig
+        phoneNumberId: data.phoneNumberId  || null,
         currentFlow:   data.currentFlow    || null,
         step:          data.step           || null,
         data:          data.data           || {},
@@ -51,22 +79,16 @@ export const createSession = async (customerPhone, tenantId, data = {}) => {
         lastBotMessage: null,
         lastIntent:    null,
         humanMode:     false,
-        expiresAt:     new Date(Date.now() + SESSION_TTL_MS),
-        mode:          null,  // clear any awaiting_question / awaiting_rejection_action state
-        // ── Loop-prevention & upsell state ──────────────────────────────
-        // These must be explicitly reset so returning customers start clean.
-        // Without this reset:
-        //   - loopCount/lastLoopMessage/lastLoopStep persist from old sessions,
-        //     causing false loop-threshold hits for returning users.
-        //   - upsellSent=true persists forever, permanently disabling upsells
-        //     after the first order even across entirely new sessions.
-        //   - stepHistory is polluted with steps from prior flows.
+        expiresAt:     new Date(Date.now() + ttl),
+        mode:          null,
         loopCount:       0,
         lastLoopMessage: null,
         lastLoopStep:    null,
         stepHistory:     [],
         upsellSent:      false,
         pendingAddOn:    null,
+        // [SES-3] Preserve name if provided; don't wipe on re-create
+        ...(data.customerName ? { customerName: data.customerName } : {}),
       },
     },
     { upsert: true, new: true }
@@ -76,23 +98,34 @@ export const createSession = async (customerPhone, tenantId, data = {}) => {
 // ─── GET ──────────────────────────────────────────────────────────────────────
 export const getSession = async (customerPhone, tenantId) => {
   const key = sessionKey(customerPhone, tenantId);
-  // Guard against MongoDB TTL lag — expired sessions stay in collection
-  // for up to 60s after expiry. Filter them out explicitly.
   return await Session.findOne({ phone: key, expiresAt: { $gt: new Date() } });
 };
 
 // ─── UPDATE ───────────────────────────────────────────────────────────────────
-/** Uses $set so only the supplied fields are changed — never wipes the document. */
+/**
+ * Partial update — only the supplied fields are changed.
+ *
+ * [SES-1] When step transitions to a PAYMENT_STEPS value, TTL is extended
+ *         automatically. This is the core of the payment-session-survival fix.
+ *
+ * [SES-2] Callers may pass `_stepHint` in updates to force a specific TTL
+ *         without actually writing a step value. This is useful when the
+ *         step field is set elsewhere but the TTL still needs extending.
+ */
 export const updateSession = async (customerPhone, tenantId, updates = {}) => {
   const key   = sessionKey(customerPhone, tenantId);
   const patch = { ...updates };
 
-  // Extend TTL whenever the flow progresses
-  if (updates.step !== undefined || updates.currentFlow !== undefined) {
-    patch.expiresAt = new Date(Date.now() + SESSION_TTL_MS);
+  // Remove internal hint before writing to DB
+  const stepHint = patch._stepHint;
+  delete patch._stepHint;
+
+  // Extend TTL on any step or flow change
+  if (updates.step !== undefined || updates.currentFlow !== undefined || stepHint) {
+    const effectiveStep = updates.step || stepHint;
+    patch.expiresAt = new Date(Date.now() + resolveTTL(effectiveStep));
   }
 
-  // [FIX] Include tenantId in filter to prevent null-key collisions (E11000)
   return await Session.findOneAndUpdate(
     { phone: key, tenantId: String(tenantId) },
     { $set: patch },

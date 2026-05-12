@@ -122,11 +122,12 @@ const STRICT_INTENTS = {
     'i dont want', 'i do not want', 'not interested', 'not now',
     'maybe later', 'not today', 'start over', 'scratch that',
     'remove', 'clear', 'reset it',
-    // Extended natural-language cancel variants (exact matches only — brainService
-    // normalizes then checks phrases.includes(normalized), so no substring risk here)
+    // Extended natural-language cancel variants
     'cancel it', 'cancel that', 'cancel order', 'cancel booking',
-    'i want to cancel', 'please cancel', 'no thanks', 'no thank you',
-    'abort', 'i want out', 'get me out', 'not for me', 'dont bother',
+    'i want to cancel', 'please cancel', 'end', 'abort',
+    'no thanks', 'no thank you', 'dont bother', 'dont want it',
+    'i want out', 'get me out', 'i want to stop', 'leave me',
+    'not for me', 'go back',
   ],
   GREETING: [
     'hi', 'hello', 'hey', 'start', 'begin', 'good morning',
@@ -161,8 +162,27 @@ const STRICT_INTENTS = {
     'is my order ready', 'when is my order',
   ],
   SUPPORT: [
-    'support', 'agent', 'human', 'speak to someone', 'talk to someone',
-    'contact support', 'complaint', 'problem', 'issue',
+    // Core support triggers
+    'support', 'agent', 'human', 'real person', 'live agent',
+    'speak to someone', 'talk to someone', 'speak to a human',
+    'talk to a human', 'speak to agent', 'connect me to agent',
+    'contact support', 'get help', 'need help', 'i need help',
+    'help me', 'help please',
+    // Complaints and problems
+    'complaint', 'complain', 'problem', 'issue', 'something wrong',
+    'this is wrong', 'wrong order', 'missing item', 'not happy',
+    'unhappy', 'upset', 'frustrated', 'this is bad', 'terrible',
+    'awful', 'unacceptable', 'fix this', 'sort this out',
+    // Payment problems
+    'my payment failed', 'payment rejected', 'payment problem',
+    'payment issue', 'i paid already', 'i already paid',
+    'wave issue', 'didnt receive', 'not received',
+    // Delivery problems
+    'my order is late', 'order not arrived', 'where is my food',
+    'late delivery', 'delivery problem', 'i want a refund', 'refund',
+    // West African / Gambian expressions
+    'abeg help me', 'make them call me', 'i want to complain',
+    'i wan complain', 'call me', 'call me back', 'someone call me',
   ],
   REPEAT_ORDER: [
     'same as before', 'same again', 'the usual', 'same as last time',
@@ -304,6 +324,7 @@ function logDecision({ raw, normalized, intent, flowTriggered, suggestion, aiUse
 //   { action: 'CONFIRM' }
 //   { action: 'CANCEL' }
 //   { action: 'ENQUIRY', intent }
+//   { action: 'SUPPORT', intent }
 //   { action: 'TRACK_ORDER', intent }
 //   { action: 'REPEAT_ORDER', intent }
 //   { action: 'AI_PAYMENT_HELP', intent }
@@ -443,6 +464,7 @@ export const think = async ({ message, session, business, phone }) => {
     if (strictInFlow === 'CONFIRM')     return { action: 'CONFIRM' };
     if (strictInFlow === 'SHOW_MENU')   return { action: 'SHOW_MENU' };
     if (strictInFlow === 'QUESTION')    return { action: 'ENQUIRY', intent: 'QUESTION' };
+    if (strictInFlow === 'SUPPORT')     return { action: 'SUPPORT', intent: 'SUPPORT' };
     if (strictInFlow === 'PAYMENT')     return { action: 'AI_PAYMENT_HELP', intent: 'PAYMENT' };
     if (strictInFlow === 'TRACK_ORDER') return { action: 'TRACK_ORDER', intent: 'TRACK_ORDER' };
 
@@ -507,7 +529,7 @@ export const think = async ({ message, session, business, phone }) => {
     if (finalIntent === 'PAYMENT')        return { action: 'AI_PAYMENT_HELP', intent: 'PAYMENT' };
     if (finalIntent === 'TRACK_ORDER')    return { action: 'TRACK_ORDER', intent: 'TRACK_ORDER' };
     if (finalIntent === 'REPEAT_ORDER')   return { action: 'REPEAT_ORDER', intent: 'REPEAT_ORDER' };
-    if (finalIntent === 'SUPPORT')        return { action: 'ENQUIRY', intent: 'SUPPORT' };
+    if (finalIntent === 'SUPPORT')        return { action: 'SUPPORT', intent: 'SUPPORT' };
     if (finalIntent === 'CONFIRM' || finalIntent === 'CANCEL') return { action: 'SHOW_MENU' };
 
     if (finalIntent === 'RESTRICT_ORDER')   return { action: 'RESTRICT_ORDER',   reply: getModeRestrictionMessage(business, 'ORDER') };

@@ -3,18 +3,17 @@
  *
  * LAYER 2 — FLOW LOGIC ONLY.
  *
- * v13.0 improvements:
- * - Number/word selection: SELECT_ITEM and SELECT_SERVICE now accept word-numbers
- *   ("one", "two", "three"…) in addition to digits, so customers can type either.
- * - Cancel handling: isCancel() and STRICT_INTENTS.CANCEL extended with natural
- *   phrases ("no thanks", "forget it", "cancel that", "i want to cancel", etc.).
- *   buildCancelUI() now returns a warm, professional acknowledgement with the
- *   business name instead of a terse "No problem!" stub.
- * - Partial service match: SELECT_SERVICE now shows a "Did you mean X?" button
- *   prompt on LOW-confidence matches, exactly mirroring SELECT_ITEM behaviour.
- *   handleBooking() gains a suggestion guard at the top (same as handleOrder).
- * - Welcome body: sanitiseWelcomeBody() strips "Type Order to buy or Book" style
- *   instructions when interactive buttons are rendered (already in v12, confirmed).
+ * v13.0 final merge — all features from both branches:
+ * [FLOW-1] Word-number selection: SELECT_ITEM / SELECT_SERVICE accept "one"/"two"/etc.
+ * [FLOW-2] Cancel detection: exact-match phrases with startsWith guard (no substring false-positives).
+ *          buildCancelUI() returns warm, professional acknowledgement with business name.
+ * [FLOW-3] Partial service match: SELECT_SERVICE shows "Did you mean X?" on LOW-confidence matches.
+ * [FLOW-4] buildOrderSummaryText() used for all order summaries — currency-aware, locale-formatted.
+ * [FLOW-5] Rotating upsell copy — 4 natural prompts, randomly selected per session.
+ * [FLOW-6] conversationMemoryService anchor written at PAYMENT_PROOF entry point (PAY-F3 support).
+ * [SES-1]  _stepHint: 'PAYMENT_PROOF' passed to sessionService → 4h TTL for payment sessions.
+ * [LEARN]  Smart recommendation tracking (recommendedThisSession) preserved.
+ * [LEAD]   lastItem read from UserProfile.favoriteItems (persists across session resets).
  *
  *
  * BUG FIXES (from v2.6):
@@ -69,6 +68,7 @@ import {
   buildAdminBookingAlert,
   buildEnquiryUI,
   buildAskQuestionPromptUI,
+  buildOrderSummaryText,
 } from '../utils/messageBuilders.js';
 
 import { findBestMatch } from '../utils/matchEngine.js';
@@ -613,12 +613,9 @@ async function handleOrder(session, raw, clean, business, isInteractive = false,
       const cfg    = getModeConfig(business);
       const addOns = cfg.addOns || [];
 
-      // Build the summary message (no confirm buttons yet — that comes next turn)
-      const summaryText =
-        `🧾 *Order Summary*\n\n` +
-        `🍽️ Item: *${itemName}*\n` +
-        `🔢 Quantity: *${qty}*` +
-        (totalPrice ? `\n💰 Total: *D${totalPrice}*` : '');
+      // [v13] Clean modern order summary via shared builder — currency-aware, locale-formatted
+      const currency    = business?.payment?.currency || 'GMD';
+      const summaryText = buildOrderSummaryText(itemName, qty, totalPrice, currency);
 
       if (addOns.length > 0 && !session.upsellSent) {
         // Pick a random add-on and queue upsell immediately after summary
@@ -631,13 +628,18 @@ async function handleOrder(session, raw, clean, business, isInteractive = false,
         });
         await pushStep(session, 'UPSELL');
 
-        // Return summary + upsell as a SINGLE structured response
-        // webhookController dispatches this via dispatch() which calls sendMessage()
-        // We send two messages: summary (text) then upsell (buttons)
-        // Since we can only return ONE ui object, combine them cleanly:
+        // [v13] Natural upsell language — rotates through friendly prompts
+        const upsellPrompts = [
+          `Most customers pair *${itemName}* with a *${addOn.name}* 😄\nWant to add one for *D${addOn.price}*?`,
+          `Don't forget drinks! Add a *${addOn.name}* for just *D${addOn.price}*? 🥤`,
+          `Quick add: *${addOn.name}* for *D${addOn.price}*. Worth it! 😊`,
+          `Top it off with a *${addOn.name}* — only *D${addOn.price}* extra. Yes? 🙌`,
+        ];
+        const upsellCopy = upsellPrompts[Math.floor(Math.random() * upsellPrompts.length)];
+
         return {
           type: 'buttons',
-          body: summaryText + `\n\n➕ Would you like to add a *${addOn.name}* for *D${addOn.price}*? 🥤`,
+          body: summaryText + `\n\n${upsellCopy}`,
           buttons: [
             { id: 'UPSELL_YES', title: '✅ Yes, add it' },
             { id: 'UPSELL_NO',  title: '❌ No thanks'   },
@@ -1026,7 +1028,11 @@ async function handleFinalize(session, business, tenant) {
         // always re-link the session to the correct order regardless of status.
         data: { item, quantity, totalPrice, orderId: String(savedOrder._id) },
         expectedInputType: 'image',
+        _stepHint: 'PAYMENT_PROOF',   // [v13 SES-1] triggers 4-hour TTL in sessionService
       });
+      // [v13 PAY-F3] Anchor order to customer for proof-recovery fallback (conversationMemoryService)
+      const { anchorOrderToCustomer } = await import('./conversationMemoryService.js');
+      anchorOrderToCustomer(savedOrder._id, session.customerPhone, session.tenantId).catch(() => {});
       return paymentMsg
         ? { type: 'text', body: paymentMsg }
         : buildPaymentInstructionsUI(business, totalPrice, String(customerPhone).slice(-4));

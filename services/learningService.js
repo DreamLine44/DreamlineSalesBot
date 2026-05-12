@@ -126,3 +126,34 @@ export const trackUser = async (
     return null;
   }
 };
+
+// ================= GET RECOMMENDATION =================
+// getRecommendation: data is collected via trackUser() but recommendations
+// are not yet consumed by any flow. Kept internal for future use.
+async function getRecommendation(phone) {
+  try {
+    const user = await UserProfile.findOne({ phone });
+
+    if (!user || !user.preferences?.favoriteItems?.length) {
+      return null;
+    }
+
+    // [FIX-7] Spread before sort — Array.prototype.sort() mutates in place.
+    // Mutating the live Mongoose document array before save() permanently re-sorts
+    // favoriteItems in the DB on every call, corrupting count-based ranking over time.
+    const sorted = [...user.preferences.favoriteItems].sort(
+      (a, b) => b.count - a.count
+    );
+
+    const top = sorted[0];
+
+    user.learning.lastRecommendation = top.name;
+
+    await user.save();
+
+    return top.name;
+  } catch (err) {
+    logger.error("❌ getRecommendation error:", err);
+    return null;
+  }
+};

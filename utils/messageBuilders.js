@@ -453,7 +453,7 @@ export function buildEnquiryUI(business) {
 // ─── CANCEL ───────────────────────────────────────────────────────────────────
 
 export function buildCancelUI(business) {
-  const cfg = getModeConfig(business);
+  const cfg     = getModeConfig(business);
   const bizName = business?.name || 'us';
 
   // Custom cancelMsg label is used as the body text (owner can override).
@@ -546,4 +546,28 @@ export function buildOptionsUI(business) {
   if (canBook)  fallbackLines.push('• *Book* — make a reservation');
   fallbackLines.push('• *Question* — ask us anything');
   return { type: 'text', body: `How can we help?\n\n${fallbackLines.join('\n')}` };
+}
+
+// ─── buildOrderSummaryText — v13.0 ───────────────────────────────────────────
+// Clean, modern order summary text (replaces the old 🧾 Order Summary format).
+//
+// Example output:
+//   ✅ Your Order
+//
+//   • Domoda (Beef) × 12
+//
+//   💰 Total: GMD 2,400
+//
+export function buildOrderSummaryText(itemName, qty, totalPrice, currency = 'GMD') {
+  const formattedTotal = totalPrice
+    ? `${currency} ${Number(totalPrice).toLocaleString()}`
+    : null;
+
+  let text = `✅ *Your Order*\n\n• ${itemName} × ${qty}`;
+
+  if (formattedTotal) {
+    text += `\n\n💰 *Total: ${formattedTotal}*`;
+  }
+
+  return text;
 }
