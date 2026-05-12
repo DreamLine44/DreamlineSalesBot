@@ -1,13 +1,14 @@
 {
   "name": "dreamlinesalesbot",
-  "version": "15.0.0",
-  "description": "Multi-tenant WhatsApp Business SaaS Platform — v15.0.0 (Final merge: v14 + v15 fixes — token encryption, auto-usage-reset, tenant-scoped leads, analytics tenantId, UTC scheduler, fuzzy number parsing, menu ack, process crash guards)",
+  "version": "15.1.0",
+  "description": "Multi-tenant WhatsApp Business SaaS Platform — v15.1.0 combined with v14 legacy flows/NLP engine",
   "main": "app.js",
   "type": "module",
   "scripts": {
     "start": "node app.js",
     "dev": "nodemon app.js",
     "seed": "node seed.js",
+    "test:nlp": "node --input-type=commonjs legacy/tests/nlp.test.js",
     "gen-key": "node --input-type=module -e \"import {randomBytes} from 'crypto'; console.log(randomBytes(32).toString('hex'))\"",
     "fix-orders": "node scripts/fix-order-index.js",
     "fix-phonenumber-index": "node scripts/fix-phonenumberid-index.js",

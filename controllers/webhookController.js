@@ -531,7 +531,8 @@ export const handleWebhook = async (req, res) => {
     if (session.mode === 'awaiting_question' && messageText) {
       const _GREETING_RESET = /^(hi|hello|hey|start|begin|good morning|good afternoon|good evening|menu|home|0|salaam|salam)$/i;
       if (_GREETING_RESET.test(messageText.trim())) {
-        await updateSession(from, tenantId, { mode: null });
+        // [FIX] clearSession already removes the mode field — no need to updateSession first.
+        // Order: clear → create → dispatch (ensures session exists before bot replies).
         await clearSession(from, tenantId);
         await createSession(from, tenantId, { customerPhone: from, phoneNumberId });
         // [FIX] Acknowledge the intent before showing the welcome menu.

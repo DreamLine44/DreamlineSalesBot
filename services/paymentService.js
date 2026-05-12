@@ -133,19 +133,33 @@ export const initiatePayment = async (orderId, business) => {
 // [PAY-F1] Status filter expanded to include 'payment_failed' (retry after rejection)
 // [PAY-F2] paymentProof: null check preserved to prevent double-acceptance
 // [PAY-F3] Falls back to conversationMemoryService if primary query finds nothing
-export const receiveProof = async (customerPhone, tenantId, imageUrl, tenant = null, business = null) => {
+export const receiveProof = async (customerPhone, tenantId, imageUrl, tenant = null, business = null, sessionOrderId = null) => {
   const cutoff = new Date(Date.now() - PROOF_ELIGIBLE_HOURS * 60 * 60 * 1000);
 
-  // ── Primary query: standard proof receipt ────────────────────────────────
+  // ── Primary query: use session-anchored orderId when available ────────────
+  // sessionOrderId is passed from webhookController when the session still has
+  // the orderId stored (active PAYMENT_PROOF step or rejection-resend). Using
+  // _id is the most precise lookup — prevents any cross-customer collisions
+  // when two customers of the same tenant place orders close together.
+  const primaryFilter = sessionOrderId
+    ? {
+        _id:           sessionOrderId,
+        tenantId,
+        customerPhone,
+        paymentStatus: { $in: ['unpaid', 'payment_failed', 'payment_pending_verification'] },
+        paymentProof:  null,
+      }
+    : {
+        tenantId,
+        customerPhone,
+        // [PAY-F1] Include payment_failed so rejected orders can receive a new proof
+        paymentStatus: { $in: ['unpaid', 'payment_failed', 'payment_pending_verification'] },
+        paymentProof:  null,   // [PAY-F2] only if no proof stored yet
+        createdAt:     { $gte: cutoff },
+      };
+
   const order = await Order.findOneAndUpdate(
-    {
-      tenantId,
-      customerPhone,
-      // [PAY-F1] Include payment_failed so rejected orders can receive a new proof
-      paymentStatus: { $in: ['unpaid', 'payment_failed', 'payment_pending_verification'] },
-      paymentProof:  null,   // [PAY-F2] only if no proof stored yet
-      createdAt:     { $gte: cutoff },
-    },
+    primaryFilter,
     {
       $set: {
         paymentProof:    imageUrl,

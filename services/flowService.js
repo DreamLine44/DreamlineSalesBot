@@ -1,7 +1,20 @@
 /**
- * services/flowService.js — Dreamline Sales Bot v13.0
+ * services/flowService.js — Dreamline Sales Bot v16.0
  *
  * LAYER 2 — FLOW LOGIC ONLY.
+ *
+ * v16.0 fix:
+ * [FIX-QUANTITY-WORDS] Full multi-word number parser replaces flat WORD_NUMBERS table.
+ *   Customers can now type ANY number in words or figures and the bot understands it:
+ *   "thousand" → 1000, "twenty five" → 25, "five hundred" → 500,
+ *   "one thousand two hundred" → 1200, "ninty" → 90 (typo), "a dozen" → 12.
+ *   The fix is in wordsToNumber() + updated parseQuantity() + phraseEngine detectNumber()
+ *   + brainService menu shortcuts. All three entry points are covered.
+ *
+ * v15.1 fix:
+ * [FIX-SELECT-ITEM] After AI answers an off-topic message at SELECT_ITEM step,
+ *   the interactive menu is now also returned so the customer always has a clear
+ *   next action. Previously AI answered but left no way for the customer to continue.
  *
  * v13.0 final merge — all features from both branches:
  * [FLOW-1] Word-number selection: SELECT_ITEM / SELECT_SERVICE accept "one"/"two"/etc.
@@ -133,71 +146,122 @@ function _setUpsellCooldown(phone, tenantId) {
 }
 
 // ─── Word-to-number ───────────────────────────────────────────────────────────
+// v16 FIX: Full multi-word number parser.
+// Replaces the flat lookup table with a proper additive parser so that phrases
+// like "twenty five", "one hundred", "thousand", "five hundred thousand" all
+// resolve correctly — not just single word tokens.
 
-const WORD_NUMBERS = {
-  // 1–19
+const _WN_ONES = {
+  zero:0, oh:0, nought:0, nil:0, naught:0,
   one:1, two:2, three:3, four:4, five:5,
   six:6, seven:7, eight:8, nine:9, ten:10,
   eleven:11, twelve:12, thirteen:13, fourteen:14, fifteen:15,
   sixteen:16, seventeen:17, eighteen:18, nineteen:19,
-  // tens
-  twenty:20, thirty:30, forty:40, fifty:50,
-  sixty:60, seventy:70, eighty:80, ninety:90,
-  // common compounds (twenty-one … ninety-nine)
+  // Typos / West African phonetics
+  wan:1, wun:1, onne:1,
+  tow:2, tu:2, too:2,
+  fore:4, 'for':4, foru:4,
+  fife:5, fiv:5, fiev:5,
+  sex:6, siks:6, sik:6,
+  sevn:7, sevan:7, seben:7,
+  eght:8, eigth:8, eit:8,
+  nien:9, nein:9, nin:9,
+  elevan:11, elever:11, elvn:11, leven:11,
+  twelv:12, twelf:12, twleve:12, tweleve:12,
+  thirten:13, thirtteen:13,
+  forteen:14, fourten:14, forten:14,
+  fiften:15, fiveteen:15,
+  sixten:16,
+  seventen:17, seventeeen:17,
+  eighten:18, eightteen:18,
+  ninten:19, nineteene:19,
+  // articles → 1
+  a:1, an:1,
+};
+
+const _WN_TENS = {
+  twenty:20,  tweny:20,  twety:20,  twenti:20,  twentey:20, tweenty:20, twnety:20,
+  thirty:30,  thrity:30, thirthy:30, thiry:30,   thirthy:30, thrty:30,
+  forty:40,   fourty:40, forthy:40, foty:40,     froty:40,
+  fifty:50,   fify:50,   fifthy:50, fiffty:50,   fity:50,
+  sixty:60,   sixy:60,   sixthy:60, sikty:60,
+  seventy:70, sevnty:70, sevanty:70,
+  eighty:80,  eightty:80, eighthy:80, eigthy:80, eightey:80,
+  ninety:90,  ninty:90,  ninity:90, niety:90,    ninnty:90, ninite:90, nineti:90, nienty:90,
+};
+
+const _WN_MULT = {
+  hundred:100, hundreds:100, hunderd:100, hundered:100, hunded:100,
+  thousand:1000, thousands:1000, thousend:1000, thousan:1000,
+  million:1e6, millions:1e6, milion:1e6, millon:1e6,
+  billion:1e9, billions:1e9,
+};
+
+const _WN_SPECIAL = {
+  dozen:12, dozens:12,
+  couple:2, pair:2,
+  score:20,
+};
+
+function _stripOrdinal(w) {
+  return w
+    .replace(/^(\d+)(st|nd|rd|th)$/i, '$1')
+    .replace(/^first$/i,'one').replace(/^second$/i,'two').replace(/^third$/i,'three')
+    .replace(/^fourth$/i,'four').replace(/^fifth$/i,'five').replace(/^sixth$/i,'six')
+    .replace(/^seventh$/i,'seven').replace(/^eighth$/i,'eight').replace(/^ninth$/i,'nine')
+    .replace(/^tenth$/i,'ten').replace(/^eleventh$/i,'eleven').replace(/^twelfth$/i,'twelve')
+    .replace(/^(\w+)teenth$/i,'$1teen')
+    .replace(/^twentieth$/i,'twenty').replace(/^thirtieth$/i,'thirty')
+    .replace(/^fortieth$/i,'forty').replace(/^fiftieth$/i,'fifty')
+    .replace(/^sixtieth$/i,'sixty').replace(/^seventieth$/i,'seventy')
+    .replace(/^eightieth$/i,'eighty').replace(/^ninetieth$/i,'ninety');
+}
+
+/**
+ * wordsToNumber(str) — parse a string of number-words into an integer.
+ * Handles: "twenty five", "one hundred", "five hundred thousand", "thousand", etc.
+ * Returns null if no numeric token found.
+ */
+function wordsToNumber(input) {
+  if (!input) return null;
+  if (/half[\s-]+a[\s-]+dozen/i.test(input)) return 6;
+  const tokens = String(input).trim().toLowerCase()
+    .replace(/-/g, ' ').replace(/\band\b/gi, ' ').replace(/\bof\b/gi, ' ')
+    .split(/[\s,]+/).filter(Boolean).map(_stripOrdinal);
+
+  let total = 0, current = 0, found = false;
+  for (const tok of tokens) {
+    if (/^\d[\d,]*$/.test(tok)) { current += parseInt(tok.replace(/,/g,''), 10); found = true; continue; }
+    if (_WN_ONES[tok] !== undefined)    { current += _WN_ONES[tok]; found = true; }
+    else if (_WN_TENS[tok] !== undefined) { current += _WN_TENS[tok]; found = true; }
+    else if (_WN_SPECIAL[tok] !== undefined) { current = (current||1) * _WN_SPECIAL[tok]; found = true; }
+    else if (_WN_MULT[tok] !== undefined) {
+      const m = _WN_MULT[tok];
+      if (m === 100) { current = (current||1) * 100; }
+      else           { total += (current||1) * m; current = 0; }
+      found = true;
+    }
+  }
+  return found ? total + current : null;
+}
+
+// Keep WORD_NUMBERS as a flat lookup for single-word backward compat
+// (used by SELECT_ITEM / SELECT_SERVICE index resolution below)
+const WORD_NUMBERS = {
+  ...Object.fromEntries(Object.entries(_WN_ONES).filter(([,v]) => v > 0)),
+  ...Object.fromEntries(Object.entries(_WN_TENS)),
+  // compounds: twenty-one … ninety-nine
   ...Object.fromEntries(
     ['twenty','thirty','forty','fifty','sixty','seventy','eighty','ninety'].flatMap((tens, ti) => {
-      const tensVal = (ti + 2) * 10;
+      const tv = (ti+2)*10;
       return ['one','two','three','four','five','six','seven','eight','nine'].flatMap((unit, ui) => {
-        const unitVal = ui + 1;
-        const val     = tensVal + unitVal;
-        return [
-          [`${tens}-${unit}`, val],          // "twenty-one"
-          [`${tens} ${unit}`, val],           // "twenty one"
-          [`${tens}${unit}`,  val],           // "twentyone"
-        ];
+        const v = tv + ui + 1;
+        return [[`${tens}-${unit}`,v],[`${tens} ${unit}`,v],[`${tens}${unit}`,v]];
       });
     })
   ),
-  // 100 as a special case
   hundred:100, 'one hundred':100,
-
-  // ── Common misspellings & alternate spellings ─────────────────────────────
-  // These are real inputs from WhatsApp customers — especially mobile autocorrect
-  // and West African English phonetic spelling. Without these, the bot asks again
-  // instead of resolving an obvious quantity.
-  //
-  // teens / low numbers
-  'wan':1, 'wun':1, 'onne':1,                       // "one"
-  'tow':2, 'tow':2, 'tu':2, 'too':2,                // "two"
-  'fore':4, 'for':4,                                  // "four"
-  'fife':5, 'fiv':5,                                  // "five"
-  'sex':6, 'siks':6,                                  // "six"
-  'sevn':7, 'sevan':7, 'seben':7,                    // "seven"
-  'eght':8, 'eigth':8, 'eit':8,                      // "eight"
-  'nien':9, 'nein':9,                                 // "nine"
-  'ten':10,                                            // already canonical, kept for clarity
-  'elevan':11, 'elever':11, 'elvn':11,               // "eleven"
-  'twelv':12, 'twelf':12, 'twleve':12,               // "twelve"
-  'thirten':13, 'thirten':13,                         // "thirteen"
-  'forteen':14, 'fourten':14, 'forten':14,           // "fourteen"
-  'fiften':15, 'fiveteen':15,                         // "fifteen"
-  'sixten':16, 'sixteen':16,                          // "sixteen" (canonical + alt)
-  'seventen':17, 'seventeeen':17,                    // "seventeen"
-  'eighten':18, 'eightteen':18,                      // "eighteen"
-  'ninten':19, 'nineteen':19,                         // "nineteen"
-  // tens
-  'twentey':20, 'tweny':20, 'twenti':20,             // "twenty"
-  'thirthy':30, 'thiry':30, 'thirthy':30,            // "thirty"
-  'fourty':40, 'foty':40,                             // "forty" (very common misspelling)
-  'fity':50, 'fifthy':50, 'fiffty':50,               // "fifty"
-  'sixthy':60, 'sixy':60,                             // "sixty"
-  'seventy':70,                                        // canonical, already above
-  'sevnty':70, 'sevanty':70,                         // "seventy"
-  'eighty':80,                                         // canonical, already above
-  'eightey':80, 'eighthy':80, 'eigthy':80,           // "eighty"
-  // ninety — the bug that triggered this fix
-  'ninty':90, 'ninety':90, 'niety':90, 'ninty':90,
-  'ninety':90, 'ninnty':90, 'ninity':90, 'ninite':90,
+  thousand:1000, dozen:12, couple:2,
 };
 
 // Negation patterns that indicate the client does NOT want a quantity
@@ -215,58 +279,36 @@ const parseQuantity = (raw) => {
   const direct = parseInt(trimmed, 10);
   if (!isNaN(direct) && String(direct) === trimmed.replace(/\s/g, '')) return direct;
 
-  // 2. Single word-number — "four", "two"
-  const wordNum = WORD_NUMBERS[trimmed.toLowerCase()];
-  if (wordNum !== undefined) return wordNum;
-
-  // 3. Natural-language phrases — "I want 4", "give me 3", "just 2 please", "x2"
-  // Extract the first digit sequence from anywhere in the string.
-  // Match digit sequence anywhere — handles "x2", "×3", "qty:4", "I want 4"
-  const phraseMatch = trimmed.match(/(?:^|[^\d])(\d+)(?:[^\d]|$)/);
+  // 2. Digit embedded in text — "I want 4", "give me 3", "x2", "qty:4"
+  const phraseMatch = trimmed.match(/(?:^|[^\d])(\d[\d,]*)(?:[^\d]|$)/);
   if (phraseMatch) {
-    const n = parseInt(phraseMatch[1], 10);
+    const n = parseInt(phraseMatch[1].replace(/,/g,''), 10);
     if (!isNaN(n)) return n;
   }
 
-  // 4. Word-number embedded in phrase — "I want four", "just twenty one"
-  // Sort entries by key length descending so compound phrases ("twenty-one") are
-  // tested before their constituent parts ("twenty", "one"), preventing partial matches.
-  const lower = trimmed.toLowerCase();
-  const sortedEntries = Object.entries(WORD_NUMBERS).sort((a, b) => b[0].length - a[0].length);
-  for (const [word, num] of sortedEntries) {
-    // Escape hyphens in the key so the regex stays valid for "twenty-one" etc.
-    const escaped = word.replace(/-/g, '[\\s\\-]');
-    // Use word-boundary anchors only around pure-word chars; space/hyphen variants
-    // are handled by the escaped pattern above.
-    if (new RegExp(`(?:^|\\s)${escaped}(?:\\s|$|[^a-z])`, 'i').test(lower)) return num;
-  }
+  // 3. Full multi-word number parse — "twenty five", "one hundred", "thousand",
+  //    "five hundred thousand", "a dozen", "half a dozen", etc.
+  //    This is the primary fix for the "thousand" / "ninety" / "twenty five" bug.
+  const multiWord = wordsToNumber(trimmed);
+  if (multiWord !== null) return multiWord;
 
-  // 5. Fuzzy match for single-word misspellings of word-numbers (e.g. "ninty" → 90).
-  // Only attempt when the input is a single word (no spaces) of reasonable length.
-  // We compare against only the simple canonical word-numbers (no compounds) to avoid
-  // false positives. Levenshtein distance ≤ 2 is used so "ninty"→"ninety" (dist=1)
-  // and "fourty"→"forty" (dist=1) both resolve, but "three"→"tree" (dist=1) is safe
-  // because we only check words >= 4 chars (short words risk too many false positives).
+  // 4. Fuzzy match for single-word misspellings (e.g. "ninty" → 90, "fourty" → 40).
+  //    Only when input is a single word of reasonable length and wordsToNumber
+  //    returned null (meaning the word wasn't in any lookup table).
+  const lower = trimmed.toLowerCase();
   if (/^\w+$/.test(lower) && lower.length >= 4) {
     const SIMPLE_NUMS = [
       'one','two','three','four','five','six','seven','eight','nine','ten',
       'eleven','twelve','thirteen','fourteen','fifteen','sixteen','seventeen','eighteen','nineteen',
-      'twenty','thirty','forty','fifty','sixty','seventy','eighty','ninety','hundred',
+      'twenty','thirty','forty','fifty','sixty','seventy','eighty','ninety','hundred','thousand',
     ];
     let bestWord = null, bestDist = Infinity;
     for (const canon of SIMPLE_NUMS) {
       const dist = levenshtein.get(lower, canon);
       if (dist < bestDist) { bestDist = dist; bestWord = canon; }
     }
-    // Accept if within edit distance 2, and the input is long enough that a distance-2
-    // change isn't likely to be a totally different word.
-    if (bestDist <= 2 && lower.length >= 5 && bestWord) {
-      return WORD_NUMBERS[bestWord];
-    }
-    // For very close matches (dist=1) on shorter words (4 chars), still accept.
-    if (bestDist === 1 && lower.length >= 4 && bestWord) {
-      return WORD_NUMBERS[bestWord];
-    }
+    if (bestDist <= 2 && lower.length >= 5 && bestWord) return wordsToNumber(bestWord);
+    if (bestDist === 1 && lower.length >= 4 && bestWord) return wordsToNumber(bestWord);
   }
 
   return null;
@@ -608,20 +650,19 @@ async function handleOrder(session, raw, clean, business, isInteractive = false,
 
       // [FIX] Don't re-send the menu for clearly non-menu input (random text, questions).
       // Re-sending the menu on every unrecognised message causes a frustrating loop.
-      // Instead: use AI to respond helpfully, keeping the flow intact so they can
-      // still select from the menu after getting a real answer.
+      // Instead: use AI to respond helpfully, then re-show the menu so they can
+      // still select from it after getting a real answer.
       if (!item || confidenceLevel === 'NONE') {
         // If input looks conversational (4+ chars, not a number), ask AI first
         if (raw.trim().length >= 4 && !/^\d+$/.test(raw.trim())) {
           const aiReply = await getAIReply(raw, business, session, 'FALLBACK').catch(() => null);
-          if (aiReply) return { type: 'text', body: aiReply };
+          if (aiReply) {
+            // [FIX] Return AI answer + menu so user always has a clear next action
+            return [{ type: 'text', body: aiReply }, buildMenuUI(business)];
+          }
         }
-        // Short/garbled or AI failed → show menu with a gentle prompt
-        const menuNames = menu.slice(0, 5).map((m, i) => `${i + 1}. ${getName(m)}`).join('\n');
-        return {
-          type: 'text',
-          body: `I didn't quite catch that 😊\n\nHere are our options:\n${menuNames}\n\nReply with a *number* or item name to choose.`,
-        };
+        // Short/garbled or AI failed → show menu directly
+        return buildMenuUI(business);
       }
 
       const name = getName(item);

@@ -86,7 +86,8 @@ const STRICT_INTENTS = {
     'i wan order', 'i wan buy', 'i wan food', 'abeg let me order',
     'pls let me order', 'i dey hungry', 'bring food', 'order pls',
     'i want make order', 'lemme order', 'order make',
-    'food', 'get', 'purchase',
+    // NOTE: 'food', 'get', 'purchase' removed — too broad and cause false positives
+    // on natural questions like "do you have food?" → now routes to ENQUIRY correctly
   ],
   BOOKING: [
     'book', 'book service', 'book now', 'reserve', 'reservation',
@@ -408,21 +409,25 @@ export const think = async ({ message, session, business, phone }) => {
 
   // 5. Number shortcuts (context-aware per mode, only outside flows)
   if (!session?.currentFlow) {
-    const num      = parseInt(raw, 10);
+    // Accept both digits ("1") and word-numbers ("one", "two", "three")
+    const _MENU_WORD_NUMS = { one:1,wan:1,wun:1, two:2,tow:2,tu:2, three:3,tree:3, four:4,fore:4, five:5,fiv:5 };
+    const num = parseInt(raw, 10);
+    const numFromWord = _MENU_WORD_NUMS[raw.trim().toLowerCase()];
+    const resolvedNum = !isNaN(num) ? num : (numFromWord !== undefined ? numFromWord : NaN);
     const cfg      = getModeConfig(business);
     const canOrder = cfg.flows.includes('ORDER');
     const canBook  = cfg.flows.includes('BOOKING');
 
     if (canOrder && canBook) {
-      if (num === 1) return { action: 'START_ORDER' };
-      if (num === 2) return { action: 'START_BOOKING' };
-      if (num === 3) return { action: 'ENQUIRY', intent: 'QUESTION' };
+      if (resolvedNum === 1) return { action: 'START_ORDER' };
+      if (resolvedNum === 2) return { action: 'START_BOOKING' };
+      if (resolvedNum === 3) return { action: 'ENQUIRY', intent: 'QUESTION' };
     } else if (canOrder) {
-      if (num === 1) return { action: 'START_ORDER' };
-      if (num === 2) return { action: 'ENQUIRY', intent: 'QUESTION' };
+      if (resolvedNum === 1) return { action: 'START_ORDER' };
+      if (resolvedNum === 2) return { action: 'ENQUIRY', intent: 'QUESTION' };
     } else if (canBook) {
-      if (num === 1) return { action: 'START_BOOKING' };
-      if (num === 2) return { action: 'ENQUIRY', intent: 'QUESTION' };
+      if (resolvedNum === 1) return { action: 'START_BOOKING' };
+      if (resolvedNum === 2) return { action: 'ENQUIRY', intent: 'QUESTION' };
     }
   }
 

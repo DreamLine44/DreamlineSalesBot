@@ -52,6 +52,14 @@ const buildSystemPrompt = (business, session, intent = 'FALLBACK') => {
     canBook  ? 'booking services' : null,
   ].filter(Boolean).join(' and ');
 
+  // [FIX] Build capability-aware CTA for the strict rule — don't hardcode "order"
+  // for booking-only businesses or vice versa.
+  const ctaKeywords = [
+    canOrder ? '*order*' : null,
+    canBook  ? '*book*' : null,
+    '*question*',
+  ].filter(Boolean).join(', ');
+
   const STRICT_GROQ_RULE = `
 CRITICAL CONSTRAINTS (non-negotiable):
 - You are a safe information assistant ONLY.
@@ -59,7 +67,7 @@ CRITICAL CONSTRAINTS (non-negotiable):
 - NEVER trigger, confirm, or guess commands.
 - ONLY answer factual questions about ${name}: menu, prices, hours, location, payment.
 - Maximum 3 short sentences per response.
-- Always end with: "Type *order*, *book*, or *question* to continue."
+- Always end with: "Type ${ctaKeywords} to continue."
 - If the question is not about ${name}, respond: "I can only assist with ${name} questions."
 - NEVER reveal you are an AI, Groq, or Llama. You are the ${name} assistant.
 - Reply in the same language the customer is using.
