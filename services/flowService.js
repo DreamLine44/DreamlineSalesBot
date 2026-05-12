@@ -115,6 +115,22 @@ const isBtnReject  = (raw) => raw === 'CANCEL'  || isReject(normalize(raw));
 const isSwitchYes  = (raw) => raw === 'SWITCH_YES' || isConfirm(normalize(raw));
 const isSwitchNo   = (raw) => raw === 'SWITCH_NO'  || isReject(normalize(raw));
 
+// ─── Upsell cooldown (per-phone, 30-min window) ───────────────────────────────
+// Prevents the upsell from firing again if the customer just declined it within
+// the last 30 minutes, even if the session was cleared between orders.
+const _upsellCooldown = new Map(); // key: tenantId:phone → expiry timestamp
+const UPSELL_COOLDOWN_MS = 30 * 60 * 1000; // 30 minutes
+function _hasUpsellCooldown(phone, tenantId) {
+  const key = tenantId + ':' + phone;
+  const expiry = _upsellCooldown.get(key);
+  if (!expiry) return false;
+  if (Date.now() > expiry) { _upsellCooldown.delete(key); return false; }
+  return true;
+}
+function _setUpsellCooldown(phone, tenantId) {
+  _upsellCooldown.set(tenantId + ':' + phone, Date.now() + UPSELL_COOLDOWN_MS);
+}
+
 // ─── Word-to-number ───────────────────────────────────────────────────────────
 
 const WORD_NUMBERS = {
@@ -183,7 +199,7 @@ const parseQuantity = (raw) => {
     const escaped = word.replace(/-/g, '[\\s\\-]');
     // Use word-boundary anchors only around pure-word chars; space/hyphen variants
     // are handled by the escaped pattern above.
-    if (new RegExp(`(?:^|\\s)${escaped}(?:\\s|$)`, 'i').test(lower)) return num;
+    if (new RegExp(`(?:^|\\s)${escaped}(?:\\s|$|[^a-z])`, 'i').test(lower)) return num;
   }
 
   return null;
@@ -327,7 +343,10 @@ export const handleFlow = async (session, message, tenant = null, isInteractive 
     const { item, quantity, totalPrice } = session.data || {};
     const pendingAddOn = session.pendingAddOn;
     const addOnAccepted = raw === 'UPSELL_YES' || isBtnConfirm(raw);
-    const addOnDeclined = raw === 'UPSELL_NO'  || isBtnReject(raw);
+    // Treat as declined: explicit NO, reject/cancel phrases, OR any interactive
+    // list-reply that is not UPSELL_YES (user picked a menu item mid-upsell).
+    const addOnDeclined = raw === 'UPSELL_NO' || isBtnReject(raw) || isBtnCancel(raw)
+      || (isInteractive && raw !== 'UPSELL_YES');
 
     // Quantity never changes on upsell — add-ons don't affect item count
     const updatedQty   = quantity;
@@ -342,8 +361,9 @@ export const handleFlow = async (session, message, tenant = null, isInteractive 
 
     if (addOnAccepted && pendingAddOn) {
       logger.info('[flowService] Upsell accepted', { addOn: pendingAddOn.name, customerPhone: session.customerPhone });
-    } else if (addOnDeclined || isBtnCancel(raw)) {
-      // Declined — proceed with original item/total
+    } else if (addOnDeclined) {
+      // Declined — set cooldown so upsell won't fire again within 30 min
+      _setUpsellCooldown(session.customerPhone, session.tenantId);
     } else {
       // Unclear input — re-show upsell prompt
       return pendingAddOn
@@ -481,7 +501,7 @@ async function handleOrder(session, raw, clean, business, isInteractive = false,
       // Smart recommendation (non-blocking — never delays order flow)
       const recoA = await getSmartRecommendation(business, selected, session).catch(() => null);
       if (recoA) await updateSession(session.customerPhone, session.tenantId, { data: { ...session.data, recommendedThisSession: true } });
-      const qtyA  = `Great choice 👍\n\nHow many *${selected}* would you like?\n\n(Enter a number, e.g. *1*, *2*)`;
+      const qtyA  = `Great choice 👍\n\nHow many *${selected}* would you like?\n\n(Enter a number or word, e.g. *1*, *2*, *four*)`;
       return recoA ? { type: 'text', body: `${recoA}\n\n${qtyA}` } : qtyA;
     }
     if (isBtnReject(raw)) {
@@ -511,7 +531,7 @@ async function handleOrder(session, raw, clean, business, isInteractive = false,
         // Smart recommendation (non-blocking)
         const recoB = await getSmartRecommendation(business, item, session).catch(() => null);
         if (recoB) await updateSession(session.customerPhone, session.tenantId, { data: { ...session.data, recommendedThisSession: true } });
-        const qtyB  = `Great choice 👍\n\nHow many *${item}* would you like?\n\n(Enter a number, e.g. *1*, *2*)`;
+        const qtyB  = `Great choice 👍\n\nHow many *${item}* would you like?\n\n(Enter a number or word, e.g. *1*, *2*, *four*)`;
         return recoB ? { type: 'text', body: `${recoB}\n\n${qtyB}` } : qtyB;
       }
 
@@ -549,7 +569,7 @@ async function handleOrder(session, raw, clean, business, isInteractive = false,
         // Smart recommendation (non-blocking)
         const recoC = await getSmartRecommendation(business, name, session).catch(() => null);
         if (recoC) await updateSession(session.customerPhone, session.tenantId, { data: { ...session.data, recommendedThisSession: true } });
-        const qtyC  = `Great choice 👍\n\nHow many *${name}* would you like?\n\n(Enter a number, e.g. *1*, *2*)`;
+        const qtyC  = `Great choice 👍\n\nHow many *${name}* would you like?\n\n(Enter a number or word, e.g. *1*, *2*, *four*)`;
         return recoC ? { type: 'text', body: `${recoC}\n\n${qtyC}` } : qtyC;
       }
 
@@ -571,7 +591,7 @@ async function handleOrder(session, raw, clean, business, isInteractive = false,
       if (isInteractive) {
         const itemName = session.data?.item;
         const promptBody = itemName
-          ? `How many *${itemName}* would you like? 🛒\n\nPlease *type* a number (e.g. *1*, *2*, *3*).`
+          ? `How many *${itemName}* would you like? 🛒\n\nPlease type a *number or word* (e.g. *1*, *2*, *three*).`
           : 'Please *type* a number for the quantity (e.g. *1*, *2*, *3*).';
         return {
           type: 'buttons',
@@ -585,8 +605,8 @@ async function handleOrder(session, raw, clean, business, isInteractive = false,
       if (!qty || qty < 1) {
         const itemName = session.data?.item;
         const nudgeBody = itemName
-          ? `How many *${itemName}* would you like? 🛒\n\nPlease type a number (e.g. *1*, *2*, *3*).`
-          : 'Please enter a *number* for the quantity (e.g. *1*, *2*, *3*).';
+          ? `How many *${itemName}* would you like? 🛒\n\nPlease type a *number or word* (e.g. *1*, *2*, *three*).`
+          : 'Please enter a *number or word* for the quantity (e.g. *1*, *2*, *three*).';
 
         // [v12 FIX] Only call AI for clearly conversational, off-topic messages
         // (not short garble, not negation-filtered inputs).
@@ -621,8 +641,8 @@ async function handleOrder(session, raw, clean, business, isInteractive = false,
         return {
           type: 'buttons',
           body: itemNameForBounds
-            ? `Maximum quantity is 100 😊\n\nHow many *${itemNameForBounds}* would you like?\n\n(Enter a number, e.g. *1*, *2*, *10*)`
-            : `Maximum quantity is 100 😊\n\nPlease enter a number between *1* and *100*.`,
+            ? `Maximum quantity is 100 😊\n\nHow many *${itemNameForBounds}* would you like?\n\n(Enter a number or word, e.g. *1*, *2*, *ten*)`
+            : `Maximum quantity is 100 😊\n\nPlease enter a number or word between *1* and *100*.`,
           buttons: [{ id: 'CANCEL', title: '❌ Cancel Order' }],
         };
       }
@@ -646,7 +666,7 @@ async function handleOrder(session, raw, clean, business, isInteractive = false,
       const currency    = business?.payment?.currency || 'GMD';
       const summaryText = buildOrderSummaryText(itemName, qty, totalPrice, currency);
 
-      if (addOns.length > 0 && !session.upsellSent) {
+      if (addOns.length > 0 && !session.upsellSent && !_hasUpsellCooldown(session.customerPhone, session.tenantId)) {
         // Pick a random add-on and queue upsell immediately after summary
         const addOn = addOns[Math.floor(Math.random() * addOns.length)];
         await updateSession(session.customerPhone, session.tenantId, {
