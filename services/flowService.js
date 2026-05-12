@@ -118,8 +118,31 @@ const isSwitchNo   = (raw) => raw === 'SWITCH_NO'  || isReject(normalize(raw));
 // ─── Word-to-number ───────────────────────────────────────────────────────────
 
 const WORD_NUMBERS = {
+  // 1–19
   one:1, two:2, three:3, four:4, five:5,
   six:6, seven:7, eight:8, nine:9, ten:10,
+  eleven:11, twelve:12, thirteen:13, fourteen:14, fifteen:15,
+  sixteen:16, seventeen:17, eighteen:18, nineteen:19,
+  // tens
+  twenty:20, thirty:30, forty:40, fifty:50,
+  sixty:60, seventy:70, eighty:80, ninety:90,
+  // common compounds (twenty-one … ninety-nine)
+  ...Object.fromEntries(
+    ['twenty','thirty','forty','fifty','sixty','seventy','eighty','ninety'].flatMap((tens, ti) => {
+      const tensVal = (ti + 2) * 10;
+      return ['one','two','three','four','five','six','seven','eight','nine'].flatMap((unit, ui) => {
+        const unitVal = ui + 1;
+        const val     = tensVal + unitVal;
+        return [
+          [`${tens}-${unit}`, val],          // "twenty-one"
+          [`${tens} ${unit}`, val],           // "twenty one"
+          [`${tens}${unit}`,  val],           // "twentyone"
+        ];
+      });
+    })
+  ),
+  // 100 as a special case
+  hundred:100, 'one hundred':100,
 };
 
 // Negation patterns that indicate the client does NOT want a quantity
@@ -150,11 +173,17 @@ const parseQuantity = (raw) => {
     if (!isNaN(n)) return n;
   }
 
-  // 4. Word-number embedded in phrase — "I want four", "just two"
+  // 4. Word-number embedded in phrase — "I want four", "just twenty one"
+  // Sort entries by key length descending so compound phrases ("twenty-one") are
+  // tested before their constituent parts ("twenty", "one"), preventing partial matches.
   const lower = trimmed.toLowerCase();
-  for (const [word, num] of Object.entries(WORD_NUMBERS)) {
-    // Match whole word, not substring (e.g. "one" in "money" should not match)
-    if (new RegExp(`\\b${word}\\b`).test(lower)) return num;
+  const sortedEntries = Object.entries(WORD_NUMBERS).sort((a, b) => b[0].length - a[0].length);
+  for (const [word, num] of sortedEntries) {
+    // Escape hyphens in the key so the regex stays valid for "twenty-one" etc.
+    const escaped = word.replace(/-/g, '[\\s\\-]');
+    // Use word-boundary anchors only around pure-word chars; space/hyphen variants
+    // are handled by the escaped pattern above.
+    if (new RegExp(`(?:^|\\s)${escaped}(?:\\s|$)`, 'i').test(lower)) return num;
   }
 
   return null;

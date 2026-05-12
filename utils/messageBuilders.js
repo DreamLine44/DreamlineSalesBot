@@ -71,7 +71,7 @@ export function buildWelcomeUI(business) {
  * Preserves the greeting and any brand/identity copy that precedes the
  * instruction fragment.
  */
-function sanitiseWelcomeBody(text) {
+export function sanitiseWelcomeBody(text) {
   if (!text) return text;
   // Pattern: sentences containing "Type <Word>" or "tap <Word>" instructions
   // that map to bot keywords. Split on sentence boundaries and drop matching ones.

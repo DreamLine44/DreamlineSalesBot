@@ -21,7 +21,7 @@ import { dispatch }                                                   from '../s
 import { getBusiness }                                            from '../services/businessService.js';
 import { think }                                                  from '../services/brainService.js';
 import { handleFlow, startOrderFlow, startBookingFlow, handleEnquiry } from '../services/flowService.js';
-import { buildWelcomeUI, buildCancelUI, buildSmartFallbackUI } from '../utils/messageBuilders.js';
+import { buildWelcomeUI, buildCancelUI, buildSmartFallbackUI, sanitiseWelcomeBody } from '../utils/messageBuilders.js';
 import { trackFailedInteraction }                                 from '../services/analyticsService.js';
 import { getAIReply, generateGreeting, answerAboutQuestion }      from '../services/groqService.js';
 import { receiveProof, handleDonePayment }                        from '../services/paymentService.js';
@@ -768,6 +768,10 @@ export const handleWebhook = async (req, res) => {
         await createSession(from, tenantId, { customerPhone: from, phoneNumberId });
         let greetMsg = null;
         try { greetMsg = await generateGreeting(business, session); } catch { /* use static */ }
+        // Strip any "Type Order / Type Book" keyword instructions from the greeting —
+        // the interactive buttons already communicate those actions, so repeating
+        // them as plain text is redundant and looks unprofessional.
+        if (greetMsg) greetMsg = sanitiseWelcomeBody(greetMsg);
         const welcomeBase = buildWelcomeUI(business);
         // [v11] Personalise greeting if customer name is known
         const knownName = session?.customerName;
