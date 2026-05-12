@@ -454,8 +454,13 @@ export function buildEnquiryUI(business) {
 
 export function buildCancelUI(business) {
   const cfg = getModeConfig(business);
-  // Custom cancelMsg label is used as the body text (owner can override)
-  const msg = getLabel(business, 'cancelMsg') || '✅ No problem! What would you like to do next?';
+  const bizName = business?.name || 'us';
+
+  // Custom cancelMsg label is used as the body text (owner can override).
+  // Default: warm, professional acknowledgement — never abrupt.
+  const msg = getLabel(business, 'cancelMsg') ||
+    `No worries at all! 😊\n\nYour request has been cancelled. Whenever you're ready, we're here to help.\n\n*${bizName}* — happy to assist you anytime.`;
+
   const buttons = cfg.ui.welcomeButtons;
 
   // Button-first: show welcome action buttons so the customer can jump straight back in
@@ -465,7 +470,7 @@ export function buildCancelUI(business) {
   }
 
   // Single-button mode (e.g. enquiry-only) — minimal text guidance
-  return { type: 'text', body: clean(msg + '\n\nType *Hi* to start again.') };
+  return { type: 'text', body: clean(msg + '\n\nTap *Hi* to start again anytime.') };
 }
 
 export const cancelMessage = () =>

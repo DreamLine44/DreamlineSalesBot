@@ -1,9 +1,21 @@
 /**
- * services/flowService.js — Dreamline Sales Bot v11.0
+ * services/flowService.js — Dreamline Sales Bot v13.0
  *
  * LAYER 2 — FLOW LOGIC ONLY.
  *
- * v3.1 = v3.0 UX improvements + v2.6 critical bug fixes merged:
+ * v13.0 improvements:
+ * - Number/word selection: SELECT_ITEM and SELECT_SERVICE now accept word-numbers
+ *   ("one", "two", "three"…) in addition to digits, so customers can type either.
+ * - Cancel handling: isCancel() and STRICT_INTENTS.CANCEL extended with natural
+ *   phrases ("no thanks", "forget it", "cancel that", "i want to cancel", etc.).
+ *   buildCancelUI() now returns a warm, professional acknowledgement with the
+ *   business name instead of a terse "No problem!" stub.
+ * - Partial service match: SELECT_SERVICE now shows a "Did you mean X?" button
+ *   prompt on LOW-confidence matches, exactly mirroring SELECT_ITEM behaviour.
+ *   handleBooking() gains a suggestion guard at the top (same as handleOrder).
+ * - Welcome body: sanitiseWelcomeBody() strips "Type Order to buy or Book" style
+ *   instructions when interactive buttons are rendered (already in v12, confirmed).
+ *
  *
  * BUG FIXES (from v2.6):
  * loadBusiness: session.tenantId stored as String but BusinessConfig.tenantId
@@ -79,8 +91,23 @@ const isConfirm = (msg) =>
 const isReject = (msg) =>
   ['no', 'nope', 'nah', 'n'].includes(msg);
 
-const isCancel = (msg) =>
-  ['cancel', 'stop', 'exit', 'quit', 'reset'].includes(msg);
+const isCancel = (msg) => {
+  if (['cancel', 'stop', 'exit', 'quit', 'reset'].includes(msg)) return true;
+  // Exact-match phrases — short enough to be ambiguous substrings if used with .includes()
+  const exactCancelPhrases = [
+    'never mind', 'nevermind', 'forget it', 'i changed my mind',
+    'not now', 'maybe later', 'not today', 'start over', 'scratch that',
+    'i dont want', 'i do not want', 'dont want', 'do not want',
+    'cancel it', 'cancel that', 'cancel order', 'cancel booking',
+    'i want to cancel', 'no thanks', 'no thank you',
+    'abort', 'i want out', 'get me out', 'not for me', 'dont bother',
+  ];
+  if (exactCancelPhrases.includes(msg)) return true;
+  // Substring-safe phrases — only used as prefix/suffix anchored checks
+  // 'please cancel' — safe substring (unlikely inside normal sentence start)
+  if (msg.startsWith('please cancel')) return true;
+  return false;
+};
 
 const isBtnConfirm = (raw) => raw === 'CONFIRM' || isConfirm(normalize(raw));
 const isBtnCancel  = (raw) => raw === 'CANCEL'  || isCancel(normalize(raw));
@@ -424,6 +451,7 @@ async function handleOrder(session, raw, clean, business, isInteractive = false,
       await _maybeSendItemImage(session, suggestedItem, tenant);
       // Smart recommendation (non-blocking — never delays order flow)
       const recoA = await getSmartRecommendation(business, selected, session).catch(() => null);
+      if (recoA) await updateSession(session.customerPhone, session.tenantId, { data: { ...session.data, recommendedThisSession: true } });
       const qtyA  = `Great choice 👍\n\nHow many *${selected}* would you like?\n\n(Enter a number, e.g. *1*, *2*)`;
       return recoA ? { type: 'text', body: `${recoA}\n\n${qtyA}` } : qtyA;
     }
@@ -437,7 +465,9 @@ async function handleOrder(session, raw, clean, business, isInteractive = false,
   switch (session.step) {
 
     case 'SELECT_ITEM': {
-      const index = parseInt(raw, 10);
+      // Support both numeric ("2") and word-number ("two") for item selection
+      const _rawWordNum = WORD_NUMBERS[raw.trim().toLowerCase()];
+      const index = _rawWordNum !== undefined ? _rawWordNum : parseInt(raw, 10);
       if (!isNaN(index) && index > 0) {
         // [SPEC FIX] Invalid index → re-show the interactive menu, never plain text
         if (!menu[index - 1]) return buildMenuUI(business);
@@ -451,6 +481,7 @@ async function handleOrder(session, raw, clean, business, isInteractive = false,
         await _maybeSendItemImage(session, menuItem, tenant);
         // Smart recommendation (non-blocking)
         const recoB = await getSmartRecommendation(business, item, session).catch(() => null);
+        if (recoB) await updateSession(session.customerPhone, session.tenantId, { data: { ...session.data, recommendedThisSession: true } });
         const qtyB  = `Great choice 👍\n\nHow many *${item}* would you like?\n\n(Enter a number, e.g. *1*, *2*)`;
         return recoB ? { type: 'text', body: `${recoB}\n\n${qtyB}` } : qtyB;
       }
@@ -488,6 +519,7 @@ async function handleOrder(session, raw, clean, business, isInteractive = false,
         await _maybeSendItemImage(session, item, tenant);
         // Smart recommendation (non-blocking)
         const recoC = await getSmartRecommendation(business, name, session).catch(() => null);
+        if (recoC) await updateSession(session.customerPhone, session.tenantId, { data: { ...session.data, recommendedThisSession: true } });
         const qtyC  = `Great choice 👍\n\nHow many *${name}* would you like?\n\n(Enter a number, e.g. *1*, *2*)`;
         return recoC ? { type: 'text', body: `${recoC}\n\n${qtyC}` } : qtyC;
       }
@@ -671,6 +703,27 @@ async function handleOrder(session, raw, clean, business, isInteractive = false,
 // ═════════════════════════════════════════════════════════════════════════════
 
 async function handleBooking(session, raw, clean, business) {
+  // Handle pending service suggestion (LOW confidence "Did you mean?" from SELECT_SERVICE)
+  if (session.suggestion && session.step === 'SELECT_SERVICE') {
+    if (isBtnConfirm(raw)) {
+      const selected = session.suggestion;
+      const services = (business?.services || []).filter(s => s.available !== false);
+      const svcItem  = services.find(s => s.name.toLowerCase() === selected.toLowerCase());
+      await updateSession(session.customerPhone, session.tenantId, {
+        data: { ...session.data, service: selected, serviceDuration: svcItem?.duration },
+        step: 'DATE', suggestion: null, expectedInputType: 'date',
+      });
+      await pushStep(session, 'DATE');
+      const prompt = getLabel(business, 'bookPrompt') || 'What date would you like?';
+      return `Great! *${selected}* selected ✅\n\n${prompt} 📅\n\n(e.g. *25 June*, *tomorrow*, *next Monday*)`;
+    }
+    if (isBtnReject(raw)) {
+      await updateSession(session.customerPhone, session.tenantId, { suggestion: null });
+      return buildServicesUI(business);
+    }
+    await updateSession(session.customerPhone, session.tenantId, { suggestion: null });
+  }
+
   switch (session.step) {
 
     case 'SELECT_SERVICE': {
@@ -683,7 +736,9 @@ async function handleBooking(session, raw, clean, business) {
         return `No booking types are currently listed, but we can still book you in!\n\n${prompt} 📅\n\n(e.g. *25 June*, *tomorrow*, *next Monday*)`;
       }
 
-      const index = parseInt(raw, 10);
+      // Support both numeric ("2") and word-number ("two") for service selection
+      const _svcWordNum = WORD_NUMBERS[raw.trim().toLowerCase()];
+      const index = _svcWordNum !== undefined ? _svcWordNum : parseInt(raw, 10);
       if (!isNaN(index) && index > 0) {
         // [SPEC FIX] Invalid index → re-show the interactive services list, never plain text
         if (!services[index - 1]) return buildServicesUI(business);
@@ -704,6 +759,20 @@ async function handleBooking(session, raw, clean, business) {
         const prompt = getLabel(business, 'bookPrompt') || 'What date would you like?';
         return `Great! *${svcMatch.name}* selected ✅\n\n${prompt} 📅\n\n(e.g. *25 June*, *tomorrow*, *next Monday*)`;
       }
+
+      // LOW confidence — ask "Did you mean?" with buttons (mirrors SELECT_ITEM behaviour)
+      if (svcMatch && confidenceLevel === 'LOW') {
+        await updateSession(session.customerPhone, session.tenantId, { suggestion: svcMatch.name });
+        return {
+          type:    'buttons',
+          body:    `Did you mean *${svcMatch.name}*?`,
+          buttons: [
+            { id: 'CONFIRM', title: '✅ Yes, that one' },
+            { id: 'CANCEL',  title: '❌ No, pick again' },
+          ],
+        };
+      }
+
       return buildServicesUI(business);
     }
 

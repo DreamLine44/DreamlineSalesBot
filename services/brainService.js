@@ -122,6 +122,11 @@ const STRICT_INTENTS = {
     'i dont want', 'i do not want', 'not interested', 'not now',
     'maybe later', 'not today', 'start over', 'scratch that',
     'remove', 'clear', 'reset it',
+    // Extended natural-language cancel variants (exact matches only — brainService
+    // normalizes then checks phrases.includes(normalized), so no substring risk here)
+    'cancel it', 'cancel that', 'cancel order', 'cancel booking',
+    'i want to cancel', 'please cancel', 'no thanks', 'no thank you',
+    'abort', 'i want out', 'get me out', 'not for me', 'dont bother',
   ],
   GREETING: [
     'hi', 'hello', 'hey', 'start', 'begin', 'good morning',

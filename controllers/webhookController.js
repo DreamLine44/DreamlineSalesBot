@@ -27,6 +27,7 @@ import { getAIReply, generateGreeting, answerAboutQuestion }      from '../servi
 import { receiveProof, handleDonePayment }                        from '../services/paymentService.js';
 import { isAdminPhone, handleAdminButtonReply, handleAdminTextCommand } from '../services/adminPaymentHandler.js';
 import { shouldCaptureLead, startLeadCapture, handleLeadCapture } from '../services/leadCaptureService.js';
+import UserProfile from '../models/UserProfile.js';
 import Tenant  from '../models/Tenant.js';
 import logger  from '../config/logger.js';
 import { createHmac, timingSafeEqual } from 'crypto';
@@ -782,9 +783,17 @@ export const handleWebhook = async (req, res) => {
       // [v11] Repeat order — show last ordered item if known, guide to order flow
       case 'REPEAT_ORDER': {
         const { getLabel: getLbl2 } = await import('../config/modes.js');
-        const lastItem = session?.data?.item || null;
+        // session.data is cleared after every order — read persistent UserProfile instead
+        let lastItem = null;
+        try {
+          const profile = await UserProfile.findOne({ phone: from }, 'preferences.favoriteItems').lean();
+          const sorted = (profile?.preferences?.favoriteItems || []).slice().sort((a, b) => b.count - a.count);
+          lastItem = sorted[0]?.name || null;
+        } catch { /* non-fatal */ }
         const repeatMsg = getLbl2(business, 'repeatOrderMsg', lastItem)
-          || `Tap *Order* to place a new order!`;
+          || (lastItem
+            ? `Last time you ordered *${lastItem}* — would you like the same? 😊`
+            : `Tap *Order* to place a new order!`);
         responseUI = {
           type: 'buttons',
           body: repeatMsg,
