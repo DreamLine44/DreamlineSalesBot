@@ -37,6 +37,7 @@ import Order          from '../models/Order.js';
 import Booking        from '../models/Booking.js';
 import BusinessConfig from '../models/BusinessConfig.js';
 import mongoose       from 'mongoose';
+import levenshtein    from 'fast-levenshtein';
 
 import { updateSession, clearSession, getSession }                             from './sessionService.js';
 import { trackOrderAnalytics, trackBookingAnalytics, trackFailedInteraction } from './analyticsService.js';
@@ -159,6 +160,44 @@ const WORD_NUMBERS = {
   ),
   // 100 as a special case
   hundred:100, 'one hundred':100,
+
+  // ── Common misspellings & alternate spellings ─────────────────────────────
+  // These are real inputs from WhatsApp customers — especially mobile autocorrect
+  // and West African English phonetic spelling. Without these, the bot asks again
+  // instead of resolving an obvious quantity.
+  //
+  // teens / low numbers
+  'wan':1, 'wun':1, 'onne':1,                       // "one"
+  'tow':2, 'tow':2, 'tu':2, 'too':2,                // "two"
+  'fore':4, 'for':4,                                  // "four"
+  'fife':5, 'fiv':5,                                  // "five"
+  'sex':6, 'siks':6,                                  // "six"
+  'sevn':7, 'sevan':7, 'seben':7,                    // "seven"
+  'eght':8, 'eigth':8, 'eit':8,                      // "eight"
+  'nien':9, 'nein':9,                                 // "nine"
+  'ten':10,                                            // already canonical, kept for clarity
+  'elevan':11, 'elever':11, 'elvn':11,               // "eleven"
+  'twelv':12, 'twelf':12, 'twleve':12,               // "twelve"
+  'thirten':13, 'thirten':13,                         // "thirteen"
+  'forteen':14, 'fourten':14, 'forten':14,           // "fourteen"
+  'fiften':15, 'fiveteen':15,                         // "fifteen"
+  'sixten':16, 'sixteen':16,                          // "sixteen" (canonical + alt)
+  'seventen':17, 'seventeeen':17,                    // "seventeen"
+  'eighten':18, 'eightteen':18,                      // "eighteen"
+  'ninten':19, 'nineteen':19,                         // "nineteen"
+  // tens
+  'twentey':20, 'tweny':20, 'twenti':20,             // "twenty"
+  'thirthy':30, 'thiry':30, 'thirthy':30,            // "thirty"
+  'fourty':40, 'foty':40,                             // "forty" (very common misspelling)
+  'fity':50, 'fifthy':50, 'fiffty':50,               // "fifty"
+  'sixthy':60, 'sixy':60,                             // "sixty"
+  'seventy':70,                                        // canonical, already above
+  'sevnty':70, 'sevanty':70,                         // "seventy"
+  'eighty':80,                                         // canonical, already above
+  'eightey':80, 'eighthy':80, 'eigthy':80,           // "eighty"
+  // ninety — the bug that triggered this fix
+  'ninty':90, 'ninety':90, 'niety':90, 'ninty':90,
+  'ninety':90, 'ninnty':90, 'ninity':90, 'ninite':90,
 };
 
 // Negation patterns that indicate the client does NOT want a quantity
@@ -200,6 +239,34 @@ const parseQuantity = (raw) => {
     // Use word-boundary anchors only around pure-word chars; space/hyphen variants
     // are handled by the escaped pattern above.
     if (new RegExp(`(?:^|\\s)${escaped}(?:\\s|$|[^a-z])`, 'i').test(lower)) return num;
+  }
+
+  // 5. Fuzzy match for single-word misspellings of word-numbers (e.g. "ninty" → 90).
+  // Only attempt when the input is a single word (no spaces) of reasonable length.
+  // We compare against only the simple canonical word-numbers (no compounds) to avoid
+  // false positives. Levenshtein distance ≤ 2 is used so "ninty"→"ninety" (dist=1)
+  // and "fourty"→"forty" (dist=1) both resolve, but "three"→"tree" (dist=1) is safe
+  // because we only check words >= 4 chars (short words risk too many false positives).
+  if (/^\w+$/.test(lower) && lower.length >= 4) {
+    const SIMPLE_NUMS = [
+      'one','two','three','four','five','six','seven','eight','nine','ten',
+      'eleven','twelve','thirteen','fourteen','fifteen','sixteen','seventeen','eighteen','nineteen',
+      'twenty','thirty','forty','fifty','sixty','seventy','eighty','ninety','hundred',
+    ];
+    let bestWord = null, bestDist = Infinity;
+    for (const canon of SIMPLE_NUMS) {
+      const dist = levenshtein.get(lower, canon);
+      if (dist < bestDist) { bestDist = dist; bestWord = canon; }
+    }
+    // Accept if within edit distance 2, and the input is long enough that a distance-2
+    // change isn't likely to be a totally different word.
+    if (bestDist <= 2 && lower.length >= 5 && bestWord) {
+      return WORD_NUMBERS[bestWord];
+    }
+    // For very close matches (dist=1) on shorter words (4 chars), still accept.
+    if (bestDist === 1 && lower.length >= 4 && bestWord) {
+      return WORD_NUMBERS[bestWord];
+    }
   }
 
   return null;

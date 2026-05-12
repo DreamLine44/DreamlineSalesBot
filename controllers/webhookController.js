@@ -518,6 +518,13 @@ export const handleWebhook = async (req, res) => {
         await updateSession(from, tenantId, { mode: null });
         await clearSession(from, tenantId);
         await createSession(from, tenantId, { customerPhone: from, phoneNumberId });
+        // [FIX] Acknowledge the intent before showing the welcome menu.
+        // Previously the bot reset silently — professional assistants say "Sure!" first.
+        const isMenuWord = /^(menu|home|0)$/i.test(messageText.trim());
+        const ackMsg = isMenuWord
+          ? `Sure! Here's the main menu 👇`
+          : `👋 Welcome back! Here's what you can do:`;
+        await dispatch(from, { type: 'text', body: ackMsg }, tenantDoc);
         await dispatch(from, buildWelcomeUI(business), tenantDoc);
         continue;
       }
@@ -657,6 +664,9 @@ export const handleWebhook = async (req, res) => {
     if (action === 'SHOW_MENU' && session.currentFlow) {
       await clearSession(from, tenantId);
       await createSession(from, tenantId, { customerPhone: from, phoneNumberId });
+      // [FIX] Acknowledge the navigation intent before showing the menu.
+      // Jumping straight to the welcome screen without any response feels broken.
+      await dispatch(from, { type: 'text', body: `Sure! Taking you back to the main menu 👇` }, tenantDoc);
       await dispatch(from, buildWelcomeUI(business), tenantDoc);
       continue;
     }
