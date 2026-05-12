@@ -87,6 +87,19 @@ const orderSchema = new mongoose.Schema({
   // Free-text notes — editable via PATCH /business/orders/:id
   notes: { type: String, default: null },
 
+  // [FIX] Stored payment reference (DSB-MMDD-XXXX) generated at initiation time.
+  // paymentService.initiatePayment() writes this so the reference never drifts
+  // between the initial instructions and any follow-up messages. Without this
+  // field in the schema, Mongoose strict mode silently drops the $set and the
+  // stored reference is always null — falling back to a freshly-generated ref
+  // that may differ from the one already shown to the customer.
+  paymentReference: { type: String, default: null },
+
+  // [FIX] Set by schedulerService when a payment-reminder WhatsApp template is sent.
+  // Acts as an idempotency flag — without this in the schema, Mongoose strict
+  // mode drops the $set, causing the scheduler to re-message every run.
+  paymentReminderSentAt: { type: Date, default: null },
+
   // Set by schedulerService when an abandoned-cart WhatsApp template is sent.
   // Acts as an idempotency flag — without this in the schema, Mongoose strict
   // mode drops the $set, causing the scheduler to re-message the same customer

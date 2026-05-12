@@ -38,6 +38,11 @@ const bookingSchema = new mongoose.Schema({
 
   notifiedAt: { type: Date, default: null },
 
+  // [FIX] Set by schedulerService when a booking-reminder WhatsApp template is sent.
+  // Without this field, Mongoose strict mode silently drops the $set and the
+  // scheduler re-sends the reminder on every hourly run — spamming customers.
+  reminderSentAt: { type: Date, default: null },
+
 }, { timestamps: true });
 
 // [FIX-D] Compound indexes for the two most common query patterns.

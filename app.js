@@ -216,3 +216,23 @@ const PORT = process.env.PORT || 5000;
     logger.info("Platform:  GET /platform/stats — SaaS owner panel");
   });
 })();
+
+// ── Global error guards ───────────────────────────────────────────────────────
+// Without these, an unhandled Promise rejection or synchronous throw escapes
+// Express's error handler and crashes the process silently (Node ≥15 exits on
+// unhandledRejection by default with no log entry in production log aggregators).
+process.on('unhandledRejection', (reason, promise) => {
+  logger.error('[Process] Unhandled Promise rejection — process will exit', {
+    reason: reason instanceof Error ? reason.message : String(reason),
+    stack:  reason instanceof Error ? reason.stack  : undefined,
+  });
+  setTimeout(() => process.exit(1), 100);
+});
+
+process.on('uncaughtException', (err) => {
+  logger.error('[Process] Uncaught exception — process will exit', {
+    err:   err.message,
+    stack: err.stack,
+  });
+  setTimeout(() => process.exit(1), 100);
+});
