@@ -6,12 +6,15 @@ import logger from "../config/logger.js";
 // [FIX 4] Accept actual `quantity` so analytics reflects real order volumes
 // instead of always recording 1.
 // [FIX R] Accept `revenue` (totalPrice) so we can aggregate sales revenue.
-export const trackOrderAnalytics = async (item, phoneNumberId = null, quantity = 1, revenue = 0) => {
+// [FIX T] Accept `tenantId` — Analytics model has the field but callers weren't
+// passing it. Without it, platform-level tenantId queries return nothing.
+export const trackOrderAnalytics = async (item, phoneNumberId = null, quantity = 1, revenue = 0, tenantId = null) => {
   try {
     const now = new Date();
     await Analytics.create({
       type: "ORDER",
       phoneNumberId,
+      tenantId: tenantId || undefined,
       item,
       quantity: quantity > 0 ? quantity : 1,
       revenue:  revenue  > 0 ? revenue  : 0,
@@ -26,7 +29,7 @@ export const trackOrderAnalytics = async (item, phoneNumberId = null, quantity =
 
 // ================= TRACK BOOKING =================
 
-export const trackBookingAnalytics = async ({ date, time, phoneNumberId = null } = {}) => {
+export const trackBookingAnalytics = async ({ date, time, phoneNumberId = null, tenantId = null } = {}) => {
   try {
     const now = new Date();
 
@@ -36,6 +39,7 @@ export const trackBookingAnalytics = async ({ date, time, phoneNumberId = null }
     await Analytics.create({
       type: "BOOKING",
       phoneNumberId,
+      tenantId: tenantId || undefined,
       bookingDate: validDate,
       bookingTime: time || undefined,
       hour: now.getHours(),

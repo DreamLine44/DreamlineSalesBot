@@ -1,7 +1,7 @@
 {
   "name": "dreamlinesalesbot",
-  "version": "14.0.0",
-  "description": "Multi-tenant WhatsApp Business SaaS Platform — v14.0.0",
+  "version": "15.0.0",
+  "description": "Multi-tenant WhatsApp Business SaaS Platform — v15.0.0 (Final merge: v14 + v15 fixes — token encryption, auto-usage-reset, tenant-scoped leads, analytics tenantId, UTC scheduler, fuzzy number parsing, menu ack, process crash guards)",
   "main": "app.js",
   "type": "module",
   "scripts": {

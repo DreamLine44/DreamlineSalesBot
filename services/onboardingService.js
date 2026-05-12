@@ -14,11 +14,12 @@
 import crypto         from 'crypto';
 import Tenant         from '../models/Tenant.js';
 import BusinessConfig from '../models/BusinessConfig.js';
+import { encrypt }    from './cryptoService.js';
 import logger         from '../config/logger.js';
 
 const WA_VER = () => process.env.WA_API_VERSION || process.env.META_API_VERSION || 'v21.0';
 
-const VALID_BUSINESS_MODES = ['RESTAURANT', 'SALON', 'RETAIL'];
+const VALID_BUSINESS_MODES = ['RESTAURANT', 'SALON', 'RETAIL', 'BAKERY', 'SUPERMARKET', 'FASHION', 'COSMETICS', 'ELECTRONICS', 'PHARMACY', 'DELIVERY'];
 const VALID_MODES          = ['ORDER', 'BOOKING', 'BOTH'];
 
 // ─── Meta API validation ──────────────────────────────────────────────────────
@@ -97,7 +98,7 @@ export async function connectWhatsAppAndCreateTenant({ phoneNumberId, accessToke
         phone:          cleanPhone,
         phoneNumberId:  phoneNumberId.trim(),
         wabaId:         validation.wabaId || null,
-        accessToken:    accessToken.trim(),
+        accessToken:    encrypt(accessToken.trim()),
         verifyToken,
         apiVersion:     WA_VER(),
         connected:      true,

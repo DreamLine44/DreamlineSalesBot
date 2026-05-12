@@ -12,6 +12,7 @@
 import axios from 'axios';
 import FailedMessage from '../models/FailedMessage.js';
 import { notifyAdmin } from './notificationService.js';
+import { decrypt } from './cryptoService.js';
 import logger from "../config/logger.js";
 
 const FALLBACK_API_VERSION = process.env.WA_API_VERSION || 'v21.0';
@@ -77,7 +78,9 @@ function retryDelay(attempt) {
 export async function sendMessage(to, text, tenant) {
   // Tenant model stores credentials under .whatsapp.* — support both flat and nested
   const phoneNumberId = tenant?.whatsapp?.phoneNumberId || tenant?.phoneNumberId;
-  const accessToken   = tenant?.whatsapp?.accessToken   || tenant?.accessToken;
+  // [FIX] Decrypt accessToken — cryptoService is a no-op when ENCRYPTION_KEY is not
+  // set (returns plaintext), so this is safe for both encrypted and plain deployments.
+  const accessToken   = decrypt(tenant?.whatsapp?.accessToken   || tenant?.accessToken);
   const tenantId      = tenant?._id;
 
   // [FIX 2] Use per-tenant apiVersion if stored, fall back to env var.
@@ -186,7 +189,7 @@ function sleep(ms) {
  */
 export async function sendButtonMessage(to, bodyText, buttons, tenant) {
   const phoneNumberId = tenant?.whatsapp?.phoneNumberId || tenant?.phoneNumberId;
-  const accessToken   = tenant?.whatsapp?.accessToken   || tenant?.accessToken;
+  const accessToken   = decrypt(tenant?.whatsapp?.accessToken   || tenant?.accessToken);
   const apiVersion    = tenant?.whatsapp?.apiVersion    || process.env.WA_API_VERSION || 'v21.0';
 
   if (!phoneNumberId || !accessToken) return false;
@@ -241,7 +244,7 @@ export async function sendButtonMessage(to, bodyText, buttons, tenant) {
  */
 export async function sendListMessage(to, headerText, bodyText, buttonText, rows, tenant) {
   const phoneNumberId = tenant?.whatsapp?.phoneNumberId || tenant?.phoneNumberId;
-  const accessToken   = tenant?.whatsapp?.accessToken   || tenant?.accessToken;
+  const accessToken   = decrypt(tenant?.whatsapp?.accessToken   || tenant?.accessToken);
   const apiVersion    = tenant?.whatsapp?.apiVersion    || process.env.WA_API_VERSION || 'v21.0';
 
   if (!phoneNumberId || !accessToken) return false;
@@ -300,7 +303,7 @@ export async function sendListMessage(to, headerText, bodyText, buttonText, rows
  */
 export async function sendImageMessage(to, mediaIdOrUrl, caption = '', tenant) {
   const phoneNumberId = tenant?.whatsapp?.phoneNumberId || tenant?.phoneNumberId;
-  const accessToken   = tenant?.whatsapp?.accessToken   || tenant?.accessToken;
+  const accessToken   = decrypt(tenant?.whatsapp?.accessToken   || tenant?.accessToken);
   const apiVersion    = tenant?.whatsapp?.apiVersion    || process.env.WA_API_VERSION || 'v21.0';
 
   if (!phoneNumberId || !accessToken || !mediaIdOrUrl) return false;

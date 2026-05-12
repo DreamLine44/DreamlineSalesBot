@@ -27,6 +27,7 @@
 import crypto         from 'crypto';
 import Tenant         from '../models/Tenant.js';
 import BusinessConfig from '../models/BusinessConfig.js';
+import { encrypt }    from '../services/cryptoService.js';
 import logger         from '../config/logger.js';
 import {
   connectWhatsAppAndCreateTenant,
@@ -104,7 +105,7 @@ export const connectWhatsApp = async (req, res) => {
         phone:          cleanPhone,
         phoneNumberId:  phoneNumberId.trim(),
         wabaId:         validation.wabaId || req.tenant.whatsapp?.wabaId || null,
-        accessToken:    accessToken.trim(),
+        accessToken:    encrypt(accessToken.trim()),
         verifyToken,
         apiVersion:     WA_API_VERSION,
         connected:      true,
@@ -481,7 +482,7 @@ export const handleMetaCallback = async (req, res) => {
       tenant.whatsapp = {
         ...tenant.whatsapp,
         phone, phoneNumberId, wabaId,
-        accessToken:    userToken,
+        accessToken:    encrypt(userToken),
         verifyToken:    resolvedVerifyToken,
         apiVersion:     WA_API_VERSION,
         connected:      true,

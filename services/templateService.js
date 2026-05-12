@@ -28,9 +28,10 @@
  * ╚══════════════════════════════════════════════════════════════════╝
  */
 
-import axios  from 'axios';
-import Tenant from '../models/Tenant.js';
-import logger from '../config/logger.js';
+import axios   from 'axios';
+import Tenant  from '../models/Tenant.js';
+import { decrypt } from './cryptoService.js';
+import logger  from '../config/logger.js';
 
 // ─── Config ───────────────────────────────────────────────────────────────────
 
@@ -160,7 +161,7 @@ export async function sendTemplate({ to, templateName, variables = {}, tenant })
   }
 
   const phoneNumberId = tenant?.whatsapp?.phoneNumberId || tenant?.phoneNumberId;
-  const accessToken   = tenant?.whatsapp?.accessToken   || tenant?.accessToken;
+  const accessToken   = decrypt(tenant?.whatsapp?.accessToken   || tenant?.accessToken);
   const apiVersion    = tenant?.whatsapp?.apiVersion    || FALLBACK_API_VERSION;
 
   if (!phoneNumberId || !accessToken) {

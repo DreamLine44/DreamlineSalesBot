@@ -26,6 +26,7 @@ import BusinessConfig from '../models/BusinessConfig.js';
 import { confirmPayment, rejectPayment } from './paymentService.js';
 import { sendMessage, sendButtonMessage, dispatch } from './messageService.js';
 import { updateSession, createSession, getSession } from './sessionService.js';
+import { decrypt } from './cryptoService.js';
 import axios          from 'axios';
 import logger from '../config/logger.js';
 
@@ -172,7 +173,7 @@ export const notifyAdminOfPayment = async (order, imageUrl, tenant, business) =>
 
 async function forwardProofImage(adminPhone, mediaIdOrUrl, order, tenant) {
   const phoneNumberId = tenant?.whatsapp?.phoneNumberId || tenant?.phoneNumberId;
-  const accessToken   = tenant?.whatsapp?.accessToken   || tenant?.accessToken;
+  const accessToken   = decrypt(tenant?.whatsapp?.accessToken   || tenant?.accessToken);
   const apiVersion    = tenant?.whatsapp?.apiVersion    || process.env.WA_API_VERSION || 'v21.0';
 
   if (!phoneNumberId || !accessToken) return;

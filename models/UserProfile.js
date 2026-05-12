@@ -93,6 +93,11 @@ const userProfileSchema = new mongoose.Schema({
     contact:    { type: String,  default: null }, // email or phone
     interest:   { type: String,  default: null },
     capturedAt: { type: Date,    default: null },
+    // [FIX] tenantId scopes the lead to the business that captured it.
+    // Without this, getLeadsForTenant() falls back to querying ephemeral Session
+    // records — customers who haven't messaged in >30 min have no session and
+    // their captured leads are invisible to GET /business/leads.
+    tenantId:   { type: mongoose.Schema.Types.ObjectId, ref: 'Tenant', default: null, index: true },
   },
 
 }, {

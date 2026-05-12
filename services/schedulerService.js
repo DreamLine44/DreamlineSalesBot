@@ -111,10 +111,13 @@ async function runAbandonedCartJob() {
 // ─── Job 2: Booking reminder ──────────────────────────────────────────────────
 
 async function runBookingReminderJob() {
-  const now   = new Date();
-  const hour  = now.getHours();
+  const now  = new Date();
+  // [FIX] Use UTC hours — getHours() returns server local time which varies by
+  // deployment region. UTC is consistent everywhere and is documented in the README.
+  // 18:00–20:00 UTC = early evening in West Africa (GMT+0/+1), suitable for reminders.
+  const hour = now.getUTCHours();
 
-  // Only run between 18:00–20:00 (evening before appointments)
+  // Only run between 18:00–20:00 UTC (evening before appointments)
   if (hour < 18 || hour > 20) return;
 
   logger.info('[Scheduler] Running booking reminder job...');

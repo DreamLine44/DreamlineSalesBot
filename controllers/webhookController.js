@@ -27,6 +27,8 @@ import { getAIReply, generateGreeting, answerAboutQuestion }      from '../servi
 import { receiveProof, handleDonePayment }                        from '../services/paymentService.js';
 import { isAdminPhone, handleAdminButtonReply, handleAdminTextCommand } from '../services/adminPaymentHandler.js';
 import { shouldCaptureLead, startLeadCapture, handleLeadCapture } from '../services/leadCaptureService.js';
+import { getLabel }                                               from '../config/modes.js';
+import { notifyAdmin }                                            from '../services/notificationService.js';
 import Tenant      from '../models/Tenant.js';
 import UserProfile from '../models/UserProfile.js';
 import logger  from '../config/logger.js';
@@ -284,9 +286,23 @@ export const handleWebhook = async (req, res) => {
     if (tenantDoc.status === 'SUSPENDED') continue;
 
     // ── STEP 2c: Plan message limit enforcement ───────────────────────────
-    // Increment usage counter atomically. If the tenant has exceeded their
-    // monthly message limit, send a polite over-limit reply and stop processing.
-    // Fire-and-forget the increment so it never blocks the message pipeline.
+    // Auto-reset monthly counter when the calendar month has rolled over.
+    // Previously the counter only reset via manual POST /platform/reset-usage —
+    // so tenants whose month turned over while no admin noticed stayed blocked forever.
+    const resetDate     = tenantDoc.usage?.resetDate ? new Date(tenantDoc.usage.resetDate) : null;
+    const now           = new Date();
+    const monthRolled   = !resetDate ||
+      resetDate.getUTCFullYear() !== now.getUTCFullYear() ||
+      resetDate.getUTCMonth()    !== now.getUTCMonth();
+    if (monthRolled) {
+      // Reset atomically — fire-and-forget so it never blocks the pipeline
+      Tenant.findByIdAndUpdate(tenantId, {
+        $set: { 'usage.messagesThisMonth': 0, 'usage.resetDate': now },
+      }).catch(err => logger.warn('[Webhook] Usage auto-reset failed', { err: err.message, tenantId }));
+      // Use 0 for this request's limit check (month just reset)
+      tenantDoc.usage = { messagesThisMonth: 0, resetDate: now };
+    }
+
     const monthlyLimit = tenantDoc.limits?.messagesPerMonth ?? 500;
     const currentUsage = tenantDoc.usage?.messagesThisMonth ?? 0;
     if (currentUsage >= monthlyLimit) {
@@ -786,7 +802,6 @@ export const handleWebhook = async (req, res) => {
         // [v11] Personalise greeting if customer name is known
         const knownName = session?.customerName;
         if (knownName && !greetMsg) {
-          const { getLabel } = await import('../config/modes.js');
           const personalMsg = getLabel(business, 'welcomePersonalised', knownName);
           if (personalMsg) greetMsg = personalMsg;
         }
@@ -796,9 +811,8 @@ export const handleWebhook = async (req, res) => {
 
       // [v11] Track order status — bot informs customer and provides admin contact
       case 'TRACK_ORDER': {
-        const { getLabel: getLbl } = await import('../config/modes.js');
         const adminContact = business?.adminPhone || tenantDoc?.adminPhone || null;
-        const trackMsg = getLbl(business, 'trackOrderMsg', adminContact)
+        const trackMsg = getLabel(business, 'trackOrderMsg', adminContact)
           || `To track your order, please contact us directly.${adminContact ? `\n\n📞 *${adminContact}*` : ''}`;
         responseUI = { type: 'text', body: trackMsg };
         break;
@@ -806,7 +820,6 @@ export const handleWebhook = async (req, res) => {
 
       // [v11] Repeat order — show last ordered item if known, guide to order flow
       case 'REPEAT_ORDER': {
-        const { getLabel: getLbl2 } = await import('../config/modes.js');
         // [FIX-LAST-ITEM] session.data is cleared after every order — read persistent
         // UserProfile.favoriteItems so returning customers see their top item.
         let lastItem = null;
@@ -815,7 +828,7 @@ export const handleWebhook = async (req, res) => {
           const sorted = (profile?.preferences?.favoriteItems || []).slice().sort((a, b) => b.count - a.count);
           lastItem = sorted[0]?.name || null;
         } catch { /* non-fatal */ }
-        const repeatMsg = getLbl2(business, 'repeatOrderMsg', lastItem)
+        const repeatMsg = getLabel(business, 'repeatOrderMsg', lastItem)
           || `Tap *Order* to place a new order!`;
         responseUI = {
           type: 'buttons',
@@ -860,7 +873,6 @@ export const handleWebhook = async (req, res) => {
 
         // Notify admin (fire-and-forget)
         try {
-          const { notifyAdmin } = await import('../services/notificationService.js');
           const adminPhone = business?.adminPhone || tenantDoc?.adminPhone;
           if (adminPhone && tenantDoc) {
             const customerName = session?.customerName ? ` (${session.customerName})` : '';

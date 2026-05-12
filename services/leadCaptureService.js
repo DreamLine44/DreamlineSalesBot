@@ -16,7 +16,6 @@
 
 import UserProfile    from '../models/UserProfile.js';
 import BusinessConfig from '../models/BusinessConfig.js';
-import Session        from '../models/Session.js';
 import { updateSession, clearSession } from './sessionService.js';
 import { dispatch }   from './messageService.js';
 import logger         from '../config/logger.js';
@@ -121,6 +120,9 @@ async function finalizeLead(session, business, tenantDoc, extra = {}) {
   const name    = data.leadName    || null;
   const contact = data.leadContact || null;
   const interest= data.interest    || null;
+  // [FIX] Store tenantId on the lead so getLeadsForTenant() can query directly
+  // instead of joining through ephemeral Session records (which expire in 30 min).
+  const tenantId = session.tenantId ? session.tenantId : (tenantDoc?._id || null);
 
   // Save to UserProfile
   try {
@@ -133,6 +135,7 @@ async function finalizeLead(session, business, tenantDoc, extra = {}) {
           'lead.contact':   contact,
           'lead.interest':  interest,
           'lead.capturedAt': new Date(),
+          'lead.tenantId':  tenantId,
           'activity.lastSeen': new Date(),
         },
         $setOnInsert: { phone },
@@ -174,21 +177,15 @@ async function finalizeLead(session, business, tenantDoc, extra = {}) {
 // ─── Get all leads for a tenant (for dashboard) ───────────────────────────────
 
 export async function getLeadsForTenant(tenantId) {
-  // UserProfile has no tenantId field — scope leads by looking up which phone numbers
-  // have ever had a session for this tenant, then return matching UserProfile leads.
-  // This correctly prevents tenant A from seeing tenant B's captured leads.
-  const tenantSessions = await Session.find(
-    { tenantId: String(tenantId) },
-    { customerPhone: 1, _id: 0 },
-  ).lean();
-
-  const phones = [...new Set(tenantSessions.map(s => s.customerPhone).filter(Boolean))];
-  if (!phones.length) return [];
-
+  // [FIX] Query directly by lead.tenantId (stored at capture time).
+  // The old approach joined through Session records, but sessions expire in 30 min —
+  // any customer who hasn't messaged recently had no session, so their lead was
+  // silently invisible. Direct tenantId query is O(log n) via the index and
+  // always correct regardless of session state.
   const leads = await UserProfile.find(
-    { phone: { $in: phones }, 'lead.captured': true },
+    { 'lead.captured': true, 'lead.tenantId': tenantId },
     { phone: 1, lead: 1, 'activity.lastSeen': 1, _id: 0 },
-  ).sort({ 'lead.capturedAt': -1 }).limit(500);
+  ).sort({ 'lead.capturedAt': -1 }).limit(500).lean();
 
   return leads;
 }

@@ -669,7 +669,7 @@ async function handleOrder(session, raw, clean, business, isInteractive = false,
 
       const qty = parseQuantity(raw);
 
-      if (!qty || qty < 1) {
+      if (qty === null || qty === undefined || qty < 1) {
         const itemName = session.data?.item;
         const nudgeBody = itemName
           ? `How many *${itemName}* would you like? 🛒\n\nPlease type a *number or word* (e.g. *1*, *2*, *three*).`
@@ -1119,7 +1119,7 @@ async function handleFinalize(session, business, tenant) {
       return gracefulRetryUI('ORDER');
     }
 
-    trackOrderAnalytics(item, session.phoneNumberId, quantity, totalPrice || 0).catch(() => {});
+    trackOrderAnalytics(item, session.phoneNumberId, quantity, totalPrice || 0, session.tenantId).catch(() => {});
     recordOrderRevenue({ item, quantity, totalPrice: totalPrice || 0, phoneNumberId: session.phoneNumberId, customerPhone }).catch(() => {});
     trackUser(customerPhone, item, 'ORDER', { item }).catch(() => {});
 
@@ -1211,7 +1211,7 @@ async function handleFinalize(session, business, tenant) {
       return gracefulRetryUI('BOOKING');
     }
 
-    trackBookingAnalytics({ date, time, phoneNumberId: session.phoneNumberId }).catch(() => {});
+    trackBookingAnalytics({ date, time, phoneNumberId: session.phoneNumberId, tenantId: session.tenantId }).catch(() => {});
     trackUser(customerPhone, date || service, 'BOOKING', {}).catch(() => {});
 
     // [FIX-6d] Same tenant.adminPhone fallback as the ORDER path above.
