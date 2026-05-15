@@ -1,22 +1,32 @@
 /**
- * services/flowService.js — Dreamline Sales Bot v16.0
+ * services/flowService.js — Dreamline Sales Bot v20.0 (v18 + v19 merged)
  *
  * LAYER 2 — FLOW LOGIC ONLY.
  *
- * v16.0 fix:
- * [FIX-QUANTITY-WORDS] Full multi-word number parser replaces flat WORD_NUMBERS table.
- *   Customers can now type ANY number in words or figures and the bot understands it:
- *   "thousand" → 1000, "twenty five" → 25, "five hundred" → 500,
- *   "one thousand two hundred" → 1200, "ninty" → 90 (typo), "a dozen" → 12.
- *   The fix is in wordsToNumber() + updated parseQuantity() + phraseEngine detectNumber()
- *   + brainService menu shortcuts. All three entry points are covered.
+ * ── v18.0 fixes (this release) ───────────────────────────────────────────────
+ * [FIX-STALE-SPREAD] CRITICAL: Stale session.data spread in all three
+ *   recommendedThisSession updateSession calls (recoA/B/C) wiped data.item
+ *   from the DB immediately after it was saved. Any quantity typed after a
+ *   smart recommendation fired (e.g. "15" after seeing a Tapalapa pairing)
+ *   found data.item === undefined and reset the flow back to the menu.
+ *   Fix: include item/selected/name in each spread so the write is always safe.
  *
- * v15.1 fix:
+ * [FIX-WORDS-TO-NUMBER] Full multi-word number parser (wordsToNumber) injected
+ *   as step 3 in parseQuantity, covering arbitrary word-number phrases that
+ *   PHRASE_NUMBERS and WORD_NUMBERS don't catch: "thousand" → 1000,
+ *   "five hundred" → 500, "one thousand two hundred" → 1200, etc.
+ *
  * [FIX-SELECT-ITEM] After AI answers an off-topic message at SELECT_ITEM step,
- *   the interactive menu is now also returned so the customer always has a clear
- *   next action. Previously AI answered but left no way for the customer to continue.
+ *   the interactive menu is also returned so the customer always has a next action.
  *
- * v13.0 final merge — all features from both branches:
+ * [FIX-UPSELL-LEAK] UPSELL_COOLDOWN_MAX evicts oldest entry when map reaches
+ *   5000 entries, preventing unbounded memory growth on long-running processes.
+ *
+ * ── v17.0 features ───────────────────────────────────────────────────────────
+ * [LARGE-QTY] Large-order confirmation prompt for qty > 20 with YES/CHANGE buttons.
+ *   QTY_LARGE_CONFIRM / QTY_LARGE_CHANGE interactive button handlers.
+ *
+ * ── v13.0 features ───────────────────────────────────────────────────────────
  * [FLOW-1] Word-number selection: SELECT_ITEM / SELECT_SERVICE accept "one"/"two"/etc.
  * [FLOW-2] Cancel detection: exact-match phrases with startsWith guard (no substring false-positives).
  *          buildCancelUI() returns warm, professional acknowledgement with business name.
@@ -29,8 +39,7 @@
  * [LEAD]   lastItem read from UserProfile.favoriteItems (persists across session resets).
  *
  *
- * BUG FIXES (from v2.6):
- * loadBusiness: session.tenantId stored as String but BusinessConfig.tenantId
+ * BUG FIXES (from v2.6):\n * loadBusiness: session.tenantId stored as String but BusinessConfig.tenantId
  *         is ObjectId in MongoDB — plain string query never matches. Cast to ObjectId.
  * handleFinalize: added null-guard on business._id (ORDER + BOOKING paths).
  *         Null business from FIX-1 failure crashes Order.create(); now returns
@@ -133,7 +142,8 @@ const isSwitchNo   = (raw) => raw === 'SWITCH_NO'  || isReject(normalize(raw));
 // Prevents the upsell from firing again if the customer just declined it within
 // the last 30 minutes, even if the session was cleared between orders.
 const _upsellCooldown = new Map(); // key: tenantId:phone → expiry timestamp
-const UPSELL_COOLDOWN_MS = 30 * 60 * 1000; // 30 minutes
+const UPSELL_COOLDOWN_MS  = 30 * 60 * 1000; // 30 minutes
+const UPSELL_COOLDOWN_MAX = 5000; // Max entries before eviction (prevents memory leak on long-running processes)
 function _hasUpsellCooldown(phone, tenantId) {
   const key = tenantId + ':' + phone;
   const expiry = _upsellCooldown.get(key);
@@ -142,66 +152,145 @@ function _hasUpsellCooldown(phone, tenantId) {
   return true;
 }
 function _setUpsellCooldown(phone, tenantId) {
+  // Evict oldest entry when map is at capacity
+  if (_upsellCooldown.size >= UPSELL_COOLDOWN_MAX) {
+    _upsellCooldown.delete(_upsellCooldown.keys().next().value);
+  }
   _upsellCooldown.set(tenantId + ':' + phone, Date.now() + UPSELL_COOLDOWN_MS);
 }
 
 // ─── Word-to-number ───────────────────────────────────────────────────────────
-// v16 FIX: Full multi-word number parser.
-// Replaces the flat lookup table with a proper additive parser so that phrases
-// like "twenty five", "one hundred", "thousand", "five hundred thousand" all
-// resolve correctly — not just single word tokens.
 
-const _WN_ONES = {
-  zero:0, oh:0, nought:0, nil:0, naught:0,
+const WORD_NUMBERS = {
+  // 1–19
   one:1, two:2, three:3, four:4, five:5,
   six:6, seven:7, eight:8, nine:9, ten:10,
   eleven:11, twelve:12, thirteen:13, fourteen:14, fifteen:15,
   sixteen:16, seventeen:17, eighteen:18, nineteen:19,
-  // Typos / West African phonetics
-  wan:1, wun:1, onne:1,
-  tow:2, tu:2, too:2,
-  fore:4, 'for':4, foru:4,
-  fife:5, fiv:5, fiev:5,
-  sex:6, siks:6, sik:6,
-  sevn:7, sevan:7, seben:7,
-  eght:8, eigth:8, eit:8,
-  nien:9, nein:9, nin:9,
-  elevan:11, elever:11, elvn:11, leven:11,
-  twelv:12, twelf:12, twleve:12, tweleve:12,
-  thirten:13, thirtteen:13,
-  forteen:14, fourten:14, forten:14,
-  fiften:15, fiveteen:15,
-  sixten:16,
-  seventen:17, seventeeen:17,
-  eighten:18, eightteen:18,
-  ninten:19, nineteene:19,
-  // articles → 1
+  // tens
+  twenty:20, thirty:30, forty:40, fifty:50,
+  sixty:60, seventy:70, eighty:80, ninety:90,
+  // common compounds (twenty-one … ninety-nine)
+  ...Object.fromEntries(
+    ['twenty','thirty','forty','fifty','sixty','seventy','eighty','ninety'].flatMap((tens, ti) => {
+      const tensVal = (ti + 2) * 10;
+      return ['one','two','three','four','five','six','seven','eight','nine'].flatMap((unit, ui) => {
+        const unitVal = ui + 1;
+        const val     = tensVal + unitVal;
+        return [
+          [`${tens}-${unit}`, val],          // "twenty-one"
+          [`${tens} ${unit}`, val],           // "twenty one"
+          [`${tens}${unit}`,  val],           // "twentyone"
+        ];
+      });
+    })
+  ),
+  // 100 as a special case
+  hundred:100, 'one hundred':100,
+
+  // ── Common misspellings & alternate spellings ─────────────────────────────
+  // These are real inputs from WhatsApp customers — especially mobile autocorrect
+  // and West African English phonetic spelling. Without these, the bot asks again
+  // instead of resolving an obvious quantity.
+  //
+  // teens / low numbers
+  'wan':1, 'wun':1, 'onne':1,                       // "one"
+  'tow':2, 'tow':2, 'tu':2, 'too':2,                // "two"
+  'fore':4, 'for':4,                                  // "four"
+  'fife':5, 'fiv':5,                                  // "five"
+  'sex':6, 'siks':6,                                  // "six"
+  'sevn':7, 'sevan':7, 'seben':7,                    // "seven"
+  'eght':8, 'eigth':8, 'eit':8,                      // "eight"
+  'nien':9, 'nein':9,                                 // "nine"
+  'ten':10,                                            // already canonical, kept for clarity
+  'elevan':11, 'elever':11, 'elvn':11,               // "eleven"
+  'twelv':12, 'twelf':12, 'twleve':12,               // "twelve"
+  'thirten':13, 'thirten':13,                         // "thirteen"
+  'forteen':14, 'fourten':14, 'forten':14,           // "fourteen"
+  'fiften':15, 'fiveteen':15,                         // "fifteen"
+  'sixten':16, 'sixteen':16,                          // "sixteen" (canonical + alt)
+  'seventen':17, 'seventeeen':17,                    // "seventeen"
+  'eighten':18, 'eightteen':18,                      // "eighteen"
+  'ninten':19, 'nineteen':19,                         // "nineteen"
+  // tens
+  'twentey':20, 'tweny':20, 'twenti':20,             // "twenty"
+  'thirthy':30, 'thiry':30, 'thirthy':30,            // "thirty"
+  'fourty':40, 'foty':40,                             // "forty" (very common misspelling)
+  'fity':50, 'fifthy':50, 'fiffty':50,               // "fifty"
+  'sixthy':60, 'sixy':60,                             // "sixty"
+  'seventy':70,                                        // canonical, already above
+  'sevnty':70, 'sevanty':70,                         // "seventy"
+  'eighty':80,                                         // canonical, already above
+  'eightey':80, 'eighthy':80, 'eigthy':80,           // "eighty"
+  // ninety — the bug that triggered this fix
+  'ninty':90, 'ninety':90, 'niety':90, 'ninty':90,
+  'ninety':90, 'ninnty':90, 'ninity':90, 'ninite':90,
+};
+
+// Negation patterns that indicate the client does NOT want a quantity
+// e.g. "i don't want 4", "not 4", "maybe 4", "not interested in 4", "no 4"
+const NEGATION_PATTERN = /\b(don'?t|do not|not|no|nope|never|cancel|stop|skip|none|neither|nor|without|except|refuse|reject|not interested|maybe|perhaps|unsure|idk|i don'?t know)\b/i;
+
+// ─── Phrase-to-number map ─────────────────────────────────────────────────────
+// Handles natural English quantity phrases customers actually type.
+// Must be checked BEFORE single-word and digit extraction (longest-match first).
+const PHRASE_NUMBERS = {
+  'a dozen':      12, 'one dozen':    12, 'two dozen':    24, 'three dozen':  36,
+  'half dozen':    6, 'half a dozen':  6,
+  'a couple':      2, 'a pair':        2, 'a few':         3, 'several':       4,
+  'a score':      20, 'a gross':     144,
+  // Common compound numbers customers type as two words (without hyphen)
+  'twenty one':   21, 'twenty two':   22, 'twenty three': 23, 'twenty four':  24,
+  'twenty five':  25, 'twenty six':   26, 'twenty seven': 27, 'twenty eight': 28,
+  'twenty nine':  29,
+  'thirty one':   31, 'thirty two':   32, 'thirty three': 33, 'thirty four':  34,
+  'thirty five':  35, 'thirty six':   36, 'thirty seven': 37, 'thirty eight': 38,
+  'thirty nine':  39,
+  'forty one':    41, 'forty two':    42, 'forty three':  43, 'forty four':   44,
+  'forty five':   45, 'forty six':    46, 'forty seven':  47, 'forty eight':  48,
+  'forty nine':   49,
+  'fifty one':    51, 'fifty five':   55, 'sixty five':   65, 'seventy five':  75,
+};
+// Pre-sorted longest-first so "a dozen" matches before "a"
+const PHRASE_NUMBERS_SORTED = Object.entries(PHRASE_NUMBERS).sort((a, b) => b[0].length - a[0].length);
+
+// ─── Full multi-word number parser ─────────────────────────────────────────────
+// Handles arbitrary word-number phrases PHRASE_NUMBERS doesn't cover:
+// "thousand" → 1000, "five hundred" → 500, "one thousand two hundred" → 1200,
+// "five hundred thousand" → 500000, "a dozen" → 12, "half a dozen" → 6, etc.
+// Used as a fallback inside parseQuantity after PHRASE_NUMBERS and WORD_NUMBERS.
+
+const _WN_ONES = {
+  zero:0, oh:0, nought:0, nil:0, naught:0,
+  one:1, two:2, three:3, four:4, five:5, six:6, seven:7, eight:8, nine:9, ten:10,
+  eleven:11, twelve:12, thirteen:13, fourteen:14, fifteen:15,
+  sixteen:16, seventeen:17, eighteen:18, nineteen:19,
+  wan:1, wun:1, onne:1, tow:2, tu:2, too:2, fore:4, 'for':4, foru:4,
+  fife:5, fiv:5, fiev:5, sex:6, siks:6, sik:6,
+  sevn:7, sevan:7, seben:7, eght:8, eigth:8, eit:8, nien:9, nein:9, nin:9,
+  elevan:11, elever:11, elvn:11, leven:11, twelv:12, twelf:12, twleve:12, tweleve:12,
+  thirten:13, thirtteen:13, forteen:14, fourten:14, forten:14,
+  fiften:15, fiveteen:15, sixten:16, seventen:17, seventeeen:17,
+  eighten:18, eightteen:18, ninten:19, nineteene:19,
   a:1, an:1,
 };
-
 const _WN_TENS = {
-  twenty:20,  tweny:20,  twety:20,  twenti:20,  twentey:20, tweenty:20, twnety:20,
-  thirty:30,  thrity:30, thirthy:30, thiry:30,   thirthy:30, thrty:30,
-  forty:40,   fourty:40, forthy:40, foty:40,     froty:40,
-  fifty:50,   fify:50,   fifthy:50, fiffty:50,   fity:50,
-  sixty:60,   sixy:60,   sixthy:60, sikty:60,
+  twenty:20, tweny:20, twety:20, twenti:20, twentey:20, tweenty:20, twnety:20,
+  thirty:30, thrity:30, thirthy:30, thiry:30, thrty:30,
+  forty:40, fourty:40, forthy:40, foty:40, froty:40,
+  fifty:50, fify:50, fifthy:50, fiffty:50, fity:50,
+  sixty:60, sixy:60, sixthy:60, sikty:60,
   seventy:70, sevnty:70, sevanty:70,
-  eighty:80,  eightty:80, eighthy:80, eigthy:80, eightey:80,
-  ninety:90,  ninty:90,  ninity:90, niety:90,    ninnty:90, ninite:90, nineti:90, nienty:90,
+  eighty:80, eightty:80, eighthy:80, eigthy:80, eightey:80,
+  ninety:90, ninty:90, ninity:90, niety:90, ninnty:90, ninite:90, nineti:90, nienty:90,
 };
-
 const _WN_MULT = {
   hundred:100, hundreds:100, hunderd:100, hundered:100, hunded:100,
-  thousand:1000, thousands:1000, thousend:1000, thousan:1000,
+  thousand:1000, thousands:1000, thousend:1000, thousan:1000, thousnad:1000,
   million:1e6, millions:1e6, milion:1e6, millon:1e6,
   billion:1e9, billions:1e9,
 };
-
-const _WN_SPECIAL = {
-  dozen:12, dozens:12,
-  couple:2, pair:2,
-  score:20,
-};
+const _WN_SPECIAL = { dozen:12, dozens:12, couple:2, pair:2, score:20 };
 
 function _stripOrdinal(w) {
   return w
@@ -217,56 +306,26 @@ function _stripOrdinal(w) {
     .replace(/^eightieth$/i,'eighty').replace(/^ninetieth$/i,'ninety');
 }
 
-/**
- * wordsToNumber(str) — parse a string of number-words into an integer.
- * Handles: "twenty five", "one hundred", "five hundred thousand", "thousand", etc.
- * Returns null if no numeric token found.
- */
 function wordsToNumber(input) {
   if (!input) return null;
   if (/half[\s-]+a[\s-]+dozen/i.test(input)) return 6;
   const tokens = String(input).trim().toLowerCase()
-    .replace(/-/g, ' ').replace(/\band\b/gi, ' ').replace(/\bof\b/gi, ' ')
+    .replace(/-/g,' ').replace(/\band\b/gi,' ').replace(/\bof\b/gi,' ')
     .split(/[\s,]+/).filter(Boolean).map(_stripOrdinal);
-
   let total = 0, current = 0, found = false;
   for (const tok of tokens) {
-    if (/^\d[\d,]*$/.test(tok)) { current += parseInt(tok.replace(/,/g,''), 10); found = true; continue; }
-    if (_WN_ONES[tok] !== undefined)    { current += _WN_ONES[tok]; found = true; }
-    else if (_WN_TENS[tok] !== undefined) { current += _WN_TENS[tok]; found = true; }
-    else if (_WN_SPECIAL[tok] !== undefined) { current = (current||1) * _WN_SPECIAL[tok]; found = true; }
+    if (/^\d[\d,]*$/.test(tok)) { current += parseInt(tok.replace(/,/g,''),10); found=true; continue; }
+    if (_WN_ONES[tok] !== undefined)      { current += _WN_ONES[tok]; found=true; }
+    else if (_WN_TENS[tok] !== undefined)   { current += _WN_TENS[tok]; found=true; }
+    else if (_WN_SPECIAL[tok] !== undefined){ current = (current||1)*_WN_SPECIAL[tok]; found=true; }
     else if (_WN_MULT[tok] !== undefined) {
       const m = _WN_MULT[tok];
-      if (m === 100) { current = (current||1) * 100; }
-      else           { total += (current||1) * m; current = 0; }
-      found = true;
+      if (m===100) { current=(current||1)*100; } else { total+=(current||1)*m; current=0; }
+      found=true;
     }
   }
-  return found ? total + current : null;
+  return found ? total+current : null;
 }
-
-// Keep WORD_NUMBERS as a flat lookup for single-word backward compat
-// (used by SELECT_ITEM / SELECT_SERVICE index resolution below)
-const WORD_NUMBERS = {
-  ...Object.fromEntries(Object.entries(_WN_ONES).filter(([,v]) => v > 0)),
-  ...Object.fromEntries(Object.entries(_WN_TENS)),
-  // compounds: twenty-one … ninety-nine
-  ...Object.fromEntries(
-    ['twenty','thirty','forty','fifty','sixty','seventy','eighty','ninety'].flatMap((tens, ti) => {
-      const tv = (ti+2)*10;
-      return ['one','two','three','four','five','six','seven','eight','nine'].flatMap((unit, ui) => {
-        const v = tv + ui + 1;
-        return [[`${tens}-${unit}`,v],[`${tens} ${unit}`,v],[`${tens}${unit}`,v]];
-      });
-    })
-  ),
-  hundred:100, 'one hundred':100,
-  thousand:1000, dozen:12, couple:2,
-};
-
-// Negation patterns that indicate the client does NOT want a quantity
-// e.g. "i don't want 4", "not 4", "maybe 4", "not interested in 4", "no 4"
-const NEGATION_PATTERN = /\b(don'?t|do not|not|no|nope|never|cancel|stop|skip|none|neither|nor|without|except|refuse|reject|not interested|maybe|perhaps|unsure|idk|i don'?t know)\b/i;
 
 const parseQuantity = (raw) => {
   const trimmed = raw.trim();
@@ -279,36 +338,71 @@ const parseQuantity = (raw) => {
   const direct = parseInt(trimmed, 10);
   if (!isNaN(direct) && String(direct) === trimmed.replace(/\s/g, '')) return direct;
 
-  // 2. Digit embedded in text — "I want 4", "give me 3", "x2", "qty:4"
-  const phraseMatch = trimmed.match(/(?:^|[^\d])(\d[\d,]*)(?:[^\d]|$)/);
-  if (phraseMatch) {
-    const n = parseInt(phraseMatch[1].replace(/,/g,''), 10);
-    if (!isNaN(n)) return n;
+  // 1b. Phrase numbers — "a dozen", "half dozen", "a couple", "twenty five"…
+  //     Checked BEFORE single word-number so "a few" → 3, not null.
+  const lower0 = trimmed.toLowerCase();
+  for (const [phrase, num] of PHRASE_NUMBERS_SORTED) {
+    if (lower0.includes(phrase)) return num;
   }
 
-  // 3. Full multi-word number parse — "twenty five", "one hundred", "thousand",
-  //    "five hundred thousand", "a dozen", "half a dozen", etc.
-  //    This is the primary fix for the "thousand" / "ninety" / "twenty five" bug.
+  // 2. Single word-number — "four", "two"
+  const wordNum = WORD_NUMBERS[trimmed.toLowerCase()];
+  if (wordNum !== undefined) return wordNum;
+
+  // 3. Full multi-word number parse — "thousand" → 1000, "five hundred" → 500,
+  //    "one thousand two hundred" → 1200, "I want ninty please" → 90, etc.
+  //    Covers anything PHRASE_NUMBERS and WORD_NUMBERS don't already handle.
   const multiWord = wordsToNumber(trimmed);
   if (multiWord !== null) return multiWord;
 
-  // 4. Fuzzy match for single-word misspellings (e.g. "ninty" → 90, "fourty" → 40).
-  //    Only when input is a single word of reasonable length and wordsToNumber
-  //    returned null (meaning the word wasn't in any lookup table).
+  // 4. Natural-language phrases — "I want 4", "give me 3", "just 2 please", "x2"
+  // Extract the first digit sequence from anywhere in the string.
+  // Match digit sequence anywhere — handles "x2", "×3", "qty:4", "I want 4"
+  const phraseMatch = trimmed.match(/(?:^|[^\d])(\d+)(?:[^\d]|$)/);
+  if (phraseMatch) {
+    const n = parseInt(phraseMatch[1], 10);
+    if (!isNaN(n)) return n;
+  }
+
+  // 5. Word-number embedded in phrase — "I want four", "just twenty one"
+  // Sort entries by key length descending so compound phrases ("twenty-one") are
+  // tested before their constituent parts ("twenty", "one"), preventing partial matches.
   const lower = trimmed.toLowerCase();
+  const sortedEntries = Object.entries(WORD_NUMBERS).sort((a, b) => b[0].length - a[0].length);
+  for (const [word, num] of sortedEntries) {
+    // Escape hyphens in the key so the regex stays valid for "twenty-one" etc.
+    const escaped = word.replace(/-/g, '[\\s\\-]');
+    // Use word-boundary anchors only around pure-word chars; space/hyphen variants
+    // are handled by the escaped pattern above.
+    if (new RegExp(`(?:^|\\s)${escaped}(?:\\s|$|[^a-z])`, 'i').test(lower)) return num;
+  }
+
+  // 6. Fuzzy match for single-word misspellings of word-numbers (e.g. "ninty" → 90).
+  // Only attempt when the input is a single word (no spaces) of reasonable length.
+  // We compare against only the simple canonical word-numbers (no compounds) to avoid
+  // false positives. Levenshtein distance ≤ 2 is used so "ninty"→"ninety" (dist=1)
+  // and "fourty"→"forty" (dist=1) both resolve, but "three"→"tree" (dist=1) is safe
+  // because we only check words >= 4 chars (short words risk too many false positives).
   if (/^\w+$/.test(lower) && lower.length >= 4) {
     const SIMPLE_NUMS = [
       'one','two','three','four','five','six','seven','eight','nine','ten',
       'eleven','twelve','thirteen','fourteen','fifteen','sixteen','seventeen','eighteen','nineteen',
-      'twenty','thirty','forty','fifty','sixty','seventy','eighty','ninety','hundred','thousand',
+      'twenty','thirty','forty','fifty','sixty','seventy','eighty','ninety','hundred',
     ];
     let bestWord = null, bestDist = Infinity;
     for (const canon of SIMPLE_NUMS) {
       const dist = levenshtein.get(lower, canon);
       if (dist < bestDist) { bestDist = dist; bestWord = canon; }
     }
-    if (bestDist <= 2 && lower.length >= 5 && bestWord) return wordsToNumber(bestWord);
-    if (bestDist === 1 && lower.length >= 4 && bestWord) return wordsToNumber(bestWord);
+    // Accept if within edit distance 2, and the input is long enough that a distance-2
+    // change isn't likely to be a totally different word.
+    if (bestDist <= 2 && lower.length >= 5 && bestWord) {
+      return WORD_NUMBERS[bestWord];
+    }
+    // For very close matches (dist=1) on shorter words (4 chars), still accept.
+    if (bestDist === 1 && lower.length >= 4 && bestWord) {
+      return WORD_NUMBERS[bestWord];
+    }
   }
 
   return null;
@@ -391,6 +485,93 @@ async function pushStep(session, step) {
   await updateSession(session.customerPhone, session.tenantId, { stepHistory: history });
 }
 
+// ─── Step re-prompt builder (exported for webhookController AI_FALLBACK path) ─
+// Returns a minimal, contextual re-prompt for the current step.
+// Called when webhookController sends '' (empty string) to re-anchor the customer
+// after an AI side-answer, so they always know exactly what to do next.
+
+export function handleStepReprompt(session) {
+  return _buildStepReprompt(session);
+}
+
+function _buildStepReprompt(session) {
+  const data = session.data || {};
+  const step = session.step;
+  const flow = session.currentFlow;
+
+  if (flow === 'ORDER') {
+    if (step === 'SELECT_ITEM') {
+      return { type: 'text', body: '👆 Please choose an item from the menu above, or type its name.' };
+    }
+    if (step === 'QUANTITY') {
+      const itemName = data.item || 'your item';
+      return {
+        type: 'buttons',
+        body: `How many *${itemName}* would you like? 🛒\n\n(Type a number or word — e.g. *1*, *2*, *five*)`,
+        buttons: [{ id: 'CANCEL', title: '❌ Cancel Order' }],
+      };
+    }
+    if (step === 'CONFIRM') {
+      const summaryLine = data.item
+        ? `🍽️ *${data.item}* × ${data.quantity || '?'}${data.totalPrice ? ` — D${data.totalPrice}` : ''}`
+        : 'Your order';
+      return {
+        type: 'buttons',
+        body: `${summaryLine}\n\nShall we go ahead? ✅`,
+        buttons: [
+          { id: 'CONFIRM', title: '✅ Confirm Order' },
+          { id: 'CANCEL',  title: '❌ Cancel'        },
+        ],
+      };
+    }
+    if (step === 'PAYMENT_PROOF') {
+      return { type: 'text', body: '📸 Please send your *Wave payment screenshot* to complete your order.' };
+    }
+  }
+
+  if (flow === 'BOOKING') {
+    if (step === 'SELECT_SERVICE') {
+      return { type: 'text', body: '👆 Please choose a service from the list above, or type its name.' };
+    }
+    if (step === 'DATE') {
+      return { type: 'text', body: '📅 What *date* would you like?\n\n(e.g. *25 June*, *tomorrow*, *next Monday*)' };
+    }
+    if (step === 'DATE_CONFIRM') {
+      return {
+        type: 'buttons',
+        body: `Just to confirm — did you mean *${data.date || '?'}*? 📅`,
+        buttons: [{ id: 'CONFIRM', title: '✅ Yes, that date' }, { id: 'DATE_BACK', title: '❌ No, re-enter' }],
+      };
+    }
+    if (step === 'TIME') {
+      return { type: 'text', body: '⏰ What *time* would you prefer?\n\n(e.g. *2pm*, *14:00*, *morning*)' };
+    }
+    if (step === 'TIME_CONFIRM') {
+      return {
+        type: 'buttons',
+        body: `Just to confirm — did you mean *${data.time || '?'}*? ⏰`,
+        buttons: [{ id: 'CONFIRM', title: '✅ Yes, that time' }, { id: 'TIME_BACK', title: '❌ No, re-enter' }],
+      };
+    }
+    if (step === 'CONFIRM') {
+      const summaryLine = data.service
+        ? `💅 *${data.service}* — ${data.date || '?'}${data.time ? ` at ${data.time}` : ''}`
+        : `📅 ${data.date || '?'}${data.time ? ` at ${data.time}` : ''}`;
+      return {
+        type: 'buttons',
+        body: `${summaryLine}\n\nShall we confirm your booking? ✅`,
+        buttons: [
+          { id: 'CONFIRM', title: '✅ Confirm Booking' },
+          { id: 'CANCEL',  title: '❌ Cancel'           },
+        ],
+      };
+    }
+  }
+
+  // Generic fallback — shouldn't be reached in normal flow
+  return { type: 'text', body: '😊 What would you like to do next? Type *cancel* to stop or continue with your response.' };
+}
+
 // ═════════════════════════════════════════════════════════════════════════════
 // MAIN ENTRY
 // ═════════════════════════════════════════════════════════════════════════════
@@ -401,7 +582,21 @@ export const handleFlow = async (session, message, tenant = null, isInteractive 
   const raw   = String(message || '').trim();
   const clean = normalize(raw);
 
-  await updateSession(session.customerPhone, session.tenantId, { lastMessage: raw });
+  // FIX-EMPTY-REPROMPT: When webhookController sends '' (empty string) to re-prompt
+  // the current step after an AI answer, return a step-appropriate prompt instead
+  // of falling through to the default case which shows an unhelpful menu.
+  if (!raw && session.currentFlow) {
+    return _buildStepReprompt(session);
+  }
+
+  await updateSession(session.customerPhone, session.tenantId, {
+    lastMessage: raw,
+    // FIX-TTL: Touch expiresAt on every message so a customer who takes time
+    // between steps (reading menu, deciding) never hits an expired session.
+    // updateSession already does this when `step` is provided; this explicit
+    // touch covers messages that don't change the step (e.g. invalid inputs).
+    expiresAt: new Date(Date.now() + (30 * 60 * 1000)),
+  });
 
   const business = await loadBusiness(session);
   if (!business) return 'Business configuration not found. Please contact support.';
@@ -422,22 +617,21 @@ export const handleFlow = async (session, message, tenant = null, isInteractive 
   }
 
   // ── Global: cancel ────────────────────────────────────────────────────────
-  // [FIX-12] Exclude steps that have their own "No" handling so a user typing
-  // "stop" or "quit" to decline an upsell or re-enter a date/time doesn't
-  // accidentally cancel the entire order/booking.
-  // DATE_CONFIRM and TIME_CONFIRM are already safe because their "re-enter"
-  // buttons now use DATE_BACK / TIME_BACK (not CANCEL), but typed "no"/"stop"
-  // still hits isBtnCancel — so we exclude them here too.
+  // Excludes steps that have their own "No" handling. DATE_CONFIRM / TIME_CONFIRM
+  // use DATE_BACK / TIME_BACK buttons, not CANCEL. UPSELL has its own decline path.
   const _cancelExcludedSteps = new Set(['UPSELL', 'DATE_CONFIRM', 'TIME_CONFIRM']);
   if (isBtnCancel(raw) && !_cancelExcludedSteps.has(session.step)) {
     await clearSession(session.customerPhone, session.tenantId);
     return buildCancelUI(business);
   }
 
-  // ── Global: "0" → main menu ───────────────────────────────────────────────
+  // FIX-4: "0" mid-flow is treated as CANCEL (with graceful cancel UI) rather
+  // than an immediate session wipe with no explanation. A customer whose keyboard
+  // sends a stray "0" while typing their quantity no longer loses their entire order.
+  // "0" with no active flow (handled by brainService SHOW_MENU) is unaffected.
   if (raw === '0') {
     await clearSession(session.customerPhone, session.tenantId);
-    return buildWelcomeUI(business);
+    return buildCancelUI(business);
   }
 
   // ── INTERRUPT step ────────────────────────────────────────────────────────
@@ -529,6 +723,9 @@ export const handleFlow = async (session, message, tenant = null, isInteractive 
       await clearSession(session.customerPhone, session.tenantId);
       return buildCancelUI(business);
     }
+    // FIX-7: Any unrecognised input at CONFIRM (mis-tap, stray text, button replay)
+    // re-renders the full confirm UI so the customer always sees their options clearly.
+    // Never silently ignore input at this critical step.
     const fallbackSummary = session.currentFlow === 'ORDER'
       ? `🧾 *Order Summary*\n\n🍽️ Item: *${session.data?.item || '?'}*\n🔢 Quantity: *${session.data?.quantity || '?'}*` +
         (session.data?.totalPrice ? `\n💰 Total: *D${session.data.totalPrice}*` : '')
@@ -609,7 +806,11 @@ async function handleOrder(session, raw, clean, business, isInteractive = false,
       await _maybeSendItemImage(session, suggestedItem, tenant);
       // Smart recommendation (non-blocking — never delays order flow)
       const recoA = await getSmartRecommendation(business, selected, session).catch(() => null);
-      if (recoA) await updateSession(session.customerPhone, session.tenantId, { data: { ...session.data, recommendedThisSession: true } });
+      // [FIX-STALE-SPREAD] Always include item in the spread so this write never wipes
+      // data.item that was stored by the updateSession call just above (session.data is
+      // the in-memory snapshot from before that write, so a plain ...session.data would
+      // overwrite data.item back to undefined — causing the QUANTITY step to show the menu).
+      if (recoA) await updateSession(session.customerPhone, session.tenantId, { data: { ...session.data, item: selected, recommendedThisSession: true } });
       const qtyA  = `Great choice 👍\n\nHow many *${selected}* would you like?\n\n(Enter a number or word, e.g. *1*, *2*, *four*)`;
       return recoA ? { type: 'text', body: `${recoA}\n\n${qtyA}` } : qtyA;
     }
@@ -639,7 +840,8 @@ async function handleOrder(session, raw, clean, business, isInteractive = false,
         await _maybeSendItemImage(session, menuItem, tenant);
         // Smart recommendation (non-blocking)
         const recoB = await getSmartRecommendation(business, item, session).catch(() => null);
-        if (recoB) await updateSession(session.customerPhone, session.tenantId, { data: { ...session.data, recommendedThisSession: true } });
+        // [FIX-STALE-SPREAD] Always include item in the spread (same stale-snapshot bug as recoA).
+        if (recoB) await updateSession(session.customerPhone, session.tenantId, { data: { ...session.data, item, recommendedThisSession: true } });
         const qtyB  = `Great choice 👍\n\nHow many *${item}* would you like?\n\n(Enter a number or word, e.g. *1*, *2*, *four*)`;
         return recoB ? { type: 'text', body: `${recoB}\n\n${qtyB}` } : qtyB;
       }
@@ -650,19 +852,20 @@ async function handleOrder(session, raw, clean, business, isInteractive = false,
 
       // [FIX] Don't re-send the menu for clearly non-menu input (random text, questions).
       // Re-sending the menu on every unrecognised message causes a frustrating loop.
-      // Instead: use AI to respond helpfully, then re-show the menu so they can
-      // still select from it after getting a real answer.
+      // Instead: use AI to respond helpfully, keeping the flow intact so they can
+      // still select from the menu after getting a real answer.
       if (!item || confidenceLevel === 'NONE') {
         // If input looks conversational (4+ chars, not a number), ask AI first
         if (raw.trim().length >= 4 && !/^\d+$/.test(raw.trim())) {
           const aiReply = await getAIReply(raw, business, session, 'FALLBACK').catch(() => null);
-          if (aiReply) {
-            // [FIX] Return AI answer + menu so user always has a clear next action
-            return [{ type: 'text', body: aiReply }, buildMenuUI(business)];
-          }
+          if (aiReply) return { type: 'text', body: aiReply };
         }
-        // Short/garbled or AI failed → show menu directly
-        return buildMenuUI(business);
+        // Short/garbled or AI failed → show menu with a gentle prompt
+        const menuNames = menu.slice(0, 5).map((m, i) => `${i + 1}. ${getName(m)}`).join('\n');
+        return {
+          type: 'text',
+          body: `I didn't quite catch that 😊\n\nHere are our options:\n${menuNames}\n\nReply with a *number* or item name to choose.`,
+        };
       }
 
       const name = getName(item);
@@ -676,7 +879,8 @@ async function handleOrder(session, raw, clean, business, isInteractive = false,
         await _maybeSendItemImage(session, item, tenant);
         // Smart recommendation (non-blocking)
         const recoC = await getSmartRecommendation(business, name, session).catch(() => null);
-        if (recoC) await updateSession(session.customerPhone, session.tenantId, { data: { ...session.data, recommendedThisSession: true } });
+        // [FIX-STALE-SPREAD] Always include item: name in the spread (same stale-snapshot bug as recoA/B).
+        if (recoC) await updateSession(session.customerPhone, session.tenantId, { data: { ...session.data, item: name, recommendedThisSession: true } });
         const qtyC  = `Great choice 👍\n\nHow many *${name}* would you like?\n\n(Enter a number or word, e.g. *1*, *2*, *four*)`;
         return recoC ? { type: 'text', body: `${recoC}\n\n${qtyC}` } : qtyC;
       }
@@ -697,6 +901,39 @@ async function handleOrder(session, raw, clean, business, isInteractive = false,
       // [v12] Interactive taps at QUANTITY — a button was tapped while awaiting
       // a quantity. Show a clear prompt with the item name and cancel option.
       if (isInteractive) {
+        // [LARGE-QTY] Customer confirmed a large order — pull pendingLargeQty and proceed.
+        if (raw === 'QTY_LARGE_CONFIRM') {
+          const confirmedQty = session.data?.pendingLargeQty;
+          if (confirmedQty) {
+            // Clear the pending flag so a re-visit doesn't double-trigger
+            await updateSession(session.customerPhone, session.tenantId, {
+              data: { ...session.data, pendingLargeQty: null },
+            });
+            // Re-enter QUANTITY flow with the confirmed number as plain text
+            return handleFlow(
+              { ...session, data: { ...session.data, pendingLargeQty: null } },
+              String(confirmedQty),
+              business,
+              false,
+            );
+          }
+        }
+
+        // [LARGE-QTY] Customer wants to change quantity — re-prompt cleanly.
+        if (raw === 'QTY_LARGE_CHANGE') {
+          const itemName = session.data?.item;
+          await updateSession(session.customerPhone, session.tenantId, {
+            data: { ...session.data, pendingLargeQty: null },
+          });
+          return {
+            type: 'buttons',
+            body: itemName
+              ? `No problem! How many *${itemName}* would you like? 🛒\n\nType a number or word (e.g. *1*, *2*, *five*).`
+              : 'Please type the quantity you\'d like (e.g. *1*, *2*, *five*).',
+            buttons: [{ id: 'CANCEL', title: '❌ Cancel Order' }],
+          };
+        }
+
         const itemName = session.data?.item;
         const promptBody = itemName
           ? `How many *${itemName}* would you like? 🛒\n\nPlease type a *number or word* (e.g. *1*, *2*, *three*).`
@@ -752,6 +989,31 @@ async function handleOrder(session, raw, clean, business, isInteractive = false,
             ? `Maximum quantity is 100 😊\n\nHow many *${itemNameForBounds}* would you like?\n\n(Enter a number or word, e.g. *1*, *2*, *ten*)`
             : `Maximum quantity is 100 😊\n\nPlease enter a number or word between *1* and *100*.`,
           buttons: [{ id: 'CANCEL', title: '❌ Cancel Order' }],
+        };
+      }
+
+      // [LARGE-ORDER WARN] qty 21–100 — confirm before proceeding so customers don't
+      // accidentally order 30 items instead of 3. Store qty in session so the
+      // YES/CONFIRM path can pick it up without re-parsing the message.
+      if (qty > 20) {
+        const itemNameForWarn = session.data?.item;
+        const menuItemForWarn = (business?.menu || []).find(m => getName(m).toLowerCase() === (itemNameForWarn || '').toLowerCase());
+        const unitPriceWarn   = menuItemForWarn?.price || 0;
+        const totalWarn       = unitPriceWarn > 0 ? unitPriceWarn * qty : null;
+        const currency        = business?.payment?.currency || 'GMD';
+        const totalStr        = totalWarn ? ` (${currency} ${totalWarn.toLocaleString()})` : '';
+        await updateSession(session.customerPhone, session.tenantId, {
+          data: { ...session.data, pendingLargeQty: qty },
+        });
+        return {
+          type: 'buttons',
+          body: itemNameForWarn
+            ? `Just to confirm — *${qty} × ${itemNameForWarn}*${totalStr}? 🤔\n\nThat's a large order. Did you mean ${qty}?`
+            : `Just to confirm — you want *${qty} items*${totalStr}? 🤔`,
+          buttons: [
+            { id: 'QTY_LARGE_CONFIRM', title: `✅ Yes, ${qty} items` },
+            { id: 'QTY_LARGE_CHANGE',  title: '✏️ Change Quantity' },
+          ],
         };
       }
 
@@ -851,6 +1113,9 @@ async function handleOrder(session, raw, clean, business, isInteractive = false,
     }
 
     default:
+      // FIX-8: Unknown step in ORDER flow — reset to SELECT_ITEM and show menu.
+      // This handles edge cases where a session has a step value that no longer
+      // maps to a valid case (schema migration, corrupted state, etc.).
       await updateSession(session.customerPhone, session.tenantId, { step: 'SELECT_ITEM' });
       return buildMenuUI(business);
   }

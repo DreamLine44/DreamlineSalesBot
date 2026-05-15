@@ -1,36 +1,22 @@
 {
   "name": "dreamlinesalesbot",
-  "version": "15.1.0",
-  "description": "Multi-tenant WhatsApp Business SaaS Platform — v15.1.0 combined with v14 legacy flows/NLP engine",
-  "main": "app.js",
+  "version": "20.0.0",
+  "description": "Multi-tenant WhatsApp Business SaaS Platform — v20.0.0 (v18+v19 merged)",
   "type": "module",
   "scripts": {
     "start": "node app.js",
-    "dev": "nodemon app.js",
-    "seed": "node seed.js",
-    "test:nlp": "node --input-type=commonjs legacy/tests/nlp.test.js",
-    "gen-key": "node --input-type=module -e \"import {randomBytes} from 'crypto'; console.log(randomBytes(32).toString('hex'))\"",
-    "fix-orders": "node scripts/fix-order-index.js",
-    "fix-phonenumber-index": "node scripts/fix-phonenumberid-index.js",
-    "migrate-apikey": "node scripts/migrate-apikey-hash.js",
-    "migrate-shortid": "node scripts/migrate-order-shortid.js",
-    "migrate-encrypt-tokens": "node scripts/migrate-encrypt-tokens.js"
+    "test": "node tests/nlp.test.mjs"
   },
   "dependencies": {
-    "axios": "^1.15.1",
-    "cloudinary": "^2.5.1",
-    "cors": "^2.8.5",
-    "dotenv": "^16.6.1",
-    "express": "^4.22.1",
-    "express-rate-limit": "^7.1.5",
+    "axios": "^1.6.7",
+    "bcryptjs": "^2.4.3",
+    "dotenv": "^16.4.5",
+    "express": "^4.18.3",
     "fast-levenshtein": "^3.0.0",
-    "helmet": "^7.1.0",
-    "json2csv": "^5.0.7",
-    "mongoose": "^8.23.0",
-    "multer": "^1.4.5-lts.1"
-  },
-  "devDependencies": {
-    "eslint": "^10.2.1",
-    "nodemon": "^3.0.2"
+    "jsonwebtoken": "^9.0.2",
+    "mongoose": "^8.2.1",
+    "node-cron": "^3.0.3",
+    "short-unique-id": "^5.2.0",
+    "winston": "^3.13.0"
   }
 }

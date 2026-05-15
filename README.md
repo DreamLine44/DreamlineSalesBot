@@ -1,8 +1,11 @@
-# DreamLine SalesBot — v15.0.0 (Combined Final)
+# DreamLine SalesBot — v16.0.0 (Combined Final)
 
-**This is the authoritative combined release** merging `DreamlineSalesBot_v14_fixed` (full codebase) with `DreamlineSalesBot_v13` (targeted patch package).
+**This is the authoritative combined release** merging all three sources:
+- `DreamlineSalesBot_v13` — targeted patch package
+- `DreamlineSalesBot_v14_fixed` — full codebase with v13 patches applied
+- `DreamlineSalesBot_v14` — parallel branch with additional production hardening
 
-> **Result:** v13 was already fully applied inside v14_fixed. This build is v14_fixed with the version bumped to 15.0.0 and this README added for clarity. No code was changed — only confirmed.
+> **Result:** v13 was fully applied inside v14_fixed (verified by clean diffs). The new v14 (original branch) was a parallel effort — all its unique fixes were already in v14_fixed except two: `package-lock.json` and the `UPSELL_COOLDOWN_MAX` eviction cap in `flowService.js`. Both are now included.
 
 ---
 
@@ -128,5 +131,26 @@ v7  (strict intent engine philosophy)
               └─► v12.1 (Master Spec Compliance — 10 additional UX/state fixes)
                     └─► v13 (4 critical payment/session/support fixes + UX improvements)
                           └─► v14_fixed (3-way merge, all fixes confirmed)
-                                └─► v15.0.0 ← YOU ARE HERE (combined + verified)
+                                └─► v16.0.0 ← YOU ARE HERE (combined + verified)
 ```
+
+---
+
+## v17.0.0 — Three-way merge + Full Audit (this build)
+
+### Third source merged: `DreamlineSalesBot_v14` (clean lightweight branch)
+
+This branch was a completely different architecture (in-memory sessions, flows/ pattern, CommonJS, no MongoDB). Rather than a structural merge, the genuinely better pieces were extracted and integrated:
+
+| Extracted from v14 clean branch | What it improves |
+|---------------------------------|-----------------|
+| **PHRASE_NUMBERS** | `parseQuantity` now handles "a dozen" → 12, "half dozen" → 6, "a couple" → 2, "a few" → 3, "several" → 4, "twenty five" → 25, and 30+ compound forms |
+| **Large-order warning** | qty 21–100 now triggers "Just to confirm — 25 × Domoda?" with Yes/Change buttons before committing. Previously only >100 was caught. |
+| **`tests/nlp.test.mjs`** | First test suite — 56 assertions covering phrase numbers, all v13 misspellings, matchEngine confidence levels, edge cases. Run with `npm test`. |
+| **6 missing `.env` vars** | `ENCRYPTION_KEY`, `PAYMENT_SESSION_TTL_HOURS`, `PROOF_ELIGIBLE_HOURS`, `SESSION_TTL_MINUTES`, `SCHEDULER_ENABLED`, `TEMPLATE_LANGUAGE` — all documented with defaults and explanations |
+
+### Audit fixes applied
+
+- `QTY_LARGE_CONFIRM` / `QTY_LARGE_CHANGE` button IDs wired into QUANTITY case in flowService — previously the large-order buttons were generated but never handled
+- `npm test` script added to package.json
+- PHRASE_NUMBERS sorted longest-first at module load time (no runtime sort cost per message)

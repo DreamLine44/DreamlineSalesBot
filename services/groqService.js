@@ -52,11 +52,10 @@ const buildSystemPrompt = (business, session, intent = 'FALLBACK') => {
     canBook  ? 'booking services' : null,
   ].filter(Boolean).join(' and ');
 
-  // [FIX] Build capability-aware CTA for the strict rule — don't hardcode "order"
-  // for booking-only businesses or vice versa.
+  // [FIX] Build capability-aware CTA — don't hardcode "order" for booking-only businesses
   const ctaKeywords = [
     canOrder ? '*order*' : null,
-    canBook  ? '*book*' : null,
+    canBook  ? '*book*'  : null,
     '*question*',
   ].filter(Boolean).join(', ');
 

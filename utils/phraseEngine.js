@@ -84,14 +84,14 @@ export const extractMeaning = (text) => {
 
 
 // ================= NUMBER DETECTION =================
-// Word-number lookup for detectNumber (single words only — keeps phraseEngine lightweight)
-const _PHRASE_ENGINE_WORD_NUMS = {
+// Word-number lookup — keeps phraseEngine lightweight (single words only).
+const _PE_WORD_NUMS = {
   zero:0, one:1, two:2, three:3, four:4, five:5, six:6, seven:7, eight:8, nine:9, ten:10,
   eleven:11, twelve:12, thirteen:13, fourteen:14, fifteen:15,
   sixteen:16, seventeen:17, eighteen:18, nineteen:19,
   twenty:20, thirty:30, forty:40, fifty:50, sixty:60, seventy:70, eighty:80, ninety:90,
   hundred:100, thousand:1000,
-  // common typos
+  // Common typos
   wan:1, wun:1, tow:2, tu:2, too:2, fore:4, fiv:5, fife:5, sik:6, sevn:7, eght:8, nein:9,
   tweny:20, thirthy:30, fourty:40, fifthy:50, sixy:60, sevnty:70, eighthy:80,
   ninty:90, ninity:90, niety:90,
@@ -99,11 +99,12 @@ const _PHRASE_ENGINE_WORD_NUMS = {
 };
 
 const detectNumber = (msg) => {
+  if (!msg) return null;
   // 1. Plain digit
-  const num = parseInt(msg);
-  if (!isNaN(num) && String(parseInt(msg)) === msg.trim()) return num;
-  // 2. Single word-number
-  const wordNum = _PHRASE_ENGINE_WORD_NUMS[String(msg).trim().toLowerCase()];
+  const num = parseInt(msg, 10);
+  if (!isNaN(num) && String(num) === String(msg).trim()) return num;
+  // 2. Single word-number (including typos)
+  const wordNum = _PE_WORD_NUMS[String(msg).trim().toLowerCase()];
   if (wordNum !== undefined) return wordNum;
   // 3. Digit embedded in short message
   const m = String(msg).match(/\b(\d+)\b/);

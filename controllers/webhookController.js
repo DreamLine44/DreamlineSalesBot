@@ -20,7 +20,7 @@ import { getSession, createSession, updateSession, clearSession } from '../servi
 import { dispatch }                                                   from '../services/messageService.js';
 import { getBusiness }                                            from '../services/businessService.js';
 import { think }                                                  from '../services/brainService.js';
-import { handleFlow, startOrderFlow, startBookingFlow, handleEnquiry } from '../services/flowService.js';
+import { handleFlow, startOrderFlow, startBookingFlow, handleEnquiry, handleStepReprompt } from '../services/flowService.js';
 import { buildWelcomeUI, buildCancelUI, buildSmartFallbackUI, sanitiseWelcomeBody } from '../utils/messageBuilders.js';
 import { trackFailedInteraction }                                 from '../services/analyticsService.js';
 import { getAIReply, generateGreeting, answerAboutQuestion }      from '../services/groqService.js';
@@ -531,8 +531,8 @@ export const handleWebhook = async (req, res) => {
     if (session.mode === 'awaiting_question' && messageText) {
       const _GREETING_RESET = /^(hi|hello|hey|start|begin|good morning|good afternoon|good evening|menu|home|0|salaam|salam)$/i;
       if (_GREETING_RESET.test(messageText.trim())) {
-        // [FIX] clearSession already removes the mode field — no need to updateSession first.
-        // Order: clear → create → dispatch (ensures session exists before bot replies).
+        // [FIX] clearSession already removes all session fields including mode.
+        // The separate updateSession({ mode: null }) is redundant and wastes a DB round-trip.
         await clearSession(from, tenantId);
         await createSession(from, tenantId, { customerPhone: from, phoneNumberId });
         // [FIX] Acknowledge the intent before showing the welcome menu.
@@ -638,11 +638,14 @@ export const handleWebhook = async (req, res) => {
     }
 
     // ── STEP 9: INTERRUPT — store state, send switch prompt, stop ─────────
-    // Capture session.step BEFORE overwriting it
+    // FIX-5: Re-fetch session to get the latest step BEFORE overwriting it.
+    // Several updateSession() calls above (lastIntent, lastMessage) may have
+    // updated the session since we last read it, making session.step stale.
     if (action === 'INTERRUPT') {
+      const freshForInterrupt = (await getSession(from, tenantId)) || session;
       await updateSession(from, tenantId, {
-        previousStep:  session.step,
-        previousFlow:  session.currentFlow,
+        previousStep:  freshForInterrupt.step,
+        previousFlow:  freshForInterrupt.currentFlow,
         step:          'INTERRUPT',
         pendingIntent: intent,
       });
@@ -650,15 +653,13 @@ export const handleWebhook = async (req, res) => {
       continue;
     }
 
-    // ── STEP 10: REJECT_FLOW — user doesn't want this flow ────────────────
-    // e.g. "i dont want to book", "not interested", "never mind"
+    // ── STEP 10: REJECT_FLOW — user signals they don't want the current flow ──────
+    // FIX: "don't want" mid-flow could mean "I don't want onions" not "cancel everything".
+    // Route to CANCEL which shows the confirm-cancel UI (same as explicit cancel) so
+    // the customer has a chance to confirm they really want to stop.
     if (action === 'REJECT_FLOW' && session.currentFlow) {
-      // Clone UI before mutation — never modify the shared builder result
       await clearSession(from, tenantId);
-      await createSession(from, tenantId, { customerPhone: from, phoneNumberId });
-      const baseUI = buildWelcomeUI(business);
-      const rejectionReply = { ...baseUI, body: 'No problem 👍\n\n' + (baseUI.body || '') };
-      await dispatch(from, rejectionReply, tenantDoc);
+      await dispatch(from, buildCancelUI(business), tenantDoc);
       continue;
     }
 
@@ -722,9 +723,11 @@ export const handleWebhook = async (req, res) => {
           // Send the AI answer, then re-prompt the current step so the customer
           // knows exactly what to do next — flow stays intact.
           await dispatch(from, { type: 'text', body: aiReply }, tenantDoc);
-          // Re-prompt the current step (fire handleFlow with a synthetic "re-show" trigger)
+          // FIX-6/8: Re-prompt using the fresh session and explicit step reprompt.
+          // Previously this sent '' to handleFlow which hit the default case (showed
+          // an unhelpful menu). Now we use the exported reprompt function directly.
           const freshSession = (await getSession(from, tenantId)) || session;
-          const stepReprompt = await handleFlow(freshSession, '', tenantDoc, false).catch(() => null);
+          const stepReprompt = handleStepReprompt(freshSession);
           if (stepReprompt) await dispatch(from, stepReprompt, tenantDoc);
           continue;
         }
@@ -793,20 +796,36 @@ export const handleWebhook = async (req, res) => {
       case 'GREET': {
         await clearSession(from, tenantId);
         await createSession(from, tenantId, { customerPhone: from, phoneNumberId });
+
+        // ── Professional greeting construction ────────────────────────────────
+        // Priority: AI-generated greeting → tenant-configured personalised →
+        //           tenant-configured generic → professional time-aware default.
+        // The bot NEVER initiates contact — this path only runs because the
+        // customer sent a greeting first (GREET intent always requires user input).
         let greetMsg = null;
-        try { greetMsg = await generateGreeting(business, session); } catch { /* use static */ }
-        // Strip any "Type Order / Type Book" keyword instructions from the greeting —
-        // the interactive buttons already communicate those actions, so repeating
-        // them as plain text is redundant and looks unprofessional.
+
+        // 1. AI-generated greeting (Groq) — may be null if AI is unavailable
+        try { greetMsg = await generateGreeting(business, session); } catch { /* fallback below */ }
+        // Strip any "Type X / Type Y" keyword instructions — buttons replace them
         if (greetMsg) greetMsg = sanitiseWelcomeBody(greetMsg);
-        const welcomeBase = buildWelcomeUI(business);
-        // [v11] Personalise greeting if customer name is known
+
+        // 2. Personalise if customer name is known and AI didn't supply a greeting
         const knownName = session?.customerName;
-        if (knownName && !greetMsg) {
+        if (!greetMsg && knownName) {
           const personalMsg = getLabel(business, 'welcomePersonalised', knownName);
           if (personalMsg) greetMsg = personalMsg;
         }
-        responseUI = greetMsg ? { ...welcomeBase, body: greetMsg } : welcomeBase;
+
+        // 3. Time-of-day professional fallback
+        if (!greetMsg) {
+          const _greetHour = new Date().getHours();
+          const _tod = _greetHour < 12 ? 'Good morning' : _greetHour < 17 ? 'Good afternoon' : 'Good evening';
+          const _name = knownName ? `, ${knownName}` : '';
+          greetMsg = `${_tod}${_name}! 👋 Welcome to *${business?.name || 'us'}*. Thank you for getting in touch — we're happy to assist you today. Please choose an option below.`;
+        }
+
+        const welcomeBase = buildWelcomeUI(business);
+        responseUI = { ...welcomeBase, body: greetMsg };
         break;
       }
 

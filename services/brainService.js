@@ -86,7 +86,7 @@ const STRICT_INTENTS = {
     'i wan order', 'i wan buy', 'i wan food', 'abeg let me order',
     'pls let me order', 'i dey hungry', 'bring food', 'order pls',
     'i want make order', 'lemme order', 'order make',
-    // NOTE: 'food', 'get', 'purchase' removed — too broad and cause false positives
+    // NOTE: 'food', 'get', 'purchase' removed — too broad, cause false positives
     // on natural questions like "do you have food?" → now routes to ENQUIRY correctly
   ],
   BOOKING: [
@@ -119,16 +119,20 @@ const STRICT_INTENTS = {
   ],
   CANCEL: [
     'cancel', 'stop', 'exit', 'quit', 'no', 'nope', 'nah',
-    'never mind', 'nevermind', 'forget it', 'i changed my mind', 'restart',
+    'never mind', 'nevermind', 'forget it', 'i changed my mind',
     'i dont want', 'i do not want', 'not interested', 'not now',
-    'maybe later', 'not today', 'start over', 'scratch that',
-    'remove', 'clear', 'reset it',
+    'maybe later', 'not today', 'scratch that',
+    'remove', 'clear',
     // Extended natural-language cancel variants
     'cancel it', 'cancel that', 'cancel order', 'cancel booking',
     'i want to cancel', 'please cancel', 'end', 'abort',
     'no thanks', 'no thank you', 'dont bother', 'dont want it',
     'i want out', 'get me out', 'i want to stop', 'leave me',
-    'not for me', 'go back',
+    'not for me',
+    // NOTE: "go back", "start over", "restart", "reset it" removed from CANCEL.
+    // These are navigation intent, not cancellation intent. A customer at SELECT_ITEM
+    // saying "go back" wants the previous menu, not their entire session wiped.
+    // These now only appear in SHOW_MENU and are handled as navigation mid-flow.
   ],
   GREETING: [
     'hi', 'hello', 'hey', 'start', 'begin', 'good morning',
@@ -389,8 +393,15 @@ export const think = async ({ message, session, business, phone }) => {
     return { action: 'SHOW_MENU' };
   }
 
-  // 3. Greeting — ALWAYS resets to welcome, even inside active flows (v7 rule)
+  // 3. Greeting — snaps to welcome ONLY when no flow is active.
+  //    Mid-flow greetings (e.g. "hi thanks", "ok hello") are treated as
+  //    CONTINUE_FLOW so the customer never loses their order/booking by saying "hi".
   if (GREETING_REGEX.test(raw)) {
+    if (session?.currentFlow) {
+      // Mid-flow greeting — pass to flow unchanged (e.g. "hi" at QUANTITY is noise)
+      logDecision({ raw, normalized, intent: 'GREETING', action: 'CONTINUE_FLOW', source: 'greeting-mid-flow' });
+      return { action: 'CONTINUE_FLOW' };
+    }
     logDecision({ raw, normalized, intent: 'GREETING', action: 'GREET', source: 'greeting-regex' });
     return { action: 'GREET' };
   }
@@ -456,7 +467,8 @@ export const think = async ({ message, session, business, phone }) => {
       const strictHere = strictMatch(normalized);
       if (strictHere === 'CANCEL')    return { action: 'CANCEL' };
       if (strictHere === 'CONFIRM')   return { action: 'CONFIRM' };
-      if (strictHere === 'SHOW_MENU') return { action: 'SHOW_MENU' };
+      // FIX: "menu"/"go back" at a protected step → CANCEL (triggers confirm-cancel UI)
+      if (strictHere === 'SHOW_MENU') return { action: 'CANCEL' };
       // Everything else — flow owns it, no AI
       logDecision({ raw, normalized, intent: null, action: 'CONTINUE_FLOW', source: 'protected-step' });
       return { action: 'CONTINUE_FLOW' };
@@ -467,7 +479,10 @@ export const think = async ({ message, session, business, phone }) => {
 
     if (strictInFlow === 'CANCEL')      return { action: 'CANCEL' };
     if (strictInFlow === 'CONFIRM')     return { action: 'CONFIRM' };
-    if (strictInFlow === 'SHOW_MENU')   return { action: 'SHOW_MENU' };
+    // FIX: SHOW_MENU mid-flow → ask to confirm cancel rather than immediately wiping session.
+    // "menu", "go back", "start over" etc. mid-order now prompt the customer to confirm
+    // they want to leave before destroying their cart/booking state.
+    if (strictInFlow === 'SHOW_MENU')   return { action: 'CANCEL' };
     if (strictInFlow === 'QUESTION')    return { action: 'ENQUIRY', intent: 'QUESTION' };
     if (strictInFlow === 'SUPPORT')     return { action: 'SUPPORT', intent: 'SUPPORT' };
     if (strictInFlow === 'PAYMENT')     return { action: 'AI_PAYMENT_HELP', intent: 'PAYMENT' };

@@ -133,6 +133,7 @@ export const initiatePayment = async (orderId, business) => {
 // [PAY-F1] Status filter expanded to include 'payment_failed' (retry after rejection)
 // [PAY-F2] paymentProof: null check preserved to prevent double-acceptance
 // [PAY-F3] Falls back to conversationMemoryService if primary query finds nothing
+// [PAY-F4] sessionOrderId: when present, uses _id lookup to prevent cross-customer collisions
 export const receiveProof = async (customerPhone, tenantId, imageUrl, tenant = null, business = null, sessionOrderId = null) => {
   const cutoff = new Date(Date.now() - PROOF_ELIGIBLE_HOURS * 60 * 60 * 1000);
 

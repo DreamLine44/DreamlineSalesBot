@@ -47,7 +47,13 @@ export function buildWelcomeUI(business) {
   // Strip any "Type X to Y" / "tap X to Z" instructions from the body — the
   // buttons already communicate available actions, so repeating them as text
   // is redundant and looks unprofessional. We keep the greeting portion only.
-  const rawBody = getLabel(business, 'welcomeMessage') || getLabel(business, 'welcome') || `👋 Hi there! Welcome to *${business?.name || 'us'}*. How can we help you today?`;
+  // ── Professional welcome message ─────────────────────────────────────────
+  // Time-of-day greeting keeps the message warm but not overly casual.
+  // Falls back gracefully through tenant config → time-aware default.
+  const _hour = new Date().getHours();
+  const _timeGreeting = _hour < 12 ? 'Good morning' : _hour < 17 ? 'Good afternoon' : 'Good evening';
+  const _defaultWelcome = `${_timeGreeting}! 👋 Thank you for reaching out to *${business?.name || 'us'}*. We're delighted to assist you. Please select an option below to get started.`;
+  const rawBody = getLabel(business, 'welcomeMessage') || getLabel(business, 'welcome') || _defaultWelcome;
   const body = sanitiseWelcomeBody(rawBody);
 
   if (buttons.length === 1) {
