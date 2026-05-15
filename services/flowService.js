@@ -1,5 +1,5 @@
 /**
- * services/flowService.js — Dreamline Sales Bot v20.0 (v18 + v19 merged)
+ * services/flowService.js — Dreamline Sales Bot v20.0 (definitive)
  *
  * LAYER 2 — FLOW LOGIC ONLY.
  *
@@ -195,7 +195,7 @@ const WORD_NUMBERS = {
   //
   // teens / low numbers
   'wan':1, 'wun':1, 'onne':1,                       // "one"
-  'tow':2, 'tow':2, 'tu':2, 'too':2,                // "two"
+  'tow':2, 'tu':2, 'too':2,                          // "two"
   'fore':4, 'for':4,                                  // "four"
   'fife':5, 'fiv':5,                                  // "five"
   'sex':6, 'siks':6,                                  // "six"
@@ -205,7 +205,7 @@ const WORD_NUMBERS = {
   'ten':10,                                            // already canonical, kept for clarity
   'elevan':11, 'elever':11, 'elvn':11,               // "eleven"
   'twelv':12, 'twelf':12, 'twleve':12,               // "twelve"
-  'thirten':13, 'thirten':13,                         // "thirteen"
+  'thirten':13, 'thirtteen':13,                       // "thirteen"
   'forteen':14, 'fourten':14, 'forten':14,           // "fourteen"
   'fiften':15, 'fiveteen':15,                         // "fifteen"
   'sixten':16, 'sixteen':16,                          // "sixteen" (canonical + alt)
@@ -214,16 +214,16 @@ const WORD_NUMBERS = {
   'ninten':19, 'nineteen':19,                         // "nineteen"
   // tens
   'twentey':20, 'tweny':20, 'twenti':20,             // "twenty"
-  'thirthy':30, 'thiry':30, 'thirthy':30,            // "thirty"
+  'thirthy':30, 'thiry':30,                           // "thirty"
   'fourty':40, 'foty':40,                             // "forty" (very common misspelling)
   'fity':50, 'fifthy':50, 'fiffty':50,               // "fifty"
   'sixthy':60, 'sixy':60,                             // "sixty"
   'seventy':70,                                        // canonical, already above
   'sevnty':70, 'sevanty':70,                         // "seventy"
   'eighty':80,                                         // canonical, already above
-  'eightey':80, 'eighthy':80, 'eigthy':80,           // "eighty"
+  'eightey':80, 'eighthy':80, 'eigthy':80,            // "eighty"
   // ninety — the bug that triggered this fix
-  'ninty':90, 'ninety':90, 'niety':90, 'ninty':90,
+  'ninty':90, 'niety':90,
   'ninety':90, 'ninnty':90, 'ninity':90, 'ninite':90,
 };
 
@@ -1498,6 +1498,26 @@ async function handleFinalize(session, business, tenant) {
 
     const customerPhone = session.customerPhone || session.phone;
 
+    // Capture customerName and partySize from session for admin visibility and reminders
+    const _customerName = session.customerName || null;
+    const _partySize    = session.data?.partySize || null;
+
+    // [SC-2] Attempt to parse the free-text date into a JS Date for the scheduler.
+    // The scheduler uses parsedDate for accurate reminder timing — if null it falls
+    // back to the createdAt window which is imprecise. Best-effort: never crash if
+    // the date string is unrecognised (e.g. "next Friday", "tomorrow", "25 June").
+    let _parsedDate = null;
+    if (date) {
+      try {
+        const d = new Date(date);
+        // Reject NaN and clearly wrong dates (Date parses many strings but some give
+        // Invalid Date or year 2001 from bare "June" with no year context)
+        if (!isNaN(d.getTime()) && d.getFullYear() >= new Date().getFullYear()) {
+          _parsedDate = d;
+        }
+      } catch { /* non-fatal — scheduler falls back to createdAt window */ }
+    }
+
     try {
       await Booking.create({
         phone:         customerPhone,
@@ -1510,6 +1530,12 @@ async function handleFinalize(session, business, tenant) {
         duration:      serviceDuration || null,
         status:        'pending',
         notifiedAt:    null,
+        // [FIX] Persist customer name and party size — required for admin workflow
+        // and booking reminder templates. Previously always null in every booking.
+        customerName:  _customerName,
+        partySize:     _partySize,
+        // [SC-2] Parsed date for accurate scheduler reminder timing
+        parsedDate:    _parsedDate,
       });
     } catch (err) {
       logger.error('[flowService] Booking save error', { err: err.message, date, time, service, customerPhone });

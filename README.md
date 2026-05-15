@@ -154,3 +154,55 @@ This branch was a completely different architecture (in-memory sessions, flows/ 
 - `QTY_LARGE_CONFIRM` / `QTY_LARGE_CHANGE` button IDs wired into QUANTITY case in flowService — previously the large-order buttons were generated but never handled
 - `npm test` script added to package.json
 - PHRASE_NUMBERS sorted longest-first at module load time (no runtime sort cost per message)
+
+---
+
+## v18.0.0 — Full Audit Fix (this build)
+
+All 4 critical issues and 6 high-priority gaps from the pre-launch audit resolved.
+
+### Critical fixes
+
+| # | Issue | Fix |
+|---|-------|-----|
+| C-1 | **No graceful shutdown** — MongoDB connections leaked on every deploy/restart | Added `SIGTERM`/`SIGINT` handlers in `app.js`; HTTP server drains, scheduler stops, MongoDB disconnects cleanly within a 10 s timeout |
+| C-2 | **Zero v15 codebase tests** | New `tests/v18.test.mjs` — 40+ assertions covering all 8 fixes; run with `npm test` |
+| C-3 | **WhatsApp template names hardcoded** — failed in Meta Business Manager | Template names now read from `TEMPLATE_NAME_*` env vars with defaults. Change any name without a code deploy. |
+| C-4 | **Scheduler intervals never stored** — leaked on shutdown | `schedulerService.js` now stores all `setInterval`/`setTimeout` handles and exports `stopScheduler()` for graceful cleanup |
+
+### High-priority fixes
+
+| # | Issue | Fix |
+|---|-------|-----|
+| H-1 | **No admin WhatsApp command to exit human mode** | `RESUME BOT <phone>` command added to `adminPaymentHandler.js`. Admin texts it from WhatsApp; bot clears `humanMode`, notifies customer. |
+| H-2 | **Groq menu prices hardcoded to 'D' (Dalasi)** | `groqService.js` now reads `business.payment.currency` (falls back to `business.currency`, then `'D'`) |
+| H-3 | **No input sanitization — prompt injection risk** | New `utils/sanitize.js` — strips 15 known injection patterns (LLaMA tokens, ChatML prefixes, DAN variants, etc.); applied to all Groq prompt paths |
+| H-4 | **Order tracking was a dead-end text** | `TRACK_ORDER` intent now does a real MongoDB lookup; returns item, qty, total, date, and a customer-friendly status label |
+| H-5 | **Booking model missing key fields** | Added `customerName`, `partySize`, `adminConfirmedAt/By`, `adminDeclinedAt/By`, `adminNote`, `shortId` + pre-save hook |
+| H-6 | **Scheduler intervals not cleaned up** | Combined with C-4 above — `stopScheduler()` clears everything |
+
+### New env vars (v18)
+
+```
+TEMPLATE_NAME_ABANDONED_CART=your_approved_name
+TEMPLATE_NAME_ORDER_CONFIRMED=your_approved_name
+TEMPLATE_NAME_BOOKING_REMINDER=your_approved_name
+TEMPLATE_NAME_PAYMENT_REMINDER=your_approved_name
+TEMPLATE_NAME_REENGAGEMENT=your_approved_name
+```
+
+### Admin WhatsApp commands (updated)
+
+| Command | Description |
+|---------|-------------|
+| `APPROVE <shortId>` | Approve payment (e.g. `APPROVE ABC123`) |
+| `REJECT <shortId>` | Reject payment with re-prompt to customer |
+| `RESUME BOT <phone>` | **[NEW]** Resume bot for customer in human-handoff mode |
+
+### Running tests
+
+```bash
+npm test          # runs nlp.test.mjs + v18.test.mjs
+npm run test:nlp  # NLP/phrase parser only
+npm run test:v18  # audit fix tests only
+```

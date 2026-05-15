@@ -387,8 +387,14 @@ export const think = async ({ message, session, business, phone }) => {
     return { action: 'CONTINUE_FLOW' };
   }
 
-  // 2. "0" shortcut → always show menu
+  // 2. "0" shortcut → show menu (no flow) or trigger cancel-confirm (mid-flow)
+  // [FIX] "0" mid-flow should ask the customer to confirm they want to leave,
+  // not silently wipe their cart. Consistent with "menu" mid-flow behaviour.
   if (raw === '0') {
+    if (session?.currentFlow) {
+      logDecision({ raw, normalized, intent: 'CANCEL', action: 'CANCEL', source: 'shortcut-mid-flow' });
+      return { action: 'CANCEL' };
+    }
     logDecision({ raw, normalized, intent: 'SHOW_MENU', action: 'SHOW_MENU', source: 'shortcut' });
     return { action: 'SHOW_MENU' };
   }

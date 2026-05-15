@@ -19,8 +19,9 @@ import { handleMetaCallback, fullOnboardingHandler } from "./controllers/onboard
 import { errorHandler } from "./middlewares/errorHandler.js";
 import logger from "./config/logger.js";
 import { requireApiKey, requireSuperAdminKey, requireApiKeyForDashboard } from "./middlewares/authMiddleware.js";
+import mongoose from 'mongoose';
+import { startScheduler, stopScheduler } from './services/schedulerService.js';
 import { groqHealthCheck }                    from "./services/groqService.js";
-import { startScheduler }                     from "./services/schedulerService.js";
 
 const _require = createRequire(import.meta.url);
 const { version: APP_VERSION } = _require("./package.json");
@@ -173,6 +174,62 @@ app.use(errorHandler);
 
 const PORT = process.env.PORT || 5000;
 
+// ── Graceful shutdown ─────────────────────────────────────────────────────────
+// Called on SIGTERM (container orchestrators, PM2, Render, Railway) and SIGINT
+// (Ctrl-C in dev). Stops accepting new connections, drains existing ones, clears
+// scheduler intervals, then closes the MongoDB connection cleanly.
+//
+// Without this:
+//   - MongoDB connections leak on every rolling deploy
+//   - Scheduler setIntervals keep firing in the dying process for up to 30 s
+//   - In-flight requests get hard-killed with no response to the client
+//
+// Timeout: 10 s — if drain takes longer than that, force-exit so the process
+// manager doesn't have to SIGKILL us.
+
+let httpServer = null; // assigned after listen()
+
+async function gracefulShutdown(signal) {
+  logger.info(`[Shutdown] ${signal} received — starting graceful shutdown`);
+
+  // 1. Stop scheduler intervals so no new DB queries fire during drain
+  stopScheduler();
+
+  // 2. Stop accepting new HTTP connections
+  if (httpServer) {
+    await new Promise((resolve) => httpServer.close(resolve));
+    logger.info('[Shutdown] HTTP server closed');
+  }
+
+  // 3. Close MongoDB connection
+  try {
+    await mongoose.connection.close(false);
+    logger.info('[Shutdown] MongoDB disconnected');
+  } catch (err) {
+    logger.warn('[Shutdown] MongoDB close error (non-fatal)', { err: err.message });
+  }
+
+  logger.info('[Shutdown] Done — exiting cleanly');
+  process.exit(0);
+}
+
+// Force-exit safety net: if graceful drain takes > 10 s, hard exit.
+// Prevents zombie processes when a downstream hangs.
+function withShutdownTimeout(signal) {
+  const timer = setTimeout(() => {
+    logger.error('[Shutdown] Timeout — forcing exit');
+    process.exit(1);
+  }, 10_000);
+  timer.unref(); // don't prevent the event loop from draining during normal shutdown
+  gracefulShutdown(signal).catch((err) => {
+    logger.error('[Shutdown] Unexpected error', { err: err.message });
+    process.exit(1);
+  });
+}
+
+process.on('SIGTERM', () => withShutdownTimeout('SIGTERM'));
+process.on('SIGINT',  () => withShutdownTimeout('SIGINT'));
+
 (async () => {
   // ── PRODUCTION SAFETY CHECKS ──
   // Refuse to start in production if critical security config is missing.
@@ -206,7 +263,7 @@ const PORT = process.env.PORT || 5000;
     logger.warn(`[Groq] Health check failed: ${groqStatus.error} — AI replies will use standard fallback`);
   }
 
-  app.listen(PORT, () => {
+  httpServer = app.listen(PORT, () => {
     logger.info(`Dreamline Sales Bot v${APP_VERSION} running on port ${PORT}`);
     logger.info("Onboarding: PUT /register/whatsapp (Step 1: connect WhatsApp + create tenant) | POST /register/business (Step 2: configure bot, requires x-api-key) | POST /register/full (unified single-call onboarding)");
     logger.info("Routes: /webhook | /business | /dashboard | /platform | /admin/tenants | /admin/messages");

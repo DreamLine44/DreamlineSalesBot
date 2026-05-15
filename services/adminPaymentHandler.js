@@ -390,6 +390,72 @@ function collectAdmins(tenant, business) {
 export const handleAdminTextCommand = async (messageText, tenantId, adminPhone, tenant, business) => {
   const upper = (messageText || '').trim().toUpperCase();
 
+  // ── [FIX] Admin RESUME BOT command ────────────────────────────────────────
+  // Problem: there was no WhatsApp command to exit human-handoff mode.
+  // The only way was the REST API — useless when the admin is on their phone.
+  //
+  // Syntax (case-insensitive):
+  //   RESUME BOT <phone>         — resume bot for a specific customer
+  //   RESUME BOT +220XXXXXXXX   — works with or without leading +
+  //
+  // The command clears session.humanMode so the bot resumes responding normally.
+  // Admin receives confirmation. Customer receives a "bot is back" message.
+  // Safe to call repeatedly (idempotent).
+  //
+  // Example (admin types in WhatsApp):
+  //   "RESUME BOT 2207654321"
+  //   "resume bot +2207654321"
+  // ─────────────────────────────────────────────────────────────────────────
+  const resumeMatch = upper.match(/^RESUME\s+BOT\s+([\d+]+)$/);
+  if (resumeMatch) {
+    // Normalise phone: strip leading + for internal storage consistency
+    const rawPhone     = resumeMatch[1].replace(/^\+/, '');
+    const customerPhone = rawPhone;
+
+    try {
+      // Lazy import to avoid circular dep (sessionService → webhookController)
+      const { getSession, updateSession } = await import('./sessionService.js');
+
+      const session = await getSession(customerPhone, tenantId);
+      if (!session) {
+        return `⚠️ No active session found for +${customerPhone}. Bot may already be inactive for this customer.`;
+      }
+
+      if (!session.humanMode) {
+        return `ℹ️ Bot is already active for +${customerPhone} — no change needed.`;
+      }
+
+      await updateSession(customerPhone, tenantId, {
+        humanMode:         false,
+        humanModeNotified: false,
+      });
+
+      // Notify the customer that the bot has resumed
+      const { dispatch } = await import('./messageService.js');
+      const businessName = business?.name || 'us';
+      await dispatch(
+        customerPhone,
+        {
+          type: 'text',
+          body:
+            `✅ You've been reconnected to the *${businessName}* assistant.\n\n` +
+            `Type *Hi* or *Menu* to continue.`,
+        },
+        tenant,
+      ).catch((err) =>
+        logger.warn('[AdminCmd] RESUME BOT — could not notify customer', { err: err.message }),
+      );
+
+      logger.info('[AdminCmd] RESUME BOT executed', { adminPhone, customerPhone, tenantId });
+      return `✅ Bot resumed for +${customerPhone}. Customer has been notified.`;
+
+    } catch (err) {
+      logger.error('[AdminCmd] RESUME BOT failed', { err: err.message, customerPhone });
+      return `⚠️ Could not resume bot for +${customerPhone}: ${err.message}`;
+    }
+  }
+
+  // ── APPROVE / REJECT payment commands ──────────────────────────────────────
   // [FIX-13] Use [a-fA-F0-9] instead of /i on [A-F0-9].
   // The /i flag does NOT expand character classes — [A-F0-9] only matches
   // uppercase hex regardless of the /i flag. The code works today because

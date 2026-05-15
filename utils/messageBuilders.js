@@ -52,7 +52,7 @@ export function buildWelcomeUI(business) {
   // Falls back gracefully through tenant config → time-aware default.
   const _hour = new Date().getHours();
   const _timeGreeting = _hour < 12 ? 'Good morning' : _hour < 17 ? 'Good afternoon' : 'Good evening';
-  const _defaultWelcome = `${_timeGreeting}! 👋 Thank you for reaching out to *${business?.name || 'us'}*. We're delighted to assist you. Please select an option below to get started.`;
+  const _defaultWelcome = `${_timeGreeting}! 👋 Thank you for reaching out to *${business?.name || 'us'}*. We are delighted to assist you. Please select an option below to get started.`;
   const rawBody = getLabel(business, 'welcomeMessage') || getLabel(business, 'welcome') || _defaultWelcome;
   const body = sanitiseWelcomeBody(rawBody);
 
@@ -265,7 +265,7 @@ export function buildPaymentInstructionsUI(business, amount, orderId = null) {
 
 export function buildPaymentProofReceivedUI(business) {
   const msg = getLabel(business, 'paymentProofReceived') ||
-    `✅ *Payment proof received.*\n\n⏳ We're verifying your payment — this usually takes a few minutes.`;
+    `✅ *Payment proof received.*\n\n⏳ We are verifying your payment — this usually takes a few minutes.`;
   return { type: 'text', body: clean(msg) };
 }
 
@@ -298,7 +298,7 @@ export function buildClarificationUI(business) {
   if (canOrder && canBook) question = "What would you like to do — *order*, *book*, or ask a *question*?";
   else if (canOrder)       question = "Would you like to place an order?";
   else if (canBook)        question = "Would you like to book an appointment?";
-  else                     question = "How can I help you? Type *0* to see options.";
+  else                     question = "How may we assist you? Type *0* to see all options.";
 
   // Use buttons if we have ≥2 options
   const buttons = cfg.ui.fallbackButtons;
@@ -338,7 +338,7 @@ export function buildFallbackUI(business) {
 
 export function buildLoopFallbackUI(business) {
   const cfg      = getModeConfig(business);
-  const loopText = getLabel(business, 'loopFallback') || "Let me show you what I can do:";
+  const loopText = getLabel(business, 'loopFallback') || "Here is what we can help you with:";
   const buttons  = cfg.ui.welcomeButtons;
 
   if (buttons.length < 2) {
@@ -357,7 +357,7 @@ export function buildInterruptUI(business, currentFlow, newFlow) {
   const next    = newFlow    === 'ORDER' ? 'place an order' : 'make a booking';
   return {
     type:    'buttons',
-    body:    clean(`You're in the middle of ${current}.\n\nSwitch and ${next} instead?`),
+    body:    clean(`You are currently in the middle of ${current}.\n\nWould you like to switch and ${next} instead?`),
     buttons: cfg.ui.switchButtons,
   };
 }
@@ -366,7 +366,7 @@ export const interruptPrompt = (currentFlow, newFlow) => {
   const current = currentFlow === 'ORDER' ? 'ordering' : 'booking';
   const next    = newFlow    === 'ORDER' ? 'place an order' : 'make a booking';
   return clean(
-    `You're in the middle of ${current}.\n\nSwitch and ${next} instead?\n\n` +
+    `You are currently in the middle of ${current}.\n\nWould you like to switch and ${next} instead?\n\n` +
     `✅ Reply *YES* to switch\n❌ Reply *NO* to continue`,
   );
 };
@@ -375,7 +375,7 @@ export const interruptPrompt = (currentFlow, newFlow) => {
 
 export function buildOrderSuccessUI(business, item, quantity) {
   const base   = getLabel(business, 'orderSuccess', item, quantity)
-                 || `✅ Order confirmed!\n\n${quantity > 1 ? `${quantity}× ` : ''}*${item}* — we're on it! 🍳`;
+                 || `✅ *Order confirmed!*\n\n${quantity > 1 ? `${quantity}× ` : ''}*${item}* — your order is being prepared. 🍳`;
   const custom = business?.customMessages?.afterOrder?.trim();
   return { type: 'text', body: clean(custom ? `${base}\n\n${custom}` : base) };
 }
@@ -384,16 +384,16 @@ export function buildBookingSuccessUI(business, date, time, service = null) {
   // [v11] Pass (date, time, service) — modes.js bookingSuccess label accepts all 3
   const base = service
     ? getLabel(business, 'bookingSuccess', date || service, time, service)
-      || `✅ Appointment confirmed!\n\n💅 *${service}*${date ? `\n📅 *${date}*` : ''}${time ? `\n⏰ *${time}*` : ''}\n\nSee you soon! ✨`
+      || `✅ *Appointment confirmed!*\n\n💅 *${service}*${date ? `\n📅 *${date}*` : ''}${time ? `\n⏰ *${time}*` : ''}\n\nWe look forward to seeing you. ✨`
     : getLabel(business, 'bookingSuccess', date, time)
-      || `✅ Booking confirmed!\n\n📅 *${date}*${time ? `\n⏰ *${time}*` : ''}\n\nLooking forward to it! 😊`;
+      || `✅ *Booking confirmed!*\n\n📅 *${date}*${time ? `\n⏰ *${time}*` : ''}\n\nWe look forward to seeing you.`;
   const custom = business?.customMessages?.afterBooking?.trim();
   return { type: 'text', body: clean(custom ? `${base}\n\n${custom}` : base) };
 }
 
 // Backward-compat plain strings
-export const orderSuccess   = (item, qty) => `✅ *Order confirmed!*\n\n${qty > 1 ? `${qty}× ` : ''}*${item}* — we're preparing it now.\nThank you! 😊`;
-export const bookingSuccess = (date, time) => `✅ *Booking confirmed!*\n\n📅 Date: *${date}*${time ? `\n⏰ Time: *${time}*` : ''}\n\nWe look forward to seeing you!`;
+export const orderSuccess   = (item, qty) => `✅ *Order confirmed!*\n\n${qty > 1 ? `${qty}× ` : ''}*${item}* — your order is being prepared.\nThank you! 🙏`;
+export const bookingSuccess = (date, time) => `✅ *Booking confirmed!*\n\n📅 Date: *${date}*${time ? `\n⏰ Time: *${time}*` : ''}\n\nWe look forward to seeing you.`;
 
 // ─── ASK QUESTION PROMPT UI ──────────────────────────────────────────────────
 // Phase 1 of the question flow: customer just tapped "Ask a Question".
@@ -416,7 +416,7 @@ export function buildAskQuestionPromptUI(business) {
   ].filter(Boolean).join('\n');
 
   const body = clean(
-    `Sure — what would you like to know? 😊\n\nYou can ask about:\n${topics}\n\nJust type your question below 👇`,
+    `Of course — what would you like to know?\n\nYou can ask about:\n${topics}\n\nPlease type your question below.`,
   );
 
   return { type: 'text', body };
@@ -443,9 +443,9 @@ export function buildEnquiryUI(business) {
   ].filter(Boolean).join('\n');
 
   const body = clean(
-    `Sure! 😊 What would you like to know?\n\nYou can ask about:\n${topics}\n\n` +
-    `Just type your question and I'll do my best to help.\n\n` +
-    `Or use the buttons below to get started 👇`,
+    `Certainly! What would you like to know?\n\nYou can ask about:\n${topics}\n\n` +
+    `Please type your question and we will do our best to assist you.\n\n` +
+    `Or use the options below to get started:`,
   );
 
   const buttons = cfg.ui.fallbackButtons.slice(0, 3);
@@ -465,7 +465,7 @@ export function buildCancelUI(business) {
   // Custom cancelMsg label is used as the body text (owner can override).
   // Default: warm, professional acknowledgement — never abrupt.
   const msg = getLabel(business, 'cancelMsg') ||
-    `No worries at all! 😊\n\nYour request has been cancelled. Whenever you're ready, we're here to help.\n\n*${bizName}* — happy to assist you anytime.`;
+    `Your request has been cancelled.\n\nWhenever you are ready, we are here to help.\n\n*${bizName}* — happy to assist you anytime.`;
 
   const buttons = cfg.ui.welcomeButtons;
 
@@ -480,7 +480,7 @@ export function buildCancelUI(business) {
 }
 
 export const cancelMessage = () =>
-  "✅ *Cancelled*\n\nWhenever you're ready:\n• Type *Order* to place an order\n• Type *Book* to make a reservation";
+  "✅ *Cancelled*\n\nWhenever you are ready:\n• Type *Order* to place an order\n• Type *Book* to make a reservation";
 
 export const fallback = (business) => buildSmartFallbackUI(business).body;
 
@@ -539,7 +539,7 @@ export const invalidOption         = (menuLength) =>
 export function buildOptionsUI(business) {
   const cfg      = getModeConfig(business);
   const buttons  = cfg?.ui?.welcomeButtons;
-  const body     = `How can we help you today? Please choose an option below 👇`;
+  const body     = `How may we assist you today? Please select an option below.`;
 
   if (buttons && buttons.length >= 2) {
     return { type: 'buttons', body, buttons: buttons.slice(0, 3) };
@@ -551,7 +551,7 @@ export function buildOptionsUI(business) {
   if (canOrder) fallbackLines.push('• *Order* — place an order');
   if (canBook)  fallbackLines.push('• *Book* — make a reservation');
   fallbackLines.push('• *Question* — ask us anything');
-  return { type: 'text', body: `How can we help?\n\n${fallbackLines.join('\n')}` };
+  return { type: 'text', body: `How may we assist you?\n\n${fallbackLines.join('\n')}` };
 }
 
 // ─── buildOrderSummaryText — v13.0 ───────────────────────────────────────────

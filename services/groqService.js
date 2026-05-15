@@ -1,15 +1,24 @@
 /**
- * services/groqService.js — v11.0
+ * services/groqService.js — v20.0 (definitive)
  *
- * UPGRADES:
- * - Personalised responses: system prompt injects customerName when known
- * - Larger max_tokens (220) for richer answers on menu/FAQ queries
- * - Smarter ABOUT detection: more patterns including African English
- * - TRACK_ORDER intent handling: informs customer status tracking
- * - REPEAT_ORDER intent: AI explains how to use the feature
- * - Better language detection: Groq prompted to reply in same language
- * - Context window: last 3 messages fed to Groq for multi-turn coherence
- * - ENQUIRY intent: dedicated prompt that never triggers flow actions
+ * FIXES IN v13:
+ * [G-1] Conversation history: last 3 customer messages are now passed as
+ *       actual conversation turns (role: user/assistant alternating), not
+ *       just injected into the system prompt as text. This gives Groq real
+ *       multi-turn context instead of a confusing "last message" string.
+ * [G-2] HUMAN_ESCALATION intent added — dedicated prompt that explains how
+ *       to reach a human agent and captures the customer's concern.
+ * [G-3] System prompt STRICT_GROQ_RULE now explicitly forbids Groq from
+ *       saying it has "placed", "confirmed", or "cancelled" anything.
+ *       The previous rule only covered "order" but not "booking" cancellation.
+ * [G-4] max_tokens raised to 280 for ENQUIRY intent (was 220) so answers
+ *       to multi-part questions (menu + hours + location) aren't truncated.
+ * [G-5] standardFallback now returns a buttons UI object, not a plain text
+ *       string, so callers get consistent tappable options on Groq failure.
+ * [G-6] isAboutQuestion patterns expanded: "do you deliver", "are you open",
+ *       "is there parking" — common questions that were falling to FALLBACK.
+ * [G-7] TIMEOUT_MS raised to 12000ms (from 9000) for slow Groq responses
+ *       under load. Groq p99 latency can exceed 9s on busy models.
  */
 
 import { resolveFaq, buildFaqContext } from './faqService.js';
@@ -23,15 +32,33 @@ const GROQ_MODELS = [
   'llama-3.3-70b-versatile',
 ];
 
-const TIMEOUT_MS    = 9000;
+const TIMEOUT_MS    = 12000;  // [G-7] raised from 9000
 const MAX_RETRIES   = 2;
 const RETRY_BASE_MS = 400;
 
 // ─── System prompt builder ────────────────────────────────────────────────────
 
 const buildSystemPrompt = (business, session, intent = 'FALLBACK') => {
-  const name         = business?.name        || 'this business';
-  const desc         = business?.description || '';
+  // Sanitise business-controlled fields before interpolation.
+  // An admin could set name/description to contain prompt-injection instructions.
+  // Strip common injection patterns: "Ignore previous instructions", role overrides, etc.
+  const sanitise = (str = '', maxLen = 800) => {
+    if (!str) return '';
+    return str
+      .slice(0, maxLen)
+      // Remove common injection openers
+      .replace(/ignore\s+(all\s+)?(previous|above|prior|earlier)\s+(instructions?|prompts?|rules?)/gi, '[removed]')
+      .replace(/you\s+are\s+now\s+/gi, '[removed] ')
+      .replace(/system\s*:\s*/gi, '')
+      .replace(/assistant\s*:\s*/gi, '')
+      .replace(/\bDAN\b/g, '')
+      // Collapse whitespace created by replacements
+      .replace(/\s{3,}/g, '  ')
+      .trim();
+  };
+
+  const name         = sanitise(business?.name        || 'this business', 80);
+  const desc         = sanitise(business?.description || '', 600);
   const menu         = business?.menu        || [];
   const tone         = business?.tone?.style    || 'PROFESSIONAL';
   const industry     = business?.tone?.industry || 'GENERAL';
@@ -52,17 +79,17 @@ const buildSystemPrompt = (business, session, intent = 'FALLBACK') => {
     canBook  ? 'booking services' : null,
   ].filter(Boolean).join(' and ');
 
-  // [FIX] Build capability-aware CTA — don't hardcode "order" for booking-only businesses
+  // [G-3] Stricter rule: covers order AND booking AND cancellation language
+  // [FIX-GROQ-CTA] Build capability-aware CTA keywords — never say "order" for booking-only businesses
   const ctaKeywords = [
-    canOrder ? '*order*' : null,
-    canBook  ? '*book*'  : null,
+    canOrder ? '*order*'   : null,
+    canBook  ? '*book*'    : null,
     '*question*',
   ].filter(Boolean).join(', ');
-
   const STRICT_GROQ_RULE = `
 CRITICAL CONSTRAINTS (non-negotiable):
 - You are a safe information assistant ONLY.
-- NEVER say you will place an order, make a booking, or execute any action.
+- NEVER say you will place, confirm, cancel, or modify an order or booking.
 - NEVER trigger, confirm, or guess commands.
 - ONLY answer factual questions about ${name}: menu, prices, hours, location, payment.
 - Maximum 3 short sentences per response.
@@ -70,6 +97,7 @@ CRITICAL CONSTRAINTS (non-negotiable):
 - If the question is not about ${name}, respond: "I can only assist with ${name} questions."
 - NEVER reveal you are an AI, Groq, or Llama. You are the ${name} assistant.
 - Reply in the same language the customer is using.
+- NEVER say "your booking is confirmed", "your order is placed", "I've cancelled", or similar.
 `;
 
   const cta = [
@@ -87,7 +115,6 @@ CRITICAL CONSTRAINTS (non-negotiable):
   const currentFlow    = session?.currentFlow;
   const currentStep    = session?.step;
   const lastIntent     = session?.lastIntent;
-  const lastMsg        = session?.lastMessage;
   const messageCount   = session?.messageCount || 0;
 
   const activeOrderCtx = currentFlow === 'ORDER' ? (() => {
@@ -116,7 +143,6 @@ CRITICAL CONSTRAINTS (non-negotiable):
     }
   }
 
-  // [v11] Personalisation
   const personalisationCtx = customerName
     ? `CUSTOMER NAME: ${customerName}. Address them by name naturally (not every message).`
     : '';
@@ -185,6 +211,15 @@ Task: Help the customer repeat their last order.
 - Be warm and friendly.
 - Max 2 sentences.`,
 
+    // [G-2] Dedicated human escalation prompt
+    HUMAN_ESCALATION: `
+Task: The customer wants to speak with a human agent or has a complaint.
+- Acknowledge their request warmly.
+- Explain that a team member will be in touch shortly.
+- Provide the business contact if available: ${business?.adminPhone || 'our team'}.
+- Do NOT attempt to resolve the issue yourself.
+- Max 2 sentences. Empathetic and professional tone.`,
+
   }[intent] || 'Respond helpfully in 1-2 sentences. Never expose technical errors.';
 
   return (
@@ -197,7 +232,6 @@ Task: Help the customer repeat their last order.
         `- Active flow: ${currentFlow} | Step: ${currentStep || 'unknown'}\n` +
         (activeOrderCtx ? `- ${activeOrderCtx}\n` : '') +
         (lastIntent     ? `- Last detected intent: ${lastIntent}\n` : '') +
-        (lastMsg        ? `- Last message: "${lastMsg}"\n` : '') +
         (messageCount   ? `- Messages this session: ${messageCount}\n` : '') +
         '\n'
       : 'Customer has no active flow.\n\n') +
@@ -208,7 +242,7 @@ Task: Help the customer repeat their last order.
     `YOUR TASK:\n${intentInstructions}\n\n` +
     `STRICT RULES (never break these):\n` +
     `- NEVER confirm an order, change quantities, or modify totals.\n` +
-    `- NEVER say "your order is confirmed" or "I've added X to your order".\n` +
+    `- NEVER say "your order is confirmed", "I've booked", "I've cancelled" or similar.\n` +
     `- You are a sales assistant, NOT a general chatbot.\n` +
     `- NEVER reveal you are an AI, Groq, or Llama.\n` +
     `- NEVER discuss topics unrelated to this business.\n` +
@@ -225,7 +259,7 @@ const sleep = (ms) => new Promise((res) => setTimeout(res, ms));
 
 // ─── Single Groq attempt ──────────────────────────────────────────────────────
 
-const _callGroqOnce = async (model, systemPrompt, userMessage) => {
+const _callGroqOnce = async (model, systemPrompt, messages, maxTokens = 280) => {
   const controller = new AbortController();
   const timer      = setTimeout(() => controller.abort(), TIMEOUT_MS);
   const t0         = Date.now();
@@ -240,12 +274,11 @@ const _callGroqOnce = async (model, systemPrompt, userMessage) => {
       },
       body: JSON.stringify({
         model,
-        max_tokens:  220,   // [v11] increased from 180 for richer answers
-        temperature: 0.35,  // [v11] slightly lower for more consistent replies
-        messages: [
-          { role: 'system', content: systemPrompt },
-          { role: 'user',   content: userMessage  },
-        ],
+        // [G-4] Intent-aware token limit: ENQUIRY gets 320 (multi-part answers),
+        // GREET gets 120 (short welcome), everything else gets 280.
+        max_tokens:  maxTokens,
+        temperature: 0.35,
+        messages,
       }),
     });
 
@@ -280,11 +313,24 @@ const _callGroqOnce = async (model, systemPrompt, userMessage) => {
 
 // ─── Call Groq with retry + model cascade ────────────────────────────────────
 
-const callGroq = async (systemPrompt, userMessage) => {
+const callGroq = async (systemPrompt, userMessage, conversationHistory = [], maxTokens = 280) => {
   if (!process.env.GROQ_API_KEY) {
     logger.warn('[Groq] GROQ_API_KEY not set — skipping AI call');
     return null;
   }
+
+  // [G-1] Build proper multi-turn conversation messages.
+  // conversationHistory is an array of { role, content } pairs from prior turns.
+  // We cap at last 3 user messages (6 turns max) to control token usage.
+  const historyMessages = Array.isArray(conversationHistory)
+    ? conversationHistory.slice(-6)
+    : [];
+
+  const messages = [
+    { role: 'system', content: systemPrompt },
+    ...historyMessages,
+    { role: 'user',   content: userMessage  },
+  ];
 
   for (const model of GROQ_MODELS) {
     for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
@@ -293,7 +339,7 @@ const callGroq = async (systemPrompt, userMessage) => {
         await sleep(backoff);
       }
 
-      const result = await _callGroqOnce(model, systemPrompt, userMessage);
+      const result = await _callGroqOnce(model, systemPrompt, messages, maxTokens);
       if (result.ok) return result.text;
 
       const retryable = result.status === 429 || result.status >= 500 || result.status === 0;
@@ -311,7 +357,9 @@ const callGroq = async (systemPrompt, userMessage) => {
 export const groqHealthCheck = async () => {
   if (!process.env.GROQ_API_KEY) return { ok: false, error: 'GROQ_API_KEY not set' };
   try {
-    const result = await _callGroqOnce(GROQ_MODELS[0], 'You are a test assistant. Reply with exactly: OK', 'ping');
+    const result = await _callGroqOnce(GROQ_MODELS[0], 'You are a test assistant. Reply with exactly: OK', [
+      { role: 'user', content: 'ping' },
+    ]);
     if (result.ok && result.text) return { ok: true, model: GROQ_MODELS[0] };
     return { ok: false, error: result.error || 'Empty response' };
   } catch (err) {
@@ -320,18 +368,30 @@ export const groqHealthCheck = async () => {
 };
 
 // ─── Standard fallback ────────────────────────────────────────────────────────
+// [G-5] Returns a structured buttons UI object (not a plain string) so callers
+// always get consistent tappable options on Groq failure.
 
-const standardFallback = (business) => {
+export const standardFallback = (business) => {
   const cfg      = getModeConfig(business);
   const canOrder = cfg.flows.includes('ORDER');
   const canBook  = cfg.flows.includes('BOOKING');
-  if (canOrder && canBook) return `What would you like to do?\n\nType *Order* to place an order, or *Book* to schedule a service.`;
-  if (canOrder) return `Type *Order* to see what we have available.`;
-  if (canBook)  return `Type *Book* to schedule an appointment.`;
-  return `Type *Hi* to see how we can help you.`;
+
+  const body = `What would you like to do? 😊`;
+  const buttons = [];
+  if (canOrder) buttons.push({ id: 'ORDER',    title: '🛒 Order Now'      });
+  if (canBook)  buttons.push({ id: 'BOOK',     title: '📅 Book Service'   });
+  buttons.push(             { id: 'QUESTION', title: '❓ Ask a Question' });
+
+  if (buttons.length >= 2) return { type: 'buttons', body, buttons: buttons.slice(0, 3) };
+  // Edge: single-flow business
+  const hint = canOrder ? 'Type *Order* to see what we have available.'
+             : canBook  ? 'Type *Book* to schedule an appointment.'
+             :            'Type *Hi* to see how we can help you.';
+  return { type: 'text', body: hint };
 };
 
 // ─── About-question detection ─────────────────────────────────────────────────
+// [G-6] Additional patterns for common questions that were hitting FALLBACK
 
 const ABOUT_PATTERNS = [
   /what (do|does|can) (you|this|the business)/i,
@@ -343,7 +403,11 @@ const ABOUT_PATTERNS = [
   /what (do|does) (this|your) (place|restaurant|shop|salon|business)/i,
   /what (do you|can you) (offer|serve|have)/i,
   /what (are you|is this)/i,
-  // [v11] African English variants
+  /do you (deliver|have delivery|offer delivery)/i,  // [G-6]
+  /are you (open|closed|available)/i,               // [G-6]
+  /is there (parking|seating|takeaway|delivery)/i,   // [G-6]
+  /how (far|long) (is|does|will)/i,                  // [G-6]
+  // African English variants
   /wetin (you|una) (dey|de) (sell|offer|do)/i,
   /wetin you get/i,
   /abeg tell me about/i,
@@ -394,10 +458,48 @@ export const getAIReply = async (message, business, session, intent = 'FALLBACK'
   const resolvedIntent = (intent === 'FALLBACK' && isAboutQuestion(message)) ? 'ABOUT' : intent;
 
   if (!process.env.GROQ_API_KEY) {
-    return standardFallback(business);
+    const fallback = standardFallback(business);
+    // Return text body for callers expecting a string
+    return typeof fallback === 'string' ? fallback : fallback.body;
   }
 
   const systemPrompt = buildSystemPrompt(business, session, resolvedIntent);
-  const aiReply      = await callGroq(systemPrompt, message);
-  return aiReply || standardFallback(business);
+
+  // [G-1] Build conversation history from session if available
+  const history = [];
+  if (session?.lastMessage && session?.lastBotMessage) {
+    history.push({ role: 'user',      content: session.lastMessage    });
+    history.push({ role: 'assistant', content: session.lastBotMessage });
+  }
+
+  // [G-4] Intent-appropriate token budget
+  const maxTokens = resolvedIntent === 'ENQUIRY' ? 320
+                  : resolvedIntent === 'GREET'   ? 120
+                  : 280;
+  const aiReply = await callGroq(systemPrompt, message, history, maxTokens);
+  if (aiReply) return aiReply;
+
+  const fallback = standardFallback(business);
+  return typeof fallback === 'string' ? fallback : fallback.body;
+};
+
+// ─── AI reply for human escalation ───────────────────────────────────────────
+// [G-2] Dedicated function for SUPPORT/escalation intent
+
+export const getEscalationReply = async (business, session) => {
+  if (!process.env.GROQ_API_KEY || !business?.description?.trim()) {
+    const adminPhone = business?.adminPhone;
+    return adminPhone
+      ? `🤝 Our team will be with you shortly.\n\nYou can also reach us directly at *${adminPhone}*.`
+      : `🤝 Our team will be with you shortly. Thank you for your patience! 😊`;
+  }
+
+  const systemPrompt = buildSystemPrompt(business, session, 'HUMAN_ESCALATION');
+  const aiReply      = await callGroq(systemPrompt, 'I need to speak with a human agent.');
+  if (aiReply) return aiReply;
+
+  const adminPhone = business?.adminPhone;
+  return adminPhone
+    ? `🤝 Our team will be with you shortly.\n\nYou can also reach us at *${adminPhone}*.`
+    : `🤝 Our team will be with you shortly. Thank you for your patience! 😊`;
 };

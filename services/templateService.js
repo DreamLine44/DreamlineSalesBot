@@ -38,6 +38,29 @@ import logger  from '../config/logger.js';
 const FALLBACK_API_VERSION  = process.env.WA_API_VERSION  || 'v21.0';
 const TEMPLATE_LANGUAGE     = process.env.TEMPLATE_LANGUAGE || 'en_US';
 
+// ─── Template name resolution ─────────────────────────────────────────────────
+//
+// Template names MUST match exactly what is registered and approved in Meta
+// Business Manager. The defaults below are examples — they will be rejected by
+// Meta until you register templates with these exact names (or override via env).
+//
+// Override any template name without code changes via environment variables:
+//   TEMPLATE_NAME_ABANDONED_CART=your_approved_name
+//   TEMPLATE_NAME_ORDER_CONFIRMED=your_approved_name
+//   TEMPLATE_NAME_BOOKING_REMINDER=your_approved_name
+//   TEMPLATE_NAME_PAYMENT_REMINDER=your_approved_name
+//   TEMPLATE_NAME_REENGAGEMENT=your_approved_name
+//
+// See INTEGRATION_GUIDE.md §Templates for registration steps.
+
+const TEMPLATE_NAMES = {
+  abandoned_cart:    process.env.TEMPLATE_NAME_ABANDONED_CART    || 'dreamline_abandoned_cart',
+  order_confirmed:   process.env.TEMPLATE_NAME_ORDER_CONFIRMED   || 'dreamline_order_confirmed',
+  booking_reminder:  process.env.TEMPLATE_NAME_BOOKING_REMINDER  || 'dreamline_booking_reminder',
+  payment_reminder:  process.env.TEMPLATE_NAME_PAYMENT_REMINDER  || 'dreamline_payment_reminder',
+  reengagement:      process.env.TEMPLATE_NAME_REENGAGEMENT      || 'dreamline_reengagement',
+};
+
 // ─── Template definitions ─────────────────────────────────────────────────────
 //
 // Each entry maps a logical name to the Meta-registered template name + component
@@ -46,15 +69,12 @@ const TEMPLATE_LANGUAGE     = process.env.TEMPLATE_LANGUAGE || 'en_US';
 //
 // Template variables MUST match exactly what was approved in Meta Business Manager.
 // Parameter order matters — {{1}} = first param, {{2}} = second, etc.
-//
-// IMPORTANT: Template names below are examples. Replace with your actual registered
-// template names from Meta Business Manager before going live.
 
 const TEMPLATE_DEFINITIONS = {
 
   // Sent ~1h after a session expires with an incomplete order
   abandoned_cart: {
-    name: 'dreamline_abandoned_cart',
+    name: TEMPLATE_NAMES.abandoned_cart,
     language: TEMPLATE_LANGUAGE,
     // Template body (register in Meta):
     // "Hi {{1}}! You left some items in your cart at {{2}}. 🛒
@@ -72,7 +92,7 @@ const TEMPLATE_DEFINITIONS = {
 
   // Sent after order is confirmed by admin payment approval
   order_confirmed: {
-    name: 'dreamline_order_confirmed',
+    name: TEMPLATE_NAMES.order_confirmed,
     language: TEMPLATE_LANGUAGE,
     // "Your order ({{1}}) has been confirmed! ✅ We'll have it ready soon."
     buildComponents: ({ orderSummary = 'your order' }) => ([
@@ -87,7 +107,7 @@ const TEMPLATE_DEFINITIONS = {
 
   // Sent the evening before a booking appointment
   booking_reminder: {
-    name: 'dreamline_booking_reminder',
+    name: TEMPLATE_NAMES.booking_reminder,
     language: TEMPLATE_LANGUAGE,
     // "Reminder: You have a booking at {{1}} tomorrow at {{2}}. 📅
     //  Reply *Hi* to manage your booking."
@@ -104,7 +124,7 @@ const TEMPLATE_DEFINITIONS = {
 
   // Sent if payment proof hasn't arrived within 30 minutes of order placement
   payment_reminder: {
-    name: 'dreamline_payment_reminder',
+    name: TEMPLATE_NAMES.payment_reminder,
     language: TEMPLATE_LANGUAGE,
     // "Hi! Your order at {{1}} is waiting for payment confirmation. 💳
     //  Please send your Wave payment screenshot to complete your order."
@@ -120,7 +140,7 @@ const TEMPLATE_DEFINITIONS = {
 
   // Generic re-engagement for cold customers
   reengagement: {
-    name: 'dreamline_reengagement',
+    name: TEMPLATE_NAMES.reengagement,
     language: TEMPLATE_LANGUAGE,
     // "Hi {{1}}! We miss you at {{2}}. 👋 Come back and see what's new!"
     buildComponents: ({ customerName = 'there', businessName = 'us' }) => ([
