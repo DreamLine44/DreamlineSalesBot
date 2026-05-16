@@ -310,6 +310,15 @@ export const confirmPayment = async (orderId, tenantId, adminIdentifier) => {
   const { clearOrderAnchor } = await import('./conversationMemoryService.js');
   clearOrderAnchor(order._id).catch(() => {});
 
+  // [FIX-POST-APPROVAL] Clear the customer session so that subsequent messages
+  // ("Ok", "Hi", "Thanks") don't hit the PAYMENT_PROOF step handler and trigger
+  // repeated payment instruction re-sends. After approval the order is done —
+  // the customer should be returned to the welcome state on their next message.
+  try {
+    const { clearSession } = await import('./sessionService.js');
+    await clearSession(order.customerPhone, String(tenantId));
+  } catch { /* non-fatal — session may have already expired via TTL */ }
+
   let business = null;
   try { business = await BusinessConfig.findOne({ tenantId }).lean(); } catch { /* use default */ }
 

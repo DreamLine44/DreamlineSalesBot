@@ -410,16 +410,73 @@ const parseQuantity = (raw) => {
 
 // ─── Date / Time validators ───────────────────────────────────────────────────
 
+// ─── Date validation helpers ─────────────────────────────────────────────────
+// Valid month names used for strict date token validation.
+const _MONTH_FULL  = ['january','february','march','april','may','june','july','august','september','october','november','december'];
+const _MONTH_SHORT = ['jan','feb','mar','apr','may','jun','jul','aug','sep','oct','nov','dec'];
+const _WEEKDAYS    = ['monday','tuesday','wednesday','thursday','friday','saturday','sunday'];
+
+// Returns true only if word is a recognisable month name (exact or <=1-2 char typo).
+// Rejects garbage like "jjjj", "xjk", "zzz", "jj".
+function _isMonthWord(word) {
+  const w = word.toLowerCase();
+  if (_MONTH_SHORT.includes(w) || _MONTH_FULL.includes(w)) return true;
+  for (const m of _MONTH_SHORT) {
+    if (Math.abs(w.length - m.length) <= 1 && levenshtein.get(w, m) <= 1) return true;
+  }
+  for (const m of _MONTH_FULL) {
+    if (Math.abs(w.length - m.length) <= 2 && levenshtein.get(w, m) <= 2) return true;
+  }
+  return false;
+}
+
+// Returns true if n is a plausible day-of-month (1-31) or year (2020-2099).
+function _isPlausibleDayOrYear(n) {
+  return (n >= 1 && n <= 31) || (n >= 2020 && n <= 2099);
+}
+
 const looksLikeDate = (input) => {
   const s = input.trim().toLowerCase();
   if (s.length < 2) return false;
-  if (['today','tomorrow','yesterday','next','this','coming','following'].some(p => s.startsWith(p))) return true;
-  if (['jan','feb','mar','apr','may','jun','jul','aug','sep','oct','nov','dec'].some(m => s.includes(m))) return true;
-  if (['monday','tuesday','wednesday','thursday','friday','saturday','sunday'].some(d => s.includes(d))) return true;
-  if (/^\d{1,2}[\/\-]\d{1,2}([\/\-]\d{2,4})?$/.test(s)) return true;
-  if (/\d+\s+\w+/.test(s) || /\w+\s+\d+/.test(s)) return true;
-  // Ordinal numbers: "6th", "1st", "2nd", "3rd", "6th of this month", etc.
-  if (/^\d{1,2}(st|nd|rd|th)(\s+.*)?$/.test(s)) return true;
+
+  // Relative anchors
+  if (['today','tomorrow','yesterday'].includes(s)) return true;
+  if (['today ','tomorrow ','yesterday '].some(p => s.startsWith(p))) return true;
+
+  // "next Friday", "this Saturday", "coming Monday" — require something after the anchor
+  if (/^(next|this|coming|following)\s+\S/.test(s)) return true;
+
+  // Day-of-week alone or with context ("Friday", "Saturday morning")
+  if (_WEEKDAYS.some(d => s === d || s.startsWith(d + ' '))) return true;
+
+  // Ordinal: "6th", "1st of June", "22nd" — day must be 1-31
+  const ordinalMatch = s.match(/^(\d{1,2})(st|nd|rd|th)(\s+.*)?$/);
+  if (ordinalMatch) {
+    const day = parseInt(ordinalMatch[1], 10);
+    if (day >= 1 && day <= 31) return true;
+  }
+
+  // Numeric formats: DD/MM, DD/MM/YYYY, DD-MM, DD-MM-YYYY
+  const numericMatch = s.match(/^(\d{1,2})[\/\-](\d{1,2})([\/\-]\d{2,4})?$/);
+  if (numericMatch) {
+    const d = parseInt(numericMatch[1], 10);
+    const m = parseInt(numericMatch[2], 10);
+    if (d >= 1 && d <= 31 && m >= 1 && m <= 12) return true;
+  }
+
+  // "25 June", "June 25", "25 June 2025" — REQUIRES a real recognised month word.
+  // This is the key fix: "12 jjjj" matched the OLD /\d+\s+\w+/ regex but now
+  // requires _isMonthWord() to pass, which rejects "jjjj", "jj", "xyz", etc.
+  const tokens = s.replace(/[,\/\-]/g, ' ').split(/\s+/).filter(Boolean);
+  if (tokens.length >= 2) {
+    const hasRealMonth  = tokens.some(t => _isMonthWord(t));
+    const hasPlausibleDay = tokens.some(t => {
+      const n = parseInt(t.replace(/(st|nd|rd|th)$/i, ''), 10);
+      return !isNaN(n) && _isPlausibleDayOrYear(n);
+    });
+    if (hasRealMonth && hasPlausibleDay) return true;
+  }
+
   return false;
 };
 
@@ -1083,7 +1140,42 @@ async function handleOrder(session, raw, clean, business, isInteractive = false,
     }
 
     case 'PAYMENT_PROOF': {
-      // [v11] Payment retry tracking — after 2 text messages during PAYMENT_PROOF,
+      // [FIX-POST-APPROVAL] Detect "Ok/Hi/Thanks" chatter AFTER an order was approved.
+      // confirmPayment() clears the session, but a race/delayed message can land here.
+      // Check if the order is already confirmed — if so, clear session + show menu.
+      const _postChatter = [
+        'ok','okay','k','kk','cool','alright','great','perfect','thanks','thank you',
+        'thx','ty','noted','got it','understood','nice','awesome','received','hi',
+        'hello','hey','good','fine','appreciated','yep','yh','yeah','yes',
+      ];
+      const _rawLower = raw.trim().toLowerCase();
+      const _isPostChatter = _postChatter.includes(_rawLower);
+
+      if (_isPostChatter) {
+        const { orderId } = session.data || {};
+        let _orderDone = false;
+        if (orderId) {
+          try {
+            const _Order = (await import('../models/Order.js')).default;
+            const _ord = await _Order.findById(orderId).select('paymentStatus status').lean();
+            if (_ord && (_ord.paymentStatus === 'paid' || _ord.status === 'confirmed' || _ord.status === 'completed')) {
+              _orderDone = true;
+            }
+          } catch { /* non-fatal */ }
+        }
+        // If order is done (or no orderId — stale ghost session), clear and show menu
+        if (_orderDone || !orderId) {
+          await clearSession(session.customerPhone, session.tenantId);
+          const _menuUI = buildMenuUI(business);
+          return {
+            type:    _menuUI?.type    || 'buttons',
+            body:    `You're welcome! \ud83d\ude0a Is there anything else we can help you with?`,
+            buttons: _menuUI?.buttons || [{ id: 'ORDER', title: '\ud83d\uded2 Order Now' }, { id: 'QUESTION', title: '\u2753 Question' }],
+          };
+        }
+      }
+
+      // [v11] Payment retry tracking — after 3 text messages without a screenshot,
       // suggest contacting the business directly for support.
       const { totalPrice } = session.data || {};
       const retryCount = (session.paymentRetryCount || 0) + 1;
@@ -1098,7 +1190,7 @@ async function handleOrder(session, raw, clean, business, isInteractive = false,
         return {
           type: 'buttons',
           body: supportBody,
-          buttons: [{ id: 'CANCEL', title: '❌ Cancel Order' }],
+          buttons: [{ id: 'CANCEL', title: '\u274c Cancel Order' }],
         };
       }
 
@@ -1106,7 +1198,7 @@ async function handleOrder(session, raw, clean, business, isInteractive = false,
       if (raw.trim().length >= 4) {
         const aiReply = await getAIReply(raw, business, session, 'FALLBACK').catch(() => null);
         if (aiReply) {
-          const reminder = '\n\n💳 Reminder: please send your *Wave payment screenshot* to complete your order.';
+          const reminder = '\n\n\ud83d\udcb3 Reminder: please send your *Wave payment screenshot* to complete your order.';
           return { type: 'text', body: aiReply + reminder };
         }
       }
@@ -1212,19 +1304,19 @@ async function handleBooking(session, raw, clean, business) {
         return 'I need a *date* for your booking 📅\n\nWhat date works for you?\n(e.g. *25 June*, *next Friday*, *tomorrow*)';
       }
       if (!looksLikeDate(dateInput)) {
-        // Long/conversational input → Groq handles it (complaint, question, etc.)
+        // Long/conversational input -> Groq handles it (complaint, question, etc.)
         if (dateInput.length >= 8 && !/\d/.test(dateInput)) {
           const aiReply = await getAIReply(dateInput, business, session, 'FALLBACK').catch(() => null);
           if (aiReply) return { type: 'text', body: aiReply };
         }
+        // Show a specific error so the customer knows to use a real date format
         return {
           type: 'buttons',
           body: (
-            `I need a *date* for your booking 📅\n\n` +
-            `Please give me a date, for example:\n` +
-            `• *25 June*\n• *tomorrow*\n• *next Friday*\n• *25/06/2025*`
+            `I couldn't recognise *${dateInput}* as a valid date. Please use a real date, for example:\n\n` +
+            `\u2022 *25 June* (day + real month name)\n\u2022 *tomorrow*\n\u2022 *next Friday*\n\u2022 *25/06/2025*`
           ),
-          buttons: [{ id: 'CANCEL', title: '❌ Cancel Booking' }],
+          buttons: [{ id: 'CANCEL', title: '\u274c Cancel Booking' }],
         };
       }
       await updateSession(session.customerPhone, session.tenantId, {
