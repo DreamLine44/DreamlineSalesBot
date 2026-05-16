@@ -1,208 +1,400 @@
-# DreamLine SalesBot — v16.0.0 (Combined Final)
+# DreamLine SalesBot v23.0
+## AI WhatsApp Business Automation System
 
-**This is the authoritative combined release** merging all three sources:
-- `DreamlineSalesBot_v13` — targeted patch package
-- `DreamlineSalesBot_v14_fixed` — full codebase with v13 patches applied
-- `DreamlineSalesBot_v14` — parallel branch with additional production hardening
-
-> **Result:** v13 was fully applied inside v14_fixed (verified by clean diffs). The new v14 (original branch) was a parallel effort — all its unique fixes were already in v14_fixed except two: `package-lock.json` and the `UPSELL_COOLDOWN_MAX` eviction cap in `flowService.js`. Both are now included.
+A production-grade, multi-tenant WhatsApp Business automation platform powered by OpenAI GPT-4o-mini. Built specifically for WhatsApp via Meta Cloud API, with full local simulation for pre-integration testing.
 
 ---
 
-## What's in this build
+## Architecture Overview
 
-### From v14_fixed (full codebase)
-Full multi-tenant WhatsApp SalesBot with:
-- 10 industry modes (`config/modes.js`)
-- Groq AI integration with strict flow boundaries
-- Deterministic intent engine (v7 philosophy)
-- Analytics, scheduling, smart recommendations
-- Lead capture, revenue engine, learning service
-- Admin dashboard, orders, tenant management
-- Onboarding flow + HTML onboarding UI
-- Circuit breaker, message deduplication, rate limiting
-- MongoDB multi-tenant with full schema
+```
+┌─────────────────────────────────────────────────────────┐
+│                   CUSTOMER (WhatsApp)                   │
+└─────────────────────────┬───────────────────────────────┘
+                          │ Message
+┌─────────────────────────▼───────────────────────────────┐
+│              META WHATSAPP CLOUD API                    │
+│         (Phase 5 — connect AFTER local testing)        │
+└─────────────────────────┬───────────────────────────────┘
+                          │ Webhook POST
+┌─────────────────────────▼───────────────────────────────┐
+│                 DREAMLINE BACKEND                        │
+│                                                          │
+│  webhookController → brainService → flowService        │
+│       ↓                   ↓              ↓              │
+│  sessionService      aiService      messageService      │
+│       ↓             (OpenAI/Groq)        ↓              │
+│  MongoDB               ↑          Meta API / Sim        │
+│                   BusinessConfig                        │
+└─────────────────────────────────────────────────────────┘
+```
 
-### From v13 patch package (all 4 critical fixes — confirmed applied)
+**During development (Phases 1–4):** `POST /api/messages` replaces Meta — full simulation without any Meta connection.
 
-| Fix | What it solves |
-|-----|---------------|
-| **PAY-F1** | `rejectPayment()` resets `paymentProof → null` so retry uploads work |
-| **PAY-F2/F3** | Session-expired proof uploads recovered via `conversationMemoryService` |
-| **SES-1** | PAYMENT_PROOF step extends session TTL to 4 hours (Wave payment latency) |
-| **Bug-5** | `SUPPORT` intent routes to human handover, not FAQ bot |
+---
 
-### From v13 UX improvements (confirmed applied)
+## Supported Business Types
 
-| Improvement | What changed |
-|-------------|-------------|
-| **Order summary** | Clean `✅ Your Order • Item × qty — GMD 2,400` format |
-| **Quantities 11–20** | "twelve", "fifteen", "wan" all parse correctly |
-| **Rotating upsell** | 4 natural upsell prompts instead of one static phrase |
-| **Support phrases** | 36 triggers covering complaints, payment disputes, delivery, West African expressions |
+| Type | Mode | Features |
+|------|------|----------|
+| 🍽 Restaurant | RESTAURANT | Menu, orders, cart, delivery |
+| 🎂 Bakery | BAKERY | Custom cakes, pre-orders, events |
+| 👗 Fashion Store | FASHION | Catalog, sizes, recommendations |
+| ✂️ Salon/Barbershop | SALON / BARBERSHOP | Appointments, scheduling |
+| 💄 Cosmetics | COSMETICS | Beauty advice, repeat orders |
 
 ---
 
 ## Quick Start
 
+### Prerequisites
+
+| Requirement | Version | Download |
+|-------------|---------|----------|
+| Node.js | **18+** required | https://nodejs.org |
+| MongoDB | 6+ (local or Atlas) | https://www.mongodb.com |
+| npm | comes with Node.js | — |
+
+### 1-Minute Install
+
+```bash
+# Clone or extract the project
+cd dreamline-v23
+
+# Install all packages
+npm install
+
+# Run the setup wizard (copies .env, generates keys)
+npm run setup
+
+# Start in development mode
+npm run dev
+```
+
+### Manual Install
+
 ```bash
 npm install
-cp .env.development.local.example .env
-# Fill in: MONGODB_URI, WHATSAPP_ACCESS_TOKEN, WHATSAPP_PHONE_NUMBER_ID,
-#           META_APP_SECRET, META_WEBHOOK_VERIFY_TOKEN, GROQ_API_KEY
-node seed.js    # Seed demo tenant
-node app.js     # Start server
+cp .env.example .env.development.local
+# Edit .env.development.local with your keys
+npm run dev
 ```
 
-## Environment Variables
+---
+
+## Configuration
+
+Edit `.env.development.local` (created by setup wizard):
 
 ```env
-SESSION_TTL_MINUTES=30          # Standard session TTL (default: 30)
-PAYMENT_SESSION_TTL_HOURS=4     # TTL extension for PAYMENT_PROOF step (default: 4)
-PROOF_ELIGIBLE_HOURS=48         # Hours an order can receive a proof upload (default: 48)
+# Required for AI conversations
+OPENAI_API_KEY=sk-your-openai-key       # https://platform.openai.com/api-keys
+
+# Optional (Groq is the fallback AI if OpenAI fails)
+GROQ_API_KEY=gsk_your-groq-key          # https://console.groq.com (free)
+
+# Required
+MONGODB_URI=mongodb://localhost:27017/dreamline_bot
+
+# Auto-generated by setup wizard
+SUPER_ADMIN_API_KEY=your-generated-key
+SIMULATION_SECRET=sim_your-generated-key
+
+# Simulation mode (ON by default for local testing)
+SIMULATION_MODE=true
 ```
 
-## Key Flows to Test After Deploy
-
-- [ ] Order → Wave payment → screenshot → proof received ✅
-- [ ] Order → wait 35 min (session expires) → screenshot → memory fallback works ✅
-- [ ] Order → proof received → admin rejects → resend screenshot → second proof accepted ✅
-- [ ] Type "complaint" → humanMode set, admin notified (not FAQ bot) ✅
-- [ ] Type "twelve" → quantity 12 parsed ✅
-- [ ] Order summary shows `✅ Your Order • Item × 12 — GMD 2,400` format ✅
-
-## File Structure
-
-```
-├── app.js                        # Express entry point
-├── seed.js                       # Demo tenant seeder
-├── config/
-│   ├── modes.js                  # 10 industry mode definitions
-│   ├── database.js               # MongoDB connection
-│   ├── logger.js                 # Winston logger
-│   └── env.js                    # Env validation
-├── controllers/
-│   ├── webhookController.js      # Main WhatsApp webhook handler
-│   ├── onboardingController.js   # Tenant onboarding
-│   ├── businessController.js     # Business config CRUD
-│   ├── dashboardController.js    # Admin dashboard
-│   ├── ordersController.js       # Order management
-│   ├── tenantController.js       # Tenant management
-│   └── platformController.js     # Platform admin
-├── services/
-│   ├── brainService.js           # Intent engine
-│   ├── flowService.js            # Conversation state machine
-│   ├── paymentService.js         # Payment + proof handling (v13 fixes)
-│   ├── sessionService.js         # Session management (4h TTL)
-│   ├── conversationMemoryService.js  # Durable order anchoring (v13 new)
-│   ├── groqService.js            # Groq AI integration
-│   ├── analyticsService.js       # Analytics tracking
-│   ├── schedulerService.js       # Scheduled jobs
-│   ├── adminPaymentHandler.js    # Admin payment actions
-│   ├── messageService.js         # Message dispatch
-│   ├── leadCaptureService.js     # Lead management (tenant-scoped)
-│   ├── onboardingService.js      # Onboarding logic
-│   ├── modePresetService.js      # Industry mode presets
-│   ├── smartRecommendationService.js
-│   ├── revenueEngineService.js
-│   ├── learningService.js
-│   ├── templateService.js
-│   ├── notificationService.js
-│   ├── cryptoService.js
-│   ├── faqService.js
-│   └── businessService.js
-├── models/                       # Mongoose schemas
-├── middlewares/                  # Auth, rate limiting, error handling
-├── routes/                       # Express routers
-├── utils/                        # messageBuilders, matchEngine, phraseEngine
-├── scripts/                      # DB migration scripts
-└── public/
-    └── onboarding.html           # Tenant onboarding UI
+**Meta credentials (leave blank during development):**
+```env
+META_APP_ID=          # Fill ONLY in Phase 5
+META_APP_SECRET=      # Fill ONLY in Phase 5
+META_WEBHOOK_VERIFY_TOKEN=  # Fill ONLY in Phase 5
 ```
 
 ---
 
-## Lineage
+## Local Testing (Phase 2 — No Meta Required)
 
-```
-v7  (strict intent engine philosophy)
-  └─► v11 (multi-tenant, Groq, 10 modes, analytics)
-        └─► v12 (Flow Authority, Button-First UX, AI Boundary Hardening)
-              └─► v12.1 (Master Spec Compliance — 10 additional UX/state fixes)
-                    └─► v13 (4 critical payment/session/support fixes + UX improvements)
-                          └─► v14_fixed (3-way merge, all fixes confirmed)
-                                └─► v16.0.0 ← YOU ARE HERE (combined + verified)
-```
-
----
-
-## v17.0.0 — Three-way merge + Full Audit (this build)
-
-### Third source merged: `DreamlineSalesBot_v14` (clean lightweight branch)
-
-This branch was a completely different architecture (in-memory sessions, flows/ pattern, CommonJS, no MongoDB). Rather than a structural merge, the genuinely better pieces were extracted and integrated:
-
-| Extracted from v14 clean branch | What it improves |
-|---------------------------------|-----------------|
-| **PHRASE_NUMBERS** | `parseQuantity` now handles "a dozen" → 12, "half dozen" → 6, "a couple" → 2, "a few" → 3, "several" → 4, "twenty five" → 25, and 30+ compound forms |
-| **Large-order warning** | qty 21–100 now triggers "Just to confirm — 25 × Domoda?" with Yes/Change buttons before committing. Previously only >100 was caught. |
-| **`tests/nlp.test.mjs`** | First test suite — 56 assertions covering phrase numbers, all v13 misspellings, matchEngine confidence levels, edge cases. Run with `npm test`. |
-| **6 missing `.env` vars** | `ENCRYPTION_KEY`, `PAYMENT_SESSION_TTL_HOURS`, `PROOF_ELIGIBLE_HOURS`, `SESSION_TTL_MINUTES`, `SCHEDULER_ENABLED`, `TEMPLATE_LANGUAGE` — all documented with defaults and explanations |
-
-### Audit fixes applied
-
-- `QTY_LARGE_CONFIRM` / `QTY_LARGE_CHANGE` button IDs wired into QUANTITY case in flowService — previously the large-order buttons were generated but never handled
-- `npm test` script added to package.json
-- PHRASE_NUMBERS sorted longest-first at module load time (no runtime sort cost per message)
-
----
-
-## v18.0.0 — Full Audit Fix (this build)
-
-All 4 critical issues and 6 high-priority gaps from the pre-launch audit resolved.
-
-### Critical fixes
-
-| # | Issue | Fix |
-|---|-------|-----|
-| C-1 | **No graceful shutdown** — MongoDB connections leaked on every deploy/restart | Added `SIGTERM`/`SIGINT` handlers in `app.js`; HTTP server drains, scheduler stops, MongoDB disconnects cleanly within a 10 s timeout |
-| C-2 | **Zero v15 codebase tests** | New `tests/v18.test.mjs` — 40+ assertions covering all 8 fixes; run with `npm test` |
-| C-3 | **WhatsApp template names hardcoded** — failed in Meta Business Manager | Template names now read from `TEMPLATE_NAME_*` env vars with defaults. Change any name without a code deploy. |
-| C-4 | **Scheduler intervals never stored** — leaked on shutdown | `schedulerService.js` now stores all `setInterval`/`setTimeout` handles and exports `stopScheduler()` for graceful cleanup |
-
-### High-priority fixes
-
-| # | Issue | Fix |
-|---|-------|-----|
-| H-1 | **No admin WhatsApp command to exit human mode** | `RESUME BOT <phone>` command added to `adminPaymentHandler.js`. Admin texts it from WhatsApp; bot clears `humanMode`, notifies customer. |
-| H-2 | **Groq menu prices hardcoded to 'D' (Dalasi)** | `groqService.js` now reads `business.payment.currency` (falls back to `business.currency`, then `'D'`) |
-| H-3 | **No input sanitization — prompt injection risk** | New `utils/sanitize.js` — strips 15 known injection patterns (LLaMA tokens, ChatML prefixes, DAN variants, etc.); applied to all Groq prompt paths |
-| H-4 | **Order tracking was a dead-end text** | `TRACK_ORDER` intent now does a real MongoDB lookup; returns item, qty, total, date, and a customer-friendly status label |
-| H-5 | **Booking model missing key fields** | Added `customerName`, `partySize`, `adminConfirmedAt/By`, `adminDeclinedAt/By`, `adminNote`, `shortId` + pre-save hook |
-| H-6 | **Scheduler intervals not cleaned up** | Combined with C-4 above — `stopScheduler()` clears everything |
-
-### New env vars (v18)
-
-```
-TEMPLATE_NAME_ABANDONED_CART=your_approved_name
-TEMPLATE_NAME_ORDER_CONFIRMED=your_approved_name
-TEMPLATE_NAME_BOOKING_REMINDER=your_approved_name
-TEMPLATE_NAME_PAYMENT_REMINDER=your_approved_name
-TEMPLATE_NAME_REENGAGEMENT=your_approved_name
-```
-
-### Admin WhatsApp commands (updated)
-
-| Command | Description |
-|---------|-------------|
-| `APPROVE <shortId>` | Approve payment (e.g. `APPROVE ABC123`) |
-| `REJECT <shortId>` | Reject payment with re-prompt to customer |
-| `RESUME BOT <phone>` | **[NEW]** Resume bot for customer in human-handoff mode |
-
-### Running tests
+### Test with curl
 
 ```bash
-npm test          # runs nlp.test.mjs + v18.test.mjs
-npm run test:nlp  # NLP/phrase parser only
-npm run test:v18  # audit fix tests only
+# Send a message
+curl -X POST http://localhost:5000/api/messages \
+  -H "Content-Type: application/json" \
+  -H "x-sim-key: YOUR_SIMULATION_SECRET" \
+  -d '{"userId": "customer_001", "message": "I want to order"}'
+
+# Response:
+{
+  "userId": "customer_001",
+  "input": "I want to order",
+  "reply": "Sure! Here's our menu:\n\n1. Jollof Rice — D150\n2. Grilled Fish — D200\n...",
+  "ui": { "type": "list", "header": "Our Menu", "rows": [...] },
+  "meta": { "action": "ORDER", "flow": "ORDER", "step": "SELECT_ITEM" }
+}
 ```
+
+### Test with Bruno
+
+1. Open Bruno and create a new collection
+2. Add requests using `http://localhost:5000/api/messages`
+3. Set header `x-sim-key: YOUR_SIMULATION_SECRET`
+4. Set body: `{ "userId": "test_001", "message": "hello" }`
+
+### Test with npm
+
+```bash
+npm run test:sim       # Run simulation test suite
+npm run test:nlp       # Run NLP / intent detection tests
+npm run test:v18       # Run v18 flow tests
+```
+
+### Available Simulation Endpoints
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/messages` | POST | Send a simulated customer message |
+| `/api/session` | GET | Inspect current session state |
+| `/api/session` | DELETE | Clear session (simulate timeout) |
+| `/api/history` | GET | Get conversation history |
+| `/api/businesses` | GET | List available test businesses |
+| `/api/reset` | POST | Full user reset |
+| `/api/health` | GET | Simulation engine status |
+
+---
+
+## Conversation Testing Scenarios
+
+### Test a complete order flow
+
+```bash
+# Step 1: First contact (welcome)
+curl -X POST .../api/messages -d '{"userId":"cust1","message":"hello"}'
+
+# Step 2: Order intent
+curl -X POST .../api/messages -d '{"userId":"cust1","message":"I want to order"}'
+
+# Step 3: Select item
+curl -X POST .../api/messages -d '{"userId":"cust1","message":"Jollof Rice"}'
+
+# Step 4: Set quantity
+curl -X POST .../api/messages -d '{"userId":"cust1","message":"2"}'
+
+# Step 5: Confirm
+curl -X POST .../api/messages -d '{"userId":"cust1","message":"confirm"}'
+```
+
+### Test with a specific business
+
+```bash
+# Get business ID
+curl http://localhost:5000/api/businesses -H "x-sim-key: YOUR_KEY"
+
+# Use that business in messages
+curl -X POST .../api/messages \
+  -d '{"userId":"cust1","message":"I want to book","businessId":"64abc..."}'
+```
+
+---
+
+## Project Structure
+
+```
+dreamline-v23/
+├── app.js                      # Express app + startup
+├── package.json                # All dependencies
+├── install.sh                  # One-command installer
+├── .env.example                # Environment template
+│
+├── config/
+│   ├── env.js                  # Environment loader (load FIRST)
+│   ├── database.js             # MongoDB connection
+│   ├── logger.js               # Winston logger
+│   └── modes.js                # Business mode presets
+│
+├── controllers/
+│   ├── webhookController.js    # Meta webhook handler
+│   ├── simulationController.js # ← NEW: Local testing engine
+│   ├── businessController.js   # Business config CRUD
+│   ├── dashboardController.js  # Client dashboard
+│   ├── onboardingController.js # Self-serve onboarding
+│   ├── platformController.js   # SaaS admin panel
+│   └── tenantController.js     # Tenant management
+│
+├── services/
+│   ├── aiService.js            # ← NEW: OpenAI + Groq unified AI
+│   ├── groqService.js          # ← UPDATED: now shim → aiService
+│   ├── brainService.js         # Intent detection engine
+│   ├── flowService.js          # Conversation flow logic
+│   ├── sessionService.js       # Session management
+│   ├── messageService.js       # Meta API sender
+│   ├── businessService.js      # Business config lookup
+│   ├── analyticsService.js     # Event tracking
+│   ├── conversationMemoryService.js # Customer memory
+│   ├── cryptoService.js        # Token encryption
+│   ├── faqService.js           # FAQ matching
+│   ├── leadCaptureService.js   # Lead collection
+│   ├── learningService.js      # User preference tracking
+│   ├── modePresetService.js    # Business mode presets
+│   ├── notificationService.js  # Admin notifications
+│   ├── onboardingService.js    # Onboarding flows
+│   ├── paymentService.js       # Payment handling
+│   ├── revenueEngineService.js # Revenue tracking
+│   ├── schedulerService.js     # Background jobs
+│   ├── smartRecommendationService.js # AI recommendations
+│   ├── adminPaymentHandler.js  # Admin payment commands
+│   └── templateService.js      # Message templates
+│
+├── models/
+│   ├── Tenant.js               # Multi-tenant accounts
+│   ├── BusinessConfig.js       # Bot configuration per tenant
+│   ├── Session.js              # Active conversation sessions
+│   ├── Order.js                # Orders
+│   ├── Booking.js              # Appointments
+│   ├── UserProfile.js          # Customer memory & preferences
+│   ├── Analytics.js            # Usage analytics
+│   ├── FailedMessage.js        # Failed message queue
+│   └── ProcessedMessage.js     # Deduplication log
+│
+├── routes/
+│   ├── webhookRoutes.js        # /webhook
+│   ├── simulationRoutes.js     # ← NEW: /api/* simulation
+│   ├── businessRoutes.js       # /business
+│   ├── dashboardRoutes.js      # /dashboard
+│   ├── onboardingRoutes.js     # /register
+│   ├── platformRoutes.js       # /platform
+│   ├── tenantRoutes.js         # /admin/tenants
+│   └── adminMessageRoutes.js   # /admin/messages
+│
+├── middlewares/
+│   ├── authMiddleware.js       # API key auth
+│   ├── rateLimiter.js          # Rate limiting
+│   └── errorHandler.js         # Global error handler
+│
+├── utils/
+│   ├── messageBuilders.js      # WhatsApp UI builders
+│   ├── helpers.js              # General utilities
+│   ├── matchEngine.js          # Text matching
+│   ├── phraseEngine.js         # Phrase detection
+│   ├── sanitize.js             # Input sanitisation
+│   └── logger.js               # Logger utils
+│
+├── scripts/
+│   ├── setup.js                # ← NEW: Setup wizard
+│   ├── migrate-apikey-hash.js  # DB migration
+│   ├── migrate-order-shortid.js
+│   ├── migrate-encrypt-tokens.js
+│   ├── fix-order-index.js
+│   └── fix-phonenumberid-index.js
+│
+└── tests/
+    ├── simulation.test.mjs     # ← NEW: Simulation test suite
+    ├── nlp.test.mjs            # NLP / intent tests
+    └── v18.test.mjs            # Flow tests
+```
+
+---
+
+## Build Phases
+
+| Phase | Status | Description |
+|-------|--------|-------------|
+| Phase 1 | ✅ Complete | Backend engine (brain, flow, session, AI) |
+| Phase 2 | ✅ Complete | POST /api/messages simulation for local testing |
+| Phase 3 | 🔄 Your work | Perfect conversation logic & test all flows |
+| Phase 4 | 📋 Planned | Admin dashboard (React + Tailwind) |
+| Phase 5 | 📋 Planned | Connect Meta WhatsApp Cloud API |
+
+---
+
+## AI Provider Setup
+
+### OpenAI (Primary — Recommended)
+
+1. Go to https://platform.openai.com/api-keys
+2. Create a new API key
+3. Add to `.env.development.local`:
+   ```env
+   OPENAI_API_KEY=sk-...
+   OPENAI_MODEL=gpt-4o-mini    # cheapest, fast, high quality
+   ```
+
+**Cost estimate:** ~$0.15 per million input tokens with gpt-4o-mini. A typical customer conversation costs <$0.01.
+
+### Groq (Fallback — Free Tier Available)
+
+1. Go to https://console.groq.com
+2. Create API key (free tier available)
+3. Add to `.env.development.local`:
+   ```env
+   GROQ_API_KEY=gsk_...
+   ```
+
+The system automatically falls back to Groq if OpenAI fails. If both fail, deterministic replies are used.
+
+---
+
+## API Reference
+
+### Simulation (Development Only)
+
+All simulation endpoints require `x-sim-key` header matching `SIMULATION_SECRET`.
+
+**POST /api/messages**
+```json
+Request:  { "userId": "string", "message": "string", "businessId": "string?" }
+Response: { "userId", "input", "reply", "ui", "meta": { "action", "flow", "step" } }
+```
+
+**GET /api/session?userId=**
+```json
+Response: { "userId", "session", "historyLength", "history" }
+```
+
+**GET /api/businesses**
+```json
+Response: { "count": 2, "businesses": [{ "id", "name", "mode", "menuItems" }] }
+```
+
+### Production Endpoints
+
+| Route | Auth | Description |
+|-------|------|-------------|
+| `GET /health` | None | Server health |
+| `POST /webhook` | Meta signature | Incoming WhatsApp messages |
+| `POST /register/whatsapp` | None | Connect WhatsApp number |
+| `POST /register/business` | x-api-key | Configure bot |
+| `GET /dashboard` | x-api-key | Business dashboard |
+| `GET /platform/stats` | SUPER_ADMIN | SaaS admin panel |
+
+---
+
+## Deployment (Railway)
+
+1. Push code to GitHub
+2. Connect repo to Railway (https://railway.app)
+3. Add environment variables in Railway dashboard
+4. Deploy — Railway auto-detects Node.js
+
+The `start` script (`node app.js`) is Railway-compatible out of the box.
+
+---
+
+## Security Notes
+
+- API keys stored as SHA-256 hashes in MongoDB (run `npm run migrate-apikey` for existing tenants)
+- WhatsApp access tokens encrypted at rest using AES-256 (`ENCRYPTION_KEY`)
+- Meta webhook signatures verified using HMAC-SHA256
+- Rate limiting on all routes
+- Helmet security headers
+- Input sanitisation on all AI prompts (prompt injection protection)
+- `SIMULATION_MODE` auto-disabled in production (set explicitly if needed)
+
+---
+
+## Support
+
+- **Simulation not working?** Check `SIMULATION_MODE=true` in your .env
+- **AI not responding?** Verify `OPENAI_API_KEY` is set and valid
+- **MongoDB errors?** Check `MONGODB_URI` and that MongoDB is running
+- **Tests failing?** Ensure server is running with `npm run dev` before `npm run test:sim`

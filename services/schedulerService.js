@@ -237,6 +237,10 @@ async function runPaymentReminderJob() {
 
 // ─── Boot ─────────────────────────────────────────────────────────────────────
 
+// Track all interval handles so stopScheduler() can clear them on shutdown.
+const _intervals = [];
+const _timeouts  = [];
+
 export function startScheduler() {
   if (!ENABLED) {
     logger.info('[Scheduler] Disabled (set SCHEDULER_ENABLED=true to enable).');
@@ -250,20 +254,28 @@ export function startScheduler() {
     bookingReminder:   `${BOOKING_REMINDER_INTERVAL_MS / 60000}min`,
   });
 
-  setTimeout(() => {
+  _timeouts.push(setTimeout(() => {
     runAbandonedCartJob();
-    setInterval(runAbandonedCartJob, CART_INTERVAL_MS);
-  }, 5_000);
+    _intervals.push(setInterval(runAbandonedCartJob, CART_INTERVAL_MS));
+  }, 5_000));
 
-  setTimeout(() => {
+  _timeouts.push(setTimeout(() => {
     runPaymentReminderJob();
-    setInterval(runPaymentReminderJob, PAYMENT_REMINDER_INTERVAL_MS);
-  }, 15_000);
+    _intervals.push(setInterval(runPaymentReminderJob, PAYMENT_REMINDER_INTERVAL_MS));
+  }, 15_000));
 
-  setTimeout(() => {
+  _timeouts.push(setTimeout(() => {
     runBookingReminderJob();
-    setInterval(runBookingReminderJob, BOOKING_REMINDER_INTERVAL_MS);
-  }, 30_000);
+    _intervals.push(setInterval(runBookingReminderJob, BOOKING_REMINDER_INTERVAL_MS));
+  }, 30_000));
 
   logger.info('[Scheduler] Jobs registered: abandoned_cart, booking_reminder, payment_reminder');
+}
+
+export function stopScheduler() {
+  for (const t of _timeouts)  clearTimeout(t);
+  for (const i of _intervals) clearInterval(i);
+  _timeouts.length  = 0;
+  _intervals.length = 0;
+  logger.info('[Scheduler] All jobs stopped.');
 }
