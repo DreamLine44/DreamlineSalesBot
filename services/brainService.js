@@ -86,6 +86,16 @@ const STRICT_INTENTS = {
     'i wan order', 'i wan buy', 'i wan food', 'abeg let me order',
     'pls let me order', 'i dey hungry', 'bring food', 'order pls',
     'i want make order', 'lemme order', 'order make',
+    // Fashion specific
+    'i want clothes', 'i want to buy clothes', 'shop clothes', 'browse collection',
+    'see collection', 'view collection', 'i need an outfit', 'buy outfit',
+    'i want a dress', 'i want shoes', 'fashion', 'style', 'i want to shop fashion',
+    // Cosmetics / beauty products
+    'i want beauty products', 'buy skincare', 'buy makeup', 'shop beauty',
+    'i want skincare', 'i need makeup', 'i want cosmetics', 'buy products',
+    // Bakery specific
+    'i want to pre-order', 'pre-order', 'preorder', 'i want a cake', 'order cake',
+    'buy bread', 'i want pastries', 'baked goods', 'i want to buy bread',
     // NOTE: 'food', 'get', 'purchase' removed — too broad, cause false positives
     // on natural questions like "do you have food?" → now routes to ENQUIRY correctly
   ],
@@ -98,6 +108,16 @@ const STRICT_INTENTS = {
     'book for me', 'i want to reserve',
     'i wan book', 'abeg book for me', 'pls book', 'book am',
     'i want schedule', 'make booking', 'booking please',
+    // Barbershop / salon specific
+    'haircut', 'hair cut', 'i want a haircut', 'i need a haircut',
+    'cut my hair', 'get a cut', 'get a trim', 'trim my hair',
+    'fade', 'i want a fade', 'low cut', 'low fade', 'skin fade',
+    'lining', 'edge up', 'shape up', 'shave', 'beard trim', 'lineup',
+    'i want a shave', 'barber', 'i need the barber', 'visit the barber',
+    // Salon / beauty
+    'hair appointment', 'nail appointment', 'book a treatment',
+    'i want a treatment', 'beauty appointment', 'consultation',
+    'book consultation', 'i want a consultation', 'beauty consultation',
   ],
   QUESTION: [
     'question', 'ask', 'ask question', 'enquiry', 'enquire',
@@ -387,14 +407,8 @@ export const think = async ({ message, session, business, phone }) => {
     return { action: 'CONTINUE_FLOW' };
   }
 
-  // 2. "0" shortcut → show menu (no flow) or trigger cancel-confirm (mid-flow)
-  // [FIX] "0" mid-flow should ask the customer to confirm they want to leave,
-  // not silently wipe their cart. Consistent with "menu" mid-flow behaviour.
+  // 2. "0" shortcut → always show menu
   if (raw === '0') {
-    if (session?.currentFlow) {
-      logDecision({ raw, normalized, intent: 'CANCEL', action: 'CANCEL', source: 'shortcut-mid-flow' });
-      return { action: 'CANCEL' };
-    }
     logDecision({ raw, normalized, intent: 'SHOW_MENU', action: 'SHOW_MENU', source: 'shortcut' });
     return { action: 'SHOW_MENU' };
   }

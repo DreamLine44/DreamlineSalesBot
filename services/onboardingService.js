@@ -19,7 +19,7 @@ import logger         from '../config/logger.js';
 
 const WA_VER = () => process.env.WA_API_VERSION || process.env.META_API_VERSION || 'v21.0';
 
-const VALID_BUSINESS_MODES = ['RESTAURANT', 'SALON', 'RETAIL', 'BAKERY', 'SUPERMARKET', 'FASHION', 'COSMETICS', 'ELECTRONICS', 'PHARMACY', 'DELIVERY'];
+const VALID_BUSINESS_MODES = ['RESTAURANT', 'SALON', 'BARBERSHOP', 'RETAIL', 'BAKERY', 'SUPERMARKET', 'FASHION', 'COSMETICS', 'ELECTRONICS', 'PHARMACY', 'DELIVERY'];
 const VALID_MODES          = ['ORDER', 'BOOKING', 'BOTH'];
 
 // ─── Meta API validation ──────────────────────────────────────────────────────

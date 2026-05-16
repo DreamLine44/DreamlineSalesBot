@@ -70,7 +70,7 @@ const businessConfigSchema = new mongoose.Schema({
   // v15 canonical mode field
   businessMode: {
     type: String,
-    enum: ['RESTAURANT', 'SALON', 'RETAIL', 'BAKERY', 'SUPERMARKET', 'FASHION', 'COSMETICS', 'ELECTRONICS', 'PHARMACY', 'DELIVERY'],
+    enum: ['RESTAURANT', 'SALON', 'BARBERSHOP', 'RETAIL', 'BAKERY', 'SUPERMARKET', 'FASHION', 'COSMETICS', 'ELECTRONICS', 'PHARMACY', 'DELIVERY'],
     default: 'RESTAURANT',
     index: true,
   },
@@ -123,7 +123,7 @@ const businessConfigSchema = new mongoose.Schema({
 
   tone: {
     style:    { type: String, enum: ['PROFESSIONAL', 'FRIENDLY', 'PREMIUM'], default: 'PROFESSIONAL' },
-    industry: { type: String, enum: ['RESTAURANT', 'SALON', 'RETAIL', 'BAKERY', 'SUPERMARKET', 'FASHION', 'COSMETICS', 'ELECTRONICS', 'PHARMACY', 'DELIVERY', 'GENERAL'], default: 'GENERAL' },
+    industry: { type: String, enum: ['RESTAURANT', 'SALON', 'BARBERSHOP', 'RETAIL', 'BAKERY', 'SUPERMARKET', 'FASHION', 'COSMETICS', 'ELECTRONICS', 'PHARMACY', 'DELIVERY', 'GENERAL'], default: 'GENERAL' },
   },
 
   // All user-facing strings — owner overrides these; getLabel() reads them first
@@ -186,6 +186,7 @@ businessConfigSchema.pre('save', function (next) {
     const toneMap = {
       RESTAURANT:  { style: 'FRIENDLY',     industry: 'RESTAURANT'  },
       SALON:       { style: 'PROFESSIONAL', industry: 'SALON'        },
+      BARBERSHOP:  { style: 'FRIENDLY',     industry: 'BARBERSHOP'   },
       RETAIL:      { style: 'PROFESSIONAL', industry: 'RETAIL'       },
       BAKERY:      { style: 'FRIENDLY',     industry: 'BAKERY'       },
       SUPERMARKET: { style: 'PROFESSIONAL', industry: 'SUPERMARKET'  },

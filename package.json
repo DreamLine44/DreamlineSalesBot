@@ -1,7 +1,7 @@
 {
   "name": "dreamlinesalesbot",
-  "version": "22.0.0",
-  "description": "Multi-tenant WhatsApp Business SaaS Platform — v22.0.0 (v20+v21 merged, all deps fixed)",
+  "version": "21.0.0",
+  "description": "Multi-tenant WhatsApp Business SaaS Platform — v21.0.0 (audited perfect version)",
   "main": "app.js",
   "type": "module",
   "scripts": {
@@ -15,12 +15,10 @@
     "fix-orders": "node scripts/fix-order-index.js",
     "fix-phonenumber-index": "node scripts/fix-phonenumberid-index.js",
     "migrate-apikey": "node scripts/migrate-apikey-hash.js",
-    "migrate-shortid": "node scripts/migrate-order-shortid.js",
-    "migrate-encrypt-tokens": "node scripts/migrate-encrypt-tokens.js"
+    "migrate-shortid": "node scripts/migrate-order-shortid.js"
   },
   "dependencies": {
     "axios": "^1.15.1",
-    "bcryptjs": "^2.4.3",
     "cloudinary": "^2.5.1",
     "cors": "^2.8.5",
     "dotenv": "^16.6.1",
@@ -29,12 +27,8 @@
     "fast-levenshtein": "^3.0.0",
     "helmet": "^7.1.0",
     "json2csv": "^5.0.7",
-    "jsonwebtoken": "^9.0.2",
     "mongoose": "^8.23.0",
-    "multer": "^1.4.5-lts.1",
-    "node-cron": "^3.0.3",
-    "short-unique-id": "^5.2.0",
-    "winston": "^3.13.0"
+    "multer": "^1.4.5-lts.1"
   },
   "devDependencies": {
     "eslint": "^10.2.1",

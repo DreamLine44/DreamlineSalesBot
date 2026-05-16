@@ -1,5 +1,5 @@
 /**
- * services/groqService.js — v20.0 (definitive)
+ * services/groqService.js — v13.0
  *
  * FIXES IN v13:
  * [G-1] Conversation history: last 3 customer messages are now passed as
@@ -259,7 +259,7 @@ const sleep = (ms) => new Promise((res) => setTimeout(res, ms));
 
 // ─── Single Groq attempt ──────────────────────────────────────────────────────
 
-const _callGroqOnce = async (model, systemPrompt, messages, maxTokens = 280) => {
+const _callGroqOnce = async (model, systemPrompt, messages) => {
   const controller = new AbortController();
   const timer      = setTimeout(() => controller.abort(), TIMEOUT_MS);
   const t0         = Date.now();
@@ -274,9 +274,8 @@ const _callGroqOnce = async (model, systemPrompt, messages, maxTokens = 280) => 
       },
       body: JSON.stringify({
         model,
-        // [G-4] Intent-aware token limit: ENQUIRY gets 320 (multi-part answers),
-        // GREET gets 120 (short welcome), everything else gets 280.
-        max_tokens:  maxTokens,
+        // [G-4] Larger token limit for ENQUIRY — controlled per-call by caller
+        max_tokens:  280,
         temperature: 0.35,
         messages,
       }),
@@ -313,7 +312,7 @@ const _callGroqOnce = async (model, systemPrompt, messages, maxTokens = 280) => 
 
 // ─── Call Groq with retry + model cascade ────────────────────────────────────
 
-const callGroq = async (systemPrompt, userMessage, conversationHistory = [], maxTokens = 280) => {
+const callGroq = async (systemPrompt, userMessage, conversationHistory = []) => {
   if (!process.env.GROQ_API_KEY) {
     logger.warn('[Groq] GROQ_API_KEY not set — skipping AI call');
     return null;
@@ -339,7 +338,7 @@ const callGroq = async (systemPrompt, userMessage, conversationHistory = [], max
         await sleep(backoff);
       }
 
-      const result = await _callGroqOnce(model, systemPrompt, messages, maxTokens);
+      const result = await _callGroqOnce(model, systemPrompt, messages);
       if (result.ok) return result.text;
 
       const retryable = result.status === 429 || result.status >= 500 || result.status === 0;
@@ -400,13 +399,38 @@ const ABOUT_PATTERNS = [
   /what (is|are) (you|this place)/i,
   /about (your|the) business/i,
   /what (kind|type) of/i,
-  /what (do|does) (this|your) (place|restaurant|shop|salon|business)/i,
-  /what (do you|can you) (offer|serve|have)/i,
+  /what (do|does) (this|your) (place|restaurant|shop|salon|bakery|barbershop|store|business)/i,
+  /what (do you|can you) (offer|serve|have|sell|stock)/i,
   /what (are you|is this)/i,
   /do you (deliver|have delivery|offer delivery)/i,  // [G-6]
   /are you (open|closed|available)/i,               // [G-6]
   /is there (parking|seating|takeaway|delivery)/i,   // [G-6]
   /how (far|long) (is|does|will)/i,                  // [G-6]
+  // Fashion / clothing
+  /do you (have|sell|carry|stock) (clothes|dresses|shoes|bags|accessories|outfits)/i,
+  /what (sizes|styles|collections|colours|colors) (do you|are)/i,
+  /do you (have a size guide|do alterations|do tailoring)/i,
+  /is (this|the item) available in/i,
+  // Cosmetics / beauty
+  /do you (have|sell|carry|stock) (skincare|makeup|cosmetics|beauty products|perfume)/i,
+  /is (this product|it) (good for|suitable for|safe for)/i,
+  /what (ingredients|brand|brands) (do you|are)/i,
+  /do you (do|offer) (consultations|beauty consultations|skin consultations)/i,
+  // Bakery
+  /do you (have|sell|make) (cakes|bread|pastries|baked goods|croissants)/i,
+  /what (flavours|flavors|options) (do you|are available)/i,
+  /can (i|you) (custom order|customise|customize)/i,
+  /do you (do|make) (custom cakes|wedding cakes|birthday cakes)/i,
+  /what time (do you|are you) (open|close|ready)/i,
+  // Salon / barbershop
+  /what (services|treatments|cuts|styles) (do you|are)/i,
+  /do you (do|offer) (haircuts|fades|locs|braids|relaxers|treatments|colouring|coloring)/i,
+  /how long (does|will) (a|the) (haircut|appointment|service|treatment)/i,
+  /do i (need to|have to) (book|make an appointment|call ahead)/i,
+  /how much (does|is) (a|the) (haircut|cut|fade|treatment|service)/i,
+  // General info
+  /where (are|is) (you|the|your)/i,
+  /what (are your|is your) (hours|opening hours|working hours)/i,
   // African English variants
   /wetin (you|una) (dey|de) (sell|offer|do)/i,
   /wetin you get/i,
@@ -472,11 +496,7 @@ export const getAIReply = async (message, business, session, intent = 'FALLBACK'
     history.push({ role: 'assistant', content: session.lastBotMessage });
   }
 
-  // [G-4] Intent-appropriate token budget
-  const maxTokens = resolvedIntent === 'ENQUIRY' ? 320
-                  : resolvedIntent === 'GREET'   ? 120
-                  : 280;
-  const aiReply = await callGroq(systemPrompt, message, history, maxTokens);
+  const aiReply = await callGroq(systemPrompt, message, history);
   if (aiReply) return aiReply;
 
   const fallback = standardFallback(business);

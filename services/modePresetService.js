@@ -85,6 +85,161 @@ const MODE_PRESETS = {
       loopFallback:    '',
     },
   },
+
+  BARBERSHOP: {
+    businessMode: 'BARBERSHOP',
+    tone: { style: 'FRIENDLY', industry: 'BARBERSHOP' },
+    settings: {
+      autoSuggestions: true,
+      enableLearning:  true,
+      sessionTimeout:  30,
+      allowAfterHoursOrders: false,
+      closedMessage: "We're currently closed. Please message us during business hours to book your cut ✂️",
+    },
+    customMessages: {
+      welcomeMessage:  '',
+      afterBooking:    "Your appointment is locked in! See you soon 💈",
+      fallback:        '',
+      cancelMsg:       '',
+      loopFallback:    '',
+    },
+  },
+
+  BAKERY: {
+    businessMode: 'BAKERY',
+    tone: { style: 'FRIENDLY', industry: 'BAKERY' },
+    settings: {
+      autoSuggestions: true,
+      enableLearning:  true,
+      sessionTimeout:  30,
+      allowAfterHoursOrders: false,
+      closedMessage: "We're currently closed. Come back soon — we bake fresh every day! 🥐",
+    },
+    customMessages: {
+      welcomeMessage:  '',
+      afterOrder:      "Order received! Baking with love — we'll message you when it's ready 🎂",
+      afterBooking:    "Collection time scheduled! We'll have it fresh and ready for you 🥐",
+      fallback:        '',
+      cancelMsg:       '',
+      loopFallback:    '',
+    },
+  },
+
+  SUPERMARKET: {
+    businessMode: 'SUPERMARKET',
+    tone: { style: 'PROFESSIONAL', industry: 'SUPERMARKET' },
+    settings: {
+      autoSuggestions: true,
+      enableLearning:  true,
+      sessionTimeout:  30,
+      allowAfterHoursOrders: true,
+      closedMessage: "We're currently offline. You can still place an order and we'll process it when we're back! 🛒",
+    },
+    customMessages: {
+      welcomeMessage:  '',
+      afterOrder:      "Order received! We'll confirm delivery or pickup details shortly 🛒",
+      fallback:        '',
+      cancelMsg:       '',
+      loopFallback:    '',
+    },
+  },
+
+  FASHION: {
+    businessMode: 'FASHION',
+    tone: { style: 'PREMIUM', industry: 'FASHION' },
+    settings: {
+      autoSuggestions: true,
+      enableLearning:  true,
+      sessionTimeout:  30,
+      allowAfterHoursOrders: true,
+      closedMessage: "We're currently unavailable. Browse our collection and send us a message — we'll be in touch! 👗",
+    },
+    customMessages: {
+      welcomeMessage:  '',
+      afterOrder:      "Your order is confirmed! We'll reach out about sizing and delivery details ✨",
+      fallback:        '',
+      cancelMsg:       '',
+      loopFallback:    '',
+    },
+  },
+
+  COSMETICS: {
+    businessMode: 'COSMETICS',
+    tone: { style: 'FRIENDLY', industry: 'COSMETICS' },
+    settings: {
+      autoSuggestions: true,
+      enableLearning:  true,
+      sessionTimeout:  30,
+      allowAfterHoursOrders: true,
+      closedMessage: "We're currently closed. Shop our products and we'll process your order when we reopen 💄",
+    },
+    customMessages: {
+      welcomeMessage:  '',
+      afterOrder:      "Order placed! Your beauty products are on their way ✨",
+      afterBooking:    "Consultation booked! We look forward to helping you glow 💅",
+      fallback:        '',
+      cancelMsg:       '',
+      loopFallback:    '',
+    },
+  },
+
+  ELECTRONICS: {
+    businessMode: 'ELECTRONICS',
+    tone: { style: 'PROFESSIONAL', industry: 'ELECTRONICS' },
+    settings: {
+      autoSuggestions: true,
+      enableLearning:  true,
+      sessionTimeout:  30,
+      allowAfterHoursOrders: true,
+      closedMessage: "We're currently offline. You can still browse and order — we'll confirm availability when we're back 📱",
+    },
+    customMessages: {
+      welcomeMessage:  '',
+      afterOrder:      "Order received! We'll verify stock and confirm delivery details 📦",
+      fallback:        '',
+      cancelMsg:       '',
+      loopFallback:    '',
+    },
+  },
+
+  PHARMACY: {
+    businessMode: 'PHARMACY',
+    tone: { style: 'PROFESSIONAL', industry: 'PHARMACY' },
+    settings: {
+      autoSuggestions: true,
+      enableLearning:  true,
+      sessionTimeout:  30,
+      allowAfterHoursOrders: false,
+      closedMessage: "We're currently closed. Please message us during pharmacy hours. Stay well! 💊",
+    },
+    customMessages: {
+      welcomeMessage:  '',
+      afterOrder:      "Order received! We'll prepare your medicines and arrange delivery. Stay healthy 💊",
+      fallback:        '',
+      cancelMsg:       '',
+      loopFallback:    '',
+    },
+  },
+
+  DELIVERY: {
+    businessMode: 'DELIVERY',
+    tone: { style: 'FRIENDLY', industry: 'DELIVERY' },
+    settings: {
+      autoSuggestions: true,
+      enableLearning:  true,
+      sessionTimeout:  30,
+      allowAfterHoursOrders: false,
+      closedMessage: "We're currently offline. Deliveries resume during working hours — message us then! 🚚",
+    },
+    customMessages: {
+      welcomeMessage:  '',
+      afterOrder:      "Delivery booked! Our rider will be in touch shortly 🚚",
+      afterBooking:    "Pickup scheduled! Our driver will be there on time 🚚",
+      fallback:        '',
+      cancelMsg:       '',
+      loopFallback:    '',
+    },
+  },
 };
 
 // ─── Apply mode preset ────────────────────────────────────────────────────────
@@ -106,9 +261,10 @@ export async function applyModePreset(phoneNumberId, mode) {
   const preset  = MODE_PRESETS[modeKey];
 
   if (!preset) {
+    const validModes = Object.keys(MODE_PRESETS).join(', ');
     return {
       success: false,
-      message: `Unknown mode "${mode}". Valid modes are: RESTAURANT, SALON, RETAIL.`,
+      message: `Unknown mode "${mode}". Valid modes are: ${validModes}.`,
     };
   }
 
@@ -150,7 +306,7 @@ export async function applyModePreset(phoneNumberId, mode) {
       success: true,
       message: `✅ Mode set to ${modeKey}! Your bot is now pre-configured for a ${modeKey.toLowerCase()} business.\n\n` +
                `Next steps:\n` +
-               `1. Add your ${modeKey === 'SALON' ? 'services' : 'menu items'}\n` +
+               `1. Add your ${['SALON', 'BARBERSHOP'].includes(modeKey) ? 'services' : 'menu items'}\n` +
                `2. Set your business hours\n` +
                `3. Set your admin phone number to receive order/booking alerts`,
       data: business,
@@ -179,8 +335,9 @@ export function validateBusinessConfig(data) {
     errors.push('Business name is required. Please add your business name.');
   }
 
-  if (data.businessMode && !['RESTAURANT', 'SALON', 'RETAIL'].includes(data.businessMode.toUpperCase())) {
-    errors.push(`"${data.businessMode}" is not a valid business mode. Please choose: RESTAURANT, SALON, or RETAIL.`);
+  const VALID_MODES = ['RESTAURANT', 'SALON', 'BARBERSHOP', 'RETAIL', 'BAKERY', 'SUPERMARKET', 'FASHION', 'COSMETICS', 'ELECTRONICS', 'PHARMACY', 'DELIVERY'];
+  if (data.businessMode && !VALID_MODES.includes(data.businessMode.toUpperCase())) {
+    errors.push(`"${data.businessMode}" is not a valid business mode. Please choose one of: ${VALID_MODES.join(', ')}.`);
   }
 
   if (data.menu && !Array.isArray(data.menu)) {
@@ -246,6 +403,13 @@ export function validateBusinessConfig(data) {
 export function buildSetupChecklist(business) {
   const mode = business?.businessMode || 'RESTAURANT';
 
+  // Modes that use services (not menu items)
+  const SERVICE_MODES = new Set(['SALON', 'BARBERSHOP']);
+  // Modes that don't require Wave payment (booking-only, no ORDER flow)
+  const NO_PAYMENT_MODES = new Set(['SALON', 'BARBERSHOP']);
+  const isServiceMode  = SERVICE_MODES.has(mode);
+  const isNoPayMode    = NO_PAYMENT_MODES.has(mode);
+
   const items = [
     {
       done:  !!business?.name?.trim() && business.name !== 'Our Business',
@@ -258,14 +422,14 @@ export function buildSetupChecklist(business) {
       tip:   'Set your adminPhone so you get notified when customers order or book.',
     },
     {
-      done:  mode === 'SALON'
+      done:  isServiceMode
                ? (business?.services?.length > 0)
                : (business?.menu?.length > 0),
-      label: mode === 'SALON'
+      label: isServiceMode
                ? '✅ Services added'
                : '✅ Menu items added',
-      tip:   mode === 'SALON'
-               ? 'Add your salon services (name, duration, price) so customers can book them.'
+      tip:   isServiceMode
+               ? 'Add your services (name, duration, price) so customers can book them.'
                : 'Add your menu items (name, price) so customers can order.',
     },
     {
@@ -280,21 +444,16 @@ export function buildSetupChecklist(business) {
     },
     {
       // [FIX-B] Check both payment.wavePhone (canonical) and top-level wavePhone (legacy)
-      done:  mode !== 'SALON'
+      done:  !isNoPayMode
                ? !!(business?.payment?.wavePhone?.trim() || business?.wavePhone?.trim())
                : true,
-      label: mode !== 'SALON' ? '✅ Wave payment number set (optional)' : '✅ N/A for salon mode',
-      tip:   mode !== 'SALON'
+      label: !isNoPayMode ? '✅ Wave payment number set (optional)' : `✅ N/A for ${mode.toLowerCase()} mode`,
+      tip:   !isNoPayMode
                ? 'Add your Wave mobile money number so customers can pay digitally.'
                : null,
     },
-  // [FIX-A] Corrected filter logic — previously used:
-  //   item.label !== '✅ N/A...' || mode === 'SALON' === false
-  // 'mode === 'SALON' === false' is always (string === false) = false, so
-  // the filter was equivalent to: item.label !== 'N/A...' — which removed
-  // the N/A placeholder for ALL modes, including SALON where it should stay.
-  // Correct intent: remove the 'N/A for salon' row only when mode is NOT salon.
-  ].filter(item => !(item.label === '✅ N/A for salon mode' && mode !== 'SALON'));
+  // Remove the N/A placeholder row only when the mode does not use it.
+  ].filter(item => !(item.label?.startsWith('✅ N/A for') && !isNoPayMode));
 
   const doneCount = items.filter(i => i.done).length;
   const score     = Math.round((doneCount / items.length) * 100);
@@ -320,6 +479,7 @@ export function buildSetupChecklist(business) {
 export function getDefaultConfig(mode) {
   const modeKey = String(mode || 'RESTAURANT').toUpperCase();
   const preset  = MODE_PRESETS[modeKey] || MODE_PRESETS.RESTAURANT;
+  const SERVICE_MODES = new Set(['SALON', 'BARBERSHOP']);
 
   const sampleMenu = [
     { name: 'Item 1', price: 50, description: 'Describe your first item here', available: true },
@@ -345,8 +505,8 @@ export function getDefaultConfig(mode) {
       currency:     'GMD',
       requireProof: true,
     },
-    menu:         modeKey !== 'SALON' ? sampleMenu : [],
-    services:     modeKey === 'SALON' ? sampleServices : [],
+    menu:         !SERVICE_MODES.has(modeKey) ? sampleMenu : [],
+    services:     SERVICE_MODES.has(modeKey) ? sampleServices : [],
     hours: {
       enabled:  true,
       timezone: 'Africa/Banjul',

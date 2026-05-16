@@ -378,9 +378,9 @@ export const MODES = {
   // BAKERY — pre-orders + daily specials + collection time
   // ─────────────────────────────────────────────────────────────────────────
   BAKERY: {
-    flows: ['ORDER', 'INQUIRY'],
+    flows: ['ORDER', 'BOOKING', 'INQUIRY'],
     salesPersona: 'warm bakery assistant who loves talking about freshly baked goods, suggests add-ons, and reminds customers about daily specials',
-    intentMap: { ORDER: 'START_ORDER', INQUIRY: 'ABOUT', UNKNOWN: 'FALLBACK' },
+    intentMap: { ORDER: 'START_ORDER', BOOKING: 'START_BOOKING', INQUIRY: 'ABOUT', UNKNOWN: 'FALLBACK' },
     tone: { style: 'FRIENDLY', industry: 'RETAIL' },
     addOns: [
       { name: 'Box of Cookies', price: 60 },
@@ -398,16 +398,32 @@ export const MODES = {
       welcomePersonalised:  (name) => `🥐 Welcome back, *${name}*! Great to have you. What would you like today?`,
       nameReceivedMsg:      (name) => `Nice to meet you, *${name}*! 😊 What can I get you today?`,
       orderBtn:             '🧁 Order Now',
+      bookBtn:              '📅 Schedule Collection',
       orderPrompt:          "🎂 Here's what's fresh today — choose your item:",
-      servicePrompt:        null,
-      bookPrompt:           null,
+      servicePrompt:        'What would you like to schedule?',
+      bookPrompt:           'What date would you like to collect? 📅',
       timePrompt:           'What time would you like to collect? ⏰',
       confirmOrder: (item, qty, price) =>
         `🧾 *Order Summary*\n\n🧁 *${item}* × ${qty}` +
         (price ? `\n💰 Total: *D${price}*` : '') +
-        "\n\n📦 Ready for collection — we'll confirm your time.",
+        '\n\n📦 We\'ll prepare it fresh for you.',
+      confirmBooking: (serviceOrDate, dateOrTime, timeOrUndefined) => {
+        const hasService = timeOrUndefined !== undefined;
+        const service = hasService ? serviceOrDate : null;
+        const date    = hasService ? dateOrTime    : serviceOrDate;
+        const time    = hasService ? timeOrUndefined : dateOrTime;
+        return `📋 *Collection Summary*\n\n` +
+          (service ? `🧁 *${service}*\n` : '') +
+          `📅 *${date}*` + (time ? `\n⏰ *${time}*` : '');
+      },
       orderSuccess: (item, qty) =>
         `✅ *Order placed!*\n\n🎂 *${qty}× ${item}* — baking with love!\n\nWe'll message you when it's ready. 🥐\n\nType *0* to return to menu.`,
+      bookingSuccess: (date, time, service) =>
+        `✅ *Collection scheduled!*\n\n` +
+        (service ? `🧁 *${service}*\n` : '') +
+        `📅 *${date}*` +
+        (time ? `\n⏰ *${time}*` : '') +
+        '\n\nFreshly baked and ready for you! 🎂\n\nType *0* to return to menu.',
       paymentInstructions: (amount, wavePhone) =>
         `💳 *Payment*\n\nTotal: *D${amount}*\nWave to: *${wavePhone}*\n\nSend your screenshot here to confirm. 📸`,
       paymentProofReceived: `✅ *Screenshot received!* We're confirming your payment — just a moment. ☕`,
@@ -421,19 +437,19 @@ export const MODES = {
         lastItem
           ? `🔄 Would you like to order *${lastItem}* again?\n\nTap *Order* to get started!`
           : `🔄 Tap *Order* to browse what's fresh today!`,
-      fallback:     'Would you like to *order* something, or do you have a *question*?',
+      fallback:     'Would you like to *order* something, *schedule a collection*, or do you have a *question*?',
       loopFallback: "Here's what I can help you with:",
       upsellPrompt: (name, price) => `Would you also like *${name}* for D${price}? 🍪`,
     },
     ui: {
-      welcomeButtons:  [{ id: 'ORDER', title: '🧁 Place an Order' }, { id: 'QUESTION', title: '❓ Ask a Question' }],
+      welcomeButtons:  [{ id: 'ORDER', title: '🧁 Place an Order' }, { id: 'BOOK', title: '📅 Schedule Collection' }, { id: 'QUESTION', title: '❓ Ask a Question' }],
       confirmButtons:  [{ id: 'CONFIRM', title: '✅ Confirm Order' }, { id: 'CANCEL', title: '❌ Cancel' }],
       switchButtons:   [{ id: 'SWITCH_YES', title: '✅ Yes, switch' }, { id: 'SWITCH_NO', title: '❌ No, continue' }],
-      fallbackButtons: [{ id: 'ORDER', title: '🧁 Order' }, { id: 'QUESTION', title: '❓ Question' }],
+      fallbackButtons: [{ id: 'ORDER', title: '🧁 Order' }, { id: 'BOOK', title: '📅 Collect' }, { id: 'QUESTION', title: '❓ Question' }],
       upsellButtons:   [{ id: 'UPSELL_YES', title: '✅ Add it' }, { id: 'UPSELL_NO', title: '❌ No thanks' }],
     },
     orderSteps:   ['SELECT_ITEM', 'QUANTITY', 'CONFIRM'],
-    bookingSteps: [],
+    bookingSteps: ['DATE', 'DATE_CONFIRM', 'TIME', 'TIME_CONFIRM', 'CONFIRM'],
   },
 
   // ─────────────────────────────────────────────────────────────────────────
@@ -526,7 +542,7 @@ export const MODES = {
       confirmOrder: (item, qty, price) =>
         `🧾 *Your Order*\n\n👗 *${item}* × ${qty}` +
         (price ? `\n💰 Total: *D${price}*` : '') +
-        '\n\n📐 Please confirm your *size* in the next message.',
+        '\n\n📦 We\'ll contact you about sizing and delivery details.',
       orderSuccess: (item, qty) =>
         `✅ *Order confirmed!*\n\n👗 *${qty}× ${item}*\n\nWe'll prepare your item and reach out with delivery details. Thank you! ✨\n\nType *0* to return to menu.`,
       paymentInstructions: (amount, wavePhone) =>
@@ -563,9 +579,9 @@ export const MODES = {
   // COSMETICS — product orders + beauty advice + upsell
   // ─────────────────────────────────────────────────────────────────────────
   COSMETICS: {
-    flows: ['ORDER', 'INQUIRY'],
+    flows: ['ORDER', 'BOOKING', 'INQUIRY'],
     salesPersona: 'knowledgeable beauty advisor who gives personalised skincare and makeup recommendations, answers ingredient questions, and upsells complementary products naturally',
-    intentMap: { ORDER: 'START_ORDER', INQUIRY: 'ABOUT', UNKNOWN: 'FALLBACK' },
+    intentMap: { ORDER: 'START_ORDER', BOOKING: 'START_BOOKING', INQUIRY: 'ABOUT', UNKNOWN: 'FALLBACK' },
     tone: { style: 'FRIENDLY', industry: 'RETAIL' },
     addOns: [
       { name: 'Travel Pouch',   price: 40 },
@@ -582,15 +598,25 @@ export const MODES = {
       welcomePersonalised:  (name) => `💄 Welcome back, *${name}*! Great to have you. What are we working on today? ✨`,
       nameReceivedMsg:      (name) => `Lovely to meet you, *${name}*! 😊 Let me help you find your perfect product.`,
       orderBtn:             '💋 Shop Products',
+      bookBtn:              '💅 Book Consultation',
       orderPrompt:          '✨ Our bestsellers — choose a product:',
-      servicePrompt:        null,
-      bookPrompt:           null,
-      timePrompt:           null,
+      servicePrompt:        'What type of consultation would you like?',
+      bookPrompt:           'What date would you like your consultation? 📅',
+      timePrompt:           'What time works best? ⏰',
       confirmOrder: (item, qty, price) =>
         `🧾 *Your Order*\n\n💄 *${item}* × ${qty}` +
         (price ? `\n💰 Total: *D${price}*` : ''),
+      confirmBooking: (service, date, time) =>
+        `📋 *Consultation Summary*\n\n💅 *${service}*\n📅 *${date}*` +
+        (time ? `\n⏰ *${time}*` : ''),
       orderSuccess: (item, qty) =>
         `✅ *Order placed!*\n\n💋 *${qty}× ${item}*\n\nYour beauty is on its way! We'll confirm delivery details shortly. ✨\n\nType *0* to return to menu.`,
+      bookingSuccess: (date, time, service) =>
+        `✅ *Consultation booked!*\n\n` +
+        (service ? `💅 *${service}*\n` : '') +
+        `📅 *${date}*` +
+        (time ? `\n⏰ *${time}*` : '') +
+        '\n\nSee you then! ✨\n\nType *0* to return to menu.',
       paymentInstructions: (amount, wavePhone) =>
         `💳 *Payment*\n\nTotal: *D${amount}*\nWave to: *${wavePhone}*\n\nSend your payment screenshot here. 💄`,
       paymentProofReceived: `✅ Got your screenshot! Verifying payment now — almost there! 💋`,
@@ -604,21 +630,21 @@ export const MODES = {
         lastItem
           ? `🔄 Would you like to order *${lastItem}* again?\n\nTap *Shop* to get started!`
           : `🔄 Tap *Shop* to browse our products!`,
-      fallback:     'Would you like to *shop* our products, or do you have a *beauty question*?',
+      fallback:     'Would you like to *shop* our products, *book a consultation*, or do you have a *beauty question*?',
       loopFallback: "Let me help you find the perfect product:",
       upsellPrompt: (name, price) => price > 0
         ? `Would you also like *${name}* for D${price}? It pairs perfectly! 💋`
         : `Would you like to add a *${name}* — complimentary with your order? ✨`,
     },
     ui: {
-      welcomeButtons:  [{ id: 'ORDER', title: '💄 Shop Products' }, { id: 'QUESTION', title: '❓ Beauty Advice' }],
+      welcomeButtons:  [{ id: 'ORDER', title: '💄 Shop Products' }, { id: 'BOOK', title: '💅 Book Consultation' }, { id: 'QUESTION', title: '❓ Beauty Advice' }],
       confirmButtons:  [{ id: 'CONFIRM', title: '✅ Confirm Order' }, { id: 'CANCEL', title: '❌ Cancel' }],
       switchButtons:   [{ id: 'SWITCH_YES', title: '✅ Yes, switch' }, { id: 'SWITCH_NO', title: '❌ No, continue' }],
-      fallbackButtons: [{ id: 'ORDER', title: '💄 Shop' }, { id: 'QUESTION', title: '❓ Question' }],
+      fallbackButtons: [{ id: 'ORDER', title: '💄 Shop' }, { id: 'BOOK', title: '💅 Consult' }, { id: 'QUESTION', title: '❓ Question' }],
       upsellButtons:   [{ id: 'UPSELL_YES', title: '✅ Add it' }, { id: 'UPSELL_NO', title: '❌ No thanks' }],
     },
     orderSteps:   ['SELECT_ITEM', 'QUANTITY', 'CONFIRM'],
-    bookingSteps: [],
+    bookingSteps: ['SELECT_SERVICE', 'DATE', 'DATE_CONFIRM', 'TIME', 'TIME_CONFIRM', 'CONFIRM'],
   },
 
   // ─────────────────────────────────────────────────────────────────────────
@@ -745,6 +771,116 @@ export const MODES = {
   },
 
   // ─────────────────────────────────────────────────────────────────────────
+  // BARBERSHOP — appointment booking + walk-in queue + FAQ
+  // Shares the same booking flow as SALON but with barbershop-specific
+  // persona, labels, and service terminology.
+  // ─────────────────────────────────────────────────────────────────────────
+  BARBERSHOP: {
+    flows: ['BOOKING', 'INQUIRY'],
+
+    salesPersona: 'friendly, professional barber who helps clients book appointments, answers questions about cuts and styles, and keeps things short and confident',
+
+    intentMap: {
+      BOOKING: 'START_BOOKING',
+      INQUIRY: 'ABOUT',
+      UNKNOWN: 'FALLBACK',
+    },
+
+    tone: { style: 'FRIENDLY', industry: 'SALON' },
+
+    addOns: [
+      { name: 'Hot Towel Shave',   price: 75  },
+      { name: 'Beard Trim',        price: 50  },
+      { name: 'Hair Treatment',    price: 100 },
+      { name: 'Eyebrow Threading', price: 40  },
+    ],
+
+    smartRecommendations: {
+      enabled: false,
+      trigger: null,
+      prompt:  null,
+    },
+
+    labels: {
+      welcome:              '✂️ Welcome! Ready for a fresh cut? What can we do for you?',
+      welcomePersonalised:  (name) => `✂️ Welcome back, *${name}*! Good to see you. What are we doing today? 💈`,
+      nameReceivedMsg:      (name) => `Nice to meet you, *${name}*! 😊 Let me get you booked in.`,
+      bookBtn:              '💈 Book Appointment',
+      contactBtn:           '📞 Contact Us',
+      orderPrompt:          null,
+      bookPrompt:           'Which service would you like? 💈',
+      servicePrompt:        'Please choose a service:',
+      timePrompt:           'What time works best for you? ⏰',
+
+      confirmBooking: (service, date, time) =>
+        `📋 *Booking Summary*\\n\\n💈 *${service}*\\n📅 *${date}*` +
+        (time ? `\\n⏰ *${time}*` : ''),
+
+      bookingSuccess: (date, time, service) =>
+        `✅ *Booking confirmed!*\\n\\n` +
+        (service ? `💈 *${service}*\\n` : '') +
+        `📅 *${date}*` +
+        (time ? `\\n⏰ *${time}*` : '') +
+        '\\n\\nSee you then! ✂️\\n\\nType *0* to return to menu.',
+
+      paymentInstructions: (amount, wavePhone) =>
+        `💳 *Payment*\\n\\nTotal: *D${amount}*\\nWave to: *${wavePhone}*\\n\\nSend your screenshot here after paying.`,
+
+      paymentProofReceived:
+        `✅ *Screenshot received.*\\n\\n⏳ Verifying your payment — we'll confirm shortly.`,
+
+      paymentConfirmed:
+        `✅ *Payment confirmed!* Your appointment is locked in. See you soon! 💈\\n\\nType *0* to return to menu.`,
+
+      paymentRejected:
+        `❌ *Payment could not be verified.*\\n\\nPlease check the amount and try again, or contact us directly.`,
+
+      cancelMsg:    "✅ No problem! Type *Book* whenever you're ready, or *Question* to ask us anything.",
+
+      trackOrderMsg: (adminPhone) =>
+        `📅 *Appointment Status*\\n\\nFor updates on your appointment, please contact us directly.\\n\\n` +
+        (adminPhone ? `📞 *${adminPhone}*` : 'Please call us directly.'),
+
+      repeatOrderMsg: (lastService) =>
+        lastService
+          ? `🔄 Would you like to book *${lastService}* again?\\n\\nTap *Book* to schedule your next cut.`
+          : `🔄 Tap *Book* to schedule your next appointment!`,
+
+      fallback:     'Would you like to *book an appointment* or ask a *question*?',
+      loopFallback: 'Let me help you get booked in:',
+
+      upsellPrompt: (addOnName, addOnPrice) =>
+        `Would you like to add *${addOnName}* for D${addOnPrice}? ✂️`,
+    },
+
+    ui: {
+      welcomeButtons: [
+        { id: 'BOOK',     title: '💈 Book Appointment' },
+        { id: 'QUESTION', title: '❓ Ask a Question' },
+      ],
+      confirmButtons: [
+        { id: 'CONFIRM', title: '✅ Confirm' },
+        { id: 'CANCEL',  title: '❌ Cancel' },
+      ],
+      switchButtons: [
+        { id: 'SWITCH_YES', title: '✅ Yes, switch' },
+        { id: 'SWITCH_NO',  title: '❌ No, continue' },
+      ],
+      fallbackButtons: [
+        { id: 'BOOK',     title: '💈 Book Appointment' },
+        { id: 'QUESTION', title: '❓ Question' },
+      ],
+      upsellButtons: [
+        { id: 'UPSELL_YES', title: '✅ Yes, add it' },
+        { id: 'UPSELL_NO',  title: '❌ No thanks' },
+      ],
+    },
+
+    orderSteps:   [],
+    bookingSteps: ['SELECT_SERVICE', 'DATE', 'DATE_CONFIRM', 'TIME', 'TIME_CONFIRM', 'CONFIRM'],
+  },
+
+  // ─────────────────────────────────────────────────────────────────────────
   // DELIVERY — delivery order + tracking + scheduling
   // ─────────────────────────────────────────────────────────────────────────
   DELIVERY: {
@@ -829,7 +965,7 @@ export function getModeConfig(businessOrMode) {
       ? businessOrMode
       : (businessOrMode?.businessMode || businessOrMode?.mode || 'RESTAURANT');
 
-  const legacyMap = { BOTH: 'RESTAURANT', ORDER: 'RETAIL', BOOKING: 'SALON' };
+  const legacyMap = { BOTH: 'RESTAURANT', ORDER: 'RETAIL', BOOKING: 'SALON', BARBERSHOP: 'BARBERSHOP' };
   const key = legacyMap[raw?.toUpperCase()] ?? raw?.toUpperCase();
 
   return MODES[key] ?? MODES.RESTAURANT;

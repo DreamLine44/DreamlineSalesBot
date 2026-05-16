@@ -1,5 +1,5 @@
 /**
- * services/flowService.js — Dreamline Sales Bot v20.0 (definitive)
+ * services/flowService.js — Dreamline Sales Bot v19.0
  *
  * LAYER 2 — FLOW LOGIC ONLY.
  *
@@ -195,7 +195,7 @@ const WORD_NUMBERS = {
   //
   // teens / low numbers
   'wan':1, 'wun':1, 'onne':1,                       // "one"
-  'tow':2, 'tu':2, 'too':2,                          // "two"
+  'tow':2, 'tow':2, 'tu':2, 'too':2,                // "two"
   'fore':4, 'for':4,                                  // "four"
   'fife':5, 'fiv':5,                                  // "five"
   'sex':6, 'siks':6,                                  // "six"
@@ -205,7 +205,7 @@ const WORD_NUMBERS = {
   'ten':10,                                            // already canonical, kept for clarity
   'elevan':11, 'elever':11, 'elvn':11,               // "eleven"
   'twelv':12, 'twelf':12, 'twleve':12,               // "twelve"
-  'thirten':13, 'thirtteen':13,                       // "thirteen"
+  'thirten':13, 'thirten':13,                         // "thirteen"
   'forteen':14, 'fourten':14, 'forten':14,           // "fourteen"
   'fiften':15, 'fiveteen':15,                         // "fifteen"
   'sixten':16, 'sixteen':16,                          // "sixteen" (canonical + alt)
@@ -214,16 +214,16 @@ const WORD_NUMBERS = {
   'ninten':19, 'nineteen':19,                         // "nineteen"
   // tens
   'twentey':20, 'tweny':20, 'twenti':20,             // "twenty"
-  'thirthy':30, 'thiry':30,                           // "thirty"
+  'thirthy':30, 'thiry':30, 'thirthy':30,            // "thirty"
   'fourty':40, 'foty':40,                             // "forty" (very common misspelling)
   'fity':50, 'fifthy':50, 'fiffty':50,               // "fifty"
   'sixthy':60, 'sixy':60,                             // "sixty"
   'seventy':70,                                        // canonical, already above
   'sevnty':70, 'sevanty':70,                         // "seventy"
   'eighty':80,                                         // canonical, already above
-  'eightey':80, 'eighthy':80, 'eigthy':80,            // "eighty"
+  'eightey':80, 'eighthy':80, 'eigthy':80,           // "eighty"
   // ninety — the bug that triggered this fix
-  'ninty':90, 'niety':90,
+  'ninty':90, 'ninety':90, 'niety':90, 'ninty':90,
   'ninety':90, 'ninnty':90, 'ninity':90, 'ninite':90,
 };
 
@@ -569,7 +569,7 @@ function _buildStepReprompt(session) {
   }
 
   // Generic fallback — shouldn't be reached in normal flow
-  return { type: 'text', body: '😊 What would you like to do next? Type *cancel* to stop or continue with your response.' };
+  return { type: 'text', body: 'Please continue with your response, or type *cancel* at any time to stop.' };
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -589,13 +589,15 @@ export const handleFlow = async (session, message, tenant = null, isInteractive 
     return _buildStepReprompt(session);
   }
 
+  // [BUG-2 FIX] TTL touch: use 4h for PAYMENT_PROOF (customers upload screenshots
+  // long after session creation — previously the 30min touch overwrote the 4h TTL
+  // that _stepHint set, expiring payment sessions mid-upload).
+  // All other steps use the standard 30-min idle TTL.
+  const _isPaymentStep = session.step === 'PAYMENT_PROOF';
+  const _touchTTL = _isPaymentStep ? 4 * 60 * 60 * 1000 : 30 * 60 * 1000;
   await updateSession(session.customerPhone, session.tenantId, {
     lastMessage: raw,
-    // FIX-TTL: Touch expiresAt on every message so a customer who takes time
-    // between steps (reading menu, deciding) never hits an expired session.
-    // updateSession already does this when `step` is provided; this explicit
-    // touch covers messages that don't change the step (e.g. invalid inputs).
-    expiresAt: new Date(Date.now() + (30 * 60 * 1000)),
+    expiresAt: new Date(Date.now() + _touchTTL),
   });
 
   const business = await loadBusiness(session);
@@ -697,11 +699,12 @@ export const handleFlow = async (session, message, tenant = null, isInteractive 
 
     if (addOnAccepted && pendingAddOn) {
       // STEP 3: Updated summary + confirm
+      const _upsellCurrency = business?.payment?.currency || business?.currency || 'GMD';
       const updatedSummary =
         `🧾 *Updated Order*\n\n` +
         `🍽️ ${item} × ${quantity}\n` +
         `🥤 ${pendingAddOn.name} × 1\n` +
-        `💰 Total: *D${finalTotal}*`;
+        `💰 Total: *${_upsellCurrency} ${finalTotal}*`;
 
       return buildConfirmUI(business, updatedSummary);
     }
@@ -811,7 +814,7 @@ async function handleOrder(session, raw, clean, business, isInteractive = false,
       // the in-memory snapshot from before that write, so a plain ...session.data would
       // overwrite data.item back to undefined — causing the QUANTITY step to show the menu).
       if (recoA) await updateSession(session.customerPhone, session.tenantId, { data: { ...session.data, item: selected, recommendedThisSession: true } });
-      const qtyA  = `Great choice 👍\n\nHow many *${selected}* would you like?\n\n(Enter a number or word, e.g. *1*, *2*, *four*)`;
+      const qtyA  = `How many *${selected}* would you like?\n\n(Enter a number or word — e.g. *1*, *2*, *four*)`;
       return recoA ? { type: 'text', body: `${recoA}\n\n${qtyA}` } : qtyA;
     }
     if (isBtnReject(raw)) {
@@ -842,7 +845,7 @@ async function handleOrder(session, raw, clean, business, isInteractive = false,
         const recoB = await getSmartRecommendation(business, item, session).catch(() => null);
         // [FIX-STALE-SPREAD] Always include item in the spread (same stale-snapshot bug as recoA).
         if (recoB) await updateSession(session.customerPhone, session.tenantId, { data: { ...session.data, item, recommendedThisSession: true } });
-        const qtyB  = `Great choice 👍\n\nHow many *${item}* would you like?\n\n(Enter a number or word, e.g. *1*, *2*, *four*)`;
+        const qtyB  = `How many *${item}* would you like?\n\n(Enter a number or word — e.g. *1*, *2*, *four*)`;
         return recoB ? { type: 'text', body: `${recoB}\n\n${qtyB}` } : qtyB;
       }
 
@@ -881,7 +884,7 @@ async function handleOrder(session, raw, clean, business, isInteractive = false,
         const recoC = await getSmartRecommendation(business, name, session).catch(() => null);
         // [FIX-STALE-SPREAD] Always include item: name in the spread (same stale-snapshot bug as recoA/B).
         if (recoC) await updateSession(session.customerPhone, session.tenantId, { data: { ...session.data, item: name, recommendedThisSession: true } });
-        const qtyC  = `Great choice 👍\n\nHow many *${name}* would you like?\n\n(Enter a number or word, e.g. *1*, *2*, *four*)`;
+        const qtyC  = `How many *${name}* would you like?\n\n(Enter a number or word — e.g. *1*, *2*, *four*)`;
         return recoC ? { type: 'text', body: `${recoC}\n\n${qtyC}` } : qtyC;
       }
 
@@ -928,7 +931,7 @@ async function handleOrder(session, raw, clean, business, isInteractive = false,
           return {
             type: 'buttons',
             body: itemName
-              ? `No problem! How many *${itemName}* would you like? 🛒\n\nType a number or word (e.g. *1*, *2*, *five*).`
+              ? `How many *${itemName}* would you like?\n\nPlease enter a number or word (e.g. *1*, *2*, *five*).`
               : 'Please type the quantity you\'d like (e.g. *1*, *2*, *five*).',
             buttons: [{ id: 'CANCEL', title: '❌ Cancel Order' }],
           };
@@ -1090,7 +1093,7 @@ async function handleOrder(session, raw, clean, business, isInteractive = false,
       if (retryCount >= 3) {
         const adminPhone = business?.adminPhone || tenant?.adminPhone;
         const supportBody = adminPhone
-          ? `It looks like you might need help with your payment. 🙏\n\nPlease contact us directly at *${adminPhone}* and we'll sort it out for you.`
+          ? `Please contact us directly at *${adminPhone}* for assistance with your payment.`
           : `Please send your *Wave payment screenshot* to complete your order.`;
         return {
           type: 'buttons',
@@ -1139,7 +1142,7 @@ async function handleBooking(session, raw, clean, business) {
       });
       await pushStep(session, 'DATE');
       const prompt = getLabel(business, 'bookPrompt') || 'What date would you like?';
-      return `Great! *${selected}* selected ✅\n\n${prompt} 📅\n\n(e.g. *25 June*, *tomorrow*, *next Monday*)`;
+      return `*${selected}* confirmed.\n\n${prompt}\n\n(e.g. *25 June*, *tomorrow*, *next Monday*)`;
     }
     if (isBtnReject(raw)) {
       await updateSession(session.customerPhone, session.tenantId, { suggestion: null });
@@ -1172,7 +1175,7 @@ async function handleBooking(session, raw, clean, business) {
         });
         await pushStep(session, 'DATE');
         const prompt = getLabel(business, 'bookPrompt') || 'What date would you like?';
-        return `Great! *${svc.name}* selected ✅\n\n${prompt} 📅\n\n(e.g. *25 June*, *tomorrow*, *next Monday*)`;
+        return `*${svc.name}* confirmed.\n\n${prompt}\n\n(e.g. *25 June*, *tomorrow*, *next Monday*)`;
       }
       const { item: svcMatch, confidenceLevel } = findBestMatch(services, clean);
       if (svcMatch && confidenceLevel === 'HIGH') {
@@ -1181,7 +1184,7 @@ async function handleBooking(session, raw, clean, business) {
         });
         await pushStep(session, 'DATE');
         const prompt = getLabel(business, 'bookPrompt') || 'What date would you like?';
-        return `Great! *${svcMatch.name}* selected ✅\n\n${prompt} 📅\n\n(e.g. *25 June*, *tomorrow*, *next Monday*)`;
+        return `*${svcMatch.name}* confirmed.\n\n${prompt}\n\n(e.g. *25 June*, *tomorrow*, *next Monday*)`;
       }
 
       // LOW confidence — ask "Did you mean?" with buttons (mirrors SELECT_ITEM behaviour)
@@ -1240,7 +1243,7 @@ async function handleBooking(session, raw, clean, business) {
         await updateSession(session.customerPhone, session.tenantId, { step: 'TIME', expectedInputType: 'time' });
         await pushStep(session, 'TIME');
         const timePrompt = getLabel(business, 'timePrompt') || 'What time would you prefer?';
-        return `Got it — *${session.data?.date}* ✅\n\n${timePrompt} ⏰\n\n(e.g. *2pm*, *14:00*, *morning*)`;
+        return `Date confirmed: *${session.data?.date}*.\n\n${timePrompt}\n\n(e.g. *2pm*, *14:00*, *morning*)`;
       }
       // DATE_BACK is the "❌ No, re-enter" button ID — send back to DATE step.
       // NOTE: raw === 'CANCEL' is intentionally NOT handled here; that falls
@@ -1249,7 +1252,7 @@ async function handleBooking(session, raw, clean, business) {
         await updateSession(session.customerPhone, session.tenantId, {
           data: { ...session.data, date: null }, step: 'DATE',
         });
-        return "No problem! Let's try again.\n\nWhat *date* would you like to book? 📅\n\n(e.g. *25 June*, *tomorrow*, *next Monday*)";
+        return "Of course. What *date* would you like to book?\n\n(e.g. *25 June*, *tomorrow*, *next Monday*)";
       }
       const newDate = raw.trim();
       if (looksLikeDate(newDate)) {
@@ -1319,7 +1322,7 @@ async function handleBooking(session, raw, clean, business) {
         await updateSession(session.customerPhone, session.tenantId, {
           data: { ...session.data, time: null }, step: 'TIME',
         });
-        return "No problem! Let's try again.\n\nWhat *time* would you prefer? ⏰\n\n(e.g. *2pm*, *14:00*, *morning*)";
+        return "Of course. What *time* would you prefer?\n\n(e.g. *2pm*, *14:00*, *morning*)";
       }
       const newTime = raw.trim();
       if (looksLikeTime(newTime)) {
@@ -1345,7 +1348,7 @@ async function handleBooking(session, raw, clean, business) {
       }
       await updateSession(session.customerPhone, session.tenantId, { step: firstStep });
       if (firstStep === 'SELECT_SERVICE') return buildServicesUI(business);
-      return getLabel(business, 'bookPrompt') || "Let's start over 😊\n\nWhat *date* would you like to book? 📅";
+      return getLabel(business, 'bookPrompt') || "What *date* would you like to book?\n\n(e.g. *25 June*, *tomorrow*, *next Monday*)";
     }
   }
 }
@@ -1362,7 +1365,7 @@ async function handleFinalize(session, business, tenant) {
     const action  = flow === 'ORDER' ? '*Order*' : '*Book*';
     return {
       type: 'text',
-      body: `We're having a little trouble right now 🙏\n\nYour request didn't go through — but it's not your fault!\n\nPlease try again by typing ${action}, or contact *${bizName}* directly if the problem continues.`,
+      body: `We were unable to complete your request due to a technical issue.\n\nPlease try again by typing ${action}, or contact *${bizName}* directly if the problem persists.`,
     };
   };
 
@@ -1498,26 +1501,6 @@ async function handleFinalize(session, business, tenant) {
 
     const customerPhone = session.customerPhone || session.phone;
 
-    // Capture customerName and partySize from session for admin visibility and reminders
-    const _customerName = session.customerName || null;
-    const _partySize    = session.data?.partySize || null;
-
-    // [SC-2] Attempt to parse the free-text date into a JS Date for the scheduler.
-    // The scheduler uses parsedDate for accurate reminder timing — if null it falls
-    // back to the createdAt window which is imprecise. Best-effort: never crash if
-    // the date string is unrecognised (e.g. "next Friday", "tomorrow", "25 June").
-    let _parsedDate = null;
-    if (date) {
-      try {
-        const d = new Date(date);
-        // Reject NaN and clearly wrong dates (Date parses many strings but some give
-        // Invalid Date or year 2001 from bare "June" with no year context)
-        if (!isNaN(d.getTime()) && d.getFullYear() >= new Date().getFullYear()) {
-          _parsedDate = d;
-        }
-      } catch { /* non-fatal — scheduler falls back to createdAt window */ }
-    }
-
     try {
       await Booking.create({
         phone:         customerPhone,
@@ -1530,12 +1513,6 @@ async function handleFinalize(session, business, tenant) {
         duration:      serviceDuration || null,
         status:        'pending',
         notifiedAt:    null,
-        // [FIX] Persist customer name and party size — required for admin workflow
-        // and booking reminder templates. Previously always null in every booking.
-        customerName:  _customerName,
-        partySize:     _partySize,
-        // [SC-2] Parsed date for accurate scheduler reminder timing
-        parsedDate:    _parsedDate,
       });
     } catch (err) {
       logger.error('[flowService] Booking save error', { err: err.message, date, time, service, customerPhone });
@@ -1591,7 +1568,7 @@ async function handleInterrupt(session, raw, business, tenant) {
     });
     if (newFlow === 'ORDER')            return buildMenuUI(business);
     if (firstStep === 'SELECT_SERVICE') return buildServicesUI(business);
-    return `Sure! Let's set up your booking 📅\n\nWhat *date* would you like?\n\n(e.g. *25 June*, *tomorrow*, *next Monday*)`;
+    return `What *date* would you like for your booking?\n\n(e.g. *25 June*, *tomorrow*, *next Monday*)`;
   }
 
   if (isSwitchNo(raw)) {
@@ -1604,12 +1581,12 @@ async function handleInterrupt(session, raw, business, tenant) {
     if (session.currentFlow === 'BOOKING') {
       if (prevStep === 'TIME' || prevStep === 'TIME_CONFIRM') {
         const d = session.data?.date || 'your booking';
-        return `No problem! Continuing your booking.\n\nWhat *time* would you like for *${d}*? ⏰`;
+        return `Continuing your booking.\n\nWhat *time* would you like for *${d}*?\n\n(e.g. *2pm*, *14:00*, *morning*)`;  
       }
       if (prevStep === 'DATE_CONFIRM') {
         return {
           type:    'buttons',
-          body:    `No problem! Continuing your booking.\n\nJust to confirm — did you mean *${session.data?.date}*? 📅`,
+          body:    `Continuing your booking.\n\nJust to confirm — did you mean *${session.data?.date}*?`,
           buttons: [{ id: 'CONFIRM', title: '✅ Yes, that date' }, { id: 'DATE_BACK', title: '❌ No, re-enter' }],
         };
       }
@@ -1621,11 +1598,11 @@ async function handleInterrupt(session, raw, business, tenant) {
           : `📋 *Booking Summary*\n\n📅 Date: *${date}*${time ? `\n⏰ Time: *${time}*` : ''}`;
         return buildConfirmUI(business, summaryText);
       }
-      return "No problem! Continuing your booking.\n\nWhat *date* would you like? 📅";
+      return "Continuing your booking.\n\nWhat *date* would you like?\n\n(e.g. *25 June*, *tomorrow*, *next Monday*)";
     }
 
     if (prevStep === 'QUANTITY' && session.data?.item) {
-      return `No problem! Continuing your order.\n\nHow many *${session.data.item}* would you like?`;
+      return `Continuing your order.\n\nHow many *${session.data.item}* would you like?\n\n(Enter a number or word — e.g. *1*, *2*, *four*)`;  
     }
     if (prevStep === 'CONFIRM' && session.data?.item) {
       return buildConfirmUI(
@@ -1671,7 +1648,7 @@ export async function startBookingFlow(session, business) {
   });
   if (firstStep === 'SELECT_SERVICE') return buildServicesUI(business);
   const prompt = getLabel(business, 'bookPrompt') || 'What date would you like to book?';
-  return { type: 'text', body: `Sure 👍\n\n${prompt} 📅\n\n(e.g. *25 June*, *tomorrow*, *next Monday*)` };
+  return { type: 'text', body: `${prompt}\n\n(e.g. *25 June*, *tomorrow*, *next Monday*)` };
 }
 
 // ─── Enquiry handler ──────────────────────────────────────────────────────────

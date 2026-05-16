@@ -1,5 +1,5 @@
 /**
- * controllers/webhookController.js — Dreamline Sales Bot v20.0 (definitive)
+ * controllers/webhookController.js — Dreamline Sales Bot v11.0
  *
  * PIPELINE (strictly sequential):
  *   1. Receive & verify (signature, dedup, tenant lookup)
@@ -313,7 +313,7 @@ export const handleWebhook = async (req, res) => {
       });
       await dispatch(from, {
         type: 'text',
-        body: `We're currently experiencing high demand and cannot process your message right now. Please try again later or contact us directly. 🙏`,
+        body: `We are unable to process your message at this time. Please try again shortly or contact us directly.`,
       }, tenantDoc);
       continue;
     }
@@ -372,12 +372,7 @@ export const handleWebhook = async (req, res) => {
       // Only APPROVE/REJECT commands need that path.
       if (!adminReply && messageText) {
         const upperMsg = messageText.trim().toUpperCase();
-        // Route all known admin text commands: APPROVE, REJECT, RESUME BOT
-        if (
-          upperMsg.startsWith('APPROVE') ||
-          upperMsg.startsWith('REJECT')  ||
-          upperMsg.startsWith('RESUME')
-        ) {
+        if (upperMsg.startsWith('APPROVE') || upperMsg.startsWith('REJECT')) {
           adminReply = await handleAdminTextCommand(messageText, tenantId, from, tenantDoc, business);
         }
       }
@@ -492,10 +487,10 @@ export const handleWebhook = async (req, res) => {
         continue;
       }
 
-      // Path C: image sent at wrong time — give a helpful nudge
+      // Path C: image sent at wrong time — professional nudge
       const hint = session.currentFlow === 'ORDER'
-        ? 'Please complete your order first, then send your payment screenshot when prompted. 📸'
-        : 'I can only understand text messages right now 😊\n\nType *Order*, *Book*, or *Hi* to get started.';
+        ? 'Please complete your order first. Your payment screenshot should be sent when prompted at the payment step.'
+        : 'Please send a text message to continue. Type *Order*, *Book*, or *Question* to get started.';
       await dispatch(from, { type: 'text', body: hint }, tenantDoc);
       continue;
     }
@@ -504,7 +499,7 @@ export const handleWebhook = async (req, res) => {
     if (!messageText) {
       await dispatch(from, {
         type: 'text',
-        body: 'I can only understand text messages right now 😊\n\nType *Order*, *Book*, or *Hi* to get started.',
+        body: 'Please send a text message to continue. Type *Order*, *Book*, or *Question* to get started.',
       }, tenantDoc);
       continue;
     }
@@ -538,13 +533,20 @@ export const handleWebhook = async (req, res) => {
     if (session.mode === 'awaiting_question' && messageText) {
       const _GREETING_RESET = /^(hi|hello|hey|start|begin|good morning|good afternoon|good evening|menu|home|0|salaam|salam)$/i;
       if (_GREETING_RESET.test(messageText.trim())) {
-        // [FIX-WEBHOOK-CLEARSES] clearSession removes all fields including mode;
-        // the prior updateSession({ mode: null }) was a wasted round-trip.
-        // [PROFESSIONAL-UX] Remove double-message pattern ("Sure! Here's the menu")
-        // — show the welcome UI directly. Clean, single-response professionalism.
-        const _savedName = session.customerName || null;
+        // [BUG-1 FIX] Greeting while awaiting_question must NOT clear an active flow.
+        // If the customer is mid-ORDER/BOOKING and in awaiting_question, saying "hi"
+        // previously wiped their entire session. Now we branch:
+        //   • No active flow  → clear session and show welcome (expected reset)
+        //   • Active flow     → clear only the awaiting_question mode, re-prompt step
+        if (session.currentFlow) {
+          await updateSession(from, tenantId, { mode: null });
+          const _aqFreshSession = (await getSession(from, tenantId)) || session;
+          const _aqReprompt = handleStepReprompt(_aqFreshSession);
+          if (_aqReprompt) await dispatch(from, _aqReprompt, tenantDoc);
+          continue;
+        }
         await clearSession(from, tenantId);
-        await createSession(from, tenantId, { customerPhone: from, phoneNumberId, customerName: _savedName });
+        await createSession(from, tenantId, { customerPhone: from, phoneNumberId });
         await dispatch(from, buildWelcomeUI(business), tenantDoc);
         continue;
       }
@@ -597,7 +599,7 @@ export const handleWebhook = async (req, res) => {
         });
         await dispatch(from, {
           type: 'text',
-          body: `No problem — please send a new screenshot of your Wave payment and we'll verify it right away. 📸`,
+          body: `Understood. Please send a new screenshot of your Wave payment and we will verify it promptly.`,
         }, tenantDoc);
         updateSession(from, tenantId, { lastBotMessage: '' }).catch(() => {});
 
@@ -605,7 +607,7 @@ export const handleWebhook = async (req, res) => {
         await updateSession(from, tenantId, { mode: null });
         await dispatch(from, {
           type: 'text',
-          body: `*Support Request Received*\n\nYour payment concern has been noted and forwarded to our team. A team member will respond to you shortly.\n\nFeel free to share any additional details in the meantime.`,
+          body: `*Payment Support*\n\nYour message has been noted. A member of our team will follow up on your payment issue shortly.\n\nPlease share any additional details in the meantime.`,
         }, tenantDoc);
         updateSession(from, tenantId, { lastBotMessage: '' }).catch(() => {});
 
@@ -679,12 +681,10 @@ export const handleWebhook = async (req, res) => {
 
     // ── STEP 11: SHOW_MENU mid-flow ───────────────────────────────────────
     // [PROFESSIONAL-UX] Show the welcome menu directly — no filler text before it.
-    // [FIX] Preserve customerName across session reset so the GREET handler
-    // can use it without the customer having to re-introduce themselves.
+    // A single, clean response is more professional than "Sure! ..." + menu.
     if (action === 'SHOW_MENU' && session.currentFlow) {
-      const _nameToPreserve = session.customerName || null;
       await clearSession(from, tenantId);
-      await createSession(from, tenantId, { customerPhone: from, phoneNumberId, customerName: _nameToPreserve });
+      await createSession(from, tenantId, { customerPhone: from, phoneNumberId });
       await dispatch(from, buildWelcomeUI(business), tenantDoc);
       continue;
     }
@@ -794,43 +794,22 @@ export const handleWebhook = async (req, res) => {
       }
 
       case 'GREET': {
-        // Preserve name BEFORE clearing session — SES-3 will restore it in createSession
-        const _preservedName = session?.customerName || null;
         await clearSession(from, tenantId);
-        await createSession(from, tenantId, { customerPhone: from, phoneNumberId, customerName: _preservedName });
-        // ── Professional greeting construction ────────────────────────────────
-        // Priority chain:
-        //   1. AI-generated greeting (Groq) — most personalised
-        //   2. Tenant welcomePersonalised label — if customer name is known
-        //   3. Tenant welcomeMessage label — static tenant override
-        //   4. Time-of-day professional default — warm, businesslike fallback
-        // The bot NEVER initiates contact — this path only runs because the
-        // customer sent a greeting first (GREET intent always requires user input).
+        await createSession(from, tenantId, { customerPhone: from, phoneNumberId });
         let greetMsg = null;
-
-        // 1. AI-generated greeting (Groq) — may be null if AI is unavailable
-        try { greetMsg = await generateGreeting(business, session); } catch { /* fallback below */ }
-        // Strip any "Type X / Type Y" keyword instructions — buttons replace them
+        try { greetMsg = await generateGreeting(business, session); } catch { /* use static */ }
+        // Strip any "Type Order / Type Book" keyword instructions from the greeting —
+        // the interactive buttons already communicate those actions, so repeating
+        // them as plain text is redundant and looks unprofessional.
         if (greetMsg) greetMsg = sanitiseWelcomeBody(greetMsg);
-
-        // 2. Personalise if customer name is known and AI didn't supply a greeting
-        // Use the preserved name (session was cleared above; _preservedName holds it)
-        const knownName = _preservedName;
-        if (!greetMsg && knownName) {
+        const welcomeBase = buildWelcomeUI(business);
+        // [v11] Personalise greeting if customer name is known
+        const knownName = session?.customerName;
+        if (knownName && !greetMsg) {
           const personalMsg = getLabel(business, 'welcomePersonalised', knownName);
           if (personalMsg) greetMsg = personalMsg;
         }
-
-        // 3. Time-of-day professional fallback (replaces generic "How can we help?")
-        if (!greetMsg) {
-          const _greetHour = new Date().getHours();
-          const _tod  = _greetHour < 12 ? 'Good morning' : _greetHour < 17 ? 'Good afternoon' : 'Good evening';
-          const _name = knownName ? `, ${knownName}` : '';
-          greetMsg = `${_tod}${_name}. Welcome to *${business?.name || 'us'}*.\n\nHow may we assist you today?`;
-        }
-
-        const welcomeBase = buildWelcomeUI(business);
-        responseUI = { ...welcomeBase, body: greetMsg };
+        responseUI = greetMsg ? { ...welcomeBase, body: greetMsg } : welcomeBase;
         break;
       }
 
@@ -909,7 +888,7 @@ export const handleWebhook = async (req, res) => {
           lastItem = sorted[0]?.name || null;
         } catch { /* non-fatal */ }
         const repeatMsg = getLabel(business, 'repeatOrderMsg', lastItem)
-          || `Tap *Order* to place a new order!`;
+          || `Tap *Order* to place a new order.`;
         responseUI = {
           type: 'buttons',
           body: repeatMsg,
@@ -922,9 +901,8 @@ export const handleWebhook = async (req, res) => {
       }
 
       case 'SHOW_MENU': {
-        const _nameToPreserve = session.customerName || null;
         await clearSession(from, tenantId);
-        await createSession(from, tenantId, { customerPhone: from, phoneNumberId, customerName: _nameToPreserve });
+        await createSession(from, tenantId, { customerPhone: from, phoneNumberId });
         responseUI = buildWelcomeUI(business);
         break;
       }
@@ -1012,13 +990,12 @@ export const handleWebhook = async (req, res) => {
       }
 
       // Orphaned CONFIRM / CANCEL / CONTINUE_FLOW with no active flow
-      // → clear stale state and show welcome, preserving customerName
+      // → clear stale state and show welcome
       case 'CONFIRM':
       case 'CANCEL':
       case 'CONTINUE_FLOW': {
-        const _orphanName = session?.customerName || null;
         await clearSession(from, tenantId);
-        await createSession(from, tenantId, { customerPhone: from, phoneNumberId, customerName: _orphanName });
+        await createSession(from, tenantId, { customerPhone: from, phoneNumberId });
         responseUI = buildWelcomeUI(business);
         break;
       }

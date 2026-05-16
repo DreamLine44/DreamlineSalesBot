@@ -1,5 +1,5 @@
 /**
- * services/schedulerService.js — v20.0 (definitive)
+ * services/schedulerService.js — v13.0
  *
  * FIXES IN v13:
  * [SC-1] Abandoned cart job now queries by tenantId index and batches
@@ -237,10 +237,6 @@ async function runPaymentReminderJob() {
 
 // ─── Boot ─────────────────────────────────────────────────────────────────────
 
-// Interval handles — stored so stopScheduler() can clear them on graceful shutdown
-const _intervals = [];
-const _timeouts  = [];
-
 export function startScheduler() {
   if (!ENABLED) {
     logger.info('[Scheduler] Disabled (set SCHEDULER_ENABLED=true to enable).');
@@ -254,34 +250,20 @@ export function startScheduler() {
     bookingReminder:   `${BOOKING_REMINDER_INTERVAL_MS / 60000}min`,
   });
 
-  _timeouts.push(setTimeout(() => {
+  setTimeout(() => {
     runAbandonedCartJob();
-    _intervals.push(setInterval(runAbandonedCartJob, CART_INTERVAL_MS));
-  }, 5_000));
+    setInterval(runAbandonedCartJob, CART_INTERVAL_MS);
+  }, 5_000);
 
-  _timeouts.push(setTimeout(() => {
+  setTimeout(() => {
     runPaymentReminderJob();
-    _intervals.push(setInterval(runPaymentReminderJob, PAYMENT_REMINDER_INTERVAL_MS));
-  }, 15_000));
+    setInterval(runPaymentReminderJob, PAYMENT_REMINDER_INTERVAL_MS);
+  }, 15_000);
 
-  _timeouts.push(setTimeout(() => {
+  setTimeout(() => {
     runBookingReminderJob();
-    _intervals.push(setInterval(runBookingReminderJob, BOOKING_REMINDER_INTERVAL_MS));
-  }, 30_000));
+    setInterval(runBookingReminderJob, BOOKING_REMINDER_INTERVAL_MS);
+  }, 30_000);
 
   logger.info('[Scheduler] Jobs registered: abandoned_cart, booking_reminder, payment_reminder');
-}
-
-/**
- * stopScheduler — clears all intervals and pending timeouts.
- * Called by app.js graceful shutdown handler on SIGTERM/SIGINT.
- * Safe to call multiple times (idempotent — clearInterval/clearTimeout on
- * an already-cleared handle is a no-op in Node.js).
- */
-export function stopScheduler() {
-  for (const t of _timeouts)   clearTimeout(t);
-  for (const i of _intervals)  clearInterval(i);
-  _timeouts.length  = 0;
-  _intervals.length = 0;
-  logger.info('[Scheduler] All jobs stopped.');
 }

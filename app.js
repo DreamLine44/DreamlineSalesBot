@@ -19,9 +19,8 @@ import { handleMetaCallback, fullOnboardingHandler } from "./controllers/onboard
 import { errorHandler } from "./middlewares/errorHandler.js";
 import logger from "./config/logger.js";
 import { requireApiKey, requireSuperAdminKey, requireApiKeyForDashboard } from "./middlewares/authMiddleware.js";
-import mongoose from 'mongoose';
-import { startScheduler, stopScheduler } from './services/schedulerService.js';
 import { groqHealthCheck }                    from "./services/groqService.js";
+import { startScheduler }                     from "./services/schedulerService.js";
 
 const _require = createRequire(import.meta.url);
 const { version: APP_VERSION } = _require("./package.json");
@@ -186,6 +185,9 @@ const PORT = process.env.PORT || 5000;
 //
 // Timeout: 10 s — if drain takes longer than that, force-exit so the process
 // manager doesn't have to SIGKILL us.
+
+import mongoose from 'mongoose';
+import { stopScheduler } from './services/schedulerService.js';
 
 let httpServer = null; // assigned after listen()
 
