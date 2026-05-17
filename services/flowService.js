@@ -58,6 +58,7 @@
 import Order          from '../models/Order.js';
 import Booking        from '../models/Booking.js';
 import BusinessConfig from '../models/BusinessConfig.js';
+import UserProfile    from '../models/UserProfile.js';
 import mongoose       from 'mongoose';
 import levenshtein    from 'fast-levenshtein';
 
@@ -98,6 +99,7 @@ import { findBestMatch } from '../utils/matchEngine.js';
 import { resolveFaq } from './faqService.js';
 import { initiatePayment } from './paymentService.js';
 import { getSmartRecommendation } from './smartRecommendationService.js';
+import { shouldCaptureLead, startLeadCapture } from './leadCaptureService.js';
 
 // ─── Normalisation ────────────────────────────────────────────────────────────
 
@@ -105,6 +107,48 @@ const normalize = (text) =>
   String(text || '').toLowerCase().replace(/[^\w\s]/g, '').trim();
 
 const getName = (item) => (typeof item === 'string' ? item : item.name);
+
+// ─── Date parsing helper ──────────────────────────────────────────────────────
+// Tries to convert a free-text booking date string (e.g. "25 June", "tomorrow",
+// "next Monday") into a JS Date. Returns null when the string is unparseable so
+// the scheduler falls back to its createdAt-window strategy (SC-2).
+// Only called at Booking.create time — keeps the scheduler query simple.
+
+function tryParseDate(dateStr) {
+  if (!dateStr) return null;
+  try {
+    // Normalise common West-African English shorthands before handing off to Date()
+    const now = new Date();
+    const lower = String(dateStr).toLowerCase().trim();
+
+    if (lower === 'today')    return new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    if (lower === 'tomorrow') {
+      const d = new Date(now); d.setDate(d.getDate() + 1); d.setHours(0,0,0,0); return d;
+    }
+    if (lower.startsWith('next ')) {
+      const days = ['sunday','monday','tuesday','wednesday','thursday','friday','saturday'];
+      const target = days.indexOf(lower.replace('next ', ''));
+      if (target !== -1) {
+        const d = new Date(now);
+        const diff = (target - d.getDay() + 7) % 7 || 7;
+        d.setDate(d.getDate() + diff); d.setHours(0,0,0,0); return d;
+      }
+    }
+
+    // Attempt native Date parse (handles "25 June 2025", "June 25", ISO strings)
+    const parsed = new Date(dateStr);
+    if (!isNaN(parsed.getTime())) return parsed;
+
+    // Partial month name + day, e.g. "25 June" or "June 25" — add current year
+    const withYear = `${dateStr} ${now.getFullYear()}`;
+    const parsed2  = new Date(withYear);
+    if (!isNaN(parsed2.getTime())) return parsed2;
+
+    return null;
+  } catch {
+    return null;
+  }
+}
 
 // ─── Local intent helpers ─────────────────────────────────────────────────────
 
@@ -449,11 +493,20 @@ const looksLikeDate = (input) => {
   // Day-of-week alone or with context ("Friday", "Saturday morning")
   if (_WEEKDAYS.some(d => s === d || s.startsWith(d + ' '))) return true;
 
-  // Ordinal: "6th", "1st of June", "22nd" — day must be 1-31
+  // Ordinal: "1st of June", "22nd March" — day must be 1-31 AND a real month must be present.
+  // A bare ordinal like "12th" or "22nd" with no month is ambiguous — we reject it so the
+  // DATE step can ask the customer to re-enter with a full date (day + month name).
   const ordinalMatch = s.match(/^(\d{1,2})(st|nd|rd|th)(\s+.*)?$/);
   if (ordinalMatch) {
     const day = parseInt(ordinalMatch[1], 10);
-    if (day >= 1 && day <= 31) return true;
+    if (day >= 1 && day <= 31) {
+      const rest = (ordinalMatch[3] || '').trim();
+      const restTokens = rest.replace(/[,\/\-]/g, ' ').split(/\s+/).filter(Boolean);
+      const hasMonth = restTokens.some(t => _isMonthWord(t));
+      // Only accept if a recognisable month is also present
+      if (hasMonth) return true;
+      return false; // no month — force re-entry
+    }
   }
 
   // Numeric formats: DD/MM, DD/MM/YYYY, DD-MM, DD-MM-YYYY
@@ -484,8 +537,29 @@ const looksLikeTime = (input) => {
   const s = input.trim().toLowerCase();
   if (s.length < 2) return false;
   if (['morning','afternoon','evening','night','noon','midnight','midday'].some(p => s.includes(p))) return true;
-  if (/am|pm/i.test(s)) return true;
-  if (/:\d{2}/.test(s)) return true;
+
+  // am/pm — extract the numeric part and validate it before accepting
+  if (/am|pm/i.test(s)) {
+    const ampmHourMatch = s.match(/(\d{1,2})(?::(\d{2}))?/);
+    if (ampmHourMatch) {
+      const h = parseInt(ampmHourMatch[1], 10);
+      const m = ampmHourMatch[2] ? parseInt(ampmHourMatch[2], 10) : 0;
+      // 12-hour format: hour must be 1-12, minutes 0-59
+      if (h >= 1 && h <= 12 && m >= 0 && m <= 59) return true;
+      return false; // e.g. "15pm" or "13:00am" — impossible
+    }
+    return true; // "afternoon" already caught above; bare "am"/"pm" with no number
+  }
+
+  // HH:MM or H:MM — validate strictly: hour 0-23, minutes 0-59
+  const colonMatch = s.match(/(\d{1,2}):(\d{2})/);
+  if (colonMatch) {
+    const h = parseInt(colonMatch[1], 10);
+    const m = parseInt(colonMatch[2], 10);
+    if (h >= 0 && h <= 23 && m >= 0 && m <= 59) return true;
+    return false; // e.g. 26:00, 14:75 — impossible
+  }
+
   if (/(in the|past|to|half|quarter)\s+\w+/.test(s)) return true;
   return false;
 };
@@ -1309,13 +1383,20 @@ async function handleBooking(session, raw, clean, business) {
           const aiReply = await getAIReply(dateInput, business, session, 'FALLBACK').catch(() => null);
           if (aiReply) return { type: 'text', body: aiReply };
         }
-        // Show a specific error so the customer knows to use a real date format
-        return {
-          type: 'buttons',
-          body: (
+        // Detect bare ordinal (e.g. "12th", "3rd") — give a targeted hint to add the month
+        const _bareOrdinal = /^(\d{1,2})(st|nd|rd|th)$/i.test(dateInput.trim());
+        const _errorBody = _bareOrdinal
+          ? (
+            `I need the *month* too 📅\n\nPlease add the month name, for example:\n\n` +
+            `\u2022 *${dateInput} June*\n\u2022 *${dateInput} July*\n\u2022 *${dateInput} August*`
+          )
+          : (
             `I couldn't recognise *${dateInput}* as a valid date. Please use a real date, for example:\n\n` +
             `\u2022 *25 June* (day + real month name)\n\u2022 *tomorrow*\n\u2022 *next Friday*\n\u2022 *25/06/2025*`
-          ),
+          );
+        return {
+          type: 'buttons',
+          body: _errorBody,
           buttons: [{ id: 'CANCEL', title: '\u274c Cancel Booking' }],
         };
       }
@@ -1374,13 +1455,22 @@ async function handleBooking(session, raw, clean, business) {
           const aiReply = await getAIReply(timeInput, business, session, 'FALLBACK').catch(() => null);
           if (aiReply) return { type: 'text', body: aiReply };
         }
-        return {
-          type: 'buttons',
-          body: (
+        // Detect impossible HH:MM (hour > 23 or minutes > 59) — give targeted error
+        const _badColonTime = timeInput.match(/^(\d{1,2}):(\d{2})$/);
+        const _timeErrorBody = _badColonTime && (parseInt(_badColonTime[1], 10) > 23 || parseInt(_badColonTime[2], 10) > 59)
+          ? (
+            `*${timeInput}* isn't a valid time ⏰\n\n` +
+            `Hours must be *0–23* and minutes *00–59*.\n\nPlease enter a real time, for example:\n` +
+            `• *2pm* or *2:00pm*\n• *14:00*\n• *morning*`
+          )
+          : (
             `I need a *time* for your booking ⏰\n\n` +
             `Please give me a time, for example:\n` +
             `• *2pm* or *2:00pm*\n• *14:00*\n• *morning*\n• *6 in the morning*`
-          ),
+          );
+        return {
+          type: 'buttons',
+          body: _timeErrorBody,
           buttons: [{ id: 'CANCEL', title: '❌ Cancel Booking' }],
         };
       }
@@ -1557,6 +1647,17 @@ async function handleFinalize(session, business, tenant) {
 
     // No payment configured — clear session and confirm
     await clearSession(session.customerPhone, session.tenantId);
+
+    // [FIX-4a] AFTER_ORDER lead capture — fires when the business has leadCapture
+    // configured with triggerOn:'AFTER_ORDER' and this customer hasn't been captured yet.
+    // We start the lead flow instead of returning the success UI; the success message
+    // is folded into the lead capture prompt so the customer still sees confirmation.
+    try {
+      if (await shouldCaptureLead(business, session, 'AFTER_ORDER')) {
+        return await startLeadCapture(session, business);
+      }
+    } catch { /* non-fatal — fall through to normal success UI */ }
+
     // Use buildOrderSuccessUI for a structured, mode-aware confirmation — mirrors
     // the BOOKING path which correctly calls buildBookingSuccessUI. The plain
     // afterOrder label is still honoured as the body if the owner configured it.
@@ -1593,6 +1694,22 @@ async function handleFinalize(session, business, tenant) {
 
     const customerPhone = session.customerPhone || session.phone;
 
+    // [FIX-1a] Resolve customer display name for reminders and admin dashboard.
+    // Prefer session.data.leadName (set by lead-capture flow), fall back to
+    // UserProfile, and finally leave null so the field is never an empty string.
+    let customerName = session.data?.leadName || null;
+    if (!customerName) {
+      try {
+        const prof = await UserProfile.findOne({ phone: customerPhone }, 'lead.name').lean();
+        customerName = prof?.lead?.name || null;
+      } catch { /* non-fatal */ }
+    }
+
+    // [FIX-1b] Parse the free-text date into a real JS Date so the scheduler can
+    // use accurate 24h-before reminder timing (Strategy A) instead of the
+    // createdAt-window fallback (Strategy B / SC-2).
+    const parsedDate = tryParseDate(date);
+
     try {
       await Booking.create({
         phone:         customerPhone,
@@ -1600,9 +1717,11 @@ async function handleFinalize(session, business, tenant) {
         businessId:    business._id,
         tenantId:      tenant._id,
         date:          date    || null,
+        parsedDate:    parsedDate,
         time:          time    || null,
         service:       service || null,
         duration:      serviceDuration || null,
+        customerName:  customerName,
         status:        'pending',
         notifiedAt:    null,
       });
@@ -1624,6 +1743,14 @@ async function handleFinalize(session, business, tenant) {
     }
 
     await clearSession(session.customerPhone, session.tenantId);
+
+    // [FIX-4b] AFTER_BOOKING lead capture — same pattern as AFTER_ORDER above.
+    try {
+      if (await shouldCaptureLead(business, session, 'AFTER_BOOKING')) {
+        return await startLeadCapture(session, business);
+      }
+    } catch { /* non-fatal */ }
+
     // [v11] Pass service as 3rd arg so bookingSuccess label can include it
     return buildBookingSuccessUI(business, date || null, time, service || null);
   }

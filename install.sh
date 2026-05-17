@@ -52,6 +52,15 @@ if ! command -v npm &> /dev/null; then
 fi
 echo -e "${GREEN}✓ npm $(npm --version) — OK${RESET}"
 
+# ── Check .env.example exists ─────────────────────────────────────
+echo ""
+echo -e "${CYAN}→ Checking environment template...${RESET}"
+if [ ! -f ".env.example" ]; then
+    echo -e "${RED}✗ .env.example not found. Please restore it from the repository.${RESET}"
+    exit 1
+fi
+echo -e "${GREEN}✓ .env.example found${RESET}"
+
 # ── Install packages ──────────────────────────────────────────────
 echo ""
 echo -e "${CYAN}→ Installing npm packages...${RESET}"
@@ -62,3 +71,11 @@ echo -e "${GREEN}✓ All packages installed${RESET}"
 echo ""
 echo -e "${CYAN}→ Running setup wizard...${RESET}"
 node scripts/setup.js
+
+echo ""
+echo -e "${BOLD}${GREEN}═══════════════════════════════════════════════════════${RESET}"
+echo -e "${BOLD}${GREEN}  Installation complete!${RESET}"
+echo -e "${BOLD}${GREEN}═══════════════════════════════════════════════════════${RESET}"
+echo ""
+echo -e "${YELLOW}Next: edit .env.development.local and run: npm run dev${RESET}"
+echo ""

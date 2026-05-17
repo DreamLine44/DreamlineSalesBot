@@ -100,12 +100,14 @@ export function sanitizeForPrompt(input, context = 'generic', { allowNewlines = 
   //    we strip just the matched portion and log a warning.
   for (const pattern of INJECTION_PATTERNS) {
     if (pattern.test(s)) {
-      // Log to console (avoids circular dep; sanitize.js must not import logger)
-      console.warn('[Sanitize] Prompt injection pattern detected and stripped', {
-        context,
-        pattern: pattern.source,
-        excerpt: s.slice(0, 80),
+      // Use process.stderr.write to avoid circular import (sanitize.js → logger → sanitize.js).
+      // Produces the same JSON format as the real logger in production.
+      const entry = JSON.stringify({
+        ts: new Date().toISOString(), level: 'warn',
+        msg: '[Sanitize] Prompt injection pattern detected and stripped',
+        context, pattern: pattern.source, excerpt: s.slice(0, 80),
       });
+      process.stderr.write(entry + '\n');
       // Replace the matched segment with [removed]
       s = s.replace(pattern, '[removed]');
     }

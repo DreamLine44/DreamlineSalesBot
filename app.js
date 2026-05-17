@@ -49,9 +49,10 @@ app.use(helmet({
 }));
 
 const allowedOrigins = process.env.CORS_ORIGIN
-  ? process.env.CORS_ORIGIN.split(",").map(o => o.trim())
-  : ["http://localhost:3000", "http://localhost:5000"];
+  ? process.env.CORS_ORIGIN.split(",").map(o => o.trim()).filter(Boolean)
+  : [];
 
+// Always allow the app's own BASE_URL origin (covers dashboard hosted on same domain)
 if (process.env.BASE_URL) {
   try {
     const o = new URL(process.env.BASE_URL).origin;
@@ -59,9 +60,22 @@ if (process.env.BASE_URL) {
   } catch {}
 }
 
+// In development, also allow localhost defaults so devs don't need CORS_ORIGIN set
+if (process.env.NODE_ENV !== "production") {
+  ["http://localhost:3000", "http://localhost:5000", "http://localhost:4000"].forEach(o => {
+    if (!allowedOrigins.includes(o)) allowedOrigins.push(o);
+  });
+}
+
 app.use(cors({
   origin: (origin, cb) => {
-    if (!origin || allowedOrigins.includes(origin)) return cb(null, true);
+    // Allow server-to-server (no Origin header) — curl, Meta webhooks, etc.
+    if (!origin) return cb(null, true);
+    if (allowedOrigins.includes(origin)) return cb(null, true);
+    // In production with no CORS_ORIGIN set, log a warning but don't crash
+    if (allowedOrigins.length === 0) {
+      logger.warn(`[CORS] No CORS_ORIGIN configured — blocking browser request from ${origin}. Set CORS_ORIGIN env var.`);
+    }
     cb(new Error(`CORS: origin ${origin} not allowed`));
   },
   methods:        ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
@@ -102,6 +116,9 @@ app.get("/",       (req, res) => res.send("DreamLine SalesBot v" + APP_VERSION))
 app.use("/webhook", webhookRoutes);
 
 if (process.env.SIMULATION_MODE === "true") {
+  if (process.env.NODE_ENV === "production") {
+    logger.warn("[App] WARNING: SIMULATION_MODE=true in production — /api/messages is exposed. Set SIMULATION_MODE=false unless intentional.");
+  }
   app.use("/api", createRateLimiter(200), simulationRoutes);
   logger.info("[App] Simulation mode ON — POST /api/messages available");
 }

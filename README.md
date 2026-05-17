@@ -1,4 +1,4 @@
-# DreamLine SalesBot v23.0
+# DreamLine SalesBot v24.0
 ## AI WhatsApp Business Automation System
 
 A production-grade, multi-tenant WhatsApp Business automation platform powered by OpenAI GPT-4o-mini. Built specifically for WhatsApp via Meta Cloud API, with full local simulation for pre-integration testing.
@@ -369,14 +369,18 @@ Response: { "count": 2, "businesses": [{ "id", "name", "mode", "menuItems" }] }
 
 ---
 
-## Deployment (Railway)
+## Deployment
 
-1. Push code to GitHub
-2. Connect repo to Railway (https://railway.app)
-3. Add environment variables in Railway dashboard
-4. Deploy — Railway auto-detects Node.js
+See the full deployment guide: **[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)**
 
-The `start` script (`node app.js`) is Railway-compatible out of the box.
+Quick options:
+- **Railway** (easiest): push to GitHub, connect repo, set env vars, deploy
+- **Render**: same as Railway — zero config Node.js hosting
+- **VPS (Ubuntu + PM2 + Nginx)**: for full control, use `ecosystem.config.cjs`
+
+The `start` script (`node app.js`) is compatible with Railway, Render, and Heroku out of the box.
+
+> ⚠️ Always set `SIMULATION_MODE=false` in production to prevent exposing the `/api/messages` test endpoint.
 
 ---
 

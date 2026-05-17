@@ -120,9 +120,14 @@ async function runBookingReminderJob() {
   const weekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
 
   try {
-    // Fetch all unreminded confirmed bookings created in the last 7 days
+    // [FIX-2] Query BOTH 'pending' and 'confirmed' bookings.
+    // Previously only 'confirmed' was queried, but Booking.create always sets
+    // status:'pending' and nothing ever auto-promotes it to 'confirmed' without
+    // admin action. This meant the reminder job matched zero rows indefinitely.
+    // Reminders are sent for all unreminded bookings regardless of confirmation
+    // status so customers are always nudged about their upcoming slot.
     const bookings = await Booking.find({
-      status:         'confirmed',
+      status:         { $in: ['pending', 'confirmed'] },
       createdAt:      { $gte: weekAgo },
       reminderSentAt: { $exists: false },
     }).lean();

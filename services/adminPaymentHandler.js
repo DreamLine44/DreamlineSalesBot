@@ -21,6 +21,7 @@
  */
 
 import Order          from '../models/Order.js';
+import Booking        from '../models/Booking.js';
 import Tenant         from '../models/Tenant.js';
 import BusinessConfig from '../models/BusinessConfig.js';
 import { confirmPayment, rejectPayment } from './paymentService.js';
@@ -452,6 +453,112 @@ export const handleAdminTextCommand = async (messageText, tenantId, adminPhone, 
     } catch (err) {
       logger.error('[AdminCmd] RESUME BOT failed', { err: err.message, customerPhone });
       return `⚠️ Could not resume bot for +${customerPhone}: ${err.message}`;
+    }
+  }
+
+  // ── [FIX-3] CONFIRM BOOK / DECLINE BOOK booking commands ──────────────────
+  // Syntax (case-insensitive):
+  //   CONFIRM BOOK <shortId>   — marks booking as confirmed, notifies customer
+  //   DECLINE BOOK <shortId>   — marks booking as cancelled, notifies customer
+  //
+  // shortId is the last 6 hex chars of the Booking._id (pre-populated by
+  // Booking pre-save hook, matches the ID shown in admin booking alerts).
+  //
+  // The commands mirror APPROVE/REJECT for orders so admins have a symmetric
+  // WhatsApp-only workflow for both flows without needing the dashboard.
+  const confirmBookMatch = upper.match(/^CONFIRM\s+BOOK\s+([A-F0-9]{6,24})$/);
+  const declineBookMatch = upper.match(/^DECLINE\s+BOOK\s+([A-F0-9]{6,24})$/);
+
+  if (confirmBookMatch || declineBookMatch) {
+    const bookShortId = (confirmBookMatch || declineBookMatch)[1].toUpperCase();
+    const bookAction  = confirmBookMatch ? 'CONFIRM' : 'DECLINE';
+
+    let booking;
+    try {
+      booking = await Booking.findOne({ tenantId, shortId: bookShortId })
+        .select('_id customerPhone date time service status customerName')
+        .lean();
+    } catch (err) {
+      return `⚠️ DB error: ${err.message}`;
+    }
+
+    if (!booking) {
+      return `⚠️ No booking found matching ID: ${bookShortId}`;
+    }
+
+    if (booking.status === 'cancelled') {
+      return `ℹ️ Booking #${bookShortId} is already *cancelled*. No action taken.`;
+    }
+    if (booking.status === 'confirmed' && bookAction === 'CONFIRM') {
+      return `ℹ️ Booking #${bookShortId} is already *confirmed*. No action taken.`;
+    }
+
+    const bookingId  = String(booking._id);
+    const when       = booking.time ? `${booking.date} at ${booking.time}` : (booking.date || 'TBD');
+    const serviceStr = booking.service ? ` (${booking.service})` : '';
+    const nameStr    = booking.customerName ? ` *${booking.customerName}*` : '';
+
+    if (bookAction === 'CONFIRM') {
+      try {
+        await Booking.updateOne(
+          { _id: bookingId },
+          {
+            $set: {
+              status:             'confirmed',
+              adminConfirmedAt:   new Date(),
+              adminConfirmedBy:   adminPhone,
+            },
+          },
+        );
+
+        const customerMsg =
+          `✅ *Booking Confirmed!*\n\n` +
+          `Your booking${serviceStr} for *${when}* has been confirmed.\n\n` +
+          `We look forward to seeing you! 😊`;
+
+        await sendMessage(booking.customerPhone, customerMsg, tenant);
+
+        logger.info('[AdminCmd] CONFIRM BOOK executed', { adminPhone, bookingId, tenantId });
+        return (
+          `✅ *Booking Confirmed*\n\n` +
+          `Booking #${bookShortId} for${nameStr} (${when}${serviceStr}) confirmed.\n` +
+          `Customer ${booking.customerPhone} has been notified.`
+        );
+      } catch (err) {
+        logger.error('[AdminCmd] CONFIRM BOOK failed', { err: err.message, bookingId });
+        return `⚠️ Could not confirm booking: ${err.message}`;
+      }
+    }
+
+    // DECLINE
+    try {
+      await Booking.updateOne(
+        { _id: bookingId },
+        {
+          $set: {
+            status:           'cancelled',
+            adminDeclinedAt:  new Date(),
+            adminDeclinedBy:  adminPhone,
+          },
+        },
+      );
+
+      const customerMsg =
+        `❌ *Booking Unavailable*\n\n` +
+        `Unfortunately we're unable to confirm your booking${serviceStr} for *${when}*.\n\n` +
+        `Please contact us to arrange an alternative time. We apologise for the inconvenience.`;
+
+      await sendMessage(booking.customerPhone, customerMsg, tenant);
+
+      logger.info('[AdminCmd] DECLINE BOOK executed', { adminPhone, bookingId, tenantId });
+      return (
+        `❌ *Booking Declined*\n\n` +
+        `Booking #${bookShortId} for${nameStr} (${when}${serviceStr}) has been cancelled.\n` +
+        `Customer ${booking.customerPhone} has been notified.`
+      );
+    } catch (err) {
+      logger.error('[AdminCmd] DECLINE BOOK failed', { err: err.message, bookingId });
+      return `⚠️ Could not decline booking: ${err.message}`;
     }
   }
 

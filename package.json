@@ -1,7 +1,7 @@
 {
   "name": "dreamlinesalesbot",
-  "version": "23.0.0",
-  "description": "Multi-tenant AI WhatsApp Business SaaS Platform — v23.0.0 (OpenAI upgrade + simulation engine)",
+  "version": "24.0.0",
+  "description": "Multi-tenant AI WhatsApp Business SaaS Platform — v24.0.0 (greeting fix, date/time validation, full audit)",
   "main": "app.js",
   "type": "module",
   "engines": {

@@ -372,7 +372,13 @@ export const handleWebhook = async (req, res) => {
       // Only APPROVE/REJECT commands need that path.
       if (!adminReply && messageText) {
         const upperMsg = messageText.trim().toUpperCase();
-        if (upperMsg.startsWith('APPROVE') || upperMsg.startsWith('REJECT')) {
+        if (
+          upperMsg.startsWith('APPROVE') ||
+          upperMsg.startsWith('REJECT')  ||
+          upperMsg.startsWith('CONFIRM BOOK') ||
+          upperMsg.startsWith('DECLINE BOOK') ||
+          upperMsg.startsWith('RESUME BOT')
+        ) {
           adminReply = await handleAdminTextCommand(messageText, tenantId, from, tenantDoc, business);
         }
       }
@@ -797,7 +803,22 @@ export const handleWebhook = async (req, res) => {
         await clearSession(from, tenantId);
         await createSession(from, tenantId, { customerPhone: from, phoneNumberId });
         let greetMsg = null;
-        try { greetMsg = await generateGreeting(business, session); } catch { /* use static */ }
+        try {
+          // Fetch last order for personalised greeting hint
+          let _lastOrderItem = null;
+          try {
+            const _lastOrd = await Order.findOne(
+              { customerPhone: from, tenantId },
+              'item',
+            ).sort({ createdAt: -1 }).lean();
+            _lastOrderItem = _lastOrd?.item || null;
+          } catch { /* non-fatal */ }
+          greetMsg = await generateGreeting({
+            business,
+            customerName: session?.customerName || null,
+            lastOrder:    _lastOrderItem,
+          });
+        } catch { /* use static */ }
         // Strip any "Type Order / Type Book" keyword instructions from the greeting —
         // the interactive buttons already communicate those actions, so repeating
         // them as plain text is redundant and looks unprofessional.
@@ -887,16 +908,34 @@ export const handleWebhook = async (req, res) => {
           const sorted = (profile?.preferences?.favoriteItems || []).slice().sort((a, b) => b.count - a.count);
           lastItem = sorted[0]?.name || null;
         } catch { /* non-fatal */ }
-        const repeatMsg = getLabel(business, 'repeatOrderMsg', lastItem)
-          || `Tap *Order* to place a new order.`;
-        responseUI = {
-          type: 'buttons',
-          body: repeatMsg,
-          buttons: [
-            { id: 'ORDER',    title: '🍔 Order Now' },
-            { id: 'QUESTION', title: '❓ Question' },
-          ],
-        };
+
+        // [FIX-5] If we know the last item, pre-fill it into the session and jump
+        // directly to QUANTITY so the customer never has to re-select from the menu.
+        // This is what "repeat order" actually means — not just a menu nudge.
+        if (lastItem) {
+          await updateSession(from, tenantId, {
+            currentFlow:       'ORDER',
+            step:              'QUANTITY',
+            expectedInputType: 'quantity',
+            data:              { item: lastItem },
+          });
+          responseUI = {
+            type: 'text',
+            body: `🔁 *Repeat your last order*\n\nYou previously ordered *${lastItem}*.\n\nHow many would you like this time?\n\n_(Enter a number or word — e.g. *1*, *2*, *three*)_`,
+          };
+        } else {
+          // No history — fall back to a generic "start an order" prompt
+          const repeatMsg = getLabel(business, 'repeatOrderMsg', null)
+            || `Tap *Order* to place a new order.`;
+          responseUI = {
+            type: 'buttons',
+            body: repeatMsg,
+            buttons: [
+              { id: 'ORDER',    title: '🍔 Order Now' },
+              { id: 'QUESTION', title: '❓ Question'  },
+            ],
+          };
+        }
         break;
       }
 
