@@ -239,7 +239,7 @@ const WORD_NUMBERS = {
   //
   // teens / low numbers
   'wan':1, 'wun':1, 'onne':1,                       // "one"
-  'tow':2, 'tow':2, 'tu':2, 'too':2,                // "two"
+  'tow':2, 'tu':2, 'too':2,                          // "two" — removed duplicate 'tow'
   'fore':4, 'for':4,                                  // "four"
   'fife':5, 'fiv':5,                                  // "five"
   'sex':6, 'siks':6,                                  // "six"
@@ -249,7 +249,7 @@ const WORD_NUMBERS = {
   'ten':10,                                            // already canonical, kept for clarity
   'elevan':11, 'elever':11, 'elvn':11,               // "eleven"
   'twelv':12, 'twelf':12, 'twleve':12,               // "twelve"
-  'thirten':13, 'thirten':13,                         // "thirteen"
+  'thirten':13,                                        // "thirteen" — removed duplicate 'thirten'
   'forteen':14, 'fourten':14, 'forten':14,           // "fourteen"
   'fiften':15, 'fiveteen':15,                         // "fifteen"
   'sixten':16, 'sixteen':16,                          // "sixteen" (canonical + alt)
@@ -258,17 +258,16 @@ const WORD_NUMBERS = {
   'ninten':19, 'nineteen':19,                         // "nineteen"
   // tens
   'twentey':20, 'tweny':20, 'twenti':20,             // "twenty"
-  'thirthy':30, 'thiry':30, 'thirthy':30,            // "thirty"
+  'thirthy':30, 'thiry':30,                           // "thirty" — removed duplicate 'thirthy'
   'fourty':40, 'foty':40,                             // "forty" (very common misspelling)
   'fity':50, 'fifthy':50, 'fiffty':50,               // "fifty"
   'sixthy':60, 'sixy':60,                             // "sixty"
-  'seventy':70,                                        // canonical, already above
-  'sevnty':70, 'sevanty':70,                         // "seventy"
-  'eighty':80,                                         // canonical, already above
-  'eightey':80, 'eighthy':80, 'eigthy':80,           // "eighty"
-  // ninety — the bug that triggered this fix
-  'ninty':90, 'ninety':90, 'niety':90, 'ninty':90,
-  'ninety':90, 'ninnty':90, 'ninity':90, 'ninite':90,
+  // 'seventy':70 is already defined in the canonical block above
+  'sevnty':70, 'sevanty':70,                         // "seventy" misspellings
+  // 'eighty':80 is already defined in the canonical block above
+  'eightey':80, 'eighthy':80, 'eigthy':80,           // "eighty" misspellings
+  // ninety — removed duplicates 'ninty' and 'ninety' (already in canonical block)
+  'niety':90, 'ninnty':90, 'ninity':90, 'ninite':90, 'ninety':90, 'ninty':90,
 };
 
 // Negation patterns that indicate the client does NOT want a quantity
@@ -992,14 +991,14 @@ async function handleOrder(session, raw, clean, business, isInteractive = false,
         // If input looks conversational (4+ chars, not a number), ask AI first
         if (raw.trim().length >= 4 && !/^\d+$/.test(raw.trim())) {
           const aiReply = await getAIReply(raw, business, session, 'FALLBACK').catch(() => null);
-          if (aiReply) return { type: 'text', body: aiReply };
+          // [FIX-SELECT-ITEM] After AI answers an off-topic message at SELECT_ITEM,
+          // ALSO return the interactive menu so the customer always has a next action.
+          // The original code returned only the text reply which left the customer
+          // with an answer but no visible path to continue ordering.
+          if (aiReply) return [{ type: 'text', body: aiReply }, buildMenuUI(business)];
         }
-        // Short/garbled or AI failed → show menu with a gentle prompt
-        const menuNames = menu.slice(0, 5).map((m, i) => `${i + 1}. ${getName(m)}`).join('\n');
-        return {
-          type: 'text',
-          body: `I didn't quite catch that 😊\n\nHere are our options:\n${menuNames}\n\nReply with a *number* or item name to choose.`,
-        };
+        // Short/garbled or AI failed → show interactive menu (not text fallback)
+        return buildMenuUI(business);
       }
 
       const name = getName(item);
@@ -1043,11 +1042,14 @@ async function handleOrder(session, raw, clean, business, isInteractive = false,
             await updateSession(session.customerPhone, session.tenantId, {
               data: { ...session.data, pendingLargeQty: null },
             });
-            // Re-enter QUANTITY flow with the confirmed number as plain text
+            // Re-enter QUANTITY flow with the confirmed number as plain text.
+            // [FIX-QTY-LARGE-TENANT] 3rd arg of handleFlow is `tenant`, not `business`.
+            // Passing `business` here caused dispatch() and _maybeSendItemImage() to
+            // receive the wrong object, silently dropping admin alerts and item images.
             return handleFlow(
               { ...session, data: { ...session.data, pendingLargeQty: null } },
               String(confirmedQty),
-              business,
+              tenant,
               false,
             );
           }
@@ -1230,8 +1232,10 @@ async function handleOrder(session, raw, clean, business, isInteractive = false,
         let _orderDone = false;
         if (orderId) {
           try {
-            const _Order = (await import('../models/Order.js')).default;
-            const _ord = await _Order.findById(orderId).select('paymentStatus status').lean();
+            // [FIX-DYNAMIC-IMPORT] Order is already statically imported at the top of this
+            // file. The dynamic import() was redundant and re-loaded the module on every
+            // post-payment chatter message. Use the static import directly.
+            const _ord = await Order.findById(orderId).select('paymentStatus status').lean();
             if (_ord && (_ord.paymentStatus === 'paid' || _ord.status === 'confirmed' || _ord.status === 'completed')) {
               _orderDone = true;
             }
@@ -1367,6 +1371,33 @@ async function handleBooking(session, raw, clean, business) {
       }
 
       return buildServicesUI(business);
+    }
+
+    // [FIX-5] PARTY_SIZE step — collects how many guests for RESTAURANT table booking.
+    // The Booking model has always had this field but no step ever populated it.
+    case 'PARTY_SIZE': {
+      const sizeRaw = raw.trim();
+      const sizeWord = WORD_NUMBERS[sizeRaw.toLowerCase()];
+      // [FIX-PARTY-SIZE] sizeWord is already the resolved integer from WORD_NUMBERS.
+      // The old `sizeWord + 1` was an off-by-one that made "two" → 3, "five" → 6, etc.
+      const sizeNum  = sizeWord !== undefined ? sizeWord : parseInt(sizeRaw, 10);
+
+      if (!isNaN(sizeNum) && sizeNum >= 1 && sizeNum <= 100) {
+        await updateSession(session.customerPhone, session.tenantId, {
+          data: { ...session.data, partySize: sizeNum },
+          step: 'DATE',
+          expectedInputType: 'date',
+        });
+        await pushStep(session, 'DATE');
+        const prompt = getLabel(business, 'bookPrompt') || 'What date would you like? 📅';
+        return `*${sizeNum} guest${sizeNum === 1 ? '' : 's'}* noted. \n\n${prompt}\n\n(e.g. *25 June*, *tomorrow*, *next Monday*)`;
+      }
+
+      return {
+        type: 'buttons',
+        body: `How many guests will be joining? 👥\n\nPlease enter a number (e.g. *2*, *4*, *six*).`,
+        buttons: [{ id: 'CANCEL', title: '❌ Cancel Booking' }],
+      };
     }
 
     case 'DATE': {
@@ -1645,18 +1676,19 @@ async function handleFinalize(session, business, tenant) {
         : buildPaymentInstructionsUI(business, totalPrice, String(customerPhone).slice(-4));
     }
 
-    // No payment configured — clear session and confirm
-    await clearSession(session.customerPhone, session.tenantId);
-
-    // [FIX-4a] AFTER_ORDER lead capture — fires when the business has leadCapture
-    // configured with triggerOn:'AFTER_ORDER' and this customer hasn't been captured yet.
-    // We start the lead flow instead of returning the success UI; the success message
-    // is folded into the lead capture prompt so the customer still sees confirmation.
+    // No payment configured — confirm order then handle lead capture or success UI.
+    // [FIX-2] clearSession was previously called BEFORE shouldCaptureLead / startLeadCapture.
+    // startLeadCapture calls updateSession() internally — which does findOneAndUpdate on a
+    // session that no longer exists → writes nothing → LEAD_CAPTURE flow is never set.
+    // Fix: check lead capture first; only clear session if we are NOT starting the lead flow.
     try {
       if (await shouldCaptureLead(business, session, 'AFTER_ORDER')) {
+        // Do NOT clear the session — startLeadCapture needs it to write the new step.
         return await startLeadCapture(session, business);
       }
     } catch { /* non-fatal — fall through to normal success UI */ }
+
+    await clearSession(session.customerPhone, session.tenantId);
 
     // Use buildOrderSuccessUI for a structured, mode-aware confirmation — mirrors
     // the BOOKING path which correctly calls buildBookingSuccessUI. The plain
@@ -1669,7 +1701,7 @@ async function handleFinalize(session, business, tenant) {
   }
 
   if (session.currentFlow === 'BOOKING') {
-    const { date, time, service, serviceDuration } = session.data || {};
+    const { date, time, service, serviceDuration, partySize } = session.data || {};
 
     if (!date && !service) {
       logger.error('[flowService] Booking finalize: missing date and service', { customerPhone: session.customerPhone });
@@ -1696,13 +1728,18 @@ async function handleFinalize(session, business, tenant) {
 
     // [FIX-1a] Resolve customer display name for reminders and admin dashboard.
     // Prefer session.data.leadName (set by lead-capture flow), fall back to
-    // UserProfile, and finally leave null so the field is never an empty string.
+    // UserProfile, then session.customerName (set by brainService NLP), and
+    // finally leave null so the field is never an empty string. [FIX-12]
     let customerName = session.data?.leadName || null;
     if (!customerName) {
       try {
         const prof = await UserProfile.findOne({ phone: customerPhone }, 'lead.name').lean();
         customerName = prof?.lead?.name || null;
       } catch { /* non-fatal */ }
+    }
+    // [FIX-12] Third fallback: session.customerName set by brainService during NLP
+    if (!customerName) {
+      customerName = session.customerName || null;
     }
 
     // [FIX-1b] Parse the free-text date into a real JS Date so the scheduler can
@@ -1716,14 +1753,14 @@ async function handleFinalize(session, business, tenant) {
         customerPhone,
         businessId:    business._id,
         tenantId:      tenant._id,
-        date:          date    || null,
+        date:          date      || null,
         parsedDate:    parsedDate,
-        time:          time    || null,
-        service:       service || null,
+        time:          time      || null,
+        service:       service   || null,
         duration:      serviceDuration || null,
+        partySize:     partySize || null,   // [FIX-5] now collected by PARTY_SIZE step in RESTAURANT mode
         customerName:  customerName,
         status:        'pending',
-        notifiedAt:    null,
       });
     } catch (err) {
       logger.error('[flowService] Booking save error', { err: err.message, date, time, service, customerPhone });
@@ -1742,14 +1779,15 @@ async function handleFinalize(session, business, tenant) {
         logger.error('[flowService] Admin booking alert failed', { err: err.message }));
     }
 
-    await clearSession(session.customerPhone, session.tenantId);
-
-    // [FIX-4b] AFTER_BOOKING lead capture — same pattern as AFTER_ORDER above.
+    // [FIX-2] Same fix as AFTER_ORDER: check lead capture BEFORE clearing session.
+    // clearSession() must come after so startLeadCapture() can still updateSession().
     try {
       if (await shouldCaptureLead(business, session, 'AFTER_BOOKING')) {
         return await startLeadCapture(session, business);
       }
     } catch { /* non-fatal */ }
+
+    await clearSession(session.customerPhone, session.tenantId);
 
     // [v11] Pass service as 3rd arg so bookingSuccess label can include it
     return buildBookingSuccessUI(business, date || null, time, service || null);

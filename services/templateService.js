@@ -111,10 +111,11 @@ const TEMPLATE_DEFINITIONS = {
     language: TEMPLATE_LANGUAGE,
     // "Reminder: You have a booking at {{1}} tomorrow at {{2}}. 📅
     //  Reply *Hi* to manage your booking."
-    buildComponents: ({ businessName = 'us', bookingTime = 'your scheduled time' }) => ([
+    buildComponents: ({ customerName = 'there', businessName = 'us', bookingTime = 'your scheduled time' }) => ([
       {
         type: 'body',
         parameters: [
+          { type: 'text', text: customerName  },   // [FIX-4] was missing; customers always greeted as "there"
           { type: 'text', text: businessName },
           { type: 'text', text: bookingTime  },
         ],
@@ -260,11 +261,12 @@ export async function sendAbandonedCartTemplate({ to, customerName, business, te
  * Send booking reminder the day before an appointment.
  * Called by bookingReminderJob.
  */
-export async function sendBookingReminderTemplate({ to, business, bookingTime, tenant }) {
+export async function sendBookingReminderTemplate({ to, customerName, business, bookingTime, tenant }) {
   return sendTemplate({
     to,
     templateName: 'booking_reminder',
     variables: {
+      customerName: customerName || 'there',   // [FIX-4] now exposed so callers can pass the real name
       businessName: business?.name || 'us',
       bookingTime:  bookingTime    || 'your appointment',
     },

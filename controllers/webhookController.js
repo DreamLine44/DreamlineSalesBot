@@ -512,10 +512,13 @@ export const handleWebhook = async (req, res) => {
 
     // ── STEP 7b: DONE payment (no-proof flow) ───────────────────────────
     // When requireProof=false, customer types DONE to confirm payment.
+    // [FIX-9] Gate on !requireProof — previously a customer could type "DONE" even
+    // when requireProof=true and skip proof verification entirely.
     if (
       session.currentFlow === 'ORDER' &&
       session.step === 'PAYMENT_PROOF' &&
-      messageText.trim().toUpperCase() === 'DONE'
+      messageText.trim().toUpperCase() === 'DONE' &&
+      !business?.payment?.requireProof
     ) {
       const replyText = await handleDonePayment(from, tenantId);
       // [FIX-5b] dispatch BEFORE clearSession — mirrors the same fix applied
@@ -760,6 +763,84 @@ export const handleWebhook = async (req, res) => {
         continue;
       }
 
+      // [FIX-3] TRACK_ORDER mid-flow — brainService may return TRACK_ORDER even when a flow
+      // is active. handleFlow knows nothing about it as an action and would treat the raw
+      // message text as a quantity/date input. Handle it here instead: send order status
+      // without touching the current flow so the customer can continue where they left off.
+      if (action === 'TRACK_ORDER') {
+        try {
+          const recentOrder = await Order.findOne({
+            tenantId,
+            customerPhone: from,
+            status: { $nin: ['cancelled', 'rejected'] },
+          }).sort({ createdAt: -1 })
+            .select('item quantity totalPrice status paymentStatus shortId createdAt')
+            .lean();
+
+          let trackReply;
+          if (!recentOrder) {
+            const adminContact = business?.adminPhone || tenantDoc?.adminPhone || null;
+            trackReply = {
+              type: 'text',
+              body: `We couldn't find a recent order linked to your number.${adminContact ? `\n\nNeed help? Contact us: 📞 *${adminContact}*` : ''}`,
+            };
+          } else {
+            const STATUS_LABELS = {
+              pending:                       '🕐 Received — awaiting payment',
+              payment_pending_verification:  '🔄 Payment received — under review',
+              confirmed:                     '✅ Confirmed — being prepared',
+              completed:                     '🎉 Completed',
+              payment_failed:                '❌ Payment not verified',
+              failed:                        '❌ Payment not verified',
+            };
+            const currency  = business?.payment?.currency || business?.currency || 'D';
+            const totalStr  = recentOrder.totalPrice ? `${currency} ${recentOrder.totalPrice.toLocaleString()}` : 'TBD';
+            const orderDate = new Date(recentOrder.createdAt).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
+            trackReply = {
+              type: 'text',
+              body: `📦 *Your latest order* (${recentOrder.shortId || ''})\n\n• Item: *${recentOrder.item}* × ${recentOrder.quantity}\n• Total: *${totalStr}*\n• Date: ${orderDate}\n• Status: ${STATUS_LABELS[recentOrder.status] || recentOrder.status}\n\n_(Your current flow is still active — continue when ready.)_`,
+            };
+          }
+          await dispatch(from, trackReply, tenantDoc);
+          // Re-prompt the current step so the customer knows where they were
+          const freshSession = (await getSession(from, tenantId)) || session;
+          const stepReprompt = handleStepReprompt(freshSession);
+          if (stepReprompt) await dispatch(from, stepReprompt, tenantDoc);
+        } catch (err) {
+          logger.error('[Webhook] TRACK_ORDER mid-flow lookup failed', { err: err.message, from, tenantId });
+        }
+        continue;
+      }
+
+      // [FIX-3] REPEAT_ORDER mid-flow — when brainService returns REPEAT_ORDER while a
+      // flow is active, fall through to handleFlow would pass the raw text to the flow step.
+      // Treat it as an INTERRUPT instead so the customer gets a clean switch prompt.
+      if (action === 'REPEAT_ORDER') {
+        const switchPrompt = {
+          type: 'buttons',
+          body: `You have an active ${session.currentFlow === 'BOOKING' ? 'booking' : 'order'} in progress.\n\nWould you like to switch to a new order? Your current progress will be lost.`,
+          buttons: [
+            { id: 'SWITCH_YES', title: '✅ Yes, switch' },
+            { id: 'SWITCH_NO',  title: '❌ No, continue' },
+          ],
+        };
+        // [FIX-REPEAT-ORDER-INTERRUPT] Two bugs in the original:
+        //   1. `_pendingAction` is not read by handleInterrupt — it reads `pendingIntent`.
+        //      Using a non-standard field meant SWITCH_YES always resolved to null intent,
+        //      causing handleInterrupt to clear the session and show the welcome menu
+        //      instead of starting a new order.
+        //   2. `previousStep` was never stored, so SWITCH_NO always fell back to
+        //      SELECT_ITEM/DATE instead of the actual step the customer was on.
+        await updateSession(from, tenantId, {
+          previousFlow:  session.currentFlow,
+          previousStep:  session.step,
+          step:          'INTERRUPT',
+          pendingIntent: 'ORDER',
+        });
+        await dispatch(from, switchPrompt, tenantDoc);
+        continue;
+      }
+
       const reply = await handleFlow(session, messageText, tenantDoc, isInteractive);
       if (reply) {
         await dispatch(from, reply, tenantDoc);
@@ -925,7 +1006,8 @@ export const handleWebhook = async (req, res) => {
           };
         } else {
           // No history — fall back to a generic "start an order" prompt
-          const repeatMsg = getLabel(business, 'repeatOrderMsg', null)
+          // [FIX-7] Pass '' instead of null so label interpolation never stringifies to "null"
+          const repeatMsg = getLabel(business, 'repeatOrderMsg', '')
             || `Tap *Order* to place a new order.`;
           responseUI = {
             type: 'buttons',
