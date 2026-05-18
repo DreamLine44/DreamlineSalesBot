@@ -100,6 +100,7 @@ import { resolveFaq } from './faqService.js';
 import { initiatePayment } from './paymentService.js';
 import { getSmartRecommendation } from './smartRecommendationService.js';
 import { shouldCaptureLead, startLeadCapture } from './leadCaptureService.js';
+import { validateBooking } from './bookingValidationService.js';
 
 // ─── Normalisation ────────────────────────────────────────────────────────────
 
@@ -1567,10 +1568,53 @@ async function handleBooking(session, raw, clean, business) {
           buttons: [{ id: 'CANCEL', title: '❌ Cancel Booking' }],
         };
       }
+      // ── [v29] Real-time validation FIRST — before any session write ─────
+      const _dateForValidation = session.data?.date || 'today';
+      const _timeValidation = validateBooking({
+        dateStr:  _dateForValidation,
+        timeStr:  timeInput,
+        business,
+        session,
+      });
+      if (!_timeValidation.valid) {
+        // Stay in TIME step — no session update needed
+        return {
+          type:    'buttons',
+          body:    _timeValidation.message,
+          buttons: [{ id: 'CANCEL', title: '❌ Cancel Booking' }],
+        };
+      }
+
+      // ── [v29] Skip TIME_CONFIRM when time is already unambiguous ──────────
+      // If the input contains explicit am/pm or a colon (e.g. "9:00 am", "14:00"),
+      // the customer already stated it clearly — no need to ask "did you mean?".
+      // Only show the clarification for vague inputs like "9" or "morning".
+      const _isUnambiguousTime = /\d{1,2}:\d{2}/.test(timeInput) ||
+                                 /\d{1,2}\s*(am|pm)/i.test(timeInput);
+      if (_isUnambiguousTime) {
+        // Jump straight to CONFIRM — record summaryShownAt for stale check
+        const { date, service } = session.data || {};
+        await updateSession(session.customerPhone, session.tenantId, {
+          step: 'CONFIRM',
+          expectedInputType: 'confirmation',
+          bookingSummaryShownAt: new Date().toISOString(),
+          data: { ...session.data, time: timeInput, summaryShownAt: new Date().toISOString() },
+        });
+        await pushStep(session, 'CONFIRM');
+        const _summaryText = service
+          ? getLabel(business, 'confirmBooking', service, date, timeInput)
+            || `📋 *Booking Summary*\n\n💅 Service: *${service}*\n📅 Date: *${date}*\n⏰ Time: *${timeInput}*`
+          : getLabel(business, 'confirmBooking', date, timeInput)
+            || `📋 *Booking Summary*\n\n📅 Date: *${date || 'Not specified'}*\n⏰ Time: *${timeInput}*`;
+        return buildConfirmUI(business, _summaryText);
+      }
+
+      // Ambiguous time — write to session and ask for clarification
       await updateSession(session.customerPhone, session.tenantId, {
         data: { ...session.data, time: timeInput }, step: 'TIME_CONFIRM',
       });
       await pushStep(session, 'TIME_CONFIRM');
+
       return {
         type:    'buttons',
         body:    `Just to confirm — did you mean *${timeInput}*? ⏰`,
@@ -1581,11 +1625,37 @@ async function handleBooking(session, raw, clean, business) {
     case 'TIME_CONFIRM': {
       if (isConfirm(clean) || isBtnConfirm(raw)) {
         const { date, time, service } = session.data || {};
-        await updateSession(session.customerPhone, session.tenantId, { step: 'CONFIRM', expectedInputType: 'confirmation' });
+
+        // ── [v29] Re-validate time before moving to CONFIRM summary ───────
+        const _tcValidation = validateBooking({
+          dateStr: date || 'today',
+          timeStr: time,
+          business,
+          session,
+        });
+        if (!_tcValidation.valid) {
+          await updateSession(session.customerPhone, session.tenantId, {
+            data: { ...session.data, time: null }, step: 'TIME',
+          });
+          return {
+            type:    'buttons',
+            body:    _tcValidation.message,
+            buttons: [{ id: 'CANCEL', title: '❌ Cancel Booking' }],
+          };
+        }
+
+        // Stamp when summary was shown so final CONFIRM can detect stale sessions
+        const _now = new Date().toISOString();
+        await updateSession(session.customerPhone, session.tenantId, {
+          step: 'CONFIRM',
+          expectedInputType: 'confirmation',
+          bookingSummaryShownAt: _now,
+          data: { ...session.data, summaryShownAt: _now },
+        });
         await pushStep(session, 'CONFIRM');
         const summaryText = service
           ? getLabel(business, 'confirmBooking', service, date, time)
-            || `📋 *Appointment Summary*\n\n💅 Service: *${service}*\n📅 Date: *${date}*${time ? `\n⏰ Time: *${time}*` : ''}`
+            || `📋 *Booking Summary*\n\n💅 Service: *${service}*\n📅 Date: *${date}*${time ? `\n⏰ Time: *${time}*` : ''}`
           : getLabel(business, 'confirmBooking', date, time)
             || `📋 *Booking Summary*\n\n📅 Date: *${date || 'Not specified'}*${time ? `\n⏰ Time: *${time}*` : ''}`;
         return buildConfirmUI(business, summaryText);
@@ -1601,6 +1671,20 @@ async function handleBooking(session, raw, clean, business) {
       }
       const newTime = raw.trim();
       if (looksLikeTime(newTime)) {
+        // Validate the re-entered time too
+        const _reValidation = validateBooking({
+          dateStr: session.data?.date || 'today',
+          timeStr: newTime,
+          business,
+          session,
+        });
+        if (!_reValidation.valid) {
+          return {
+            type:    'buttons',
+            body:    _reValidation.message,
+            buttons: [{ id: 'CANCEL', title: '❌ Cancel Booking' }],
+          };
+        }
         await updateSession(session.customerPhone, session.tenantId, {
           data: { ...session.data, time: newTime }, step: 'TIME_CONFIRM',
         });
@@ -1777,6 +1861,35 @@ async function handleFinalize(session, business, tenant) {
       logger.error('[flowService] Booking finalize: missing date and service', { customerPhone: session.customerPhone });
       await clearSession(session.customerPhone, session.tenantId);
       return gracefulRetryUI('BOOKING');
+    }
+
+    // ── [v29] STALE CONFIRMATION GUARD ────────────────────────────────────
+    // Revalidate date/time before committing to DB. Catches the bug where the
+    // customer confirmed a 9:00am summary at 3:11pm (screenshot bug #3 and #4).
+    if (time || date) {
+      const _finalValidation = validateBooking({
+        dateStr: date || 'today',
+        timeStr: time,
+        business,
+        session,
+        isFinal: true,
+      });
+      if (!_finalValidation.valid) {
+        // Roll back to TIME step (or DATE if it's a date issue) so customer picks again
+        const _dateRelated = ['DATE', 'DAY', 'CLOSED'].some(k => _finalValidation.reason?.includes(k));
+        const _rollbackStep = _dateRelated ? 'DATE' : 'TIME';
+        await updateSession(session.customerPhone, session.tenantId, {
+          step: _rollbackStep,
+          data: _rollbackStep === 'TIME'
+            ? { ...session.data, time: null }
+            : { ...session.data, date: null, time: null },
+        });
+        return {
+          type:    'buttons',
+          body:    _finalValidation.message,
+          buttons: [{ id: 'CANCEL', title: '❌ Cancel Booking' }],
+        };
+      }
     }
 
     // Guard against null business for BOOKING path too

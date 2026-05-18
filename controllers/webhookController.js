@@ -996,6 +996,28 @@ export const handleWebhook = async (req, res) => {
         break;
       }
 
+      // ── [v29] ACKNOWLEDGEMENT — "ok", "thanks", "cool" etc. ──────────────
+      // Respond warmly WITHOUT resetting to menu. Show contextual options only.
+      // This fixes Issue 1: bot returning to menu after "Ok" post-order.
+      case 'ACKNOWLEDGEMENT': {
+        const _ackName     = session?.customerName ? `, ${session.customerName}` : '';
+        const _canOrder    = getModeConfig(business).flows.includes('ORDER');
+        const _canBook     = getModeConfig(business).flows.includes('BOOKING');
+        const _ackButtons  = [
+          _canOrder ? { id: 'ORDER',    title: '🍔 Order Food'      } : null,
+          _canBook  ? { id: 'BOOK',     title: '📅 Book a Table'    } : null,
+          { id: 'QUESTION', title: '❓ Ask a Question' },
+        ].filter(Boolean).slice(0, 3);
+        // Natural warm reply — not a welcome screen reset
+        const _ackBody = `😊 Glad to help${_ackName}! Anything else you'd like today?`;
+        responseUI = {
+          type:    'buttons',
+          body:    _ackBody,
+          buttons: _ackButtons,
+        };
+        break;
+      }
+
       case 'ABOUT': {
         let aboutReply = null;
         try { aboutReply = await answerAboutQuestion(messageText, business, null); } catch { /* swallow */ }

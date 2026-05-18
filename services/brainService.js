@@ -215,6 +215,19 @@ const STRICT_INTENTS = {
     'last order', 'my usual', 'order same',
     'i want the same', 'same thing as before',
   ],
+
+  // ── ACKNOWLEDGEMENT — must NEVER reset menu or trigger flows ──────────────
+  // These are social continuers, not intent signals. Handled separately so the
+  // postFlowAck guard AND mid-conversation chatter both get a warm human reply.
+  ACKNOWLEDGEMENT: [
+    'ok', 'okay', 'k', 'kk', 'cool', 'alright', 'great', 'perfect',
+    'nice', 'noted', 'got it', 'understood', 'sounds good', 'good',
+    'fine', 'thanks', 'thank you', 'thank u', 'thx', 'ty', 'tq',
+    'cheers', 'appreciate it', 'appreciated', 'awesome', 'wonderful',
+    'brilliant', 'fantastic', 'amazing', 'superb', 'excellent',
+    '👍', '🙏', '😊', '👌', 'yep', 'yh', 'yah', 'sure',
+    'alright then', 'fair enough', 'no worries', 'no problem',
+  ],
 };
 
 // ─── Rejection phrases ────────────────────────────────────────────────────────
@@ -411,6 +424,16 @@ export const think = async ({ message, session, business, phone }) => {
   if (raw === '0') {
     logDecision({ raw, normalized, intent: 'SHOW_MENU', action: 'SHOW_MENU', source: 'shortcut' });
     return { action: 'SHOW_MENU' };
+  }
+
+  // 2b. Acknowledgement — "ok", "thanks", "cool" etc. MUST NOT reset menu or
+  //     trigger any flow. Only applies OUTSIDE active flows; inside a flow these
+  //     words may be legitimate confirm signals handled by isBtnConfirm().
+  if (!session?.currentFlow) {
+    if (STRICT_INTENTS.ACKNOWLEDGEMENT.includes(normalized)) {
+      logDecision({ raw, normalized, intent: 'ACKNOWLEDGEMENT', action: 'ACKNOWLEDGEMENT', source: 'ack' });
+      return { action: 'ACKNOWLEDGEMENT' };
+    }
   }
 
   // 3. Greeting — snaps to welcome ONLY when no flow is active.
