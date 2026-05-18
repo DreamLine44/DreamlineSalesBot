@@ -2,10 +2,7 @@
  * models/Booking.js
  *
  * Stores customer bookings for RESTAURANT (table) and SALON (appointment) modes.
- * Fields: customerPhone, date, time, service, duration, notes, status, reminderSentAt.
- *
- * [FIX-11] Removed dead `notifiedAt` field — it was never written to by schedulerService
- * or adminPaymentHandler. `reminderSentAt` replaced it and is the canonical reminder flag.
+ * Fields: customerPhone, date, time, service, duration, notes, status, notifiedAt.
  */
 
 import mongoose from 'mongoose';
@@ -51,6 +48,8 @@ const bookingSchema = new mongoose.Schema({
     enum: ['pending', 'confirmed', 'completed', 'cancelled'],
     default: 'pending',
   },
+
+  notifiedAt: { type: Date, default: null },
 
   // [FIX] Admin confirmation workflow — tracks who confirmed/declined and when.
   // Previously bookings moved to 'confirmed' only via schedulerService with no

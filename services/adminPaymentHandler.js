@@ -467,14 +467,11 @@ export const handleAdminTextCommand = async (messageText, tenantId, adminPhone, 
   // The commands mirror APPROVE/REJECT for orders so admins have a symmetric
   // WhatsApp-only workflow for both flows without needing the dashboard.
   const confirmBookMatch = upper.match(/^CONFIRM\s+BOOK\s+([A-F0-9]{6,24})$/);
-  // [FIX-6] Allow an optional note after the shortId: DECLINE BOOK ABC123 Not available that day
-  const declineBookMatch = upper.match(/^DECLINE\s+BOOK\s+([A-F0-9]{6,24})(?:\s+(.+))?$/);
+  const declineBookMatch = upper.match(/^DECLINE\s+BOOK\s+([A-F0-9]{6,24})$/);
 
   if (confirmBookMatch || declineBookMatch) {
     const bookShortId = (confirmBookMatch || declineBookMatch)[1].toUpperCase();
     const bookAction  = confirmBookMatch ? 'CONFIRM' : 'DECLINE';
-    // [FIX-6] Capture optional admin note from DECLINE BOOK <id> <note> command
-    const adminNote   = declineBookMatch?.[2]?.trim() || null;
 
     let booking;
     try {
@@ -542,16 +539,13 @@ export const handleAdminTextCommand = async (messageText, tenantId, adminPhone, 
             status:           'cancelled',
             adminDeclinedAt:  new Date(),
             adminDeclinedBy:  adminPhone,
-            adminNote:        adminNote || null,   // [FIX-6] persisted so dashboard can display it
           },
         },
       );
 
-      // [FIX-6] Include the admin note (reason) in the customer notification if provided
-      const reasonLine = adminNote ? `\n\nReason: _${adminNote}_` : '';
       const customerMsg =
         `❌ *Booking Unavailable*\n\n` +
-        `Unfortunately we're unable to confirm your booking${serviceStr} for *${when}*.${reasonLine}\n\n` +
+        `Unfortunately we're unable to confirm your booking${serviceStr} for *${when}*.\n\n` +
         `Please contact us to arrange an alternative time. We apologise for the inconvenience.`;
 
       await sendMessage(booking.customerPhone, customerMsg, tenant);

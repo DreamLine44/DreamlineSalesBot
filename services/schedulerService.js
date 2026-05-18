@@ -49,7 +49,7 @@ async function runAbandonedCartJob() {
     const staleOrders = await Order.find({
       status:          'pending',
       createdAt:       { $lt: cutoff, $gt: threshold },
-      abandonedCartAt: null,   // [FIX-1] $exists:false misses null-default fields; null matches correctly
+      abandonedCartAt: { $exists: false },
     }).lean();
 
     if (!staleOrders.length) {
@@ -129,7 +129,7 @@ async function runBookingReminderJob() {
     const bookings = await Booking.find({
       status:         { $in: ['pending', 'confirmed'] },
       createdAt:      { $gte: weekAgo },
-      reminderSentAt: null,   // [FIX-1] $exists:false misses null-default fields; null matches correctly
+      reminderSentAt: { $exists: false },
     }).lean();
 
     if (!bookings.length) {
@@ -162,7 +162,6 @@ async function runBookingReminderJob() {
 
         const sent = await sendBookingReminderTemplate({
           to:          booking.customerPhone,
-          customerName: booking.customerName || null,   // [FIX-4] was never passed; customers always saw "there"
           business,
           bookingTime: booking.time ? `${booking.date} at ${booking.time}` : booking.date,
           tenant,
@@ -198,7 +197,7 @@ async function runPaymentReminderJob() {
       status:                'pending',
       paymentStatus:         'unpaid',
       createdAt:             { $lt: minAge, $gt: maxAge },
-      paymentReminderSentAt: null,   // [FIX-1] $exists:false misses null-default fields; null matches correctly
+      paymentReminderSentAt: { $exists: false },
     }).lean();
 
     if (!pendingOrders.length) {

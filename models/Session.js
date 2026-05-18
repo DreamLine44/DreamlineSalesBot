@@ -68,6 +68,19 @@ const sessionSchema = new mongoose.Schema({
   upsellSent:   { type: Boolean, default: false },
   pendingAddOn: { type: Object,  default: null  },
 
+  // [FIX-C] Track whether the customer has opened the menu list during the
+  // current ORDER session. A bare number typed BEFORE the menu is shown is
+  // almost certainly a quantity or a random message — not an item selection.
+  // The SELECT_ITEM step checks this flag before accepting numeric input.
+  menuViewed:   { type: Boolean, default: false },
+
+  // [FIX-A] Set to the completed flow name ('ORDER'|'BOOKING') when a flow
+  // finishes successfully. Survives the session reset so the next message
+  // ("Ok", "Thanks", etc.) can be intercepted for a warm acknowledgement
+  // instead of immediately re-showing the full welcome menu.
+  // Cleared by the webhook ack handler or after any non-ack message.
+  postFlowAck:  { type: String, default: null },
+
   // [v11] Payment retry tracking — max 2 proof reminders before suggesting human support
   paymentRetryCount: { type: Number, default: 0 },
 

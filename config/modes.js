@@ -159,9 +159,7 @@ export const MODES = {
     },
 
     orderSteps:   ['SELECT_ITEM', 'QUANTITY', 'CONFIRM'],
-    // [FIX-5] Added PARTY_SIZE step so the admin knows how many covers to prepare.
-    // Previously partySize was modelled on Booking but never collected or saved.
-    bookingSteps: ['SELECT_SERVICE', 'PARTY_SIZE', 'DATE', 'DATE_CONFIRM', 'TIME', 'TIME_CONFIRM', 'CONFIRM'],
+    bookingSteps: ['SELECT_SERVICE', 'DATE', 'DATE_CONFIRM', 'TIME', 'TIME_CONFIRM', 'CONFIRM'],
   },
 
   // ─────────────────────────────────────────────────────────────────────────

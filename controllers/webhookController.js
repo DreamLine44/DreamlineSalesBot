@@ -27,7 +27,7 @@ import { getAIReply, generateGreeting, answerAboutQuestion }      from '../servi
 import { receiveProof, handleDonePayment }                        from '../services/paymentService.js';
 import { isAdminPhone, handleAdminButtonReply, handleAdminTextCommand } from '../services/adminPaymentHandler.js';
 import { shouldCaptureLead, startLeadCapture, handleLeadCapture } from '../services/leadCaptureService.js';
-import { getLabel }                                               from '../config/modes.js';
+import { getLabel, getModeConfig }                                from '../config/modes.js';
 import { notifyAdmin }                                            from '../services/notificationService.js';
 import Tenant      from '../models/Tenant.js';
 import UserProfile from '../models/UserProfile.js';
@@ -84,7 +84,9 @@ function extractMessage(msgObj) {
     const listReply = msgObj.interactive?.list_reply;
     // Use stable ID (e.g. "1","2" for list rows; "ORDER","BOOK","CONFIRM","CANCEL" for buttons)
     if (btnReply)  return { text: (btnReply.id  || btnReply.title  || '').trim(), imageUrl: null, isInteractive: true };
-    if (listReply) return { text: (listReply.id || listReply.title || '').trim(), imageUrl: null, isInteractive: true };
+    // [FIX-C] list_reply = customer tapped an item from the actual WhatsApp list menu.
+    // Tag isListReply so SELECT_ITEM can trust numeric input and mark menuViewed.
+    if (listReply) return { text: (listReply.id || listReply.title || '').trim(), imageUrl: null, isInteractive: true, isListReply: true };
     return { text: '', imageUrl: null, isInteractive: true };
   }
 
@@ -268,7 +270,7 @@ export const handleWebhook = async (req, res) => {
         try {
 
     // ── STEP 1: Extract ───────────────────────────────────────────────────
-    const { text: messageText, imageUrl, isInteractive } = extractMessage(msgObj);
+    const { text: messageText, imageUrl, isInteractive, isListReply } = extractMessage(msgObj);
 
     // ── STEP 2: Tenant lookup ─────────────────────────────────────────────
     const tenantDoc = await Tenant.findOne({ 'whatsapp.phoneNumberId': phoneNumberId }).lean();
@@ -512,13 +514,10 @@ export const handleWebhook = async (req, res) => {
 
     // ── STEP 7b: DONE payment (no-proof flow) ───────────────────────────
     // When requireProof=false, customer types DONE to confirm payment.
-    // [FIX-9] Gate on !requireProof — previously a customer could type "DONE" even
-    // when requireProof=true and skip proof verification entirely.
     if (
       session.currentFlow === 'ORDER' &&
       session.step === 'PAYMENT_PROOF' &&
-      messageText.trim().toUpperCase() === 'DONE' &&
-      !business?.payment?.requireProof
+      messageText.trim().toUpperCase() === 'DONE'
     ) {
       const replyText = await handleDonePayment(from, tenantId);
       // [FIX-5b] dispatch BEFORE clearSession — mirrors the same fix applied
@@ -632,6 +631,47 @@ export const handleWebhook = async (req, res) => {
       continue;
     }
 
+    // ── STEP 7e: Post-flow acknowledgement guard ──────────────────────────
+    // After a flow completes (booking confirmed, order placed, etc.) flowService
+    // sets session.postFlowAck = 'ORDER' | 'BOOKING' instead of calling
+    // clearSession(). This keeps one session row alive so the customer's next
+    // message ("Ok", "Thanks", "👍") can be caught here and answered with a
+    // warm, minimal "anything else?" card rather than the full welcome menu.
+    //
+    // Any non-ack message clears postFlowAck and falls through to brain normally.
+    if (session?.postFlowAck) {
+      const _POST_FLOW_ACK = /^(ok|okay|k|kk|thanks|thank you|thank u|thx|great|perfect|got it|noted|alright|cool|nice|sounds good|good|👍|🙏|😊|yep|yh|yah|alright then|understood|noted|cheers|appreciate it|ty|tq)$/i;
+
+      if (messageText && _POST_FLOW_ACK.test(messageText.trim())) {
+        // Warm acknowledgement — clear postFlowAck, then reply
+        await updateSession(from, tenantId, { postFlowAck: null });
+
+        const _completedFlow = session.postFlowAck;
+        const _custName = session?.customerName ? `, ${session.customerName}` : '';
+        const _bizName  = business?.name || 'us';
+        const _canOrder = getModeConfig(business).flows.includes('ORDER');
+        const _canBook  = getModeConfig(business).flows.includes('BOOKING');
+
+        // Tailor the ack message to what just completed
+        const _ackBody = _completedFlow === 'BOOKING'
+          ? `You're welcome${_custName}! 😊 Your booking is all set. Is there anything else we can help you with?`
+          : `You're welcome${_custName}! 😊 We're on it. Is there anything else we can help you with at *${_bizName}*?`;
+
+        const _ackButtons = [
+          _canOrder ? { id: 'ORDER',    title: '🛍 Place Another Order' } : null,
+          _canBook  ? { id: 'BOOK',     title: '📅 Make a Booking'      } : null,
+          { id: 'QUESTION', title: '❓ Ask a Question' },
+        ].filter(Boolean).slice(0, 3);
+
+        await dispatch(from, { type: 'buttons', body: _ackBody, buttons: _ackButtons }, tenantDoc);
+        continue;
+      }
+
+      // Non-ack message after completion — clear the flag and let brain handle it normally
+      await updateSession(from, tenantId, { postFlowAck: null });
+      // Fall through to brain ↓
+    }
+
     // ── STEP 8: Brain (Layer 1 — decision) ───────────────────────────────
     const { action, ui: brainUI, reply: brainReply, intent, suggestion: brainSuggestion } = await think({
       message: messageText, session, business, phone: from,
@@ -704,6 +744,13 @@ export const handleWebhook = async (req, res) => {
     // We already handled INTERRUPT / REJECT_FLOW / CANCEL / SHOW_MENU above.
     if (session.currentFlow) {
 
+      // [FIX-C] When the customer picks from the WhatsApp list widget,
+      // flag the session so SELECT_ITEM knows the menu was actually viewed.
+      if (isListReply && session.currentFlow === 'ORDER' && !session.menuViewed) {
+        updateSession(from, tenantId, { menuViewed: true }).catch(() => {});
+        session = { ...session, menuViewed: true };
+      }
+
       // [FIX] Re-fetch session once at the top of the active-flow block.
       // Several updateSession() calls above (lastIntent, lastMessage) change
       // DB state but not the local `session` object.
@@ -760,84 +807,6 @@ export const handleWebhook = async (req, res) => {
           ? `You can pay via *Wave* to *${wavePhone}* after confirming your order. 💳`
           : `Payment details will be shown after you confirm your order. 📱`;
         await dispatch(from, { type: 'text', body: fallbackMsg }, tenantDoc);
-        continue;
-      }
-
-      // [FIX-3] TRACK_ORDER mid-flow — brainService may return TRACK_ORDER even when a flow
-      // is active. handleFlow knows nothing about it as an action and would treat the raw
-      // message text as a quantity/date input. Handle it here instead: send order status
-      // without touching the current flow so the customer can continue where they left off.
-      if (action === 'TRACK_ORDER') {
-        try {
-          const recentOrder = await Order.findOne({
-            tenantId,
-            customerPhone: from,
-            status: { $nin: ['cancelled', 'rejected'] },
-          }).sort({ createdAt: -1 })
-            .select('item quantity totalPrice status paymentStatus shortId createdAt')
-            .lean();
-
-          let trackReply;
-          if (!recentOrder) {
-            const adminContact = business?.adminPhone || tenantDoc?.adminPhone || null;
-            trackReply = {
-              type: 'text',
-              body: `We couldn't find a recent order linked to your number.${adminContact ? `\n\nNeed help? Contact us: 📞 *${adminContact}*` : ''}`,
-            };
-          } else {
-            const STATUS_LABELS = {
-              pending:                       '🕐 Received — awaiting payment',
-              payment_pending_verification:  '🔄 Payment received — under review',
-              confirmed:                     '✅ Confirmed — being prepared',
-              completed:                     '🎉 Completed',
-              payment_failed:                '❌ Payment not verified',
-              failed:                        '❌ Payment not verified',
-            };
-            const currency  = business?.payment?.currency || business?.currency || 'D';
-            const totalStr  = recentOrder.totalPrice ? `${currency} ${recentOrder.totalPrice.toLocaleString()}` : 'TBD';
-            const orderDate = new Date(recentOrder.createdAt).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
-            trackReply = {
-              type: 'text',
-              body: `📦 *Your latest order* (${recentOrder.shortId || ''})\n\n• Item: *${recentOrder.item}* × ${recentOrder.quantity}\n• Total: *${totalStr}*\n• Date: ${orderDate}\n• Status: ${STATUS_LABELS[recentOrder.status] || recentOrder.status}\n\n_(Your current flow is still active — continue when ready.)_`,
-            };
-          }
-          await dispatch(from, trackReply, tenantDoc);
-          // Re-prompt the current step so the customer knows where they were
-          const freshSession = (await getSession(from, tenantId)) || session;
-          const stepReprompt = handleStepReprompt(freshSession);
-          if (stepReprompt) await dispatch(from, stepReprompt, tenantDoc);
-        } catch (err) {
-          logger.error('[Webhook] TRACK_ORDER mid-flow lookup failed', { err: err.message, from, tenantId });
-        }
-        continue;
-      }
-
-      // [FIX-3] REPEAT_ORDER mid-flow — when brainService returns REPEAT_ORDER while a
-      // flow is active, fall through to handleFlow would pass the raw text to the flow step.
-      // Treat it as an INTERRUPT instead so the customer gets a clean switch prompt.
-      if (action === 'REPEAT_ORDER') {
-        const switchPrompt = {
-          type: 'buttons',
-          body: `You have an active ${session.currentFlow === 'BOOKING' ? 'booking' : 'order'} in progress.\n\nWould you like to switch to a new order? Your current progress will be lost.`,
-          buttons: [
-            { id: 'SWITCH_YES', title: '✅ Yes, switch' },
-            { id: 'SWITCH_NO',  title: '❌ No, continue' },
-          ],
-        };
-        // [FIX-REPEAT-ORDER-INTERRUPT] Two bugs in the original:
-        //   1. `_pendingAction` is not read by handleInterrupt — it reads `pendingIntent`.
-        //      Using a non-standard field meant SWITCH_YES always resolved to null intent,
-        //      causing handleInterrupt to clear the session and show the welcome menu
-        //      instead of starting a new order.
-        //   2. `previousStep` was never stored, so SWITCH_NO always fell back to
-        //      SELECT_ITEM/DATE instead of the actual step the customer was on.
-        await updateSession(from, tenantId, {
-          previousFlow:  session.currentFlow,
-          previousStep:  session.step,
-          step:          'INTERRUPT',
-          pendingIntent: 'ORDER',
-        });
-        await dispatch(from, switchPrompt, tenantDoc);
         continue;
       }
 
@@ -1006,8 +975,7 @@ export const handleWebhook = async (req, res) => {
           };
         } else {
           // No history — fall back to a generic "start an order" prompt
-          // [FIX-7] Pass '' instead of null so label interpolation never stringifies to "null"
-          const repeatMsg = getLabel(business, 'repeatOrderMsg', '')
+          const repeatMsg = getLabel(business, 'repeatOrderMsg', null)
             || `Tap *Order* to place a new order.`;
           responseUI = {
             type: 'buttons',
