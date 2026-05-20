@@ -1,0 +1,21 @@
+name: whatsalesagent2
+services:
+  - name: api
+    type: web
+    git:
+      branch: main
+    build:
+      buildpack:
+        build_command: npm install --production
+        run_command: npm start
+    ports:
+      - port: 5000
+        protocol: http
+    health_checks:
+      - path: /health
+        port: 5000
+        initial_delay: 10
+        period: 30
+    env:
+      - key: NODE_ENV
+        value: production

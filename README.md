@@ -1,404 +1,226 @@
-# DreamLine SalesBot v24.0
-## AI WhatsApp Business Automation System
+# WhatSalesAgent2
 
-A production-grade, multi-tenant WhatsApp Business automation platform powered by OpenAI GPT-4o-mini. Built specifically for WhatsApp via Meta Cloud API, with full local simulation for pre-integration testing.
+> AI-powered WhatsApp Business Assistant Platform  
+> Intent Engine → Module Router → Flow Engine → AI Fallback
+
+Supports: Restaurant · Bakery · Salon · Barbershop · Fashion · Cosmetics · Electronics
 
 ---
 
-## Architecture Overview
+## Quick Start (Local — Windows)
 
-```
-┌─────────────────────────────────────────────────────────┐
-│                   CUSTOMER (WhatsApp)                   │
-└─────────────────────────┬───────────────────────────────┘
-                          │ Message
-┌─────────────────────────▼───────────────────────────────┐
-│              META WHATSAPP CLOUD API                    │
-│         (Phase 5 — connect AFTER local testing)        │
-└─────────────────────────┬───────────────────────────────┘
-                          │ Webhook POST
-┌─────────────────────────▼───────────────────────────────┐
-│                 DREAMLINE BACKEND                        │
-│                                                          │
-│  webhookController → brainService → flowService        │
-│       ↓                   ↓              ↓              │
-│  sessionService      aiService      messageService      │
-│       ↓             (OpenAI/Groq)        ↓              │
-│  MongoDB               ↑          Meta API / Sim        │
-│                   BusinessConfig                        │
-└─────────────────────────────────────────────────────────┘
+### 1. Install
+```powershell
+npm install
 ```
 
-**During development (Phases 1–4):** `POST /api/messages` replaces Meta — full simulation without any Meta connection.
+### 2. Configure
+```powershell
+copy .env.example .env
+```
+Open `.env`, then generate your security keys:
+```powershell
+npm run gen-key
+```
+Copy the output into `.env` (`SUPER_ADMIN_API_KEY` and `ENCRYPTION_KEY`).
+
+Set your MongoDB URI in `.env`:
+```
+MONGODB_URI=mongodb://127.0.0.1:27017/whatsalesagent2
+```
+
+### 3. Seed demo businesses
+```powershell
+npm run seed
+```
+
+### 4. Start (simulation mode — no WhatsApp needed)
+```powershell
+npm run dev:sim
+```
+
+### 5. Test in Bruno / Postman
+```
+POST http://localhost:5000/api/message
+Content-Type: application/json
+
+{"userId":"test001","message":"Hi"}
+```
+
+### Check server health
+```powershell
+npm run health
+```
 
 ---
 
-## Supported Business Types
+## NPM Scripts
 
-| Type | Mode | Features |
-|------|------|----------|
-| 🍽 Restaurant | RESTAURANT | Menu, orders, cart, delivery |
-| 🎂 Bakery | BAKERY | Custom cakes, pre-orders, events |
-| 👗 Fashion Store | FASHION | Catalog, sizes, recommendations |
-| ✂️ Salon/Barbershop | SALON / BARBERSHOP | Appointments, scheduling |
-| 💄 Cosmetics | COSMETICS | Beauty advice, repeat orders |
+| Script | Description |
+|--------|-------------|
+| `npm run dev` | Start in development mode |
+| `npm run dev:sim` | Start in dev + simulation mode (local testing, no WhatsApp) |
+| `npm start` | Start in production mode |
+| `npm run seed` | Seed all 6 demo businesses |
+| `npm run gen-key` | Generate SUPER_ADMIN_API_KEY + ENCRYPTION_KEY |
+| `npm run health` | Check if server is running |
 
 ---
 
-## Quick Start
+## Deploying to Koyeb
 
 ### Prerequisites
+- MongoDB Atlas free cluster → https://cloud.mongodb.com
+- Koyeb account → https://app.koyeb.com
+- Meta Developer account → https://developers.facebook.com
+- GitHub repo with this project
 
-| Requirement | Version | Download |
-|-------------|---------|----------|
-| Node.js | **18+** required | https://nodejs.org |
-| MongoDB | 6+ (local or Atlas) | https://www.mongodb.com |
-| npm | comes with Node.js | — |
-
-### 1-Minute Install
-
-```bash
-# Clone or extract the project
-cd dreamline-v23
-
-# Install all packages
-npm install
-
-# Run the setup wizard (copies .env, generates keys)
-npm run setup
-
-# Start in development mode
-npm run dev
+### Step 1 — Push to GitHub
+```powershell
+git init
+git add .
+git commit -m "initial"
+git remote add origin https://github.com/YOUR_NAME/whatsalesagent.git
+git push -u origin main
 ```
 
-### Manual Install
+### Step 2 — Create Koyeb Service
+1. Koyeb → **Create Service** → **GitHub**
+2. Select your repo + `main` branch
+3. Build command: `npm install --production`
+4. Run command: `npm start`
+5. Port: `5000`
+6. Health check path: `/health`
 
-```bash
-npm install
-cp .env.example .env.development.local
-# Edit .env.development.local with your keys
-npm run dev
+### Step 3 — Set environment variables on Koyeb
+Copy from your `.env` — required for production:
+
+| Variable | Value |
+|----------|-------|
+| `NODE_ENV` | `production` |
+| `MONGODB_URI` | Your Atlas connection string |
+| `SUPER_ADMIN_API_KEY` | From `npm run gen-key` |
+| `ENCRYPTION_KEY` | From `npm run gen-key` (exactly 32 chars) |
+| `META_APP_ID` | From Meta App → Settings → Basic |
+| `META_APP_SECRET` | From Meta App → Settings → Basic |
+| `META_PHONE_NUMBER_ID` | From Meta App → WhatsApp → API Setup |
+| `META_WHATSAPP_TOKEN` | From Meta App → WhatsApp → API Setup |
+| `META_WABA_ID` | From Meta App → WhatsApp → API Setup |
+| `META_WEBHOOK_VERIFY_TOKEN` | Any string you choose |
+| `SIMULATION_MODE` | `false` |
+| `SCHEDULER_ENABLED` | `true` |
+| `BASE_URL` | Your Koyeb URL (e.g. `https://whatsalesagent-xxx.koyeb.app`) |
+| `ADMIN_PHONES` | Your WhatsApp number (without +) |
+| `GROQ_API_KEY` | From https://console.groq.com (free) |
+
+### Step 4 — Connect Meta Webhook
+1. Meta App → WhatsApp → Configuration → Webhooks
+2. **Callback URL**: `https://YOUR_KOYEB_URL/webhook`
+3. **Verify Token**: same as `META_WEBHOOK_VERIFY_TOKEN`
+4. Click **Verify and Save**
+5. Subscribe to: `messages`
+
+### Step 5 — Create your tenant
+```powershell
+Invoke-RestMethod -Method Post https://YOUR_KOYEB_URL/admin/tenants `
+  -ContentType "application/json" `
+  -Headers @{"x-api-key" = "YOUR_SUPER_ADMIN_API_KEY"} `
+  -Body '{
+    "name": "My Business",
+    "businessMode": "RESTAURANT",
+    "adminPhone": "2207XXXXXX",
+    "whatsapp": {
+      "phoneNumberId": "YOUR_PHONE_NUMBER_ID",
+      "accessToken": "YOUR_WHATSAPP_TOKEN"
+    }
+  }'
 ```
+
+Your WhatsApp bot is now live.
 
 ---
 
-## Configuration
-
-Edit `.env.development.local` (created by setup wizard):
-
-```env
-# Required for AI conversations
-OPENAI_API_KEY=sk-your-openai-key       # https://platform.openai.com/api-keys
-
-# Optional (Groq is the fallback AI if OpenAI fails)
-GROQ_API_KEY=gsk_your-groq-key          # https://console.groq.com (free)
-
-# Required
-MONGODB_URI=mongodb://localhost:27017/dreamline_bot
-
-# Auto-generated by setup wizard
-SUPER_ADMIN_API_KEY=your-generated-key
-SIMULATION_SECRET=sim_your-generated-key
-
-# Simulation mode (ON by default for local testing)
-SIMULATION_MODE=true
-```
-
-**Meta credentials (leave blank during development):**
-```env
-META_APP_ID=          # Fill ONLY in Phase 5
-META_APP_SECRET=      # Fill ONLY in Phase 5
-META_WEBHOOK_VERIFY_TOKEN=  # Fill ONLY in Phase 5
-```
-
----
-
-## Local Testing (Phase 2 — No Meta Required)
-
-### Test with curl
-
-```bash
-# Send a message
-curl -X POST http://localhost:5000/api/messages \
-  -H "Content-Type: application/json" \
-  -H "x-sim-key: YOUR_SIMULATION_SECRET" \
-  -d '{"userId": "customer_001", "message": "I want to order"}'
-
-# Response:
-{
-  "userId": "customer_001",
-  "input": "I want to order",
-  "reply": "Sure! Here's our menu:\n\n1. Jollof Rice — D150\n2. Grilled Fish — D200\n...",
-  "ui": { "type": "list", "header": "Our Menu", "rows": [...] },
-  "meta": { "action": "ORDER", "flow": "ORDER", "step": "SELECT_ITEM" }
-}
-```
-
-### Test with Bruno
-
-1. Open Bruno and create a new collection
-2. Add requests using `http://localhost:5000/api/messages`
-3. Set header `x-sim-key: YOUR_SIMULATION_SECRET`
-4. Set body: `{ "userId": "test_001", "message": "hello" }`
-
-### Test with npm
-
-```bash
-npm run test:sim       # Run simulation test suite
-npm run test:nlp       # Run NLP / intent detection tests
-npm run test:v18       # Run v18 flow tests
-```
-
-### Available Simulation Endpoints
-
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/api/messages` | POST | Send a simulated customer message |
-| `/api/session` | GET | Inspect current session state |
-| `/api/session` | DELETE | Clear session (simulate timeout) |
-| `/api/history` | GET | Get conversation history |
-| `/api/businesses` | GET | List available test businesses |
-| `/api/reset` | POST | Full user reset |
-| `/api/health` | GET | Simulation engine status |
-
----
-
-## Conversation Testing Scenarios
-
-### Test a complete order flow
-
-```bash
-# Step 1: First contact (welcome)
-curl -X POST .../api/messages -d '{"userId":"cust1","message":"hello"}'
-
-# Step 2: Order intent
-curl -X POST .../api/messages -d '{"userId":"cust1","message":"I want to order"}'
-
-# Step 3: Select item
-curl -X POST .../api/messages -d '{"userId":"cust1","message":"Jollof Rice"}'
-
-# Step 4: Set quantity
-curl -X POST .../api/messages -d '{"userId":"cust1","message":"2"}'
-
-# Step 5: Confirm
-curl -X POST .../api/messages -d '{"userId":"cust1","message":"confirm"}'
-```
-
-### Test with a specific business
-
-```bash
-# Get business ID
-curl http://localhost:5000/api/businesses -H "x-sim-key: YOUR_KEY"
-
-# Use that business in messages
-curl -X POST .../api/messages \
-  -d '{"userId":"cust1","message":"I want to book","businessId":"64abc..."}'
-```
-
----
-
-## Project Structure
+## Architecture
 
 ```
-dreamline-v23/
-├── app.js                      # Express app + startup
-├── package.json                # All dependencies
-├── install.sh                  # One-command installer
-├── .env.example                # Environment template
-│
-├── config/
-│   ├── env.js                  # Environment loader (load FIRST)
-│   ├── database.js             # MongoDB connection
-│   ├── logger.js               # Winston logger
-│   └── modes.js                # Business mode presets
-│
-├── controllers/
-│   ├── webhookController.js    # Meta webhook handler
-│   ├── simulationController.js # ← NEW: Local testing engine
-│   ├── businessController.js   # Business config CRUD
-│   ├── dashboardController.js  # Client dashboard
-│   ├── onboardingController.js # Self-serve onboarding
-│   ├── platformController.js   # SaaS admin panel
-│   └── tenantController.js     # Tenant management
-│
-├── services/
-│   ├── aiService.js            # ← NEW: OpenAI + Groq unified AI
-│   ├── groqService.js          # ← UPDATED: now shim → aiService
-│   ├── brainService.js         # Intent detection engine
-│   ├── flowService.js          # Conversation flow logic
-│   ├── sessionService.js       # Session management
-│   ├── messageService.js       # Meta API sender
-│   ├── businessService.js      # Business config lookup
-│   ├── analyticsService.js     # Event tracking
-│   ├── conversationMemoryService.js # Customer memory
-│   ├── cryptoService.js        # Token encryption
-│   ├── faqService.js           # FAQ matching
-│   ├── leadCaptureService.js   # Lead collection
-│   ├── learningService.js      # User preference tracking
-│   ├── modePresetService.js    # Business mode presets
-│   ├── notificationService.js  # Admin notifications
-│   ├── onboardingService.js    # Onboarding flows
-│   ├── paymentService.js       # Payment handling
-│   ├── revenueEngineService.js # Revenue tracking
-│   ├── schedulerService.js     # Background jobs
-│   ├── smartRecommendationService.js # AI recommendations
-│   ├── adminPaymentHandler.js  # Admin payment commands
-│   └── templateService.js      # Message templates
-│
-├── models/
-│   ├── Tenant.js               # Multi-tenant accounts
-│   ├── BusinessConfig.js       # Bot configuration per tenant
-│   ├── Session.js              # Active conversation sessions
-│   ├── Order.js                # Orders
-│   ├── Booking.js              # Appointments
-│   ├── UserProfile.js          # Customer memory & preferences
-│   ├── Analytics.js            # Usage analytics
-│   ├── FailedMessage.js        # Failed message queue
-│   └── ProcessedMessage.js     # Deduplication log
-│
-├── routes/
-│   ├── webhookRoutes.js        # /webhook
-│   ├── simulationRoutes.js     # ← NEW: /api/* simulation
-│   ├── businessRoutes.js       # /business
-│   ├── dashboardRoutes.js      # /dashboard
-│   ├── onboardingRoutes.js     # /register
-│   ├── platformRoutes.js       # /platform
-│   ├── tenantRoutes.js         # /admin/tenants
-│   └── adminMessageRoutes.js   # /admin/messages
-│
-├── middlewares/
-│   ├── authMiddleware.js       # API key auth
-│   ├── rateLimiter.js          # Rate limiting
-│   └── errorHandler.js         # Global error handler
-│
-├── utils/
-│   ├── messageBuilders.js      # WhatsApp UI builders
-│   ├── helpers.js              # General utilities
-│   ├── matchEngine.js          # Text matching
-│   ├── phraseEngine.js         # Phrase detection
-│   ├── sanitize.js             # Input sanitisation
-│   └── logger.js               # Logger utils
-│
-├── scripts/
-│   ├── setup.js                # ← NEW: Setup wizard
-│   ├── migrate-apikey-hash.js  # DB migration
-│   ├── migrate-order-shortid.js
-│   ├── migrate-encrypt-tokens.js
-│   ├── fix-order-index.js
-│   └── fix-phonenumberid-index.js
-│
-└── tests/
-    ├── simulation.test.mjs     # ← NEW: Simulation test suite
-    ├── nlp.test.mjs            # NLP / intent tests
-    └── v18.test.mjs            # Flow tests
+Customer message (WhatsApp)
+       ↓
+  /webhook (Meta Cloud API)
+       ↓
+  Guard layer         de-dup · human mode · session load
+       ↓
+  postFlowAck         warm ack after order/booking completion
+       ↓
+  Active flow? ──yes──→ flowEngine.advance() → module handler
+       ↓ no
+  Intent Engine       button ID → emoji → keyword → AI classify
+       ↓
+  Module Router       intent → action handler
+       ↓
+  Response builder    buttons · list · text
+       ↓
+  Dispatcher          Meta Cloud API (live) or simulation slot (dev)
 ```
-
----
-
-## Build Phases
-
-| Phase | Status | Description |
-|-------|--------|-------------|
-| Phase 1 | ✅ Complete | Backend engine (brain, flow, session, AI) |
-| Phase 2 | ✅ Complete | POST /api/messages simulation for local testing |
-| Phase 3 | 🔄 Your work | Perfect conversation logic & test all flows |
-| Phase 4 | 📋 Planned | Admin dashboard (React + Tailwind) |
-| Phase 5 | 📋 Planned | Connect Meta WhatsApp Cloud API |
-
----
-
-## AI Provider Setup
-
-### OpenAI (Primary — Recommended)
-
-1. Go to https://platform.openai.com/api-keys
-2. Create a new API key
-3. Add to `.env.development.local`:
-   ```env
-   OPENAI_API_KEY=sk-...
-   OPENAI_MODEL=gpt-4o-mini    # cheapest, fast, high quality
-   ```
-
-**Cost estimate:** ~$0.15 per million input tokens with gpt-4o-mini. A typical customer conversation costs <$0.01.
-
-### Groq (Fallback — Free Tier Available)
-
-1. Go to https://console.groq.com
-2. Create API key (free tier available)
-3. Add to `.env.development.local`:
-   ```env
-   GROQ_API_KEY=gsk_...
-   ```
-
-The system automatically falls back to Groq if OpenAI fails. If both fail, deterministic replies are used.
 
 ---
 
 ## API Reference
 
-### Simulation (Development Only)
+### Simulation (dev only — `SIMULATION_MODE=true`)
 
-All simulation endpoints require `x-sim-key` header matching `SIMULATION_SECRET`.
+| Method | Path | Body |
+|--------|------|------|
+| POST | `/api/message` | `{userId, message}` or `{userId, buttonId}` |
+| POST | `/api/reset` | `{userId}` |
+| GET | `/api/session/:userId` | — |
+| GET | `/api/businesses` | — |
 
-**POST /api/messages**
-```json
-Request:  { "userId": "string", "message": "string", "businessId": "string?" }
-Response: { "userId", "input", "reply", "ui", "meta": { "action", "flow", "step" } }
-```
+### Business (requires `x-api-key`)
 
-**GET /api/session?userId=**
-```json
-Response: { "userId", "session", "historyLength", "history" }
-```
+| Method | Path |
+|--------|------|
+| GET | `/business/:tenantId` |
+| PUT | `/business/:tenantId` |
+| GET/PUT/POST/DELETE | `/business/:tenantId/menu` |
 
-**GET /api/businesses**
-```json
-Response: { "count": 2, "businesses": [{ "id", "name", "mode", "menuItems" }] }
-```
+### Dashboard (requires `x-api-key`)
 
-### Production Endpoints
+| Method | Path |
+|--------|------|
+| GET | `/dashboard/:tenantId/overview` |
+| GET | `/dashboard/:tenantId/orders` |
+| GET | `/dashboard/:tenantId/bookings` |
+| GET | `/dashboard/:tenantId/analytics` |
+| GET | `/dashboard/:tenantId/conversations` |
 
-| Route | Auth | Description |
-|-------|------|-------------|
-| `GET /health` | None | Server health |
-| `POST /webhook` | Meta signature | Incoming WhatsApp messages |
-| `POST /register/whatsapp` | None | Connect WhatsApp number |
-| `POST /register/business` | x-api-key | Configure bot |
-| `GET /dashboard` | x-api-key | Business dashboard |
-| `GET /platform/stats` | SUPER_ADMIN | SaaS admin panel |
+### Admin (requires super-admin key)
 
----
-
-## Deployment
-
-See the full deployment guide: **[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)**
-
-Quick options:
-- **Railway** (easiest): push to GitHub, connect repo, set env vars, deploy
-- **Render**: same as Railway — zero config Node.js hosting
-- **VPS (Ubuntu + PM2 + Nginx)**: for full control, use `ecosystem.config.cjs`
-
-The `start` script (`node app.js`) is compatible with Railway, Render, and Heroku out of the box.
-
-> ⚠️ Always set `SIMULATION_MODE=false` in production to prevent exposing the `/api/messages` test endpoint.
+| Method | Path |
+|--------|------|
+| POST | `/admin/tenants` |
+| GET | `/admin/tenants` |
+| PATCH | `/admin/tenants/:id/status` |
+| DELETE | `/admin/tenants/:id` |
 
 ---
 
-## Security Notes
+## WhatsApp Admin Commands
 
-- API keys stored as SHA-256 hashes in MongoDB (run `npm run migrate-apikey` for existing tenants)
-- WhatsApp access tokens encrypted at rest using AES-256 (`ENCRYPTION_KEY`)
-- Meta webhook signatures verified using HMAC-SHA256
-- Rate limiting on all routes
-- Helmet security headers
-- Input sanitisation on all AI prompts (prompt injection protection)
-- `SIMULATION_MODE` auto-disabled in production (set explicitly if needed)
+Send these from your registered admin WhatsApp number:
+
+```
+APPROVE ABC123           → Approve payment proof
+REJECT ABC123            → Reject payment proof
+CONFIRM BOOK XYZ456      → Confirm a booking
+DECLINE BOOK XYZ456      → Decline a booking
+RESUME BOT 2207XXXXXX    → Re-enable bot for a customer
+```
 
 ---
 
-## Support
+## Adding a New Business Module
 
-- **Simulation not working?** Check `SIMULATION_MODE=true` in your .env
-- **AI not responding?** Verify `OPENAI_API_KEY` is set and valid
-- **MongoDB errors?** Check `MONGODB_URI` and that MongoDB is running
-- **Tests failing?** Ensure server is running with `npm run dev` before `npm run test:sim`
+1. `src/modules/yourmodule/flows/index.js` — export config + flow handlers
+2. `src/core/shared/moduleRegistry.js` — register flows (3 lines)
+3. `src/config/modes.js` — add to MODE_MAP (1 line)
+4. `npm run seed` — add demo business with `businessMode: 'YOURMODE'`

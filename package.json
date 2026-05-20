@@ -1,48 +1,35 @@
 {
-  "name": "dreamlinesalesbot",
-  "version": "24.0.0",
-  "description": "Multi-tenant AI WhatsApp Business SaaS Platform — v24.0.0 (greeting fix, date/time validation, full audit)",
-  "main": "app.js",
+  "name": "whatsalesagent2",
+  "version": "2.0.0",
+  "description": "WhatSalesAgent2 — AI-powered WhatsApp Business Assistant Platform",
   "type": "module",
-  "engines": {
-    "node": ">=18.0.0"
-  },
+  "main": "src/app.js",
   "scripts": {
-    "start": "node app.js",
-    "dev": "nodemon app.js",
-    "test": "node tests/nlp.test.mjs",
-    "test:nlp": "node tests/nlp.test.mjs",
-    "test:v18": "node tests/v18.test.mjs",
-    "test:sim": "node tests/simulation.test.mjs",
-    "seed": "node seed.js",
-    "setup": "node scripts/setup.js",
-    "gen-key": "node --input-type=module -e \"import {randomBytes} from 'crypto'; console.log(randomBytes(32).toString('hex'))\"",
-    "fix-orders": "node scripts/fix-order-index.js",
-    "fix-phonenumber-index": "node scripts/fix-phonenumberid-index.js",
-    "migrate-apikey": "node scripts/migrate-apikey-hash.js",
-    "migrate-shortid": "node scripts/migrate-order-shortid.js",
-    "migrate-encrypt": "node scripts/migrate-encrypt-tokens.js"
+    "start":         "cross-env NODE_ENV=production node src/app.js",
+    "dev":           "cross-env NODE_ENV=development node --watch src/app.js",
+    "dev:sim":       "cross-env NODE_ENV=development SIMULATION_MODE=true node --watch src/app.js",
+    "seed":          "node src/scripts/seed.js",
+    "gen-key":       "node src/scripts/genKey.js",
+    "health":        "node src/scripts/health.js",
+    "test:simulate": "node src/scripts/testSimulate.js"
   },
   "dependencies": {
-    "axios": "^1.7.7",
-    "cloudinary": "^2.5.1",
+    "axios": "^1.6.0",
+    "bcryptjs": "^2.4.3",
     "cors": "^2.8.5",
-    "dotenv": "^16.4.5",
-    "express": "^4.21.1",
-    "express-rate-limit": "^7.4.1",
+    "dotenv": "^16.3.1",
+    "express": "^4.18.2",
+    "express-rate-limit": "^7.1.5",
     "fast-levenshtein": "^3.0.0",
-    "helmet": "^8.0.0",
-    "json2csv": "^5.0.7",
-    "jsonwebtoken": "^9.0.2",
-    "mongoose": "^8.7.0",
-    "multer": "^1.4.5-lts.1",
-    "openai": "^4.67.3",
-    "uuid": "^10.0.0",
-    "winston": "^3.15.0",
-    "winston-daily-rotate-file": "^5.0.0"
+    "helmet": "^7.1.0",
+    "mongoose": "^8.0.0",
+    "openai": "^4.20.0",
+    "winston": "^3.11.0"
   },
   "devDependencies": {
-    "eslint": "^9.13.0",
-    "nodemon": "^3.1.7"
+    "cross-env": "^7.0.3"
+  },
+  "engines": {
+    "node": ">=18.0.0"
   }
 }
