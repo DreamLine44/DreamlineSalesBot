@@ -94,7 +94,33 @@ export async function getCustomers(req, res) {
 }
 
 // ── Business settings ─────────────────────────────────────────────────────────
-export async function getDashboardOverview(req, res) {
+export async function getBusinessSettings(req, res) {
+  const { tenantId } = req.params;
+  const biz = await BusinessConfig.findOne({ tenantId })
+    .select('name description businessMode adminPhone menuItems services payment leadCapture faq customMessages hours settings')
+    .lean();
+  if (!biz) return res.status(404).json({ error: 'Not found' });
+  res.json({ settings: biz });
+}
+
+export async function updateBusinessSettings(req, res) {
+  const { tenantId } = req.params;
+  const allowed = ['name', 'description', 'adminPhone', 'menuItems', 'services',
+                   'payment', 'leadCapture', 'faq', 'customMessages', 'hours', 'settings', 'businessMode'];
+  const update = {};
+  for (const key of allowed) {
+    if (req.body[key] !== undefined) update[key] = req.body[key];
+  }
+  if (!Object.keys(update).length) return res.status(400).json({ error: 'No valid fields to update' });
+
+  const biz = await BusinessConfig.findOneAndUpdate(
+    { tenantId }, { $set: update }, { new: true, runValidators: true },
+  ).lean();
+  if (!biz) return res.status(404).json({ error: 'Not found' });
+  res.json({ settings: biz });
+}
+
+
   const { tenantId } = req.params;
   const since30 = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
 

@@ -13,6 +13,7 @@
 import { startFlow, cancelFlow, completeFlow } from './flowEngine.js';
 import { updateSession }   from '../sessions/sessionService.js';
 import { generateGreeting } from '../ai/providers/aiRouter.js';
+import { dispatchText }    from '../whatsapp/dispatcher.js';
 import logger from '../../config/logger.js';
 
 // ── Action handlers registry ──────────────────────────────────────────────────
@@ -81,13 +82,28 @@ export async function route({ action, intent, session, message, business, tenant
 
     case 'SUPPORT': {
       const adminPhone = business?.adminPhone || tenant?.adminPhone || null;
-      const body = adminPhone
-        ? `🆘 *Support Request*\n\nI've flagged this to our team.\n\n📞 You can also reach us directly at *${adminPhone}*`
-        : `🆘 *Support Request*\n\nI've flagged this to our team. Someone will contact you shortly.`;
-      // Escalate to human mode
-      await updateSession(session.customerPhone, session.tenantId, {
-        humanMode: true, currentFlow: null, step: null,
+      const customerPhone = session?.customerPhone || 'unknown';
+
+      // ── Set human mode & suppress bot ────────────────────────────────────
+      await updateSession(customerPhone, session.tenantId, {
+        humanMode: true, humanModeNotified: true, currentFlow: null, step: null,
       });
+
+      // ── Notify admin on WhatsApp (only if not already notified this session) ──
+      if (adminPhone && tenant && !session.humanModeNotified) {
+        const escalationAlert =
+          `🚨 *Support escalation*\n\n` +
+          `Customer *${customerPhone}* needs help.\n` +
+          `Message: "${message || '(no message)'}"\n\n` +
+          `Bot is now *silent* for this customer.\n\n` +
+          `Reply directly to the customer on WhatsApp, then send:\n` +
+          `✅ \`RESUME BOT ${customerPhone}\``;
+        dispatchText(adminPhone, escalationAlert, tenant).catch(() => {});
+      }
+
+      const body = adminPhone
+        ? `🆘 *Support Request*\n\nI've passed this to our team. Someone will contact you shortly.`
+        : `🆘 *Support Request*\n\nI've flagged this to our team. Someone will contact you shortly.`;
       return { type: 'text', body };
     }
 

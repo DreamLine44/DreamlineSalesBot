@@ -36,7 +36,7 @@ import { getSession, createSession, updateSession } from '../core/sessions/sessi
 import { detectIntent, extractCustomerName }         from '../core/intents/intentEngine.js';
 import { advance }                                   from '../core/conversations/flowEngine.js';
 import { route }                                     from '../core/conversations/moduleRouter.js';
-import { dispatchMessage }                           from '../core/whatsapp/dispatcher.js';
+import { dispatchMessage, dispatchText }             from '../core/whatsapp/dispatcher.js';
 import { getModeConfig }                             from '../config/modes.js';
 import { getCustomerContext }                        from '../core/memory/customerMemory.js';
 import Tenant           from '../models/Tenant.js';
@@ -116,6 +116,21 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
   // ── 5. Human mode ─────────────────────────────────────────────────────────
   if (session.humanMode) {
     logger.info('[Webhook] Human mode — bot silent', { from });
+
+    // Send admin a follow-up alert if customer messages again and admin hasn't been re-notified
+    // (humanModeNotified is set to true on first escalation; reset when RESUME BOT is sent)
+    if (!session.humanModeNotified && business?.adminPhone) {
+      const adminPhone = business.adminPhone;
+      const followUp =
+        `🚨 *Support escalation*\n\n` +
+        `Customer *${from}* needs help.\n` +
+        `Message: "${messageText || '(media)'}"\n\n` +
+        `Bot is now *silent* for this customer.\n\n` +
+        `Reply directly to the customer on WhatsApp, then send:\n` +
+        `✅ \`RESUME BOT ${from}\``;
+      dispatchText(adminPhone, followUp, tenantDoc).catch(() => {});
+      updateSession(from, tenantId, { humanModeNotified: true }).catch(() => {});
+    }
     return;
   }
 

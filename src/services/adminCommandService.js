@@ -78,7 +78,7 @@ export async function handleAdminTextCommand(text, tenantId, adminPhone, tenantD
 
   // RESUME BOT <phone>
   const resumeMatch = upper.match(/^RESUME BOT\s+(\d+)$/);
-  if (resumeMatch) return resumeBot(resumeMatch[1], tenantId);
+  if (resumeMatch) return resumeBot(resumeMatch[1], tenantId, tenantDoc);
 
   return null;
 }
@@ -98,7 +98,12 @@ async function confirmPayment(shortId, tenantId, adminPhone, tenantDoc, business
   } });
   await dispatchText(order.customerPhone, `✅ *Payment confirmed!*\n\nYour order *${order.item}* is now being processed. Thank you! 🙏`, tenantDoc);
   logger.info('[AdminCmd] Payment confirmed', { shortId, adminPhone });
-  return `✅ *Payment confirmed*\n\nOrder #${shortId} — ${order.item}\nCustomer ${order.customerPhone} notified.`;
+  return (
+    `✅ *Payment confirmed*\n\n` +
+    `Order #${shortId} — ${order.item} × ${order.quantity || 1}\n` +
+    `Amount: D${order.totalPrice || '—'}\n` +
+    `Customer ${order.customerPhone} notified.`
+  );
 }
 
 // ── Reject payment ────────────────────────────────────────────────────────────
@@ -117,7 +122,11 @@ async function rejectPayment(shortId, tenantId, adminPhone, tenantDoc, business)
   await dispatchText(order.customerPhone,
     `❌ *Payment could not be verified.*\n\nPlease check the amount and Wave number, then resend your screenshot, or type *Order* to start again.`, tenantDoc);
   logger.info('[AdminCmd] Payment rejected', { shortId, adminPhone });
-  return `❌ *Payment rejected*\n\nOrder #${shortId} — ${order.item}\nCustomer ${order.customerPhone} notified.`;
+  return (
+    `❌ *Payment rejected*\n\n` +
+    `Order #${shortId} — ${order.item}\n` +
+    `Customer ${order.customerPhone} notified to resend.`
+  );
 }
 
 // ── Confirm booking ───────────────────────────────────────────────────────────
@@ -133,7 +142,11 @@ async function confirmBooking(shortId, tenantId, adminPhone, tenantDoc) {
   await dispatchText(booking.customerPhone,
     `✅ *Booking Confirmed!*\n\nYour booking${serviceStr} for *${when}* is confirmed.\n\nWe look forward to seeing you! 😊`, tenantDoc);
   logger.info('[AdminCmd] Booking confirmed', { shortId, adminPhone });
-  return `✅ *Booking confirmed*\n\nBooking #${shortId} — ${when}${serviceStr}\nCustomer ${booking.customerPhone} notified.`;
+  return (
+    `✅ *Booking confirmed*\n\n` +
+    `Booking #${shortId} — ${when}${serviceStr}\n` +
+    `Customer ${booking.customerPhone} notified.`
+  );
 }
 
 // ── Decline booking ───────────────────────────────────────────────────────────
@@ -154,9 +167,19 @@ async function declineBooking(shortId, reason, tenantId, adminPhone, tenantDoc) 
 }
 
 // ── Resume bot ────────────────────────────────────────────────────────────────
-async function resumeBot(customerPhone, tenantId) {
+async function resumeBot(customerPhone, tenantId, tenantDoc) {
   await updateSession(customerPhone, tenantId, { humanMode: false, humanModeNotified: false });
-  return `✅ Bot resumed for *${customerPhone}*. Automation is active again.`;
+
+  // Notify the customer that the bot is back
+  if (tenantDoc) {
+    dispatchText(
+      customerPhone,
+      `✅ Our team has finished assisting you. Our automated assistant is back and ready to help! 😊\n\nType *menu* or *hi* to continue.`,
+      tenantDoc,
+    ).catch(() => {});
+  }
+
+  return `✅ *Bot resumed for ${customerPhone}*. Automation is active again.`;
 }
 
 // ── Build admin booking alert (includes shortId) ──────────────────────────────
@@ -169,9 +192,8 @@ export function buildAdminBookingAlert({ customerPhone, date, time, service, bus
 
   return (
     `🔔 *New Booking — ${bizName}*\n\n` +
-    `👤 Customer: ${customerPhone}\n` +
-    `📅 Date: *${date}*${timeStr}${serviceStr}${idStr}\n\n` +
-    `Status: *Pending* — please confirm.\n\n` +
+    `👤 ${customerPhone}\n` +
+    `📅 ${date}${timeStr}${serviceStr}${idStr}\n\n` +
     `Reply:\n` +
     `✅ \`CONFIRM BOOK ${shortId || '?'}\`\n` +
     `❌ \`DECLINE BOOK ${shortId || '?'} <reason>\``

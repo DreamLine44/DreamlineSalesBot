@@ -6,6 +6,7 @@ import {
   getDashboardOverview, getOrders, updateOrderStatus,
   getBookings, updateBookingStatus, getAnalytics,
   getConversations, setHumanMode, getCustomers,
+  getBusinessSettings, updateBusinessSettings,
 } from '../controllers/dashboardController.js';
 
 const r = Router();
@@ -32,4 +33,6 @@ r.get('/:tenantId/analytics',                  enforceTenantScope, getAnalytics)
 r.get('/:tenantId/conversations',              enforceTenantScope, getConversations);
 r.patch('/:tenantId/conversations/:phone/human', enforceTenantScope, setHumanMode);
 r.get('/:tenantId/customers',                  enforceTenantScope, getCustomers);
+r.get('/:tenantId/settings',                   enforceTenantScope, getBusinessSettings);
+r.patch('/:tenantId/settings',                 enforceTenantScope, updateBusinessSettings);
 export default r;
