@@ -39,59 +39,32 @@ export async function route({ action, intent, session, message, business, tenant
   switch (upper) {
 
     case 'GREET': {
-      // Preserve customerName — do NOT wipe on greet
+      // Fix: preserve customerName across greet — don't wipe it
       const existingName = session?.customerName || null;
       const lastOrder    = session?.data?.lastItem || null;
 
-      // ── FIRST_MESSAGE lead capture ──────────────────────────────────────────
-      // Only fires on first-ever message (messageCount 0 or 1 after increment)
-      if ((session.messageCount || 0) <= 1 && business?.leadCapture?.triggerOn === 'FIRST_MESSAGE') {
-        try {
-          const { shouldCaptureLead, startLeadCapture } = await import('../../services/leadCaptureService.js');
-          const freshSession = await import('../sessions/sessionService.js')
-            .then(m => m.getSession(session.customerPhone, session.tenantId)) || session;
-          if (await shouldCaptureLead(business, freshSession, 'FIRST_MESSAGE')) {
-            return startLeadCapture(freshSession, business);
-          }
-        } catch (err) {
-          logger.debug('[Router] FIRST_MESSAGE lead capture failed (non-fatal)', { err: err.message });
-        }
-      }
-
-      // ── Personalised greeting using customer context ────────────────────────
       let greetMsg = null;
-      try {
-        const { getCustomerContext } = await import('../memory/customerMemory.js');
-        const ctx = await getCustomerContext(session.customerPhone, session.tenantId);
-        const name = existingName || ctx.name;
-        if (name || ctx.topItem) {
-          const g = await generateGreeting({
-            business,
-            customerName: name,
-            lastOrder: ctx.topItem || lastOrder,
-          });
+      if (existingName) {
+        try {
+          const g = await generateGreeting({ business, customerName: existingName, lastOrder });
           greetMsg = g;
-          // Persist discovered name to session if not already stored
-          if (ctx.name && !existingName) {
-            updateSession(session.customerPhone, session.tenantId, { customerName: ctx.name }).catch(() => {});
-          }
-        }
-      } catch { /* non-fatal */ }
+        } catch { /* non-fatal */ }
+      }
 
       const { getModeConfig } = await import('../../config/modes.js');
       const cfg = getModeConfig(business);
 
-      // Reset flow state but preserve customerName
+      // Reset session but preserve customerName
       await updateSession(session.customerPhone, session.tenantId, {
         currentFlow:  null, step: null, data: {},
         postFlowAck:  null, menuViewed: false, upsellSent: false,
-        customerName: existingName,
+        customerName: existingName,  // preserve — do NOT wipe
       });
 
       if (greetMsg) {
         return { type: 'buttons', body: greetMsg, buttons: cfg.ui?.welcomeButtons || [] };
       }
-      return { type: 'buttons', body: cfg.messages?.welcome || '👋 Welcome! How can I help?', buttons: cfg.ui?.welcomeButtons || [] };
+      return { type: 'buttons', body: cfg.labels?.welcome || '👋 Welcome! How can I help?', buttons: cfg.ui?.welcomeButtons || [] };
     }
 
     case 'SHOW_MENU': {
@@ -171,97 +144,62 @@ export async function route({ action, intent, session, message, business, tenant
       return { type: 'text', body: '✅ Thank you! We\'ll be in touch shortly.' };
     }
 
+    // FIX #1: CONTINUE_FLOW — received when customer sends a number/short text with no active flow.
+    // Just show the menu silently (no "unknown action" warning).
+    case 'CONTINUE_FLOW': {
+      const { getModeConfig: getMC2 } = await import('../../config/modes.js');
+      const cfg3 = getMC2(business);
+      return {
+        type:    'buttons',
+        body:    cfg3.labels?.welcome || cfg3.messages?.welcome || '👋 What would you like to do?',
+        buttons: cfg3.ui?.welcomeButtons || [],
+      };
+    }
+
+    // FIX #2: PAYMENT — customer tapped a payment button or typed "pay" outside an active flow.
     case 'PAYMENT': {
-      // Customer asking about payment / how to pay
       const payment = business?.payment;
       if (!payment?.enabled) {
-        return {
-          type: 'buttons',
-          body: '💳 Payment is handled at delivery or collection. Our team will contact you with details.',
-          buttons: [{ id: 'SHOW_MENU', title: '🏠 Main Menu' }],
-        };
+        return { type: 'text', body: `💳 Payment is handled at checkout when you place an order. Type *Order* to get started!` };
       }
-      const waveNo   = payment.wavePhone || payment.phone || 'N/A';
-      const currency = payment.currency  || 'D';
+      const waveNo  = payment.wavePhone || payment.phone || '—';
+      const currency = payment.currency || 'D';
       return {
-        type: 'buttons',
-        body: `💳 *Payment Details*\n\nSend payment via *Wave* to: *${waveNo}*\n\nAfter paying, send your *screenshot* here. 📸`,
-        buttons: [
-          { id: 'ORDER',    title: '🛍 Place Order'  },
-          { id: 'SHOW_MENU', title: '🏠 Main Menu'  },
-        ],
+        type:    'buttons',
+        body:    `💳 *Payment Info*\n\nSend payment via *Wave* to: *${waveNo}*\n\nOnce you've paid, send us your *screenshot* and we'll confirm your order.`,
+        buttons: [{ id: 'ORDER', title: '🛍 Place an Order' }, { id: 'SHOW_MENU', title: '🏠 Main Menu' }],
       };
     }
 
+    // FIX #3: SWITCH_YES / SWITCH_NO — customer tapping a flow-switch confirmation button.
+    // These appear in active-flow contexts. If we reach the router it means there's no active flow
+    // — treat SWITCH_YES as starting the ORDER flow, SWITCH_NO as returning to menu.
     case 'SWITCH_YES': {
-      // Customer confirmed switching flow mid-session
-      const { getModeConfig: getSwCfg } = await import('../../config/modes.js');
-      const swCfg = getSwCfg(business);
-      await updateSession(session.customerPhone, session.tenantId, {
-        currentFlow: null, step: null, data: {}, postFlowAck: null,
-      });
-      return {
-        type:    'buttons',
-        body:    swCfg.messages?.welcome || '👋 What would you like to do?',
-        buttons: swCfg.ui?.welcomeButtons || [],
-      };
+      return startFlow({ flowName: 'ORDER', session, business, tenant });
     }
-
     case 'SWITCH_NO': {
-      // Customer wants to stay in current flow — re-send last bot message or show menu
-      const lastMsg = session?.lastBotMessage;
-      if (lastMsg) {
-        return { type: 'text', body: lastMsg };
-      }
-      const { getModeConfig: getSnCfg } = await import('../../config/modes.js');
-      const snCfg = getSnCfg(business);
-      return {
-        type:    'buttons',
-        body:    snCfg.messages?.welcome || '👋 What would you like to do?',
-        buttons: snCfg.ui?.welcomeButtons || [],
-      };
+      const { getModeConfig: getMC3 } = await import('../../config/modes.js');
+      const cfg4 = getMC3(business);
+      await updateSession(session.customerPhone, session.tenantId, { currentFlow: null, step: null });
+      return { type: 'buttons', body: cfg4.messages?.welcome || '👋 What would you like to do?', buttons: cfg4.ui?.welcomeButtons || [] };
     }
 
+    // FIX #4: REJECTION_* buttons — sent after payment rejection. By the time they reach the
+    // router it means the session flow was cleared. Route to the appropriate recovery action.
     case 'REJECTION_RESEND': {
-      // Customer wants to resend payment proof after rejection
-      await updateSession(session.customerPhone, session.tenantId, {
-        currentFlow: 'ORDER', step: 'PAYMENT_PROOF',
-      });
-      return { type: 'text', body: '📸 Please send your new payment screenshot now.' };
+      return startFlow({ flowName: 'ORDER', session, business, tenant });
     }
-
     case 'REJECTION_SUPPORT': {
-      // Customer wants human help after payment rejection
-      const adminPhone = business?.adminPhone || tenant?.adminPhone || null;
-      await updateSession(session.customerPhone, session.tenantId, {
-        humanMode: true, humanModeNotified: true, currentFlow: null, step: null,
-      });
-      if (adminPhone && tenant && !session.humanModeNotified) {
-        dispatchText(adminPhone,
-          `🚨 *Support escalation*\n\nCustomer *${session.customerPhone}* needs help with a rejected payment.\n\nBot is now silent.\n\`RESUME BOT ${session.customerPhone}\``,
-          tenant).catch(() => {});
-      }
-      return {
-        type: 'text',
-        body: '🆘 I\'ve notified our team. Someone will contact you shortly to help resolve your payment.',
-      };
+      // Re-use the SUPPORT case logic
+      return route({ action: 'SUPPORT', intent, session, message, business, tenant, isInteractive, suggestion });
     }
-
     case 'REJECTION_CANCEL': {
-      // Customer cancels after payment rejection
-      await updateSession(session.customerPhone, session.tenantId, {
-        currentFlow: null, step: null, data: {},
-      });
-      const { getModeConfig: getRcCfg } = await import('../../config/modes.js');
-      const rcCfg = getRcCfg(business);
-      return {
-        type:    'buttons',
-        body:    '✅ No problem. Feel free to order again whenever you\'re ready.',
-        buttons: rcCfg.ui?.welcomeButtons || [{ id: 'SHOW_MENU', title: '🏠 Main Menu' }],
-      };
+      const { getModeConfig: getMC4 } = await import('../../config/modes.js');
+      const cfg5 = getMC4(business);
+      await updateSession(session.customerPhone, session.tenantId, { currentFlow: null, step: null, data: {} });
+      return { type: 'buttons', body: cfg5.messages?.welcome || '👋 What else can we help with?', buttons: cfg5.ui?.welcomeButtons || [] };
     }
-
-  } // ← closes switch
+  }
 
   // ── Module-registered actions ─────────────────────────────────────────────
   const handler = ACTION_REGISTRY.get(upper);
