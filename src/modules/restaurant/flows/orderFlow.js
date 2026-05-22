@@ -20,6 +20,8 @@ import { buildMenuUI, buildOrderSummary, buildOrderSuccess } from '../handlers/u
 import { parseQuantity }    from '../../../utils/parseQuantity.js';
 import { saveOrder }        from '../../../services/orderService.js';
 import { recordRevenue }    from '../../../core/analytics/analyticsService.js';
+import { dispatchText }     from '../../../core/whatsapp/dispatcher.js';
+import { recordOrderItem }  from '../../../core/memory/customerMemory.js';
 import logger               from '../../../config/logger.js';
 
 // ── Normalise ─────────────────────────────────────────────────────────────────
@@ -239,8 +241,47 @@ export async function handleOrderFlow({ session, message, business, tenant, isIn
         };
       }
 
-      // No payment — complete flow
-      await completeFlow(session, 'ORDER');
+      // No payment — complete flow, alert admin, track analytics
+      let savedOrder = null;
+      try {
+        savedOrder = await saveOrder({
+          item:          data.item?.name || data.item,
+          quantity:      data.quantity || 1,
+          totalPrice:    data.totalPrice || 0,
+          customerPhone: session.customerPhone,
+          tenantId:      session.tenantId,
+          businessId:    business._id,
+          status:        'confirmed',
+        });
+        // Record in customer memory for personalised greetings / repeat suggestions
+        recordOrderItem(session.customerPhone, session.tenantId, data.item?.name || data.item).catch(() => {});
+        const { trackOrderAnalytics } = await import('../../../core/analytics/analyticsService.js');
+        trackOrderAnalytics(
+          data.item?.name || data.item,
+          session.phoneNumberId,
+          data.quantity || 1,
+          data.totalPrice || 0,
+          session.tenantId,
+        ).catch(() => {});
+      } catch (err) {
+        logger.error('[OrderFlow] saveOrder failed on no-payment path', { err: err.message });
+      }
+
+      // Notify admin about new confirmed order
+      if (business.adminPhone && tenant) {
+        const shortRef = savedOrder?.shortId || '—';
+        dispatchText(business.adminPhone,
+          `🛍 *New Order — ${business.name || 'Order'}*\n\n` +
+          `👤 ${session.customerPhone}\n` +
+          `📦 ${data.item?.name || data.item} × ${data.quantity || 1}\n` +
+          `💰 D${data.totalPrice || '0'}\n` +
+          `🔖 Ref: ${shortRef}\n\n` +
+          `Status: ✅ Confirmed (no payment required)`,
+          tenant).catch(() => {});
+      }
+
+      const _lcResp = await completeFlow(session, 'ORDER', business, tenant);
+      if (_lcResp) return _lcResp;
       return buildOrderSuccess({ item: data.item, qty: data.quantity, business });
     }
 

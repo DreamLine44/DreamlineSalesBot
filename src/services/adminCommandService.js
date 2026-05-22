@@ -19,7 +19,8 @@ import Booking        from '../models/Booking.js';
 import Tenant         from '../models/Tenant.js';
 import BusinessConfig from '../models/BusinessConfig.js';
 import { updateSession } from '../core/sessions/sessionService.js';
-import { dispatchText }  from '../core/whatsapp/dispatcher.js';
+import { dispatchText, dispatchMessage } from '../core/whatsapp/dispatcher.js';
+import { recordOrderItem }              from '../core/memory/customerMemory.js';
 import logger            from '../config/logger.js';
 
 // ── Admin phone check ─────────────────────────────────────────────────────────
@@ -97,6 +98,7 @@ async function confirmPayment(shortId, tenantId, adminPhone, tenantDoc, business
     paymentReviewedAt: new Date(),        // [FIX] schema field (was confirmedAt — not in schema)
   } });
   await dispatchText(order.customerPhone, `✅ *Payment confirmed!*\n\nYour order *${order.item}* is now being processed. Thank you! 🙏`, tenantDoc);
+  recordOrderItem(order.customerPhone, tenantId, order.item).catch(() => {});
   logger.info('[AdminCmd] Payment confirmed', { shortId, adminPhone });
   return (
     `✅ *Payment confirmed*\n\n` +
@@ -119,8 +121,15 @@ async function rejectPayment(shortId, tenantId, adminPhone, tenantDoc, business)
     paymentReviewedBy: adminPhone,        // [FIX] schema field (was rejectedBy — not in schema)
     paymentReviewedAt: new Date(),        // [FIX] schema field (was rejectedAt — not in schema)
   } });
-  await dispatchText(order.customerPhone,
-    `❌ *Payment could not be verified.*\n\nPlease check the amount and Wave number, then resend your screenshot, or type *Order* to start again.`, tenantDoc);
+  await dispatchMessage(order.customerPhone, {
+    type: 'buttons',
+    body: `❌ *Payment screenshot rejected.*\n\nWe couldn't verify your payment. Please check the amount and Wave number, then choose an option:`,
+    buttons: [
+      { id: 'REJECTION_RESEND',  title: '📸 Resend Screenshot' },
+      { id: 'REJECTION_SUPPORT', title: '🆘 Speak to a Person'  },
+      { id: 'REJECTION_CANCEL',  title: '❌ Cancel Order'       },
+    ],
+  }, tenantDoc);
   logger.info('[AdminCmd] Payment rejected', { shortId, adminPhone });
   return (
     `❌ *Payment rejected*\n\n` +

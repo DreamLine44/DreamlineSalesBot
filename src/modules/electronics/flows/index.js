@@ -8,6 +8,9 @@ import { getAIReply }     from '../../../core/ai/providers/aiRouter.js';
 import { findBestMatch }  from '../../../utils/matchEngine.js';
 import { saveOrder }      from '../../../services/orderService.js';
 import { parseQuantity }  from '../../../utils/parseQuantity.js';
+import { trackOrderAnalytics } from '../../../core/analytics/analyticsService.js';
+import { recordOrderItem }     from '../../../core/memory/customerMemory.js';
+import { dispatchText }        from '../../../core/whatsapp/dispatcher.js';
 import logger             from '../../../config/logger.js';
 
 export const ELECTRONICS_CONFIG = {
@@ -106,12 +109,45 @@ export async function handleElectronicsOrder({ session, message, business, tenan
       if (!/^(yes|y|confirm|ok)$/i.test(clean)) {
         return { type: 'text', body: 'Tap *Confirm* to place your order.' };
       }
+
+      const payment = business?.payment;
+      if (payment?.enabled && data.totalPrice) {
+        const waveNo = payment.wavePhone || payment.phone || 'N/A';
+        await updateSession(session.customerPhone, session.tenantId, {
+          step: 'PAYMENT_PROOF', currentFlow: 'ORDER',
+        });
+        return {
+          type: 'text',
+          body: `💳 *Payment*\n\nTotal: *D${data.totalPrice}*\nSend via *Wave* to: *${waveNo}*\n\nAfter paying, send your *screenshot* here. 📸`,
+        };
+      }
+
+      const itemName = data.item?.name || data.item;
+      let savedOrder = null;
       try {
-        await saveOrder({ item: data.item?.name, quantity: data.quantity, totalPrice: data.totalPrice,
-          customerPhone: session.customerPhone, tenantId: session.tenantId, businessId: business._id });
+        savedOrder = await saveOrder({
+          item: itemName, quantity: data.quantity, totalPrice: data.totalPrice || 0,
+          customerPhone: session.customerPhone, tenantId: session.tenantId, businessId: business._id,
+          status: 'confirmed',
+        });
+        recordOrderItem(session.customerPhone, session.tenantId, itemName).catch(() => {});
+        trackOrderAnalytics(itemName, session.phoneNumberId, data.quantity || 1, data.totalPrice || 0, session.tenantId).catch(() => {});
       } catch (err) { logger.error('[ElectronicsModule] saveOrder failed', { err: err.message }); }
-      await completeFlow(session, 'ORDER');
-      return { type: 'text', body: `✅ *Order received!*\n\n📦 *${data.quantity}× ${data.item?.name}*\n\nWe'll verify stock and reach out with delivery details. Thank you! 📱` };
+
+      const _lcResp = await completeFlow(session, 'ORDER', business, tenant);
+      if (_lcResp) return _lcResp;
+
+      if (business.adminPhone && tenant) {
+        dispatchText(business.adminPhone,
+          `🛍 *New Order — ${business.name || 'Electronics'}*\n\n` +
+          `👤 ${session.customerPhone}\n` +
+          `📦 ${data.quantity}× ${itemName}\n` +
+          `💰 D${data.totalPrice || 0}\n` +
+          `🔖 #${savedOrder?.shortId || '—'}`,
+          tenant).catch(() => {});
+      }
+
+      return { type: 'text', body: `✅ *Order received!*\n\n📦 *${data.quantity}× ${itemName}*\n\nWe'll verify stock and reach out with delivery details. Thank you! 📱` };
     }
 
     default: return buildProductCatalog(business);

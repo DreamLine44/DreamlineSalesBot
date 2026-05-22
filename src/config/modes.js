@@ -11,6 +11,94 @@ import { FASHION_CONFIG }    from '../modules/fashion/flows/index.js';
 import { COSMETICS_CONFIG }  from '../modules/cosmetics/flows/index.js';
 import { ELECTRONICS_CONFIG } from '../modules/electronics/flows/index.js';
 
+// ── Generic retail/shop config (used by RETAIL, SUPERMARKET) ─────────────────
+const RETAIL_CONFIG = {
+  businessMode: 'RETAIL',
+  flows: ['ORDER'],
+  steps: { ORDER: ['SELECT_ITEM', 'QUANTITY', 'CONFIRM'] },
+  messages: {
+    welcome:  '👋 Welcome! How can we help you today?',
+    fallback: 'How can I help you?',
+  },
+  ui: {
+    welcomeButtons: [
+      { id: 'ORDER',    title: '🛍 Shop Now'   },
+      { id: 'SHOW_MENU', title: '📋 View Items' },
+      { id: 'ENQUIRY',  title: '❓ Ask a Question' },
+    ],
+    fallbackButtons: [
+      { id: 'ORDER',    title: '🛍 Shop Now'   },
+      { id: 'SHOW_MENU', title: '📋 View Items' },
+    ],
+  },
+};
+
+// ── Pharmacy config ────────────────────────────────────────────────────────────
+const PHARMACY_CONFIG = {
+  businessMode: 'PHARMACY',
+  flows: ['ORDER'],
+  steps: { ORDER: ['SELECT_ITEM', 'QUANTITY', 'CONFIRM'] },
+  messages: {
+    welcome:  '💊 Welcome to our pharmacy! How can we assist you?',
+    fallback: 'How can I help you today?',
+  },
+  ui: {
+    welcomeButtons: [
+      { id: 'ORDER',    title: '💊 Order Medication' },
+      { id: 'SHOW_MENU', title: '📋 View Products'   },
+      { id: 'ENQUIRY',  title: '❓ Ask a Pharmacist' },
+    ],
+    fallbackButtons: [
+      { id: 'ORDER',    title: '💊 Order Medication' },
+      { id: 'SHOW_MENU', title: '📋 View Products'   },
+    ],
+  },
+};
+
+// ── Supermarket config ────────────────────────────────────────────────────────
+const SUPERMARKET_CONFIG = {
+  businessMode: 'SUPERMARKET',
+  flows: ['ORDER'],
+  steps: { ORDER: ['SELECT_ITEM', 'QUANTITY', 'CONFIRM'] },
+  messages: {
+    welcome:  '🛒 Welcome! What can we get for you today?',
+    fallback: 'How can I help you?',
+  },
+  ui: {
+    welcomeButtons: [
+      { id: 'ORDER',    title: '🛒 Place Order'   },
+      { id: 'SHOW_MENU', title: '📋 View Products' },
+      { id: 'ENQUIRY',  title: '❓ Ask a Question' },
+    ],
+    fallbackButtons: [
+      { id: 'ORDER',    title: '🛒 Place Order'   },
+      { id: 'SHOW_MENU', title: '📋 View Products' },
+    ],
+  },
+};
+
+// ── Delivery config ───────────────────────────────────────────────────────────
+const DELIVERY_CONFIG = {
+  businessMode: 'DELIVERY',
+  flows: ['ORDER'],
+  steps: { ORDER: ['SELECT_ITEM', 'QUANTITY', 'CONFIRM'] },
+  messages: {
+    welcome:  '🚚 Welcome! What would you like delivered today?',
+    fallback: 'How can I help you?',
+  },
+  ui: {
+    welcomeButtons: [
+      { id: 'ORDER',    title: '🛍 Order Now'      },
+      { id: 'SHOW_MENU', title: '📋 View Menu'      },
+      { id: 'ENQUIRY',  title: '❓ Ask a Question'  },
+    ],
+    fallbackButtons: [
+      { id: 'ORDER',    title: '🛍 Order Now'   },
+      { id: 'SHOW_MENU', title: '📋 View Menu'  },
+    ],
+  },
+};
+
 const MODE_MAP = {
   RESTAURANT:  RESTAURANT_CONFIG,
   BAKERY:      BAKERY_CONFIG,
@@ -19,18 +107,18 @@ const MODE_MAP = {
   FASHION:     FASHION_CONFIG,
   COSMETICS:   COSMETICS_CONFIG,
   ELECTRONICS: ELECTRONICS_CONFIG,
+  RETAIL:      RETAIL_CONFIG,
+  SUPERMARKET: SUPERMARKET_CONFIG,
+  PHARMACY:    PHARMACY_CONFIG,
+  DELIVERY:    DELIVERY_CONFIG,
   // Aliases
   FOOD:        RESTAURANT_CONFIG,
   CAFE:        RESTAURANT_CONFIG,
-  RETAIL:      RESTAURANT_CONFIG,
-  SUPERMARKET: RESTAURANT_CONFIG,
-  PHARMACY:    RESTAURANT_CONFIG,
-  DELIVERY:    RESTAURANT_CONFIG,
 };
 
 export function getModeConfig(business) {
   const mode = (business?.businessMode || 'RETAIL').toUpperCase();
-  return MODE_MAP[mode] || RESTAURANT_CONFIG;
+  return MODE_MAP[mode] || RETAIL_CONFIG;
 }
 
 export function getLabel(business, key, ...args) {
@@ -45,5 +133,6 @@ export function getLabel(business, key, ...args) {
 }
 
 export function getSupportedModes() {
-  return Object.keys(MODE_MAP).filter(k => !['FOOD','CAFE','RETAIL','SUPERMARKET','PHARMACY','DELIVERY'].includes(k));
+  return Object.keys(MODE_MAP).filter(k => !['FOOD', 'CAFE'].includes(k));
 }
+

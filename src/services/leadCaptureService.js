@@ -127,6 +127,19 @@ async function finaliseLead({ session, lead, business, tenantDoc }) {
     logger.error('[LeadCapture] UserProfile update failed', { err: err.message });
   }
 
+  // Notify admin if configured
+  const adminPhone = business?.adminPhone;
+  if (adminPhone && business?.leadCapture?.notifyAdmin && tenantDoc) {
+    const { dispatchText } = await import('../core/whatsapp/dispatcher.js');
+    dispatchText(adminPhone,
+      `📋 *New Lead Captured*\n\n` +
+      `👤 Name: ${lead.name  || 'not provided'}\n` +
+      `📧 Email: ${lead.email || 'not provided'}\n` +
+      `📱 Phone: ${session.customerPhone}\n` +
+      `🏢 Business: ${bizName}`,
+      tenantDoc).catch(() => {});
+  }
+
   // Reset flow
   await updateSession(session.customerPhone, session.tenantId, {
     currentFlow: null, step: null, data: { leadCaptured: true },

@@ -8,6 +8,9 @@ import { handleBookingFlow } from '../../../core/conversations/bookingFlow.js';
 import { findBestMatch }  from '../../../utils/matchEngine.js';
 import { saveOrder }      from '../../../services/orderService.js';
 import { saveBooking }    from '../../../services/bookingService.js';
+import { trackOrderAnalytics } from '../../../core/analytics/analyticsService.js';
+import { recordOrderItem }     from '../../../core/memory/customerMemory.js';
+import { dispatchText }        from '../../../core/whatsapp/dispatcher.js';
 import logger             from '../../../config/logger.js';
 
 export const BAKERY_CONFIG = {
@@ -94,19 +97,45 @@ export async function handleCakeCustomization({ session, message, business, tena
       if (!/^(yes|y|confirm|ok|sure)$/i.test(raw.toLowerCase())) {
         return { type: 'text', body: 'Tap *Confirm* to place your cake order, or *Cancel* to start over.' };
       }
-      try {
-        await saveOrder({
-          item:         `Custom Cake — ${data.flavor} (${data.size})`,
-          quantity:     1,
-          totalPrice:   0,
-          customerPhone: session.customerPhone,
-          tenantId:     session.tenantId,
-          businessId:   business._id,
+
+      // Payment gate
+      const payment = business?.payment;
+      if (payment?.enabled && data.totalPrice) {
+        const waveNo = payment.wavePhone || payment.phone || 'N/A';
+        await updateSession(session.customerPhone, session.tenantId, {
+          step: 'PAYMENT_PROOF', currentFlow: 'ORDER',
         });
+        return {
+          type: 'text',
+          body: `💳 *Payment*\n\nTotal: *D${data.totalPrice}*\nSend via *Wave* to: *${waveNo}*\n\nAfter paying, send your *screenshot* here. 📸`,
+        };
+      }
+
+      const itemName = `Custom Cake — ${data.flavor} (${data.size})`;
+      let savedOrder = null;
+      try {
+        savedOrder = await saveOrder({
+          item: itemName, quantity: 1, totalPrice: data.totalPrice || 0,
+          customerPhone: session.customerPhone, tenantId: session.tenantId, businessId: business._id,
+          status: 'confirmed',
+        });
+        recordOrderItem(session.customerPhone, session.tenantId, itemName).catch(() => {});
+        trackOrderAnalytics(itemName, session.phoneNumberId, 1, data.totalPrice || 0, session.tenantId).catch(() => {});
       } catch (err) {
         logger.error('[BakeryModule] saveCakeOrder failed', { err: err.message });
       }
-      await completeFlow(session, 'ORDER');
+      const _lcResp = await completeFlow(session, 'ORDER', business, tenant);
+      if (_lcResp) return _lcResp;
+
+      if (business.adminPhone && tenant) {
+        dispatchText(business.adminPhone,
+          `🎂 *New Cake Order — ${business.name || 'Bakery'}*\n\n` +
+          `👤 ${session.customerPhone}\n` +
+          `🎂 ${itemName}\n📅 For: ${data.eventDate || 'TBD'}\n` +
+          `🔖 #${savedOrder?.shortId || '—'}`,
+          tenant).catch(() => {});
+      }
+
       return {
         type: 'text',
         body: `✅ *Cake order placed!*\n\n🎂 *${data.flavor} cake (${data.size})*\n📅 For: *${data.eventDate}*\n\nWe'll be in touch to confirm details and pricing. Thank you! 🥐`,

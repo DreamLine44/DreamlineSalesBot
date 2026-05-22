@@ -99,6 +99,31 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
     return;
   }
 
+  // ── 3b. Business hours check ──────────────────────────────────────────────
+  if (business.hours?.enabled && process.env.DISABLE_WORKING_HOURS !== 'true') {
+    const now  = new Date();
+    const tz   = business.hours.timezone || 'UTC';
+    try {
+      const local    = new Date(now.toLocaleString('en-US', { timeZone: tz }));
+      const dayNames = ['sunday','monday','tuesday','wednesday','thursday','friday','saturday'];
+      const dayKey   = dayNames[local.getDay()];
+      const dayConf  = business.hours.days?.get ? business.hours.days.get(dayKey) : business.hours.days?.[dayKey];
+      const closed   = dayConf?.closed === true;
+      const openH    = dayConf?.open  ?? business.hours.open  ?? 8;
+      const closeH   = dayConf?.close ?? business.hours.close ?? 22;
+      const hour     = local.getHours();
+      if (closed || hour < openH || hour >= closeH) {
+        const closedMsg = business.customMessages?.closed ||
+          business.settings?.closedMessage ||
+          "We're currently closed. Please contact us during business hours.";
+        await dispatchMessage(from, { type: 'text', body: closedMsg }, tenantDoc);
+        return;
+      }
+    } catch (err) {
+      logger.warn('[Webhook] Hours check failed (non-fatal)', { err: err.message });
+    }
+  }
+
   // ── 4. Session ────────────────────────────────────────────────────────────
   let session = await getSession(from, tenantId);
   if (!session) {
@@ -112,6 +137,34 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
     messageCount: (session.messageCount || 0) + 1,
     phoneNumberId: phoneNumberId || session.phoneNumberId,
   }).catch(() => {});
+
+  // ── 4b. Loop prevention ───────────────────────────────────────────────────
+  // Detect customer sending the exact same message 3+ times consecutively
+  if (messageText && messageText === session.lastLoopMessage && session.step === session.lastLoopStep) {
+    const loopCount = (session.loopCount || 0) + 1;
+    await updateSession(from, tenantId, { loopCount, lastLoopMessage: messageText, lastLoopStep: session.step });
+    if (loopCount >= 3) {
+      await updateSession(from, tenantId, { loopCount: 0, lastLoopMessage: null, humanMode: true, humanModeNotified: false });
+      const loopMsg = business.customMessages?.loopFallback ||
+        "I'm having trouble understanding. Let me connect you with our team. 🆘";
+      await dispatchMessage(from, { type: 'text', body: loopMsg }, tenantDoc);
+      // Notify admin
+      if (business.adminPhone) {
+        dispatchText(business.adminPhone,
+          `🚨 *Support escalation*
+
+Customer *${from}* is stuck in a loop.
+Message: "${messageText}"
+
+Bot is now silent.
+\`RESUME BOT ${from}\``,
+          tenantDoc).catch(() => {});
+      }
+      return;
+    }
+  } else if (messageText) {
+    updateSession(from, tenantId, { loopCount: 0, lastLoopMessage: messageText, lastLoopStep: session.step || null }).catch(() => {});
+  }
 
   // ── 5. Human mode ─────────────────────────────────────────────────────────
   if (session.humanMode) {
@@ -300,10 +353,21 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
 
   // ── 13. Intent → module router ────────────────────────────────────────────
 
-  // Extract customer name if mentioned
+  // Load customer memory — enriches session with known name + top item for personalisation
+  let customerCtx = null;
+  try { customerCtx = await getCustomerContext(from, tenantId); } catch (_) {}
+  if (customerCtx?.name && !session.customerName) {
+    updateSession(from, tenantId, { customerName: customerCtx.name }).catch(() => {});
+    session = { ...session, customerName: customerCtx.name };
+  }
+  if (customerCtx) session._customerCtx = customerCtx; // transient, used this request only
+
+  // Extract customer name if mentioned in this message
   const extractedName = extractCustomerName(messageText);
   if (extractedName && !session.customerName) {
     updateSession(from, tenantId, { customerName: extractedName }).catch(() => {});
+    const { updateName } = await import('../core/memory/customerMemory.js');
+    updateName(from, tenantId, extractedName).catch(() => {});
     session = { ...session, customerName: extractedName };
   }
 
@@ -312,6 +376,18 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
   });
 
   logger.debug('[Webhook] Intent', { action, intent, confidence, from });
+
+  // CONTINUE_FLOW with no active flow — do nothing (already handled above in step 12)
+  // This can fire for numeric inputs outside of a flow; show menu gently.
+  if (action === 'CONTINUE_FLOW') {
+    const cfg = getModeConfig(business);
+    await dispatchMessage(from, {
+      type:    'buttons',
+      body:    cfg.messages?.welcome || '👋 What would you like to do?',
+      buttons: cfg.ui?.welcomeButtons || [],
+    }, tenantDoc);
+    return;
+  }
 
   // Special case: ENQUIRY starts a two-step question flow
   if (action === 'ENQUIRY') {

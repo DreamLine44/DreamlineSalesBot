@@ -34,11 +34,12 @@ export function validateEnv() {
   }
 
   if (isProduction) {
-    // ENCRYPTION_KEY is mandatory and must be exactly 32 chars in production
+    // ENCRYPTION_KEY is optional — reserved for future at-rest encryption of sensitive fields.
+    // Warn if missing so operators know to set it before enabling encryption features.
     if (!process.env.ENCRYPTION_KEY) {
-      errors.push('Missing required env var: ENCRYPTION_KEY');
+      console.warn('\n[Startup] Warning: ENCRYPTION_KEY not set — at-rest encryption will be unavailable.\n');
     } else if (process.env.ENCRYPTION_KEY.length !== 32) {
-      errors.push('ENCRYPTION_KEY must be exactly 32 characters');
+      console.warn('\n[Startup] Warning: ENCRYPTION_KEY must be exactly 32 characters when set.\n');
     }
 
     // In production, simulation mode must be OFF and Meta creds must be set
