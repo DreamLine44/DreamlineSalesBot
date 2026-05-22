@@ -5,12 +5,12 @@
   "type": "module",
   "main": "src/app.js",
   "scripts": {
-    "start": "cross-env NODE_ENV=production node src/app.js",
-    "dev": "cross-env NODE_ENV=development node --watch src/app.js",
-    "dev:sim": "cross-env NODE_ENV=development SIMULATION_MODE=true node --watch src/app.js",
-    "seed": "node src/scripts/seed.js",
-    "gen-key": "node src/scripts/genKey.js",
-    "health": "node src/scripts/health.js",
+    "start":         "cross-env NODE_ENV=production node src/app.js",
+    "dev":           "cross-env NODE_ENV=development node --watch src/app.js",
+    "dev:sim":       "cross-env NODE_ENV=development SIMULATION_MODE=true node --watch src/app.js",
+    "seed":          "node src/scripts/seed.js",
+    "gen-key":       "node src/scripts/genKey.js",
+    "health":        "node src/scripts/health.js",
     "test:simulate": "node src/scripts/testSimulate.js"
   },
   "dependencies": {
@@ -27,7 +27,7 @@
     "winston": "^3.11.0"
   },
   "devDependencies": {
-    "cross-env": "^10.1.0"
+    "cross-env": "^7.0.3"
   },
   "engines": {
     "node": ">=18.0.0"

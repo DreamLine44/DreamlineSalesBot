@@ -1,7 +1,6 @@
 /**
  * controllers/dashboardController.js — WhatSalesAgent2
- * FIX #12: All async functions wrapped in try/catch.
- * FIX #18: getCustomers now supports pagination (page + limit query params).
+ * All functions wrapped in try/catch. Customers endpoint has pagination.
  */
 import Order          from '../models/Order.js';
 import Booking        from '../models/Booking.js';
@@ -9,6 +8,27 @@ import Session        from '../models/Session.js';
 import UserProfile    from '../models/UserProfile.js';
 import BusinessConfig from '../models/BusinessConfig.js';
 import { getAnalyticsSummary } from '../core/analytics/analyticsService.js';
+
+// ── Overview ──────────────────────────────────────────────────────────────────
+export async function getDashboardOverview(req, res) {
+  try {
+    const { tenantId } = req.params;
+    const since30 = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+    const [orders, bookings, customers, humanModes, analytics, business] = await Promise.all([
+      Order.countDocuments({ tenantId, createdAt: { $gte: since30 } }),
+      Booking.countDocuments({ tenantId, createdAt: { $gte: since30 } }),
+      UserProfile.countDocuments({ tenantId }),
+      Session.countDocuments({ tenantId, humanMode: true }),
+      getAnalyticsSummary(tenantId, 30),
+      BusinessConfig.findOne({ tenantId }).select('name businessMode adminPhone').lean(),
+    ]);
+    res.json({
+      business,
+      last30Days: { orders, bookings, customers, revenue: analytics.revenue },
+      activeHumanSessions: humanModes,
+    });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+}
 
 // ── Orders ────────────────────────────────────────────────────────────────────
 export async function getOrders(req, res) {
@@ -22,9 +42,7 @@ export async function getOrders(req, res) {
       Order.countDocuments(filter),
     ]);
     res.json({ orders, total, page: Number(page), pages: Math.ceil(total / Number(limit)) });
-  } catch (err) {
-    res.status(500).json({ error: 'Internal server error', details: err.message });
-  }
+  } catch (err) { res.status(500).json({ error: err.message }); }
 }
 
 export async function updateOrderStatus(req, res) {
@@ -36,9 +54,7 @@ export async function updateOrderStatus(req, res) {
     );
     if (!order) return res.status(404).json({ error: 'Order not found' });
     res.json({ order });
-  } catch (err) {
-    res.status(500).json({ error: 'Internal server error', details: err.message });
-  }
+  } catch (err) { res.status(500).json({ error: err.message }); }
 }
 
 // ── Bookings ──────────────────────────────────────────────────────────────────
@@ -53,9 +69,7 @@ export async function getBookings(req, res) {
       Booking.countDocuments(filter),
     ]);
     res.json({ bookings, total, page: Number(page), pages: Math.ceil(total / Number(limit)) });
-  } catch (err) {
-    res.status(500).json({ error: 'Internal server error', details: err.message });
-  }
+  } catch (err) { res.status(500).json({ error: err.message }); }
 }
 
 export async function updateBookingStatus(req, res) {
@@ -69,9 +83,7 @@ export async function updateBookingStatus(req, res) {
     );
     if (!booking) return res.status(404).json({ error: 'Booking not found' });
     res.json({ booking });
-  } catch (err) {
-    res.status(500).json({ error: 'Internal server error', details: err.message });
-  }
+  } catch (err) { res.status(500).json({ error: err.message }); }
 }
 
 // ── Analytics ─────────────────────────────────────────────────────────────────
@@ -81,23 +93,23 @@ export async function getAnalytics(req, res) {
     const { days = 30 } = req.query;
     const summary = await getAnalyticsSummary(tenantId, Number(days));
     res.json(summary);
-  } catch (err) {
-    res.status(500).json({ error: 'Internal server error', details: err.message });
-  }
+  } catch (err) { res.status(500).json({ error: err.message }); }
 }
 
 // ── Conversations / Sessions ──────────────────────────────────────────────────
 export async function getConversations(req, res) {
   try {
     const { tenantId } = req.params;
-    const { limit = 30 } = req.query;
-    const sessions = await Session.find({ tenantId })
-      .sort({ lastSeen: -1 }).limit(Number(limit))
-      .select('customerPhone customerName lastSeen messageCount humanMode currentFlow').lean();
-    res.json({ conversations: sessions });
-  } catch (err) {
-    res.status(500).json({ error: 'Internal server error', details: err.message });
-  }
+    const { limit = 30, page = 1 } = req.query;
+    const skip = (Number(page) - 1) * Number(limit);
+    const [sessions, total] = await Promise.all([
+      Session.find({ tenantId })
+        .sort({ lastSeen: -1 }).skip(skip).limit(Number(limit))
+        .select('customerPhone customerName lastSeen messageCount humanMode currentFlow step').lean(),
+      Session.countDocuments({ tenantId }),
+    ]);
+    res.json({ conversations: sessions, total, page: Number(page), pages: Math.ceil(total / Number(limit)) });
+  } catch (err) { res.status(500).json({ error: err.message }); }
 }
 
 export async function setHumanMode(req, res) {
@@ -105,33 +117,35 @@ export async function setHumanMode(req, res) {
     const { tenantId, phone } = req.params;
     const { humanMode } = req.body;
     const { updateSession } = await import('../core/sessions/sessionService.js');
-    const session = await updateSession(phone, tenantId, { humanMode: Boolean(humanMode) });
+    const notified = humanMode ? false : undefined; // reset on takeover, clear on resume
+    const update = { humanMode: Boolean(humanMode) };
+    if (!humanMode) update.humanModeNotified = false; // dashboard resume resets flag too
+    const session = await updateSession(phone, tenantId, update);
     if (!session) return res.status(404).json({ error: 'Session not found' });
     res.json({ ok: true, humanMode: session.humanMode });
-  } catch (err) {
-    res.status(500).json({ error: 'Internal server error', details: err.message });
-  }
+  } catch (err) { res.status(500).json({ error: err.message }); }
 }
 
 // ── Customers ─────────────────────────────────────────────────────────────────
-// FIX #18: Now supports page + limit query params for proper pagination.
 export async function getCustomers(req, res) {
   try {
     const { tenantId } = req.params;
-    const { limit = 50, page = 1 } = req.query;
-    const skip = (Number(page) - 1) * Number(limit);
+    const { limit = 50, page = 1, search } = req.query;
+    const skip   = (Number(page) - 1) * Number(limit);
+    const filter = { tenantId };
+    if (search) {
+      filter.$or = [
+        { phone: { $regex: search, $options: 'i' } },
+        { 'lead.name': { $regex: search, $options: 'i' } },
+        { 'lead.email': { $regex: search, $options: 'i' } },
+      ];
+    }
     const [profiles, total] = await Promise.all([
-      UserProfile.find({ tenantId })
-        .sort({ updatedAt: -1 })
-        .skip(skip)
-        .limit(Number(limit))
-        .lean(),
-      UserProfile.countDocuments({ tenantId }),
+      UserProfile.find(filter).sort({ updatedAt: -1 }).skip(skip).limit(Number(limit)).lean(),
+      UserProfile.countDocuments(filter),
     ]);
     res.json({ customers: profiles, total, page: Number(page), pages: Math.ceil(total / Number(limit)) });
-  } catch (err) {
-    res.status(500).json({ error: 'Internal server error', details: err.message });
-  }
+  } catch (err) { res.status(500).json({ error: err.message }); }
 }
 
 // ── Business settings ─────────────────────────────────────────────────────────
@@ -143,9 +157,7 @@ export async function getBusinessSettings(req, res) {
       .lean();
     if (!biz) return res.status(404).json({ error: 'Not found' });
     res.json({ settings: biz });
-  } catch (err) {
-    res.status(500).json({ error: 'Internal server error', details: err.message });
-  }
+  } catch (err) { res.status(500).json({ error: err.message }); }
 }
 
 export async function updateBusinessSettings(req, res) {
@@ -158,38 +170,10 @@ export async function updateBusinessSettings(req, res) {
       if (req.body[key] !== undefined) update[key] = req.body[key];
     }
     if (!Object.keys(update).length) return res.status(400).json({ error: 'No valid fields to update' });
-
     const biz = await BusinessConfig.findOneAndUpdate(
       { tenantId }, { $set: update }, { new: true, runValidators: true },
     ).lean();
     if (!biz) return res.status(404).json({ error: 'Not found' });
     res.json({ settings: biz });
-  } catch (err) {
-    res.status(500).json({ error: 'Internal server error', details: err.message });
-  }
-}
-
-// ── Overview / Summary ────────────────────────────────────────────────────────
-export async function getOverview(req, res) {
-  try {
-    const { tenantId } = req.params;
-    const since30 = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
-
-    const [orders, bookings, customers, humanModes, analytics, business] = await Promise.all([
-      Order.countDocuments({ tenantId, createdAt: { $gte: since30 } }),
-      Booking.countDocuments({ tenantId, createdAt: { $gte: since30 } }),
-      UserProfile.countDocuments({ tenantId }),
-      Session.countDocuments({ tenantId, humanMode: true }),
-      getAnalyticsSummary(tenantId, 30),
-      BusinessConfig.findOne({ tenantId }).select('name businessMode adminPhone').lean(),
-    ]);
-
-    res.json({
-      business,
-      last30Days: { orders, bookings, customers, revenue: analytics.revenue },
-      activeHumanSessions: humanModes,
-    });
-  } catch (err) {
-    res.status(500).json({ error: 'Internal server error', details: err.message });
-  }
+  } catch (err) { res.status(500).json({ error: err.message }); }
 }

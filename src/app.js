@@ -50,7 +50,6 @@ import dashboardRoutes   from './routes/dashboardRoutes.js';
 import tenantRoutes      from './routes/tenantRoutes.js';
 import adminRoutes       from './routes/adminRoutes.js';
 
-
 const app        = express();
 const isProduction = process.env.NODE_ENV === 'production';
 

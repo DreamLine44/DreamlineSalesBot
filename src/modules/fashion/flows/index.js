@@ -8,6 +8,9 @@ import { getAIReply }     from '../../../core/ai/providers/aiRouter.js';
 import { findBestMatch }  from '../../../utils/matchEngine.js';
 import { saveOrder }      from '../../../services/orderService.js';
 import { parseQuantity }  from '../../../utils/parseQuantity.js';
+import { trackOrderAnalytics } from '../../../core/analytics/analyticsService.js';
+import { recordOrderItem }     from '../../../core/memory/customerMemory.js';
+import { dispatchText }        from '../../../core/whatsapp/dispatcher.js';
 import logger             from '../../../config/logger.js';
 
 export const FASHION_CONFIG = {
@@ -108,45 +111,47 @@ export async function handleFashionOrder({ session, message, business, tenant, i
         return { type: 'text', body: 'Tap *Confirm* to place your order.' };
       }
 
-      const itemLabel = `${data.item?.name}${data.size ? ` (${data.size})` : ''}`;
+      // ── Payment gate (same as restaurant) ──────────────────────────────────
+      const payment = business?.payment;
+      if (payment?.enabled && data.totalPrice) {
+        const waveNo = payment.wavePhone || payment.phone || 'N/A';
+        await updateSession(session.customerPhone, session.tenantId, {
+          step: 'PAYMENT_PROOF', currentFlow: 'ORDER',
+        });
+        return {
+          type: 'text',
+          body: `💳 *Payment*\n\nTotal: *D${data.totalPrice}*\nSend via *Wave* to: *${waveNo}*\n\nAfter paying, send your *screenshot* here. 📸`,
+        };
+      }
+
+      // ── Save order + analytics + memory ────────────────────────────────────
+      const itemName = `${data.item?.name || data.item}${data.size ? ` (${data.size})` : ''}`;
       let savedOrder = null;
       try {
         savedOrder = await saveOrder({
-          item: itemLabel, quantity: data.quantity, totalPrice: data.totalPrice,
+          item: itemName, quantity: data.quantity, totalPrice: data.totalPrice || 0,
           customerPhone: session.customerPhone, tenantId: session.tenantId, businessId: business._id,
+          status: 'confirmed',
         });
+        recordOrderItem(session.customerPhone, session.tenantId, itemName).catch(() => {});
+        trackOrderAnalytics(itemName, session.phoneNumberId, data.quantity || 1, data.totalPrice || 0, session.tenantId).catch(() => {});
       } catch (err) { logger.error('[FashionModule] saveOrder failed', { err: err.message }); }
 
-      // FIX #15 — track analytics
-      try {
-        const { trackOrderAnalytics, recordRevenue } = await import('../../../core/analytics/analyticsService.js');
-        trackOrderAnalytics(itemLabel, session.phoneNumberId, data.quantity, data.totalPrice, session.tenantId).catch(() => {});
-        if (data.totalPrice) recordRevenue({ item: itemLabel, quantity: data.quantity, revenue: data.totalPrice, tenantId: session.tenantId, customerPhone: session.customerPhone, phoneNumberId: session.phoneNumberId }).catch(() => {});
-      } catch { /* non-fatal */ }
+      const _lcResp = await completeFlow(session, 'ORDER', business, tenant);
+      if (_lcResp) return _lcResp;
 
-      // FIX #16 — notify admin of confirmed order
-      const adminPhone = business?.adminPhone || tenant?.adminPhone;
-      if (adminPhone && tenant) {
-        const { dispatchText } = await import('../../../core/whatsapp/dispatcher.js');
-        const adminMsg =
-          `🛍️ *New Fashion Order*\n\n` +
-          `Item: *${itemLabel}* × ${data.quantity || 1}\n` +
-          `${data.totalPrice ? `Total: *D${data.totalPrice}*\n` : ''}` +
-          `Customer: ${session.customerPhone}\n` +
-          (savedOrder?.shortId ? `Ref: \`${savedOrder.shortId}\`` : '');
-        dispatchText(adminPhone, adminMsg, tenant).catch(() => {});
+      // ── Admin notification ──────────────────────────────────────────────────
+      if (business.adminPhone && tenant) {
+        dispatchText(business.adminPhone,
+          `🛍 *New Order — ${business.name || 'Fashion'}*\n\n` +
+          `👤 ${session.customerPhone}\n` +
+          `📦 ${data.quantity}× ${itemName}\n` +
+          `💰 D${data.totalPrice || 0}\n` +
+          `🔖 #${savedOrder?.shortId || '—'}`,
+          tenant).catch(() => {});
       }
 
-      // FIX #14 — payment gate (same as restaurant orderFlow)
-      if (business?.payment?.enabled && data.totalPrice) {
-        await updateSession(session.customerPhone, session.tenantId, { step: 'PAYMENT_PROOF' });
-        const { buildPaymentInstructionsUI } = await import('../../../services/paymentService.js');
-        const last4 = savedOrder?._id?.toString().slice(-4) || '****';
-        return buildPaymentInstructionsUI(business, data.totalPrice, last4);
-      }
-
-      await completeFlow(session, 'ORDER');
-      return { type: 'text', body: `✅ *Order confirmed!*\n\n👗 *${data.quantity}× ${data.item?.name}*\n\nWe'll reach out with delivery details. Thank you! ✨` };
+      return { type: 'text', body: `✅ *Order confirmed!*\n\n👗 *${data.quantity}× ${itemName}*\n\nWe'll reach out with delivery details. Thank you! ✨` };
     }
 
     default: return buildCatalogUI(business);

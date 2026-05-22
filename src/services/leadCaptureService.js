@@ -127,21 +127,18 @@ async function finaliseLead({ session, lead, business, tenantDoc }) {
     logger.error('[LeadCapture] UserProfile update failed', { err: err.message });
   }
 
-  // FIX #8: Notify admin when a lead is captured, if notifyAdmin flag is set
-  try {
-    const notifyAdmin = business?.leadCapture?.notifyAdmin !== false; // default true
-    const adminPhone  = business?.adminPhone || null;
-    if (notifyAdmin && adminPhone && tenantDoc) {
-      const { dispatchText } = await import('../core/whatsapp/dispatcher.js');
-      const msg =
-        `📋 *New Lead Captured*\n\n` +
-        `📱 Phone: *${session.customerPhone}*\n` +
-        (lead.name  ? `👤 Name: *${lead.name}*\n`  : '') +
-        (lead.email ? `📧 Email: *${lead.email}*\n` : '') +
-        `🏪 Business: *${bizName}*`;
-      dispatchText(adminPhone, msg, tenantDoc).catch(() => {});
-    }
-  } catch { /* non-fatal */ }
+  // Notify admin if configured
+  const adminPhone = business?.adminPhone;
+  if (adminPhone && business?.leadCapture?.notifyAdmin && tenantDoc) {
+    const { dispatchText } = await import('../core/whatsapp/dispatcher.js');
+    dispatchText(adminPhone,
+      `📋 *New Lead Captured*\n\n` +
+      `👤 Name: ${lead.name  || 'not provided'}\n` +
+      `📧 Email: ${lead.email || 'not provided'}\n` +
+      `📱 Phone: ${session.customerPhone}\n` +
+      `🏢 Business: ${bizName}`,
+      tenantDoc).catch(() => {});
+  }
 
   // Reset flow
   await updateSession(session.customerPhone, session.tenantId, {

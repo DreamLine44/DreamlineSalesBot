@@ -132,15 +132,31 @@ export async function cancelFlow(session, business) {
 }
 
 /**
- * completeFlow(session, completedFlow)
- * Marks flow complete — writes postFlowAck so the next "Thanks/Ok"
- * gets a warm reply instead of the full welcome menu.
+ * completeFlow(session, completedFlow, business?, tenant?)
+ * Marks flow complete. If lead capture is configured for this trigger,
+ * starts the lead capture flow instead of returning to menu.
+ * Returns a UIResponse if lead capture starts, otherwise undefined.
  */
-export async function completeFlow(session, completedFlow) {
+export async function completeFlow(session, completedFlow, business = null, tenant = null) {
   await updateSession(session.customerPhone, session.tenantId, {
     currentFlow: null,
     step:        null,
     data:        {},
     postFlowAck: completedFlow.toUpperCase(),
   });
+
+  // Trigger lead capture if configured
+  if (business) {
+    try {
+      const trigger = completedFlow.toUpperCase() === 'ORDER' ? 'AFTER_ORDER' : 'AFTER_BOOKING';
+      const { shouldCaptureLead, startLeadCapture } = await import('../../services/leadCaptureService.js');
+      const freshSession = (await getSession(session.customerPhone, session.tenantId)) || session;
+      if (await shouldCaptureLead(business, freshSession, trigger)) {
+        return startLeadCapture(freshSession, business);
+      }
+    } catch (err) {
+      logger.debug('[FlowEngine] Lead capture check failed (non-fatal)', { err: err.message });
+    }
+  }
+  return null;
 }

@@ -34,14 +34,12 @@ export function validateEnv() {
   }
 
   if (isProduction) {
-    // ENCRYPTION_KEY — validate format if provided, but only warn if absent
-    // (encryption features are not yet implemented; removing hard crash to avoid
-    //  blocking prod deploys for an unused feature — FIX #22)
-    if (process.env.ENCRYPTION_KEY && process.env.ENCRYPTION_KEY.length !== 32) {
-      errors.push('ENCRYPTION_KEY must be exactly 32 characters');
-    }
+    // ENCRYPTION_KEY is optional — reserved for future at-rest encryption of sensitive fields.
+    // Warn if missing so operators know to set it before enabling encryption features.
     if (!process.env.ENCRYPTION_KEY) {
-      console.warn('\n[Startup] Warning: ENCRYPTION_KEY not set — encryption-dependent features will be unavailable.\n');
+      console.warn('\n[Startup] Warning: ENCRYPTION_KEY not set — at-rest encryption will be unavailable.\n');
+    } else if (process.env.ENCRYPTION_KEY.length !== 32) {
+      console.warn('\n[Startup] Warning: ENCRYPTION_KEY must be exactly 32 characters when set.\n');
     }
 
     // In production, simulation mode must be OFF and Meta creds must be set
