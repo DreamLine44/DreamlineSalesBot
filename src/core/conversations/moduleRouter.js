@@ -261,6 +261,8 @@ export async function route({ action, intent, session, message, business, tenant
       };
     }
 
+  } // ← closes switch
+
   // ── Module-registered actions ─────────────────────────────────────────────
   const handler = ACTION_REGISTRY.get(upper);
   if (handler) {
