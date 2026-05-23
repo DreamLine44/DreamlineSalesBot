@@ -119,7 +119,7 @@ async function checkAndHandleLoop(session, messageText, tenantId, business) {
       return {
         type:    'buttons',
         body:    loopMsg,
-        buttons: cfg.ui?.welcomeButtons || [{ id: 'SHOW_MENU', title: '🏠 Main Menu' }],
+        buttons: cfg.ui?.welcomeButtons || [{ id: 'SHOW_MENU', title: '📋 Main Menu' }],
       };
     }
   } else {
@@ -297,17 +297,20 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
       await updateSession(from, tenantId, { step: 'ANSWERED' });
       const { getAIReply } = await import('../core/ai/providers/aiRouter.js');
       const aiText = await getAIReply({ customerMessage: messageText, business, session, intent: 'QUESTION' });
+      // [FIX] Clear the flow BEFORE dispatching so "Ask again" tap correctly
+      // re-triggers the ENQUIRY intent (sets step back to AWAITING_QUESTION).
+      await updateSession(from, tenantId, { currentFlow: null, step: null });
       await dispatchMessage(from, {
         type:    'buttons',
-        body:    aiText || "Great question! Let me check that for you. 😊",
+        body:    aiText || 'Let me check that for you. 😊',
         buttons: [
-          { id: 'QUESTION',  title: '❓ Ask another'  },
-          { id: 'SHOW_MENU', title: '🏠 Back to menu' },
+          { id: 'QUESTION',  title: '❓ Ask again'  },
+          { id: 'SHOW_MENU', title: '📋 Main Menu'  },
         ],
       }, tenantDoc);
-      await updateSession(from, tenantId, { currentFlow: null, step: null });
       return;
     }
+    // Stale ANSWERED state — just clear and fall through
     await updateSession(from, tenantId, { currentFlow: null, step: null });
   }
 
@@ -368,10 +371,10 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
     if (upperMsg === '0' || upperMsg === 'SHOW_MENU' || upperMsg === 'MENU' || upperMsg === 'HOME') {
       await updateSession(from, tenantId, { currentFlow: null, step: null, postFlowAck: null });
       const cfg = getModeConfig(business);
-      const customWelcome = business?.customMessages?.welcomeMessage;
+      // [FIX] Mid-session "Main Menu" tap → short prompt, NOT full welcome greeting
       await dispatchMessage(from, {
         type:    'buttons',
-        body:    customWelcome || cfg.messages?.welcome || '👋 What would you like to do?',
+        body:    '👇 What would you like to do?',
         buttons: cfg.ui?.welcomeButtons || [],
       }, tenantDoc);
       return;
@@ -409,7 +412,7 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
     await dispatchMessage(from, {
       type:    'buttons',
       body:    '❓ What would you like to know? Type your question below.',
-      buttons: [{ id: 'SHOW_MENU', title: '🏠 Back to menu' }],
+      buttons: [{ id: 'SHOW_MENU', title: '📋 Main Menu' }],
     }, tenantDoc);
     return;
   }

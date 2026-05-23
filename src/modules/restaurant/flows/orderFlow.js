@@ -143,12 +143,23 @@ export async function handleOrderFlow({ session, message, business, tenant, isIn
     // ────────────────────────────────────────────────────────────────────────
     case 'QUANTITY': {
       const qty = parseQuantity(raw);
-      const MAX_QTY = 20; // Reasonable upper limit — prevents accidental 99-unit orders
+      // MAX_QTY is per-business configurable; default 20 for restaurants.
+      // Read from business.settings.maxOrderQuantity if set, otherwise 20.
+      const MAX_QTY = business?.settings?.maxOrderQuantity || 20;
+
+      // Can't parse at all (e.g. "any", "yes", blank)
       if (!qty || qty < 1) {
-        return { type: 'text', body: `Please enter a valid quantity (e.g. *1*, *2*, *three*)` };
+        return {
+          type: 'text',
+          body: `Please enter a number — e.g. *1*, *2*, *three*\n\n_(Maximum: ${MAX_QTY} per order)_`,
+        };
       }
+      // Parsed fine but exceeds the business max
       if (qty > MAX_QTY) {
-        return { type: 'text', body: `⚠️ Maximum order quantity is *${MAX_QTY}*. Please enter a number between 1 and ${MAX_QTY}.` };
+        return {
+          type: 'text',
+          body: `⚠️ Maximum order quantity is *${MAX_QTY}*. Please enter a number between *1* and *${MAX_QTY}*.`,
+        };
       }
       const item   = data.item;
       const price  = item?.price || 0;

@@ -196,11 +196,11 @@ export async function handleBookingFlow({ session, message, business, tenant, is
     case 'PARTY_SIZE': {
       const { parseQuantity } = await import('../../utils/parseQuantity.js');
       const partySize = parseQuantity(raw);
-      if (!partySize || partySize < 1 || partySize > 50) {
-        return {
-          type: 'text',
-          body: `Please enter the number of guests (e.g. *2*, *4*, *six*):`,
-        };
+      if (!partySize || partySize < 1) {
+        return { type: 'text', body: `Please enter the number of guests (e.g. *2*, *four*, *6*):` };
+      }
+      if (partySize > 50) {
+        return { type: 'text', body: `⚠️ Maximum party size is *50*. For larger groups please call us directly.` };
       }
       await updateSession(session.customerPhone, session.tenantId, {
         step: 'DATE', data: { ...data, partySize },

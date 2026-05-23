@@ -195,7 +195,7 @@ async function resumeBot(customerPhone, tenantId, tenantDoc) {
   if (tenantDoc) {
     dispatchText(
       customerPhone,
-      `✅ Our team has finished assisting you. Our automated assistant is back! 😊\n\nType *hi* or tap the button below to continue.`,
+      `✅ Our team has finished assisting you. Our automated assistant is back! 😊`,
       tenantDoc
     ).catch(() => {});
   }

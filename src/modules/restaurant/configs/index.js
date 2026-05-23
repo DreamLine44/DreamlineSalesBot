@@ -15,22 +15,22 @@ export const RESTAURANT_CONFIG = {
 
   ui: {
     welcomeButtons: [
-      { id: 'ORDER',    title: '🍔 Order Food'   },
-      { id: 'BOOK',     title: '📅 Book a Table' },
-      { id: 'QUESTION', title: '❓ Ask a Question'},
+      { id: 'ORDER',    title: '🍔 Order Food'    },
+      { id: 'BOOK',     title: '📅 Book a Table'  },
+      { id: 'QUESTION', title: '❓ Ask a Question' },
     ],
     fallbackButtons: [
-      { id: 'ORDER',    title: '🍔 Order'    },
-      { id: 'BOOK',     title: '📅 Book'     },
-      { id: 'QUESTION', title: '❓ Question' },
+      { id: 'ORDER',    title: '🍔 Order Food'    },
+      { id: 'BOOK',     title: '📅 Book a Table'  },
+      { id: 'QUESTION', title: '❓ Ask a Question' },
     ],
     confirmButtons: [
-      { id: 'CONFIRM', title: '✅ Confirm' },
-      { id: 'CANCEL',  title: '❌ Cancel'  },
+      { id: 'CONFIRM', title: '✅ Confirm'   },
+      { id: 'CANCEL',  title: '❌ Cancel'    },
     ],
     upsellButtons: [
-      { id: 'UPSELL_YES', title: '✅ Yes, add it' },
-      { id: 'UPSELL_NO',  title: '❌ No thanks'   },
+      { id: 'UPSELL_YES', title: '✅ Yes please' },
+      { id: 'UPSELL_NO',  title: '❌ No thanks'  },
     ],
   },
 
@@ -47,7 +47,9 @@ export const RESTAURANT_CONFIG = {
     bookPrompt:      'What date would you like to book? 📅\n\n(e.g. *25 June*, *tomorrow*, *next Monday*)',
     servicePrompt:   'Please choose a table type or service:',
     timePrompt:      'What time works for you? ⏰',
-    cancelMsg:       '✅ No problem! Type *Order* to order food, *Book* to reserve a table.',
-    fallback:        'Would you like to *order*, *book*, or ask a *question*?',
+    cancelMsg:       '✅ No problem! What would you like to do next?',
+    fallback:        'I can help you order food, book a table, or answer questions.',
+    afterOrder:      '✅ Your order is placed! We\'ll get it ready for you.',
+    afterBooking:    '✅ Booking confirmed! We look forward to seeing you.',
   },
 };

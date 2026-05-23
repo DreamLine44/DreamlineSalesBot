@@ -190,6 +190,7 @@ const businessConfigSchema = new mongoose.Schema({
     enableLearning:        { type: Boolean, default: true },
     sessionTimeout:        { type: Number,  default: 30, min: 1 },
     allowAfterHoursOrders: { type: Boolean, default: true },
+    maxOrderQuantity:      { type: Number,  default: 20, min: 1, max: 500 },
     closedMessage: {
       type: String,
       default: "We're currently closed. Please contact us during business hours.",

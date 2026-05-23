@@ -113,7 +113,7 @@ async function _buildSkincareAdvice(question, skinType, business, session) {
     buttons: [
       { id: 'ORDER',     title: '💄 Shop Now'         },
       { id: 'QUESTION',  title: '❓ Another Question'  },
-      { id: 'SHOW_MENU', title: '🏠 Back to Menu'      },
+      { id: 'SHOW_MENU', title: '📋 Main Menu'      },
     ],
   };
 }

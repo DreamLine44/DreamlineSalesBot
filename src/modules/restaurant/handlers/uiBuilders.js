@@ -51,7 +51,7 @@ export function buildOrderSuccess({ item, qty, business }) {
   const buttons  = [
     { id: 'ORDER',    title: '🛍 Order Again'  },
     canBook ? { id: 'BOOK', title: '📅 Book a Table' } : null,
-    { id: 'SHOW_MENU', title: '🏠 Main Menu'  },
+    { id: 'SHOW_MENU', title: '📋 Main Menu'  },
   ].filter(Boolean).slice(0, 3);
 
   return {

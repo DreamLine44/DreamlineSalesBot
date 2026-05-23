@@ -70,11 +70,14 @@ export async function route({ action, intent, session, message, business, tenant
       await updateSession(session.customerPhone, session.tenantId, {
         currentFlow: null, step: null, postFlowAck: null,
       });
-      const customWelcome = business?.customMessages?.welcomeMessage;
-      // [FIX-BUG1] cfg.messages not cfg.labels
+      // [FIX] SHOW_MENU ≠ GREET. When a customer taps "Main Menu" mid-session
+      // they should NOT see the full welcome greeting (business description, etc.)
+      // again — that's jarring and feels like the bot forgot the conversation.
+      // SHOW_MENU shows a short "what else can I help with?" prompt + action buttons.
+      // GREET (first message / fresh start) shows the full branded welcome.
       return {
         type:    'buttons',
-        body:    customWelcome || cfg.messages?.welcome || '👋 What would you like to do?',
+        body:    '👇 What would you like to do?',
         buttons: cfg.ui?.welcomeButtons || [],
       };
     }
@@ -110,7 +113,7 @@ export async function route({ action, intent, session, message, business, tenant
       return {
         type:    'buttons',
         body,
-        buttons: [{ id: 'SHOW_MENU', title: '🏠 Main Menu' }],
+        buttons: [{ id: 'SHOW_MENU', title: '📋 Main Menu' }],
       };
     }
 
@@ -128,7 +131,7 @@ export async function route({ action, intent, session, message, business, tenant
               (phone ? `\n\n📞 *${phone}*` : ''),
         buttons: [
           canOrder ? { id: 'ORDER', title: '🛍 New Order' } : null,
-          { id: 'SHOW_MENU', title: '🏠 Main Menu' },
+          { id: 'SHOW_MENU', title: '📋 Main Menu' },
         ].filter(Boolean),
       };
     }
@@ -153,7 +156,7 @@ export async function route({ action, intent, session, message, business, tenant
       return {
         type:    'buttons',
         body,
-        buttons: cfg.ui?.fallbackButtons || [{ id: 'SHOW_MENU', title: '🏠 Menu' }],
+        buttons: cfg.ui?.welcomeButtons || [{ id: 'SHOW_MENU', title: '📋 Main Menu' }],
       };
     }
 
@@ -164,7 +167,7 @@ export async function route({ action, intent, session, message, business, tenant
       return {
         type:    'buttons',
         body:    '✅ Thank you! Is there anything else we can help with?',
-        buttons: cfg.ui?.welcomeButtons || [{ id: 'SHOW_MENU', title: '🏠 Main Menu' }],
+        buttons: cfg.ui?.welcomeButtons || [{ id: 'SHOW_MENU', title: '📋 Main Menu' }],
       };
     }
   }
@@ -185,6 +188,6 @@ export async function route({ action, intent, session, message, business, tenant
     type:    'buttons',
     // [FIX-BUG1] cfg.messages not cfg.labels
     body:    cfg2.messages?.fallback || 'How can I help you today?',
-    buttons: cfg2.ui?.fallbackButtons || [],
+    buttons: cfg2.ui?.welcomeButtons || [],
   };
 }

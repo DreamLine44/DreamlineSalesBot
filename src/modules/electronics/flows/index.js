@@ -31,7 +31,7 @@ export const ELECTRONICS_CONFIG = {
   },
   messages: {
     welcome:   "📱 Welcome! Looking for the best tech deals? Let's find the right product for you.",
-    cancelMsg: '✅ Order cancelled. Type *Browse* to shop again. 📱',
+    cancelMsg: '✅ No problem! What would you like to do?',
     fallback:  'Would you like to *browse products*, get *tech advice*, or place an *order*?',
   },
 };
@@ -90,8 +90,14 @@ export async function handleElectronicsOrder({ session, message, business, tenan
       // [FIX] parseInt(raw,10)||1 silently coerces 'five' or '' to 1.
       // Use parseQuantity() which handles word numbers and validates range.
       const qty = parseQuantity(raw);
-      if (!qty || qty < 1 || qty > 99) {
-        return { type: 'text', body: 'Please enter a valid quantity (e.g. *1*, *2*, *three*)' };
+      const MAX_QTY = business?.settings?.maxOrderQuantity || 20;
+      if (!qty || qty < 1) {
+        return { type: 'text', body: `Please enter a number — e.g. *1*, *2*, *three*
+
+_(Maximum: ${MAX_QTY} per order)_` };
+      }
+      if (qty > MAX_QTY) {
+        return { type: 'text', body: `⚠️ Maximum order quantity is *${MAX_QTY}*. Please enter a number between *1* and *${MAX_QTY}*.` };
       }
       const total = (data.item?.price || 0) * qty;
       await updateSession(session.customerPhone, session.tenantId, { step: 'CONFIRM', data: { ...data, quantity: qty, totalPrice: total } });
@@ -172,7 +178,7 @@ export async function handleSpecRequest({ session, message, business, tenant }) 
     buttons: [
       { id: 'ORDER',     title: '📱 Buy Now'        },
       { id: 'QUESTION',  title: '❓ More Questions'  },
-      { id: 'SHOW_MENU', title: '🏠 Back to Menu'   },
+      { id: 'SHOW_MENU', title: '📋 Main Menu'   },
     ],
   };
 }

@@ -32,7 +32,7 @@ export const FASHION_CONFIG = {
   messages: {
     welcome:     "✨ Welcome! Let's find something perfect for you.",
     orderPrompt: '👗 Our latest collection — choose an item:',
-    cancelMsg:   '✅ Cancelled. Browse our collection anytime — type *Shop* to continue. 👗',
+    cancelMsg: '✅ No problem! Browse our collection anytime. 👗',
     fallback:    'Would you like to *browse our collection*, or do you have a *style question*?',
   },
 };
@@ -90,8 +90,14 @@ export async function handleFashionOrder({ session, message, business, tenant, i
       // [FIX] parseInt(raw,10)||1 silently coerces 'five' or '' to 1.
       // Use parseQuantity() which handles word numbers and validates range.
       const qty = parseQuantity(raw);
-      if (!qty || qty < 1 || qty > 99) {
-        return { type: 'text', body: 'Please enter a valid quantity (e.g. *1*, *2*, *three*)' };
+      const MAX_QTY = business?.settings?.maxOrderQuantity || 20;
+      if (!qty || qty < 1) {
+        return { type: 'text', body: `Please enter a number — e.g. *1*, *2*, *three*
+
+_(Maximum: ${MAX_QTY} per order)_` };
+      }
+      if (qty > MAX_QTY) {
+        return { type: 'text', body: `⚠️ Maximum order quantity is *${MAX_QTY}*. Please enter a number between *1* and *${MAX_QTY}*.` };
       }
       const total = (data.item?.price || 0) * qty;
       await updateSession(session.customerPhone, session.tenantId, { step: 'CONFIRM', data: { ...data, quantity: qty, totalPrice: total } });

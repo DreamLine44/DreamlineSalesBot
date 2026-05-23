@@ -27,7 +27,7 @@ export const SALON_CONFIG = {
   },
   messages: {
     welcome:   '👋 Welcome! How can we help you today?',
-    cancelMsg: '✅ No problem! Type *Book* whenever you\'re ready.',
+    cancelMsg: '✅ No problem! Just tap below whenever you're ready.',
     fallback:  'Would you like to *book an appointment* or ask a *question*?',
   },
 };
@@ -49,7 +49,7 @@ export const BARBERSHOP_CONFIG = {
   },
   messages: {
     welcome:   '✂️ Welcome! Ready for a fresh cut? How can we help?',
-    cancelMsg: '✅ No problem! Type *Book* whenever you\'re ready. ✂️',
+    cancelMsg: '✅ No problem! Just tap below whenever you're ready. ✂️',
     fallback:  'Would you like to *book an appointment* or ask a *question*?',
   },
 };

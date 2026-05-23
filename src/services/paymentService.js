@@ -96,7 +96,7 @@ export async function handleDonePayment(customerPhone, tenantId) {
     customerPhone, tenantId, paymentStatus: 'unpaid', status: 'pending',
   }).sort({ createdAt: -1 });
 
-  if (!order) return `⚠️ No pending order found. Type *Order* to start a new order.`;
+  if (!order) return `⚠️ No pending payment found. Please start a new order to continue.`;
 
   await Order.updateOne({ _id: order._id }, {
     $set: {

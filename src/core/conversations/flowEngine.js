@@ -50,7 +50,7 @@ export function registerGenericFlow(flowName, handler) {
  */
 export async function advance({ session, message, business, tenant, isInteractive = false }) {
   if (!session?.currentFlow) {
-    return { type: 'text', body: '⚠️ No active flow. Type *Hi* to start.' };
+    return { type: 'text', body: '⚠️ No active flow. Please send a message to get started.' };
   }
 
   const flow      = session.currentFlow.toUpperCase();
@@ -112,22 +112,25 @@ export async function cancelFlow(session, business) {
     currentFlow: null, step: null, data: {}, postFlowAck: null,
   });
 
-  // Build cancel response without importing modes (avoids circular chain)
-  // Caller (webhookController) handles the response if needed
+  // Build cancel response — use buttons, never type-a-keyword instructions
   const mode = (business?.businessMode || 'RETAIL').toUpperCase();
   const CANCEL_MSGS = {
-    RESTAURANT:  '✅ Cancelled! Type *Order* to order food or *Book* to reserve a table.',
-    BAKERY:      '✅ Cancelled! Type *Order* to place a bakery order.',
-    SALON:       '✅ Cancelled! Type *Book* whenever you\'re ready. ✂️',
-    BARBERSHOP:  '✅ Cancelled! Type *Book* whenever you\'re ready. 💈',
-    FASHION:     '✅ Cancelled! Type *Shop* to browse our collection. 👗',
-    COSMETICS:   '✅ Cancelled! Type *Shop* to browse products. 💄',
-    ELECTRONICS: '✅ Cancelled! Type *Browse* to see our products. 📱',
+    RESTAURANT:  '✅ No problem! What would you like to do?',
+    BAKERY:      '✅ No problem! What would you like to do?',
+    SALON:       '✅ No problem — just tap below whenever you\'re ready. ✂️',
+    BARBERSHOP:  '✅ No problem — just tap below whenever you\'re ready. 💈',
+    FASHION:     '✅ No problem! Browse our collection anytime. 👗',
+    COSMETICS:   '✅ No problem! Browse our products anytime. 💄',
+    ELECTRONICS: '✅ No problem! Browse our range anytime. 📱',
   };
+  // [FIX] Return mode-appropriate welcome buttons so the customer has somewhere to go
+  // without needing to type anything.
+  const { getModeConfig } = await import('../../config/modes.js');
+  const cfg = getModeConfig(business);
   return {
     type:    'buttons',
-    body:    CANCEL_MSGS[mode] || '✅ Cancelled! Type *0* to return to the main menu.',
-    buttons: [{ id: 'SHOW_MENU', title: '🏠 Main Menu' }],
+    body:    CANCEL_MSGS[mode] || '✅ Cancelled.',
+    buttons: cfg.ui?.welcomeButtons || [{ id: 'SHOW_MENU', title: '📋 Main Menu' }],
   };
 }
 
