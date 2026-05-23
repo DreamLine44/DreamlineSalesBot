@@ -3,42 +3,36 @@
  *
  * Routes a detected intent to the correct business module handler.
  *
- * Flow:
- *   intentEngine.detectIntent() → moduleRouter.route() → module handler
- *
- * Each business module registers its action handlers here.
- * Adding a new module = add its handlers, zero core code changes.
+ * [FIX-BUG1]  cfg.labels → cfg.messages — ALL module configs export .messages,
+ *             not .labels. Using .labels returned undefined everywhere, causing
+ *             blank bot responses on GREET / SHOW_MENU / FALLBACK / CLARIFY.
+ * [FIX-BUG8]  SUPPORT sets humanModeNotified=true so a 2nd message from the same
+ *             customer doesn't trigger a duplicate admin escalation alert.
+ * [FIX-BUG10] DONE action returns mode-appropriate welcome buttons, not a dead-end.
+ * [FIX-BUG12] TRACK_ORDER returns follow-up buttons (New Order, Main Menu).
  */
 
-import { startFlow, cancelFlow, completeFlow } from './flowEngine.js';
-import { updateSession }   from '../sessions/sessionService.js';
-import { generateGreeting } from '../ai/providers/aiRouter.js';
+import { startFlow, cancelFlow } from './flowEngine.js';
+import { updateSession }         from '../sessions/sessionService.js';
+import { generateGreeting }      from '../ai/providers/aiRouter.js';
+import { dispatchText }          from '../whatsapp/dispatcher.js';
 import logger from '../../config/logger.js';
 
-// ── Action handlers registry ──────────────────────────────────────────────────
-// Key: action string (e.g. 'START_ORDER')
-// Value: async ({ session, message, business, tenant, intent }) => UIResponse
 const ACTION_REGISTRY = new Map();
 
 export function registerAction(action, handler) {
   ACTION_REGISTRY.set(action.toUpperCase(), handler);
 }
 
-/**
- * route({ action, intent, session, message, business, tenant, isInteractive })
- * Returns UIResponse
- */
 export async function route({ action, intent, session, message, business, tenant, isInteractive, suggestion }) {
   const upper = (action || 'FALLBACK').toUpperCase();
   const mode  = (business?.businessMode || 'RETAIL').toUpperCase();
 
   logger.debug('[Router] Routing', { action: upper, mode, step: session?.step });
 
-  // ── Built-in actions (no module needed) ───────────────────────────────────
   switch (upper) {
 
     case 'GREET': {
-      // Fix: preserve customerName across greet — don't wipe it
       const existingName = session?.customerName || null;
       const lastOrder    = session?.data?.lastItem || null;
 
@@ -53,17 +47,21 @@ export async function route({ action, intent, session, message, business, tenant
       const { getModeConfig } = await import('../../config/modes.js');
       const cfg = getModeConfig(business);
 
-      // Reset session but preserve customerName
       await updateSession(session.customerPhone, session.tenantId, {
-        currentFlow:  null, step: null, data: {},
-        postFlowAck:  null, menuViewed: false, upsellSent: false,
-        customerName: existingName,  // preserve — do NOT wipe
+        currentFlow: null, step: null, data: {},
+        postFlowAck: null, menuViewed: false, upsellSent: false,
+        customerName: existingName,
       });
 
-      if (greetMsg) {
-        return { type: 'buttons', body: greetMsg, buttons: cfg.ui?.welcomeButtons || [] };
-      }
-      return { type: 'buttons', body: cfg.labels?.welcome || '👋 Welcome! How can I help?', buttons: cfg.ui?.welcomeButtons || [] };
+      // [FIX-BUG1] cfg.messages not cfg.labels — module configs use .messages
+      // Also honour customMessages.welcomeMessage when set by the operator
+      const customWelcome = business?.customMessages?.welcomeMessage;
+      const body = greetMsg
+        || customWelcome
+        || cfg.messages?.welcome
+        || '👋 Welcome! How can I help?';
+
+      return { type: 'buttons', body, buttons: cfg.ui?.welcomeButtons || [] };
     }
 
     case 'SHOW_MENU': {
@@ -72,7 +70,13 @@ export async function route({ action, intent, session, message, business, tenant
       await updateSession(session.customerPhone, session.tenantId, {
         currentFlow: null, step: null, postFlowAck: null,
       });
-      return { type: 'buttons', body: cfg.labels?.welcome || '👋 What would you like to do?', buttons: cfg.ui?.welcomeButtons || [] };
+      const customWelcome = business?.customMessages?.welcomeMessage;
+      // [FIX-BUG1] cfg.messages not cfg.labels
+      return {
+        type:    'buttons',
+        body:    customWelcome || cfg.messages?.welcome || '👋 What would you like to do?',
+        buttons: cfg.ui?.welcomeButtons || [],
+      };
     }
 
     case 'CANCEL': {
@@ -81,24 +85,51 @@ export async function route({ action, intent, session, message, business, tenant
 
     case 'SUPPORT': {
       const adminPhone = business?.adminPhone || tenant?.adminPhone || null;
+
+      // [FIX-BUG8] Set humanModeNotified=true so second message doesn't re-alert admin
+      await updateSession(session.customerPhone, session.tenantId, {
+        humanMode: true, humanModeNotified: true, currentFlow: null, step: null,
+      });
+
+      if (adminPhone && tenant && !session.humanModeNotified) {
+        const nameStr = session.customerName ? ` (${session.customerName})` : '';
+        const alert   =
+          `🚨 *Support escalation*\n\n` +
+          `Customer *${session.customerPhone}*${nameStr} needs help.\n` +
+          `Message: "${message || '(no message)'}"\n\n` +
+          `Bot is now *silent* for this customer.\n\n` +
+          `Reply directly to them on WhatsApp, then type:\n` +
+          `✅ \`RESUME BOT ${session.customerPhone}\``;
+        dispatchText(adminPhone, alert, tenant).catch(() => {});
+      }
+
       const body = adminPhone
         ? `🆘 *Support Request*\n\nI've flagged this to our team.\n\n📞 You can also reach us directly at *${adminPhone}*`
         : `🆘 *Support Request*\n\nI've flagged this to our team. Someone will contact you shortly.`;
-      // Escalate to human mode
-      await updateSession(session.customerPhone, session.tenantId, {
-        humanMode: true, currentFlow: null, step: null,
-      });
-      return { type: 'text', body };
+
+      return {
+        type:    'buttons',
+        body,
+        buttons: [{ id: 'SHOW_MENU', title: '🏠 Main Menu' }],
+      };
     }
 
     case 'TRACK_ORDER': {
       const handler = ACTION_REGISTRY.get('TRACK_ORDER');
       if (handler) return handler({ session, message, business, tenant });
       const phone = business?.adminPhone || null;
+      const { getModeConfig } = await import('../../config/modes.js');
+      const cfg = getModeConfig(business);
+      const canOrder = cfg.flows?.includes('ORDER');
+      // [FIX-BUG12] Return follow-up buttons
       return {
-        type: 'text',
-        body: `📦 *Order Tracking*\n\nFor updates on your order, please contact us directly.` +
+        type: 'buttons',
+        body: `📦 *Order Tracking*\n\nFor live updates on your order, please contact us directly.` +
               (phone ? `\n\n📞 *${phone}*` : ''),
+        buttons: [
+          canOrder ? { id: 'ORDER', title: '🛍 New Order' } : null,
+          { id: 'SHOW_MENU', title: '🏠 Main Menu' },
+        ].filter(Boolean),
       };
     }
 
@@ -110,12 +141,14 @@ export async function route({ action, intent, session, message, business, tenant
 
     case 'FALLBACK':
     case 'CLARIFY': {
-      const { getAIReply } = await import('../ai/providers/aiRouter.js');
+      const { getAIReply }    = await import('../ai/providers/aiRouter.js');
       const { getModeConfig } = await import('../../config/modes.js');
       const cfg = getModeConfig(business);
 
       const aiText = await getAIReply({ customerMessage: message, business, session, intent });
-      const body   = aiText || cfg.labels?.fallback || 'How can I help you? 😊';
+      // [FIX-BUG1] cfg.messages.fallback not cfg.labels.fallback
+      const fallbackMsg = business?.customMessages?.fallback || cfg.messages?.fallback;
+      const body = aiText || fallbackMsg || 'How can I help you? 😊';
 
       return {
         type:    'buttons',
@@ -125,7 +158,14 @@ export async function route({ action, intent, session, message, business, tenant
     }
 
     case 'DONE': {
-      return { type: 'text', body: '✅ Thank you! We\'ll be in touch shortly.' };
+      // [FIX-BUG10] Return welcome buttons instead of dead-end plain text
+      const { getModeConfig } = await import('../../config/modes.js');
+      const cfg = getModeConfig(business);
+      return {
+        type:    'buttons',
+        body:    '✅ Thank you! Is there anything else we can help with?',
+        buttons: cfg.ui?.welcomeButtons || [{ id: 'SHOW_MENU', title: '🏠 Main Menu' }],
+      };
     }
   }
 
@@ -135,21 +175,16 @@ export async function route({ action, intent, session, message, business, tenant
     return handler({ session, message, business, tenant, intent, isInteractive, suggestion });
   }
 
-  // ── Start flow actions ────────────────────────────────────────────────────
-  if (upper === 'START_ORDER') {
-    return startFlow({ flowName: 'ORDER', session, business, tenant });
-  }
-  if (upper === 'START_BOOKING') {
-    return startFlow({ flowName: 'BOOKING', session, business, tenant });
-  }
+  if (upper === 'START_ORDER')   return startFlow({ flowName: 'ORDER',   session, business, tenant });
+  if (upper === 'START_BOOKING') return startFlow({ flowName: 'BOOKING', session, business, tenant });
 
-  // Unknown action
   logger.warn('[Router] Unknown action', { action: upper, mode });
   const { getModeConfig: getMC } = await import('../../config/modes.js');
   const cfg2 = getMC(business);
   return {
     type:    'buttons',
-    body:    cfg2.labels?.fallback || 'How can I help you today?',
+    // [FIX-BUG1] cfg.messages not cfg.labels
+    body:    cfg2.messages?.fallback || 'How can I help you today?',
     buttons: cfg2.ui?.fallbackButtons || [],
   };
 }

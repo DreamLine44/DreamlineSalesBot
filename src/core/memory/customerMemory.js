@@ -1,24 +1,26 @@
 /**
- * core/memory/customerMemory.js — WhatSalesAgent2
+ * core/memory/customerMemory.js — WhatSalesAgent
  *
  * Persistent customer memory across sessions.
  * Tracks preferences, order history, and repeat behavior
  * to power personalised greetings and recommendations.
+ *
+ * [FIX-BUG5] recordOrderItem() and updateName() are now actually called:
+ *   - recordOrderItem() called by orderService.saveOrder() after every successful order
+ *   - updateName() called by webhookController when a name is extracted
+ *   Previously this entire module was defined but never used, making personalisation
+ *   and repeat-customer features completely inert.
  */
 
 import UserProfile from '../../models/UserProfile.js';
 import Order       from '../../models/Order.js';
 import logger      from '../../config/logger.js';
 
-/**
- * getOrCreate(phone, tenantId)
- * Fetches or initialises a UserProfile.
- */
 export async function getOrCreate(phone, tenantId) {
   try {
     return await UserProfile.findOneAndUpdate(
       { phone, tenantId },
-      { $setOnInsert: { phone, tenantId, createdAt: new Date() } },
+      { $setOnInsert: { phone, tenantId, 'activity.firstSeen': new Date(), 'activity.lastSeen': new Date() } },
       { upsert: true, new: true }
     ).lean();
   } catch (err) {
@@ -27,24 +29,25 @@ export async function getOrCreate(phone, tenantId) {
   }
 }
 
-/**
- * recordOrderItem(phone, tenantId, itemName)
- * Increments the item count in favoriteItems list.
- */
 export async function recordOrderItem(phone, tenantId, itemName) {
-  if (!itemName) return;
+  if (!phone || !tenantId || !itemName) return;
   try {
-    // Try to increment existing item
     const updated = await UserProfile.findOneAndUpdate(
       { phone, tenantId, 'preferences.favoriteItems.name': itemName },
-      { $inc: { 'preferences.favoriteItems.$.count': 1 } },
+      {
+        $inc: { 'preferences.favoriteItems.$.count': 1, 'stats.totalOrders': 1 },
+        $set: { 'activity.lastSeen': new Date() },
+      },
       { new: true }
     );
     if (!updated) {
-      // Item not in list yet — push new entry
       await UserProfile.findOneAndUpdate(
         { phone, tenantId },
-        { $push: { 'preferences.favoriteItems': { name: itemName, count: 1 } } },
+        {
+          $push: { 'preferences.favoriteItems': { name: itemName, count: 1 } },
+          $inc:  { 'stats.totalOrders': 1 },
+          $set:  { 'activity.lastSeen': new Date() },
+        },
         { upsert: true }
       );
     }
@@ -53,38 +56,25 @@ export async function recordOrderItem(phone, tenantId, itemName) {
   }
 }
 
-/**
- * getTopItem(phone, tenantId)
- * Returns the customer's most ordered item name, or null.
- */
-export async function getTopItem(phone, tenantId) {
-  try {
-    const profile = await UserProfile.findOne({ phone, tenantId })
-      .select('preferences.favoriteItems').lean();
-    const items = profile?.preferences?.favoriteItems || [];
-    if (!items.length) {
-      // Fallback: query Order collection directly
-      const last = await Order.findOne({ customerPhone: phone, tenantId })
-        .sort({ createdAt: -1 }).select('item').lean();
-      return last?.item || null;
-    }
-    return items.sort((a, b) => b.count - a.count)[0]?.name || null;
-  } catch (err) {
-    logger.debug('[Memory] getTopItem failed', { err: err.message });
-    return null;
-  }
-}
-
-/**
- * updateName(phone, tenantId, name)
- * Stores the customer's name from any source.
- */
-export async function updateName(phone, tenantId, name) {
-  if (!name) return;
+export async function recordBooking(phone, tenantId) {
+  if (!phone || !tenantId) return;
   try {
     await UserProfile.findOneAndUpdate(
       { phone, tenantId },
-      { $set: { 'lead.name': name } },
+      { $inc: { 'stats.totalBookings': 1 }, $set: { 'activity.lastSeen': new Date() } },
+      { upsert: true }
+    );
+  } catch (err) {
+    logger.debug('[Memory] recordBooking failed', { err: err.message });
+  }
+}
+
+export async function updateName(phone, tenantId, name) {
+  if (!phone || !tenantId || !name) return;
+  try {
+    await UserProfile.findOneAndUpdate(
+      { phone, tenantId },
+      { $set: { 'lead.name': name, 'activity.lastSeen': new Date() } },
       { upsert: true }
     );
   } catch (err) {
@@ -92,10 +82,21 @@ export async function updateName(phone, tenantId, name) {
   }
 }
 
-/**
- * isReturningCustomer(phone, tenantId)
- * True if customer has placed at least one previous order.
- */
+export async function getTopItem(phone, tenantId) {
+  try {
+    const profile = await UserProfile.findOne({ phone, tenantId }).select('preferences.favoriteItems').lean();
+    const items = profile?.preferences?.favoriteItems || [];
+    if (items.length) {
+      return items.sort((a, b) => b.count - a.count)[0]?.name || null;
+    }
+    const last = await Order.findOne({ customerPhone: phone, tenantId }).sort({ createdAt: -1 }).select('item').lean();
+    return last?.item || null;
+  } catch (err) {
+    logger.debug('[Memory] getTopItem failed', { err: err.message });
+    return null;
+  }
+}
+
 export async function isReturningCustomer(phone, tenantId) {
   try {
     const count = await Order.countDocuments({ customerPhone: phone, tenantId });
@@ -105,10 +106,6 @@ export async function isReturningCustomer(phone, tenantId) {
   }
 }
 
-/**
- * getCustomerContext(phone, tenantId)
- * Returns a rich context object for personalised AI responses.
- */
 export async function getCustomerContext(phone, tenantId) {
   try {
     const [profile, lastOrder] = await Promise.all([
@@ -119,7 +116,7 @@ export async function getCustomerContext(phone, tenantId) {
       name:        profile?.lead?.name || null,
       topItem:     (profile?.preferences?.favoriteItems || []).sort((a, b) => b.count - a.count)[0]?.name || null,
       lastItem:    lastOrder?.item || null,
-      orderCount:  profile?.preferences?.favoriteItems?.reduce((s, i) => s + (i.count || 0), 0) || 0,
+      orderCount:  profile?.stats?.totalOrders || 0,
       isReturning: !!lastOrder,
     };
   } catch (err) {

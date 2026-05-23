@@ -55,6 +55,14 @@ export const BUTTON_ID_MAP = {
   '2':                  'START_BOOKING',
   '3':                  'ENQUIRY',
   '0':                  'SHOW_MENU',
+
+  // Skincare advice skin-type buttons — [FIX-8] these were unmapped so tapping them
+  // sent the raw button ID string ('SKIN_DRY') to AI as if it were a customer message.
+  // Now correctly routed as CONTINUE_FLOW so the active SKINCARE_ADVICE handler receives them.
+  'SKIN_DRY':           'CONTINUE_FLOW',
+  'SKIN_OILY':          'CONTINUE_FLOW',
+  'SKIN_COMBO':         'CONTINUE_FLOW',
+  'SKIN_CUSTOM':        'CONTINUE_FLOW',
 };
 
 // ── Emoji → Intent map ────────────────────────────────────────────────────────

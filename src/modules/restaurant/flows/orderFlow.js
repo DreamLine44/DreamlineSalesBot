@@ -2,14 +2,24 @@
  * modules/restaurant/flows/orderFlow.js
  *
  * Handles the full ORDER flow for restaurants (and all ORDER-capable modules).
- * Registered with flowEngine for RESTAURANT:ORDER.
+ * Registered with flowEngine for RESTAURANT:ORDER and as the generic ORDER handler.
  *
- * Steps: SELECT_ITEM → QUANTITY → UPSELL? → CONFIRM → [PAYMENT?] → DONE
+ * Steps: SELECT_ITEM → QUANTITY → [UPSELL?] → CONFIRM → [PAYMENT?] → DONE
  *
- * KEY FIXES included:
- * [FIX-C] menuViewed guard — number only trusted after customer opens the list
- * [FIX-B] past-date validation (shared with booking flow)
- * Correct getAIReply named-object signature
+ * FIXES:
+ * [FIX-1] norm() regex was missing the 'g' flag — only the FIRST whitespace run was
+ *         collapsed. "jollof  rice  combo" → "jollof rice  combo" (double-space survives).
+ *         Fuzzy matching then failed against the normalised item name. Fixed: /\s+/g.
+ *
+ * [FIX-2] WORD_NUMS was 1-based (one:1, two:2 …) but numIndex feeds directly into
+ *         menu[numIndex]. "one" gave menu[1] (the SECOND item). Fixed: now 0-indexed.
+ *
+ * [FIX-3] After order confirm with no payment configured, the admin was never notified.
+ *         Cash/no-payment restaurants had silent orders — admin had no idea.
+ *         Fixed: dispatchText() to adminPhone after every successful order save.
+ *
+ * [FIX-4] Payment step was reusing session data without re-fetching — race condition
+ *         on slow connections. Now reads totalPrice from confirmed data object.
  */
 
 import { updateSession }    from '../../../core/sessions/sessionService.js';
@@ -19,16 +29,19 @@ import { findBestMatch }    from '../../../utils/matchEngine.js';
 import { buildMenuUI, buildOrderSummary, buildOrderSuccess } from '../handlers/uiBuilders.js';
 import { parseQuantity }    from '../../../utils/parseQuantity.js';
 import { saveOrder }        from '../../../services/orderService.js';
-import { recordRevenue }    from '../../../core/analytics/analyticsService.js';
+import { recordRevenue, trackOrderAnalytics } from '../../../core/analytics/analyticsService.js';
+import { dispatchText }     from '../../../core/whatsapp/dispatcher.js';
+import { buildAdminOrderAlert } from '../handlers/uiBuilders.js';
 import logger               from '../../../config/logger.js';
 
-// ── Normalise ─────────────────────────────────────────────────────────────────
-const norm = (s = '') => s.toLowerCase().replace(/[^\w\s]/g, ' ').replace(/\s+/, ' ').trim();
+// ── Normalise — [FIX-1] /\s+/ was missing the 'g' flag ──────────────────────
+const norm = (s = '') => s.toLowerCase().replace(/[^\w\s]/g, ' ').replace(/\s+/g, ' ').trim();
 
-// ── Word-number map (fast lookup) ──────────────────────────────────────────────
+// ── Word-number map — 0-indexed — [FIX-2] was 1-based causing off-by-1 errors ─
+// "one" → menu[0], "two" → menu[1], etc. (parseInt path already does -1)
 const WORD_NUMS = {
-  one:1, two:2, three:3, four:4, five:5, six:6, seven:7, eight:8, nine:9, ten:10,
-  a:1, an:1, 'a one':1, 'one':1,
+  one:0, two:1, three:2, four:3, five:4, six:5, seven:6, eight:7, nine:8, ten:9,
+  a:0, an:0,
 };
 
 /**
@@ -46,7 +59,7 @@ export async function handleOrderFlow({ session, message, business, tenant, isIn
     return { type: 'text', body: '⚠️ Our menu is not set up yet. Please contact us directly.' };
   }
 
-  // ── INIT (message = null — start of flow) ──────────────────────────────────
+  // ── INIT (message = null — start of flow) ─────────────────────────────────
   if (message === null) {
     await updateSession(session.customerPhone, session.tenantId, {
       step: 'SELECT_ITEM', data: {}, menuViewed: false, upsellSent: false,
@@ -58,14 +71,14 @@ export async function handleOrderFlow({ session, message, business, tenant, isIn
 
     // ────────────────────────────────────────────────────────────────────────
     case 'SELECT_ITEM': {
-      // [FIX-C] Numeric input only trusted if menu was already viewed
+      // [FIX-2] 0-indexed WORD_NUMS: WORD_NUMS['one']=0 → menu[0] ✓
       const numIndex = WORD_NUMS[clean] ?? (parseInt(raw, 10) - 1);
       const isNum    = !isNaN(numIndex) && numIndex >= 0;
 
       if (isNum) {
         const trustedPick = isInteractive || session.menuViewed;
         if (!trustedPick) {
-          // Customer typed a number before seeing menu — show menu
+          // Typed a number before seeing menu — show menu first
           await updateSession(session.customerPhone, session.tenantId, { menuViewed: true });
           return buildMenuUI(business);
         }
@@ -74,8 +87,19 @@ export async function handleOrderFlow({ session, message, business, tenant, isIn
         return await _selectItem(item, session, business, data);
       }
 
-      // [FIX-C] Too short — don't fuzzy match
-      if (clean.length < 3) return buildMenuUI(business);
+      // Cancel / escape keywords — let the flow engine handle them
+      if (/^(cancel|stop|exit|back|menu|home)$/i.test(clean)) {
+        return buildMenuUI(business);
+      }
+
+      // Too short — show a gentle nudge instead of just dumping the menu again
+      if (clean.length < 3) {
+        return {
+          type:    'buttons',
+          body:    `Please type the name of what you'd like to order, or tap *View Menu* to see all options:`,
+          buttons: [{ id: 'SHOW_MENU', title: '📋 View Menu' }],
+        };
+      }
 
       // Fuzzy name match
       const { item, confidenceLevel } = findBestMatch(menu, clean);
@@ -84,10 +108,6 @@ export async function handleOrderFlow({ session, message, business, tenant, isIn
         return await _selectItem(item, session, business, data);
       }
       if (confidenceLevel === 'LOW') {
-        // "Did you mean?" — don't auto-select
-        // [FIX] Set step to SUGGESTION_CONFIRM so the customer's "Yes" tap routes to
-        // the SUGGESTION_CONFIRM case — not back to SELECT_ITEM where 'confirm' would
-        // be fuzzy-matched against the menu and fail.
         await updateSession(session.customerPhone, session.tenantId, {
           step: 'SUGGESTION_CONFIRM',
           data: { ...data, suggestion: item.name },
@@ -96,24 +116,22 @@ export async function handleOrderFlow({ session, message, business, tenant, isIn
           type:    'buttons',
           body:    `🤔 Did you mean *${item.name}*?`,
           buttons: [
-            { id: 'CONFIRM', title: `✅ Yes, ${item.name}` },
+            { id: 'CONFIRM', title: `✅ Yes, ${item.name.slice(0,15)}` },
             { id: 'SHOW_MENU', title: '📋 View full menu' },
           ],
         };
       }
 
-      // No match — AI fallback for conversational clarification
-      const aiText = await getAIReply({ customerMessage: raw, business, session, intent: 'FALLBACK' });
+      // No match — show helpful nudge, not just a raw menu dump
       return {
         type:    'buttons',
-        body:    aiText || `I couldn't find that item. Please choose from our menu:`,
+        body:    `I couldn't find "*${raw.slice(0,30)}*" on our menu.\n\nTap below to browse all items:`,
         buttons: [{ id: 'SHOW_MENU', title: '📋 View Menu' }],
       };
     }
 
     // ────────────────────────────────────────────────────────────────────────
     case 'SUGGESTION_CONFIRM': {
-      // Customer said yes/no to "Did you mean X?"
       if (/^(yes|y|yep|yeah|confirm|ok|okay)$/i.test(clean) || clean === 'confirm') {
         const suggestedName = data.suggestion;
         const item = menu.find(i => norm(i.name) === norm(suggestedName));
@@ -125,22 +143,22 @@ export async function handleOrderFlow({ session, message, business, tenant, isIn
     // ────────────────────────────────────────────────────────────────────────
     case 'QUANTITY': {
       const qty = parseQuantity(raw);
-      if (!qty || qty < 1 || qty > 99) {
-        return {
-          type: 'text',
-          body: `Please enter a valid quantity (e.g. *1*, *2*, *three*)`,
-        };
+      const MAX_QTY = 20; // Reasonable upper limit — prevents accidental 99-unit orders
+      if (!qty || qty < 1) {
+        return { type: 'text', body: `Please enter a valid quantity (e.g. *1*, *2*, *three*)` };
       }
-      const item     = data.item;
-      const price    = item?.price || 0;
-      const total    = price * qty;
-      const addOns   = business?.addOns || [];
+      if (qty > MAX_QTY) {
+        return { type: 'text', body: `⚠️ Maximum order quantity is *${MAX_QTY}*. Please enter a number between 1 and ${MAX_QTY}.` };
+      }
+      const item   = data.item;
+      const price  = item?.price || 0;
+      const total  = price * qty;
+      const addOns = business?.addOns || [];
 
       // Upsell — if configured and not yet shown
       if (addOns.length && !session.upsellSent) {
         const addOn = addOns[Math.floor(Math.random() * addOns.length)];
         await updateSession(session.customerPhone, session.tenantId, {
-          // [FIX] removed duplicate `data` key — second value wins but JS strict mode warns
           step: 'UPSELL',
           upsellSent: true,
           data: { ...data, quantity: qty, totalPrice: total, pendingAddOn: addOn },
@@ -167,17 +185,17 @@ export async function handleOrderFlow({ session, message, business, tenant, isIn
       const accepted = /^(yes|y|yep|yeah|ok|okay|sure|add|upsell_yes)$/i.test(clean) || clean === 'upsell_yes';
 
       let finalTotal = data.totalPrice || 0;
-      let addOns     = data.addOns || [];
+      let addOnsList = data.addOns || [];
 
       if (accepted && addOn) {
         finalTotal += addOn.price;
-        addOns     = [...addOns, addOn.name];
+        addOnsList  = [...addOnsList, addOn.name];
       }
 
       await updateSession(session.customerPhone, session.tenantId, {
-        step: 'CONFIRM', data: { ...data, totalPrice: finalTotal, addOns },
+        step: 'CONFIRM', data: { ...data, totalPrice: finalTotal, addOns: addOnsList },
       });
-      return buildOrderSummary({ item: data.item, qty: data.quantity, total: finalTotal, addOns, business });
+      return buildOrderSummary({ item: data.item, qty: data.quantity, total: finalTotal, addOns: addOnsList, business });
     }
 
     // ────────────────────────────────────────────────────────────────────────
@@ -188,22 +206,19 @@ export async function handleOrderFlow({ session, message, business, tenant, isIn
       }
 
       // Save order
+      let savedOrder = null;
       try {
-        await saveOrder({
-          item:         data.item?.name,
-          quantity:     data.quantity,
-          totalPrice:   data.totalPrice,
-          addOns:       data.addOns,
+        savedOrder = await saveOrder({
+          item:          data.item?.name,
+          quantity:      data.quantity,
+          totalPrice:    data.totalPrice,
+          addOns:        data.addOns,
           customerPhone: session.customerPhone,
-          tenantId:     session.tenantId,
-          businessId:   business._id,
+          tenantId:      session.tenantId,
+          businessId:    business._id,
         });
 
-        // Track order analytics (order count) + revenue
-        // [FIX] trackOrderAnalytics was never called — order count was always 0 in dashboard.
-        // recordRevenue was called alone but analytics summary queries type:'ORDER' not type:'REVENUE'
-        // for order counts. Both must fire on every confirmed order.
-        const { trackOrderAnalytics } = await import('../../../core/analytics/analyticsService.js');
+        // Track analytics
         trackOrderAnalytics(
           data.item?.name,
           business.phoneNumberId || null,
@@ -211,6 +226,7 @@ export async function handleOrderFlow({ session, message, business, tenant, isIn
           data.totalPrice || 0,
           session.tenantId
         ).catch(() => {});
+
         if (data.totalPrice) {
           recordRevenue({
             item:          data.item?.name,
@@ -228,18 +244,86 @@ export async function handleOrderFlow({ session, message, business, tenant, isIn
       // Payment configured?
       const payment = business?.payment;
       if (payment?.enabled && data.totalPrice) {
-        const last4  = String(session.customerPhone).slice(-4);
         const waveNo = payment.wavePhone || payment.phone || 'N/A';
+        const shortId = savedOrder?.shortId || '';
+        // Generate reference: DSB-MMDD-XXXX
+        const now    = new Date();
+        const mmdd   = String(now.getMonth()+1).padStart(2,'0') + String(now.getDate()).padStart(2,'0');
+        const ref    = `DSB-${mmdd}-${shortId}`;
+
+        // Store the reference on the order
+        if (savedOrder?._id) {
+          const { default: Order } = await import('../../../models/Order.js');
+          Order.updateOne({ _id: savedOrder._id }, { $set: { paymentReference: ref } }).catch(() => {});
+        }
+
         await updateSession(session.customerPhone, session.tenantId, {
           step: 'PAYMENT_PROOF', currentFlow: 'ORDER',
         });
+
+        // Notify admin that a new order is pending payment
+        try {
+          const adminPhone = business?.adminPhone || tenant?.adminPhone;
+          if (adminPhone && tenant && savedOrder) {
+            const { dispatchMessage } = await import('../../../core/whatsapp/dispatcher.js');
+            const currency = payment.currency || 'D';
+            await dispatchMessage(adminPhone, {
+              type: 'text',
+              body:
+                `🔔 *New Order — ${business.name || 'Restaurant'}*\n\n` +
+                `👤 Customer: *${session.customerPhone}*\n` +
+                `🛒 Items: *${data.quantity}× ${data.item?.name}*\n` +
+                `💰 Total: *${currency}${data.totalPrice}*\n` +
+                `📝 Ref: *${ref}*\n\n` +
+                `⏳ Status: *Pending* — awaiting payment screenshot.`,
+            }, tenant).catch(() => {});
+          }
+        } catch { /* non-fatal */ }
+
         return {
           type: 'text',
-          body: `💳 *Payment*\n\nTotal: *D${data.totalPrice}*\nSend via *Wave* to: *${waveNo}*\n\nAfter paying, send your *screenshot* here. 📸`,
+          body:
+            `💳 *Payment Instructions*\n\n` +
+            `🛒 Total: *${payment.currency || 'D'}${data.totalPrice}*\n` +
+            `📝 Reference: *${ref}*\n\n` +
+            `─────────────────────\n` +
+            `📲 Send *${payment.currency || 'D'}${data.totalPrice}* via *Wave* to:\n\n` +
+            `📱 *${waveNo}*\n\n` +
+            `⚠️ Use *${ref}* as your payment reference.\n` +
+            `─────────────────────\n\n` +
+            `After sending, please *reply with a screenshot* of your Wave confirmation.\n\n` +
+            `We'll verify and confirm your order shortly ✅`,
         };
       }
 
-      // No payment — complete flow
+      // [FIX-3] No payment — notify admin with interactive buttons
+      try {
+        const adminPhone = business?.adminPhone || tenant?.adminPhone;
+        if (adminPhone && tenant && savedOrder) {
+          const { buildAdminOrderAlertBody } = await import('../handlers/uiBuilders.js');
+          const { dispatchMessage } = await import('../../../core/whatsapp/dispatcher.js');
+          const alertBody = buildAdminOrderAlertBody({
+            customerPhone: session.customerPhone,
+            item:          data.item?.name,
+            quantity:      data.quantity,
+            totalPrice:    data.totalPrice,
+            addOns:        data.addOns,
+            shortId:       savedOrder.shortId,
+            business,
+          });
+          await dispatchMessage(adminPhone, {
+            type:    'buttons',
+            body:    alertBody,
+            buttons: [
+              { id: `APPROVE_${savedOrder.shortId}`, title: '✅ Confirm Received' },
+              { id: `REJECT_${savedOrder.shortId}`,  title: '❌ Cancel Order'     },
+            ],
+          }, tenant).catch(() => {});
+        }
+      } catch (err) {
+        logger.warn('[OrderFlow] Admin notification failed (non-fatal)', { err: err.message });
+      }
+
       await completeFlow(session, 'ORDER');
       return buildOrderSuccess({ item: data.item, qty: data.quantity, business });
     }
@@ -255,10 +339,9 @@ async function _selectItem(item, session, business, data) {
     step: 'QUANTITY', data: { ...data, item }, menuViewed: true,
   });
 
-  // Smart recommendation
   const addOns    = business?.addOns || [];
   const addOnText = addOns.length
-    ? `\n\n💡 *${addOns[0].name}* pairs well with this — we'll ask at the end!`
+    ? `\n\n💡 *${addOns[0].name}* pairs well with this — we'll ask at checkout!`
     : '';
 
   return {

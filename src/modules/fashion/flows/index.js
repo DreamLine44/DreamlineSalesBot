@@ -107,11 +107,42 @@ export async function handleFashionOrder({ session, message, business, tenant, i
       if (!/^(yes|y|confirm|ok)$/i.test(clean)) {
         return { type: 'text', body: 'Tap *Confirm* to place your order.' };
       }
+      let savedOrder = null;
       try {
-        await saveOrder({ item: `${data.item?.name}${data.size ? ` (${data.size})` : ''}`,
+        savedOrder = await saveOrder({ item: `${data.item?.name}${data.size ? ` (${data.size})` : ''}`,
           quantity: data.quantity, totalPrice: data.totalPrice,
           customerPhone: session.customerPhone, tenantId: session.tenantId, businessId: business._id });
       } catch (err) { logger.error('[FashionModule] saveOrder failed', { err: err.message }); }
+
+      // [FIX-5] Payment flow — fashion was skipping payment even when payment.enabled=true
+      const payment = business?.payment;
+      if (payment?.enabled && data.totalPrice) {
+        const waveNo = payment.wavePhone || payment.phone || 'N/A';
+        await updateSession(session.customerPhone, session.tenantId, {
+          step: 'PAYMENT_PROOF', currentFlow: 'ORDER',
+        });
+        return {
+          type: 'text',
+          body: `💳 *Payment*\n\nTotal: *D${data.totalPrice}*\nSend via *Wave* to: *${waveNo}*\n\nAfter paying, send your *screenshot* here. 📸`,
+        };
+      }
+
+      // No payment — notify admin
+      try {
+        const adminPhone = business?.adminPhone || tenant?.adminPhone;
+        if (adminPhone && tenant && savedOrder) {
+          const { buildAdminOrderAlert } = await import('../../restaurant/handlers/uiBuilders.js');
+          const alert = buildAdminOrderAlert({
+            customerPhone: session.customerPhone,
+            item: `${data.item?.name}${data.size ? ` (${data.size})` : ''}`,
+            quantity: data.quantity, totalPrice: data.totalPrice,
+            shortId: savedOrder.shortId, business,
+          });
+          const { dispatchText } = await import('../../../core/whatsapp/dispatcher.js');
+          dispatchText(adminPhone, alert, tenant).catch(() => {});
+        }
+      } catch {}
+
       await completeFlow(session, 'ORDER');
       return { type: 'text', body: `✅ *Order confirmed!*\n\n👗 *${data.quantity}× ${data.item?.name}*\n\nWe'll reach out with delivery details. Thank you! ✨` };
     }

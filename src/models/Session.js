@@ -103,6 +103,9 @@ const sessionSchema = new mongoose.Schema({
   abandonedFlow: { type: String, default: null },
   abandonedItem: { type: String, default: null },
 
+  // [FIX-BUG3] Tracks whether we have already sent closed-hours message
+  closedMsgSent: { type: Boolean, default: false },
+
   expiresAt: {
     type: Date,
     default: () => new Date(Date.now() + SESSION_TTL_MS),

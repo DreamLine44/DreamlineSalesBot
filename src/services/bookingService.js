@@ -1,18 +1,31 @@
 /**
  * services/bookingService.js
+ *
+ * [FIX-BUG5] Now calls recordBooking() after every successful booking so
+ *            customer memory stats.totalBookings is actually tracked.
  */
 import Booking from '../models/Booking.js';
+import { recordBooking } from '../core/memory/customerMemory.js';
+import logger from '../config/logger.js';
 
-export async function saveBooking({ customerPhone, customerName, date, time, service, parsedDate, tenantId, businessId }) {
-  // NOTE: do NOT set shortId here — Booking.pre('save') hook auto-populates it
-  // from the last 6 hex chars of _id, consistent with admin command lookups.
-  return Booking.create({
-    customerPhone, customerName: customerName || null,
-    date, time, service: service || null,
-    parsedDate: parsedDate || null,
+export async function saveBooking({ customerPhone, customerName, date, time, service, partySize, parsedDate, tenantId, businessId }) {
+  const booking = await Booking.create({
+    customerPhone,
+    customerName:  customerName || null,
+    date, time,
+    service:       service   || null,
+    partySize:     partySize || null,
+    parsedDate:    parsedDate || null,
     tenantId, businessId,
     status: 'pending',
   });
+
+  // [FIX-BUG5] Update customer memory — fire-and-forget
+  recordBooking(customerPhone, String(tenantId)).catch(err =>
+    logger.debug('[BookingService] recordBooking failed (non-fatal)', { err: err.message })
+  );
+
+  return booking;
 }
 
 export async function getBookingByShortId(shortId, tenantId) {

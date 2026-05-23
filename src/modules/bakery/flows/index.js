@@ -94,8 +94,9 @@ export async function handleCakeCustomization({ session, message, business, tena
       if (!/^(yes|y|confirm|ok|sure)$/i.test(raw.toLowerCase())) {
         return { type: 'text', body: 'Tap *Confirm* to place your cake order, or *Cancel* to start over.' };
       }
+      let savedOrder = null;
       try {
-        await saveOrder({
+        savedOrder = await saveOrder({
           item:         `Custom Cake — ${data.flavor} (${data.size})`,
           quantity:     1,
           totalPrice:   0,
@@ -106,6 +107,24 @@ export async function handleCakeCustomization({ session, message, business, tena
       } catch (err) {
         logger.error('[BakeryModule] saveCakeOrder failed', { err: err.message });
       }
+
+      // [FIX-9] Notify admin — bakery cake orders were placed silently with no alert
+      try {
+        const adminPhone = business?.adminPhone || tenant?.adminPhone;
+        if (adminPhone && tenant && savedOrder) {
+          const { dispatchText } = await import('../../../core/whatsapp/dispatcher.js');
+          const alert =
+            `🎂 *Custom Cake Order — ${business?.name || 'Bakery'}*\n\n` +
+            `👤 Customer: ${session.customerPhone}\n` +
+            `🍰 Flavour: *${data.flavor}*\n` +
+            `📏 Size: *${data.size}*\n` +
+            `📅 For: *${data.eventDate}*\n` +
+            `🔖 Ref: \`${savedOrder.shortId}\`\n\n` +
+            `Please contact customer to confirm pricing.`;
+          dispatchText(adminPhone, alert, tenant).catch(() => {});
+        }
+      } catch {}
+
       await completeFlow(session, 'ORDER');
       return {
         type: 'text',

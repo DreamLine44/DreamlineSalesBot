@@ -134,6 +134,16 @@ export async function handleBookingFlow({ session, message, business, tenant, is
         buttons: [{ id: 'CANCEL', title: '❌ Cancel' }],
       };
     }
+    // No services — for restaurants ask party size first, then date
+    const isRestaurant = (business?.businessMode || '').toUpperCase() === 'RESTAURANT';
+    if (isRestaurant) {
+      await updateSession(session.customerPhone, session.tenantId, { step: 'PARTY_SIZE', data: {} });
+      return {
+        type:    'buttons',
+        body:    `How many guests will be dining? 👥\n\n(e.g. *2*, *4*, *six*)`,
+        buttons: [{ id: 'CANCEL', title: '❌ Cancel Booking' }],
+      };
+    }
     return {
       type:    'buttons',
       body:    `What date would you like to book? 📅\n\n(e.g. *25 June*, *tomorrow*, *next Monday*)`,
@@ -158,13 +168,47 @@ export async function handleBookingFlow({ session, message, business, tenant, is
         return { type: 'text', body: `Please choose a service by number or name:\n\n${list}` };
       }
 
+      // [FIX-7] For RESTAURANT mode, ask how many people (partySize) after service selection.
+      // The Booking model has a partySize field but the flow never captured it — admin had
+      // no idea how many covers to prepare.
+      const isRestaurant = (business?.businessMode || '').toUpperCase() === 'RESTAURANT';
+      const nextStep = isRestaurant ? 'PARTY_SIZE' : 'DATE';
+
       await updateSession(session.customerPhone, session.tenantId, {
-        step: 'DATE', data: { ...data, service: service.name, serviceDuration: service.duration, servicePrice: service.price },
+        step: nextStep, data: { ...data, service: service.name, serviceDuration: service.duration, servicePrice: service.price },
       });
+
+      if (isRestaurant) {
+        return {
+          type:    'buttons',
+          body:    `Great — *${service.name}* selected! ✅\n\nHow many guests will be dining? 👥\n\n(e.g. *2*, *4*, *six*)`,
+          buttons: [{ id: 'CANCEL', title: '❌ Cancel' }],
+        };
+      }
       return {
         type:    'buttons',
         body:    `Great — *${service.name}* selected! ✅\n\nWhat date would you like? 📅\n\n(e.g. *25 June*, *tomorrow*, *next Friday*)`,
         buttons: [{ id: 'CANCEL', title: '❌ Cancel' }],
+      };
+    }
+
+    // [FIX-7] PARTY_SIZE step — only reached for RESTAURANT mode
+    case 'PARTY_SIZE': {
+      const { parseQuantity } = await import('../../utils/parseQuantity.js');
+      const partySize = parseQuantity(raw);
+      if (!partySize || partySize < 1 || partySize > 50) {
+        return {
+          type: 'text',
+          body: `Please enter the number of guests (e.g. *2*, *4*, *six*):`,
+        };
+      }
+      await updateSession(session.customerPhone, session.tenantId, {
+        step: 'DATE', data: { ...data, partySize },
+      });
+      return {
+        type:    'buttons',
+        body:    `Perfect — *${partySize} guest${partySize > 1 ? 's' : ''}* 👥\n\nWhat date would you like? 📅\n\n(e.g. *25 June*, *tomorrow*, *next Monday*)`,
+        buttons: [{ id: 'CANCEL', title: '❌ Cancel Booking' }],
       };
     }
 
@@ -279,7 +323,7 @@ export async function handleBookingFlow({ session, message, business, tenant, is
 
       // Save booking
       const customerName = session.customerName || null;
-      const { date, time, service, parsedDate } = data;
+      const { date, time, service, parsedDate, partySize } = data;
 
       let savedBooking = null;
       try {
@@ -287,6 +331,7 @@ export async function handleBookingFlow({ session, message, business, tenant, is
           customerPhone: session.customerPhone,
           customerName,
           date, time, service,
+          partySize:    partySize || null,
           parsedDate:   parsedDate || tryParseDate(date),
           tenantId:     session.tenantId,
           businessId:   business._id,
@@ -310,15 +355,25 @@ export async function handleBookingFlow({ session, message, business, tenant, is
       try {
         const adminPhone = business?.adminPhone || tenant?.adminPhone;
         if (adminPhone && tenant && savedBooking) {
-          const alertText = buildAdminBookingAlert({
+          const { buildAdminBookingAlertBody } = await import('../../services/adminCommandService.js');
+          const { dispatchMessage } = await import('../whatsapp/dispatcher.js');
+          const alertBody = buildAdminBookingAlertBody({
             customerPhone: session.customerPhone,
             date,
             time,
             service,
+            partySize:   partySize || null,
             business,
             shortId: savedBooking.shortId,
           });
-          dispatchText(adminPhone, alertText, tenant).catch(() => {});
+          await dispatchMessage(adminPhone, {
+            type:    'buttons',
+            body:    alertBody,
+            buttons: [
+              { id: `CONFIRM_BOOK_${savedBooking.shortId}`, title: '✅ Confirm' },
+              { id: `DECLINE_BOOK_${savedBooking.shortId}`, title: '❌ Decline' },
+            ],
+          }, tenant).catch(() => {});
         }
       } catch (err) {
         logger.warn('[BookingFlow] Admin notification failed (non-fatal)', { err: err.message });
@@ -329,7 +384,9 @@ export async function handleBookingFlow({ session, message, business, tenant, is
       const confirmBody =
         `✅ *Booking confirmed!*\n\n` +
         (service ? `🗓 *${service}*\n` : '') +
-        `📅 *${date}*\n⏰ *${time}*\n\nWe look forward to seeing you! 😊`;
+        `📅 *${date}*\n⏰ *${time}*\n` +
+        (partySize ? `👥 *${partySize} guest${partySize > 1 ? 's' : ''}*\n` : '') +
+        `\nWe look forward to seeing you! 😊`;
 
       return { type: 'text', body: confirmBody };
     }

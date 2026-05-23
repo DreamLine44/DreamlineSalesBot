@@ -1,7 +1,10 @@
 /**
- * config/modes.js — WhatSalesAgent2
- * Returns the correct mode config for any business type.
- * All modules pull from here; never hardcode mode logic in controllers.
+ * config/modes.js — WhatSalesAgent (Merged)
+ *
+ * [FIX-BUG15] getLabel() now checks business.customMessages FIRST, then falls
+ *             back to module config defaults. Previously customMessages was saved
+ *             to the DB but getLabel() only read from module configs — owner
+ *             overrides silently had no effect on any bot message.
  */
 
 import { RESTAURANT_CONFIG } from '../modules/restaurant/configs/index.js';
@@ -28,15 +31,43 @@ const MODE_MAP = {
   DELIVERY:    RESTAURANT_CONFIG,
 };
 
+// customMessages key → module messages key mapping
+const CUSTOM_MSG_KEY_MAP = {
+  welcomeMessage: 'welcome',
+  afterOrder:     'afterOrder',
+  afterBooking:   'afterBooking',
+  cancelMsg:      'cancelMsg',
+  fallback:       'fallback',
+  orderPrompt:    'orderPrompt',
+  bookPrompt:     'bookPrompt',
+  servicePrompt:  'servicePrompt',
+  timePrompt:     'timePrompt',
+  closed:         'closed',
+};
+
 export function getModeConfig(business) {
   const mode = (business?.businessMode || 'RETAIL').toUpperCase();
   return MODE_MAP[mode] || RESTAURANT_CONFIG;
 }
 
+/**
+ * getLabel(business, key, ...args)
+ *
+ * [FIX-BUG15] Checks business.customMessages FIRST (operator overrides),
+ * then falls back to the module default from cfg.messages.
+ *
+ * Supports {0}, {1} template substitution.
+ */
 export function getLabel(business, key, ...args) {
-  const cfg  = getModeConfig(business);
-  const tmpl = cfg.messages?.[key] || null;
+  const cfg = getModeConfig(business);
+
+  // 1. Check customMessages override (operator-defined, stored in BusinessConfig)
+  const customKey = Object.keys(CUSTOM_MSG_KEY_MAP).find(k => CUSTOM_MSG_KEY_MAP[k] === key) || key;
+  const customMsg = business?.customMessages?.[customKey] || business?.customMessages?.[key];
+
+  const tmpl = (customMsg && customMsg.trim()) || cfg.messages?.[key] || null;
   if (!tmpl) return null;
+
   let out = tmpl;
   args.forEach((val, i) => {
     out = out.replace(new RegExp(`\\{${i}\\}`, 'g'), val ?? '');
@@ -45,5 +76,7 @@ export function getLabel(business, key, ...args) {
 }
 
 export function getSupportedModes() {
-  return Object.keys(MODE_MAP).filter(k => !['FOOD','CAFE','RETAIL','SUPERMARKET','PHARMACY','DELIVERY'].includes(k));
+  return Object.keys(MODE_MAP).filter(k =>
+    !['FOOD','CAFE','RETAIL','SUPERMARKET','PHARMACY','DELIVERY'].includes(k)
+  );
 }

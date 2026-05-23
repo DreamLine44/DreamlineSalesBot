@@ -1,12 +1,20 @@
 /**
  * modules/restaurant/handlers/uiBuilders.js
- * Builds WhatsApp-ready UI objects for the order flow.
+ *
+ * [FIX-BUG11] buildAdminOrderAlertBody no longer hardcodes "Cash / On delivery".
+ *             It now checks payment.enabled to show the correct payment mode.
+ * [FIX-BUG14] buildMenuUI returns a Contact Us button on empty menu (not plain text).
  */
 
 export function buildMenuUI(business) {
   const items = (business?.menuItems || []).filter(i => i.available !== false);
   if (!items.length) {
-    return { type: 'text', body: '⚠️ Menu not available. Please contact us directly.' };
+    // [FIX-BUG14] Return a button so there's somewhere to go
+    return {
+      type:    'buttons',
+      body:    '⚠️ Our menu is being updated. Please contact us directly or check back soon.',
+      buttons: [{ id: 'SUPPORT', title: '💬 Contact Us' }],
+    };
   }
   const rows = items.map((item, i) => ({
     id:          String(i + 1),
@@ -31,7 +39,7 @@ export function buildOrderSummary({ item, qty, total, addOns = [], business }) {
     body: `🧾 *Order Summary*\n\n🍽 *${qty}× ${name}*${addOnStr}${total ? `\n💰 Total: *${currency}${total}*` : ''}\n\nConfirm your order?`,
     buttons: [
       { id: 'CONFIRM', title: '✅ Confirm Order' },
-      { id: 'CANCEL',  title: '❌ Cancel' },
+      { id: 'CANCEL',  title: '❌ Cancel'        },
     ],
   };
 }
@@ -39,8 +47,47 @@ export function buildOrderSummary({ item, qty, total, addOns = [], business }) {
 export function buildOrderSuccess({ item, qty, business }) {
   const name     = typeof item === 'object' ? item.name : (item || 'your item');
   const quantity = qty || 1;
+  const canBook  = (business?.services || []).length > 0;
+  const buttons  = [
+    { id: 'ORDER',    title: '🛍 Order Again'  },
+    canBook ? { id: 'BOOK', title: '📅 Book a Table' } : null,
+    { id: 'SHOW_MENU', title: '🏠 Main Menu'  },
+  ].filter(Boolean).slice(0, 3);
+
   return {
-    type: 'text',
-    body: `✅ *Order placed!*\n\n🍳 *${quantity}× ${name}* — we're preparing it now.\n\nThank you! 😊`,
+    type:    'buttons',
+    body:    `✅ *Order placed!*\n\n🍳 *${quantity}× ${name}* — we're preparing it now.\n\nThank you! 😊`,
+    buttons,
   };
+}
+
+/**
+ * buildAdminOrderAlertBody
+ * [FIX-BUG11] Shows correct payment mode — no longer hardcodes "Cash / On delivery"
+ *             when the business has Wave payment enabled.
+ */
+export function buildAdminOrderAlertBody({ customerPhone, item, quantity, totalPrice, addOns = [], shortId, business }) {
+  const bizName    = business?.name || 'Business';
+  const currency   = business?.payment?.currency || 'D';
+  const payEnabled = business?.payment?.enabled;
+  const addOnStr   = addOns?.length ? `\n➕ Add-ons: ${addOns.join(', ')}` : '';
+  const priceStr   = totalPrice ? `\n💰 Total: *${currency}${totalPrice}*` : '';
+  const idStr      = shortId ? `\n🔖 Ref: \`${shortId}\`` : '';
+  // [FIX-BUG11] Check actual payment configuration
+  const paymentMode = payEnabled && totalPrice
+    ? `*Wave — awaiting screenshot verification*`
+    : `*Cash / On delivery*`;
+
+  return (
+    `🔔 *New Order — ${bizName}*\n\n` +
+    `👤 Customer: ${customerPhone}\n` +
+    `🍽 *${quantity}× ${item}*${addOnStr}${priceStr}${idStr}\n\n` +
+    `💵 *Payment:* ${paymentMode}\n\n` +
+    `Status: *Pending* — please prepare.`
+  );
+}
+
+/** @deprecated — use buildAdminOrderAlertBody */
+export function buildAdminOrderAlert(args) {
+  return buildAdminOrderAlertBody(args);
 }

@@ -1,18 +1,29 @@
 /**
  * services/orderService.js
+ *
+ * [FIX-BUG5] Now calls recordOrderItem() after every successful save so that
+ *            customer memory / personalisation / repeat-order features actually work.
+ *            Previously customerMemory was defined but never invoked from here.
  */
 import Order  from '../models/Order.js';
+import { recordOrderItem } from '../core/memory/customerMemory.js';
+import logger from '../config/logger.js';
 
 export async function saveOrder({ item, quantity, totalPrice, addOns, customerPhone, tenantId, businessId }) {
-  // NOTE: do NOT set shortId here — Order.pre('save') hook auto-populates it
-  // from the last 6 hex chars of _id, keeping it consistent with admin command lookups.
-  return Order.create({
+  const order = await Order.create({
     item, quantity, totalPrice,
     addOns:        addOns || [],
     customerPhone, tenantId, businessId,
     status:        'pending',
     paymentStatus: 'unpaid',
   });
+
+  // [FIX-BUG5] Update customer memory — fire-and-forget, never blocks order completion
+  recordOrderItem(customerPhone, String(tenantId), item).catch(err =>
+    logger.debug('[OrderService] recordOrderItem failed (non-fatal)', { err: err.message })
+  );
+
+  return order;
 }
 
 export async function getRecentOrders(customerPhone, tenantId, limit = 5) {

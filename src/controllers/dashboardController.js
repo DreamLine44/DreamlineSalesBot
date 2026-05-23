@@ -1,115 +1,471 @@
 /**
- * controllers/dashboardController.js — WhatSalesAgent2
+ * controllers/dashboardController.js — WhatSalesAgent (Merged v1+v2)
+ *
+ * FIXES applied:
+ * [FIX-6a] updateOrderStatus now validates the status value and notifies the customer
+ *          via WhatsApp when their order is confirmed or rejected/cancelled.
+ *          V2 was silently updating DB with no customer notification.
+ *
+ * [FIX-6b] updateBookingStatus now notifies customer on confirm/cancel — mirrors
+ *          v1 dashboard behaviour. V2 was silently updating DB only.
+ *
+ * [FIX-9]  Status enum validation on both update endpoints — unhandled Mongoose
+ *          ValidationError previously returned a 500 with a raw Mongoose stack trace.
+ *
+ * [MERGED] Full FAQ + Services CRUD from v1 dashboard, now available on the
+ *          dashboard routes so operators don't need separate /business calls.
+ *          v2 only had these under /business/:tenantId — added here for convenience.
+ *
+ * [MERGED] getOrderHistory — shows last 5 orders per customer (from v1).
+ *          V2 TRACK_ORDER only showed 1 order. Added as a separate dashboard endpoint.
  */
+
 import Order          from '../models/Order.js';
 import Booking        from '../models/Booking.js';
 import Session        from '../models/Session.js';
 import UserProfile    from '../models/UserProfile.js';
 import BusinessConfig from '../models/BusinessConfig.js';
+import Tenant         from '../models/Tenant.js';
 import { getAnalyticsSummary } from '../core/analytics/analyticsService.js';
+import { dispatchText }        from '../core/whatsapp/dispatcher.js';
+import logger from '../config/logger.js';
+
+// ── Helper: load tenant doc for WhatsApp dispatch ─────────────────────────────
+async function loadTenant(tenantId) {
+  return Tenant.findById(tenantId).lean().catch(() => null);
+}
+
+// ── Overview ──────────────────────────────────────────────────────────────────
+export async function getDashboardOverview(req, res) {
+  try {
+    const { tenantId } = req.params;
+    const since30 = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+
+    const [orders, bookings, customers, humanModes, analytics, business] = await Promise.all([
+      Order.countDocuments({ tenantId, createdAt: { $gte: since30 } }),
+      Booking.countDocuments({ tenantId, createdAt: { $gte: since30 } }),
+      UserProfile.countDocuments({ tenantId }),
+      Session.countDocuments({ tenantId, humanMode: true }),
+      getAnalyticsSummary(tenantId, 30),
+      BusinessConfig.findOne({ tenantId }).select('name businessMode adminPhone').lean(),
+    ]);
+
+    res.json({
+      business,
+      last30Days: { orders, bookings, customers, revenue: analytics.revenue },
+      activeHumanSessions: humanModes,
+    });
+  } catch (err) {
+    logger.error('[Dashboard] getDashboardOverview failed', { err: err.message });
+    res.status(500).json({ error: err.message });
+  }
+}
+
 // ── Orders ────────────────────────────────────────────────────────────────────
 export async function getOrders(req, res) {
-  const { tenantId } = req.params;
-  const { status, limit = 50, page = 1 } = req.query;
-  const filter = { tenantId, ...(status ? { status } : {}) };
-  const skip   = (Number(page) - 1) * Number(limit);
-  const [orders, total] = await Promise.all([
-    Order.find(filter).sort({ createdAt: -1 }).skip(skip).limit(Number(limit)).lean(),
-    Order.countDocuments(filter),
-  ]);
-  res.json({ orders, total, page: Number(page), pages: Math.ceil(total / Number(limit)) });
+  try {
+    const { tenantId } = req.params;
+    const { status, limit = 50, page = 1 } = req.query;
+    const filter = { tenantId, ...(status ? { status } : {}) };
+    const skip   = (Number(page) - 1) * Number(limit);
+    const [orders, total] = await Promise.all([
+      Order.find(filter).sort({ createdAt: -1 }).skip(skip).limit(Number(limit)).lean(),
+      Order.countDocuments(filter),
+    ]);
+    res.json({ orders, total, page: Number(page), pages: Math.ceil(total / Number(limit)) });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 }
 
 export async function updateOrderStatus(req, res) {
-  const { tenantId, orderId } = req.params;
-  const { status } = req.body;
-  const order = await Order.findOneAndUpdate(
-    { _id: orderId, tenantId }, { $set: { status } }, { new: true },
-  );
-  if (!order) return res.status(404).json({ error: 'Order not found' });
-  res.json({ order });
+  try {
+    const { tenantId, orderId } = req.params;
+    const { status, notes } = req.body;
+
+    // [FIX-9] Validate status before hitting Mongoose to return a clean 400
+    const VALID_ORDER_STATUSES = ['pending', 'confirmed', 'completed', 'cancelled', 'payment_failed', 'rejected'];
+    if (!VALID_ORDER_STATUSES.includes(status)) {
+      return res.status(400).json({ error: `Invalid status. Must be one of: ${VALID_ORDER_STATUSES.join(', ')}` });
+    }
+
+    const order = await Order.findOneAndUpdate(
+      { _id: orderId, tenantId },
+      { $set: { status, ...(notes ? { notes } : {}) } },
+      { new: true },
+    );
+    if (!order) return res.status(404).json({ error: 'Order not found' });
+
+    // [FIX-6a] Notify customer — V2 was silently updating DB with no customer message
+    try {
+      const tenant = await loadTenant(tenantId);
+      if (tenant && order.customerPhone) {
+        if (status === 'confirmed') {
+          await dispatchText(order.customerPhone,
+            `✅ *Your order is confirmed!*\n\n🍽 *${order.item}* × ${order.quantity}\n\nThank you for your patience! 😊`,
+            tenant);
+        } else if (status === 'cancelled' || status === 'rejected') {
+          await dispatchText(order.customerPhone,
+            `❌ *Order update*\n\nUnfortunately your order (*${order.item}*) has been ${status}.${notes ? `\n\nNote: ${notes}` : ''}\n\nPlease contact us if you have questions.`,
+            tenant);
+        } else if (status === 'completed') {
+          await dispatchText(order.customerPhone,
+            `🎉 *Order completed!*\n\nYour order of *${order.item}* is done. Enjoy! 😊`,
+            tenant);
+        }
+      }
+    } catch (notifyErr) {
+      logger.warn('[Dashboard] Customer notification failed (non-fatal)', { err: notifyErr.message });
+    }
+
+    res.json({ order });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+}
+
+// [MERGED from V1] Customer order history — last 5 orders
+export async function getCustomerOrderHistory(req, res) {
+  try {
+    const { tenantId, customerPhone } = req.params;
+    const { limit = 5 } = req.query;
+    const orders = await Order.find({ tenantId, customerPhone })
+      .sort({ createdAt: -1 }).limit(Number(limit)).lean();
+    res.json({ orders, count: orders.length, customerPhone });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 }
 
 // ── Bookings ──────────────────────────────────────────────────────────────────
 export async function getBookings(req, res) {
-  const { tenantId } = req.params;
-  const { status, limit = 50, page = 1 } = req.query;
-  const filter = { tenantId, ...(status ? { status } : {}) };
-  const skip   = (Number(page) - 1) * Number(limit);
-  const [bookings, total] = await Promise.all([
-    Booking.find(filter).sort({ createdAt: -1 }).skip(skip).limit(Number(limit)).lean(),
-    Booking.countDocuments(filter),
-  ]);
-  res.json({ bookings, total, page: Number(page), pages: Math.ceil(total / Number(limit)) });
+  try {
+    const { tenantId } = req.params;
+    const { status, limit = 50, page = 1 } = req.query;
+    const filter = { tenantId, ...(status ? { status } : {}) };
+    const skip   = (Number(page) - 1) * Number(limit);
+    const [bookings, total] = await Promise.all([
+      Booking.find(filter).sort({ createdAt: -1 }).skip(skip).limit(Number(limit)).lean(),
+      Booking.countDocuments(filter),
+    ]);
+    res.json({ bookings, total, page: Number(page), pages: Math.ceil(total / Number(limit)) });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 }
 
 export async function updateBookingStatus(req, res) {
-  const { tenantId, bookingId } = req.params;
-  const { status, adminNote } = req.body;
-  const booking = await Booking.findOneAndUpdate(
-    { _id: bookingId, tenantId },
-    { $set: { status, ...(adminNote ? { adminNote } : {}) } },
-    { new: true },
-  );
-  if (!booking) return res.status(404).json({ error: 'Booking not found' });
-  res.json({ booking });
+  try {
+    const { tenantId, bookingId } = req.params;
+    const { status, adminNote } = req.body;
+
+    // [FIX-9] Validate status
+    const VALID_BOOKING_STATUSES = ['pending', 'confirmed', 'completed', 'cancelled'];
+    if (!VALID_BOOKING_STATUSES.includes(status)) {
+      return res.status(400).json({ error: `Invalid status. Must be one of: ${VALID_BOOKING_STATUSES.join(', ')}` });
+    }
+
+    const booking = await Booking.findOneAndUpdate(
+      { _id: bookingId, tenantId },
+      { $set: { status, ...(adminNote ? { adminNote } : {}) } },
+      { new: true },
+    );
+    if (!booking) return res.status(404).json({ error: 'Booking not found' });
+
+    // [FIX-6b] Notify customer — V2 was silently updating DB with no customer message
+    try {
+      const tenant = await loadTenant(tenantId);
+      if (tenant && booking.customerPhone) {
+        const when = booking.time ? `${booking.date} at ${booking.time}` : booking.date;
+        const svcStr = booking.service ? ` (${booking.service})` : '';
+        const partySuffix = booking.partySize ? ` for ${booking.partySize} guest${booking.partySize > 1 ? 's' : ''}` : '';
+
+        if (status === 'confirmed') {
+          await dispatchText(booking.customerPhone,
+            `✅ *Booking Confirmed!*\n\n📅 *${when}*${svcStr}${partySuffix}\n\nWe look forward to seeing you! 😊`,
+            tenant);
+        } else if (status === 'cancelled') {
+          const reason = adminNote ? `\n\nReason: ${adminNote}` : '';
+          await dispatchText(booking.customerPhone,
+            `❌ *Booking Cancelled*\n\nSorry, your booking${svcStr} for *${when}* has been cancelled.${reason}\n\nPlease contact us to reschedule.`,
+            tenant);
+        } else if (status === 'completed') {
+          await dispatchText(booking.customerPhone,
+            `🎉 Thank you for visiting${svcStr ? ` for your ${booking.service}` : ''}! We hope to see you again soon. 😊`,
+            tenant);
+        }
+      }
+    } catch (notifyErr) {
+      logger.warn('[Dashboard] Booking notification failed (non-fatal)', { err: notifyErr.message });
+    }
+
+    res.json({ booking });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 }
 
 // ── Analytics ─────────────────────────────────────────────────────────────────
 export async function getAnalytics(req, res) {
-  const { tenantId } = req.params;
-  const { days = 30 } = req.query;
-  const summary = await getAnalyticsSummary(tenantId, Number(days));
-  res.json(summary);
+  try {
+    const { tenantId } = req.params;
+    const { days = 30 } = req.query;
+    const summary = await getAnalyticsSummary(tenantId, Number(days));
+    res.json(summary);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 }
 
 // ── Conversations / Sessions ──────────────────────────────────────────────────
 export async function getConversations(req, res) {
-  const { tenantId } = req.params;
-  const { limit = 30 } = req.query;
-  const sessions = await Session.find({ tenantId })
-    .sort({ lastSeen: -1 }).limit(Number(limit))
-    .select('customerPhone customerName lastSeen messageCount humanMode currentFlow').lean();
-  res.json({ conversations: sessions });
+  try {
+    const { tenantId } = req.params;
+    const { limit = 30 } = req.query;
+    const sessions = await Session.find({ tenantId })
+      .sort({ lastSeen: -1 }).limit(Number(limit))
+      .select('customerPhone customerName lastSeen messageCount humanMode currentFlow').lean();
+    res.json({ conversations: sessions, count: sessions.length });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 }
 
 export async function setHumanMode(req, res) {
-  const { tenantId, phone } = req.params;
-  const { humanMode } = req.body;
-  // [FIX] Session.customerPhone != Session.phone (composite key). Use sessionService
-  // which builds the correct composite key instead of querying by customerPhone directly.
-  const { updateSession } = await import('../core/sessions/sessionService.js');
-  const session = await updateSession(phone, tenantId, { humanMode: Boolean(humanMode) });
-  if (!session) return res.status(404).json({ error: 'Session not found' });
-  res.json({ ok: true, humanMode: session.humanMode });
+  try {
+    const { tenantId, phone } = req.params;
+    const { humanMode } = req.body;
+    if (typeof humanMode !== 'boolean') {
+      return res.status(400).json({ error: 'humanMode must be a boolean' });
+    }
+    const { updateSession } = await import('../core/sessions/sessionService.js');
+    const session = await updateSession(phone, tenantId, { humanMode });
+    if (!session) return res.status(404).json({ error: 'Session not found' });
+
+    // If handing back to bot, let the customer know
+    if (!humanMode) {
+      try {
+        const tenant = await loadTenant(tenantId);
+        if (tenant) {
+          await dispatchText(phone,
+            `You're now connected back to our automated assistant. How can we help? 😊`,
+            tenant);
+        }
+      } catch {}
+    }
+
+    res.json({ ok: true, humanMode: session.humanMode });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 }
 
 // ── Customers ─────────────────────────────────────────────────────────────────
 export async function getCustomers(req, res) {
-  const { tenantId } = req.params;
-  const { limit = 50 } = req.query;
-  const profiles = await UserProfile.find({ tenantId })
-    .sort({ updatedAt: -1 }).limit(Number(limit)).lean();
-  res.json({ customers: profiles });
+  try {
+    const { tenantId } = req.params;
+    const { limit = 50 } = req.query;
+    const profiles = await UserProfile.find({ tenantId })
+      .sort({ updatedAt: -1 }).limit(Number(limit)).lean();
+    res.json({ customers: profiles, count: profiles.length });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 }
 
 // ── Business settings ─────────────────────────────────────────────────────────
-export async function getDashboardOverview(req, res) {
-  const { tenantId } = req.params;
-  const since30 = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+export async function getBusinessSettings(req, res) {
+  try {
+    const { tenantId } = req.params;
+    const business = await BusinessConfig.findOne({ tenantId })
+      .select('name description businessMode adminPhone menuItems services faq payment leadCapture hours customMessages addOns settings')
+      .lean();
+    if (!business) return res.status(404).json({ error: 'Business not found' });
+    res.json({ business });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+}
 
-  const [orders, bookings, customers, humanModes, analytics, business] = await Promise.all([
-    Order.countDocuments({ tenantId, createdAt: { $gte: since30 } }),
-    Booking.countDocuments({ tenantId, createdAt: { $gte: since30 } }),
-    UserProfile.countDocuments({ tenantId }),
-    Session.countDocuments({ tenantId, humanMode: true }),
-    getAnalyticsSummary(tenantId, 30),
-    BusinessConfig.findOne({ tenantId }).select('name businessMode adminPhone').lean(),
-  ]);
+export async function updateBusinessSettings(req, res) {
+  try {
+    const { tenantId } = req.params;
+    const allowed = ['name', 'description', 'adminPhone', 'payment', 'leadCapture',
+                     'customMessages', 'hours', 'settings', 'businessMode', 'addOns'];
+    const updates = {};
+    for (const key of allowed) {
+      if (req.body[key] !== undefined) updates[key] = req.body[key];
+    }
+    if (!Object.keys(updates).length) return res.status(400).json({ error: 'No valid fields to update' });
+    const business = await BusinessConfig.findOneAndUpdate(
+      { tenantId }, { $set: updates }, { new: true, runValidators: true }
+    );
+    if (!business) return res.status(404).json({ error: 'Business not found' });
+    res.json({ ok: true, business });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+}
 
-  res.json({
-    business,
-    last30Days: { orders, bookings, customers, revenue: analytics.revenue },
-    activeHumanSessions: humanModes,
-  });
+// ── Menu CRUD [MERGED from V1] ─────────────────────────────────────────────────
+export async function getMenu(req, res) {
+  try {
+    const biz = await BusinessConfig.findOne({ tenantId: req.params.tenantId })
+      .select('menuItems').lean();
+    if (!biz) return res.status(404).json({ error: 'Not found' });
+    res.json({ menuItems: biz.menuItems || [], count: (biz.menuItems || []).length });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+}
+
+export async function addMenuItem(req, res) {
+  try {
+    const { tenantId } = req.params;
+    const { name, price, description, category, available = true, keywords = [] } = req.body;
+    if (!name) return res.status(400).json({ error: 'name required' });
+
+    const biz = await BusinessConfig.findOneAndUpdate(
+      { tenantId },
+      { $push: { menuItems: { name, price: Number(price) || 0, description, category, available, keywords } } },
+      { new: true },
+    );
+    if (!biz) return res.status(404).json({ error: 'Not found' });
+    res.status(201).json({ menuItems: biz.menuItems });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+}
+
+export async function updateMenuItem(req, res) {
+  try {
+    const { tenantId, itemId } = req.params;
+    const { name, price, description, category, available, keywords } = req.body;
+    const patch = {};
+    if (name        !== undefined) patch['menuItems.$.name']        = name;
+    if (price       !== undefined) patch['menuItems.$.price']       = Number(price);
+    if (description !== undefined) patch['menuItems.$.description'] = description;
+    if (category    !== undefined) patch['menuItems.$.category']    = category;
+    if (available   !== undefined) patch['menuItems.$.available']   = available;
+    if (keywords    !== undefined) patch['menuItems.$.keywords']    = keywords;
+
+    const biz = await BusinessConfig.findOneAndUpdate(
+      { tenantId, 'menuItems._id': itemId },
+      { $set: patch },
+      { new: true },
+    );
+    if (!biz) return res.status(404).json({ error: 'Item not found' });
+    res.json({ menuItems: biz.menuItems });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+}
+
+export async function deleteMenuItem(req, res) {
+  try {
+    const { tenantId, itemId } = req.params;
+    await BusinessConfig.updateOne({ tenantId }, { $pull: { menuItems: { _id: itemId } } });
+    res.json({ ok: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+}
+
+// ── Services CRUD [MERGED from V1] ────────────────────────────────────────────
+export async function getServices(req, res) {
+  try {
+    const biz = await BusinessConfig.findOne({ tenantId: req.params.tenantId })
+      .select('services').lean();
+    if (!biz) return res.status(404).json({ error: 'Not found' });
+    res.json({ services: biz.services || [], count: (biz.services || []).length });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+}
+
+export async function addService(req, res) {
+  try {
+    const { tenantId } = req.params;
+    const { name, price, description, duration, available = true } = req.body;
+    if (!name) return res.status(400).json({ error: 'name required' });
+
+    const biz = await BusinessConfig.findOneAndUpdate(
+      { tenantId },
+      { $push: { services: { name, price: Number(price) || 0, description, duration: Number(duration) || 30, available } } },
+      { new: true },
+    );
+    if (!biz) return res.status(404).json({ error: 'Not found' });
+    res.status(201).json({ services: biz.services });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+}
+
+export async function updateService(req, res) {
+  try {
+    const { tenantId, serviceId } = req.params;
+    const { name, price, description, duration, available } = req.body;
+    const patch = {};
+    if (name        !== undefined) patch['services.$.name']        = name;
+    if (price       !== undefined) patch['services.$.price']       = Number(price);
+    if (description !== undefined) patch['services.$.description'] = description;
+    if (duration    !== undefined) patch['services.$.duration']    = Number(duration);
+    if (available   !== undefined) patch['services.$.available']   = available;
+
+    const biz = await BusinessConfig.findOneAndUpdate(
+      { tenantId, 'services._id': serviceId },
+      { $set: patch },
+      { new: true },
+    );
+    if (!biz) return res.status(404).json({ error: 'Service not found' });
+    res.json({ services: biz.services });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+}
+
+export async function deleteService(req, res) {
+  try {
+    const { tenantId, serviceId } = req.params;
+    await BusinessConfig.updateOne({ tenantId }, { $pull: { services: { _id: serviceId } } });
+    res.json({ ok: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+}
+
+// ── FAQ CRUD [MERGED from V1] ──────────────────────────────────────────────────
+export async function getFaqs(req, res) {
+  try {
+    const biz = await BusinessConfig.findOne({ tenantId: req.params.tenantId })
+      .select('faq').lean();
+    if (!biz) return res.status(404).json({ error: 'Not found' });
+    res.json({ faq: biz.faq || [], count: (biz.faq || []).length });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+}
+
+export async function addFaq(req, res) {
+  try {
+    const { tenantId } = req.params;
+    const { trigger, reply } = req.body;
+    if (!trigger || !reply) return res.status(400).json({ error: 'trigger and reply required' });
+
+    const biz = await BusinessConfig.findOneAndUpdate(
+      { tenantId },
+      { $push: { faq: { trigger, reply } } },
+      { new: true },
+    );
+    if (!biz) return res.status(404).json({ error: 'Not found' });
+    res.status(201).json({ faq: biz.faq });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+}
+
+export async function updateFaq(req, res) {
+  try {
+    const { tenantId, faqId } = req.params;
+    const { trigger, reply } = req.body;
+    const patch = {};
+    if (trigger !== undefined) patch['faq.$.trigger'] = trigger;
+    if (reply   !== undefined) patch['faq.$.reply']   = reply;
+
+    const biz = await BusinessConfig.findOneAndUpdate(
+      { tenantId, 'faq._id': faqId },
+      { $set: patch },
+      { new: true },
+    );
+    if (!biz) return res.status(404).json({ error: 'FAQ not found' });
+    res.json({ faq: biz.faq });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+}
+
+export async function deleteFaq(req, res) {
+  try {
+    const { tenantId, faqId } = req.params;
+    await BusinessConfig.updateOne({ tenantId }, { $pull: { faq: { _id: faqId } } });
+    res.json({ ok: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
 }

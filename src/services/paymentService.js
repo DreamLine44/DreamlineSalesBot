@@ -37,21 +37,53 @@ export async function receiveProof(customerPhone, tenantId, imageId, tenantDoc) 
     },
   });
 
-  // Notify admin
+  // Notify admin with interactive buttons
   const business = await BusinessConfig.findOne({ tenantId }).lean();
   const adminPhone = business?.adminPhone || tenantDoc?.adminPhone;
   if (adminPhone && tenantDoc) {
-    const adminMsg =
-      `📸 *Payment Proof Received*\n\n` +
-      `Order: *${order.item}* × ${order.quantity}\n` +
-      `Amount: *D${order.totalPrice || '—'}*\n` +
-      `Customer: ${customerPhone}\n` +
-      `Ref: \`${order.shortId}\`\n\n` +
-      `Reply:\n✅ \`APPROVE ${order.shortId}\`\n❌ \`REJECT ${order.shortId}\``;
-    dispatchText(adminPhone, adminMsg, tenantDoc).catch(() => {});
+    const { dispatchMessage } = await import('../core/whatsapp/dispatcher.js');
+    const currency = business?.payment?.currency || 'D';
+    // Forward the payment proof image to admin so they can visually verify it
+    if (imageId) {
+      const token   = tenantDoc?.whatsapp?.accessToken;
+      const phoneId = tenantDoc?.whatsapp?.phoneNumberId;
+      const version = tenantDoc?.whatsapp?.apiVersion || process.env.META_API_VERSION || 'v21.0';
+      if (token && phoneId) {
+        const imgPayload = {
+          messaging_product: 'whatsapp', recipient_type: 'individual',
+          to: adminPhone, type: 'image',
+          image: { id: imageId, caption: `📸 Payment proof from ${customerPhone} — Order #${order.shortId}` },
+        };
+        fetch(`https://graph.facebook.com/${version}/${phoneId}/messages`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+          body: JSON.stringify(imgPayload),
+        }).catch(() => {});
+      }
+    }
+
+    // Send interactive approval card with tap-to-approve buttons
+    await dispatchMessage(adminPhone, {
+      type: 'buttons',
+      body:
+        `💳 *New Payment Submission*\n\n` +
+        `🆔 Order: *#${order.shortId}*\n` +
+        `👤 Customer: *${customerPhone}*\n` +
+        `🛒 Items: *${order.item}* × ${order.quantity}\n` +
+        `💰 Amount: *${currency}${order.totalPrice || '—'}*\n\n` +
+        `Screenshot sent above ↑\nPlease approve or reject:`,
+      buttons: [
+        { id: `APPROVE_${order.shortId}`, title: '✅ Approve' },
+        { id: `REJECT_${order.shortId}`,  title: '❌ Reject'  },
+      ],
+    }, tenantDoc).catch(() => {});
   }
 
-  return `✅ *Screenshot received!*\n\nWe'll verify your payment and confirm your order shortly. Thank you! 🙏`;
+  return (
+    `✅ *Payment proof received!*\n\n` +
+    `⏳ Your order *${order.item}* × ${order.quantity} is now awaiting verification.\n\n` +
+    `We'll confirm shortly 🙏`
+  );
 }
 
 /**
@@ -80,18 +112,24 @@ export async function handleDonePayment(customerPhone, tenantId) {
 /**
  * buildPaymentInstructionsUI — shown after order confirm when payment is enabled
  */
-export function buildPaymentInstructionsUI(business, totalPrice, last4) {
-  const payment = business?.payment || {};
-  const waveNo  = payment.wavePhone || payment.phone || '—';
-  const currency= payment.currency || 'D';
+export function buildPaymentInstructionsUI(business, totalPrice, shortId) {
+  const payment  = business?.payment || {};
+  const waveNo   = payment.wavePhone || payment.phone || '—';
+  const currency = payment.currency || 'D';
+  const ref      = shortId ? `DSB-${new Date().toLocaleDateString('en-GB', { day:'2-digit', month:'2-digit' }).replace('/','')}-${shortId}` : null;
 
   return {
     type: 'text',
     body:
-      `💳 *Payment Details*\n\n` +
-      `💰 Total: *${currency}${totalPrice}*\n` +
-      `📲 Send via *Wave* to: *${waveNo}*\n\n` +
-      `After payment, send your *screenshot* here. 📸\n\n` +
-      `_(Reference: ends in ${last4})_`,
+      `💳 *Payment Instructions*\n\n` +
+      `🛒 Total: *${currency}${totalPrice}*` +
+      (ref ? `\n📝 Reference: *${ref}*` : '') +
+      `\n\n─────────────────────\n` +
+      `📲 Send *${currency}${totalPrice}* via *Wave* to:\n\n` +
+      `📱 *${waveNo}*\n` +
+      (ref ? `\n⚠️ Use *${ref}* as your payment reference.\n` : '') +
+      `─────────────────────\n\n` +
+      `After sending, please *reply with a screenshot* of your Wave confirmation.\n\n` +
+      `We'll verify and confirm your order shortly ✅`,
   };
 }
