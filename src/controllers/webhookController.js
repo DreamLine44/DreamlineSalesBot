@@ -80,17 +80,27 @@ function isWithinBusinessHours(hours) {
     const openHr  = dayConfig?.open  ?? hours.open  ?? 8;
     const closeHr = dayConfig?.close ?? hours.close ?? 22;
 
-    // Get current hour in the business timezone
-    let currentHour = now.getUTCHours();
+    // [FIX-15] Get current time as decimal hours (e.g. 22.5 = 22:30) in the
+    // business timezone so minutes are respected. Previously only the integer
+    // hour was checked, meaning a business closing at 22:30 effectively closed
+    // at 22:00, and opening at 8:30 let messages through from 8:00.
+    let currentDecimalHour = now.getUTCHours() + now.getUTCMinutes() / 60;
     if (tz !== 'UTC') {
       try {
-        const formatter = new Intl.DateTimeFormat('en', { timeZone: tz, hour: 'numeric', hour12: false });
+        const formatter = new Intl.DateTimeFormat('en', {
+          timeZone: tz, hour: 'numeric', minute: 'numeric', hour12: false,
+        });
         const parts = formatter.formatToParts(now);
-        const hourPart = parts.find(p => p.type === 'hour');
-        if (hourPart) currentHour = parseInt(hourPart.value, 10);
-      } catch { /* fall back to UTC */ }
+        const hourPart   = parts.find(p => p.type === 'hour');
+        const minutePart = parts.find(p => p.type === 'minute');
+        if (hourPart) {
+          const h = parseInt(hourPart.value, 10);
+          const m = minutePart ? parseInt(minutePart.value, 10) : 0;
+          currentDecimalHour = h + m / 60;
+        }
+      } catch { /* fall back to UTC decimal */ }
     }
-    return currentHour >= openHr && currentHour < closeHr;
+    return currentDecimalHour >= openHr && currentDecimalHour < closeHr;
   } catch {
     return true; // on error, default open
   }
@@ -188,7 +198,8 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
   }).catch(() => {});
 
   // ── 5. [FIX-BUG3] Business hours enforcement ──────────────────────────────
-  if (messageText && !isWithinBusinessHours(business.hours)) {
+  // Apply to ALL message types — button taps during closed hours must also be blocked.
+  if (!isWithinBusinessHours(business.hours)) {
     const closedMsg = business?.customMessages?.closed
       || business?.settings?.closedMessage
       || `⏰ We're currently closed. Please contact us during business hours.`;
@@ -199,9 +210,9 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
     }
     return;
   }
-  // Clear closedMsgSent once we're open again
+  // Clear closedMsgSent once we're open again — awaited so a DB failure is visible in logs
   if (session.closedMsgSent) {
-    updateSession(from, tenantId, { closedMsgSent: false }).catch(() => {});
+    await updateSession(from, tenantId, { closedMsgSent: false });
   }
 
   // ── 6. Human mode ─────────────────────────────────────────────────────────
@@ -210,8 +221,9 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
     return;
   }
 
-  // ── 7. [FIX-BUG4] Loop prevention (only on text, not buttons) ─────────────
-  if (messageText && !isInteractive) {
+  // ── 7. [FIX-BUG4] Loop prevention (text AND button taps) ─────────────────
+  // Previously this only ran for !isInteractive — button loops were unchecked.
+  if (messageText) {
     const loopReply = await checkAndHandleLoop(session, messageText, tenantId, business);
     if (loopReply) {
       await dispatchMessage(from, loopReply, tenantDoc);
@@ -321,7 +333,10 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
   )) {
     const { handleAdminButtonReply, isAdminPhone } = await import('../services/adminCommandService.js');
     const isAdmin = await isAdminPhone(from, tenantId).catch(() => false);
-    if (isAdmin) {
+    if (!isAdmin) {
+      // Non-admin tapping an admin button — treat as a stale/unknown button and fall through
+      logger.warn('[Webhook] Non-admin tapped admin button', { from, buttonId: messageText });
+    } else {
       const reply = await handleAdminButtonReply(messageText, tenantId, from, tenantDoc, business).catch(() => null);
       if (reply) { await dispatchMessage(from, { type: 'text', body: reply }, tenantDoc); return; }
     }
@@ -370,7 +385,11 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
 
       const body = completed === 'BOOKING'
         ? `You're welcome${custName}! 😊 Your booking is confirmed. Anything else we can help with?`
-        : `You're welcome${custName}! 😊 We're preparing your order. Anything else we can help with at *${business.name || 'us'}*?`;
+        : completed === 'ORDER'
+          ? `You're welcome${custName}! 😊 We're preparing your order. Anything else we can help with at *${business.name || 'us'}*?`
+          // [FIX-11] Any other completedFlow (e.g. LEAD_CAPTURE) gets a neutral ack
+          // instead of the misleading "preparing your order" message.
+          : `You're welcome${custName}! 😊 Anything else we can help with?`;
 
       const buttons = [
         canOrder ? { id: 'ORDER',    title: '🛒 Place New Order' } : null,

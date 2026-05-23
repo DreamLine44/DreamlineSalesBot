@@ -186,7 +186,10 @@ export async function handleOrderFlow({ session, message, business, tenant, isIn
 
       // Upsell — if configured and not yet shown
       if (addOns.length && !session.upsellSent) {
-        const addOn = addOns[Math.floor(Math.random() * addOns.length)];
+        // [FIX-14] Pin the add-on at first selection — re-use the stored one if we
+        // somehow reach this branch again (e.g. after a session update race) so the
+        // customer never sees different add-on offers across retries.
+        const addOn = data.pendingAddOn || addOns[Math.floor(Math.random() * addOns.length)];
         await updateSession(session.customerPhone, session.tenantId, {
           step: 'UPSELL',
           upsellSent: true,

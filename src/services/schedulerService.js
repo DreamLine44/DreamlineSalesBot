@@ -129,12 +129,15 @@ async function runBookingReminderJob() {
 }
 
 function decideShouldSendReminder(booking, now) {
-  // Strategy A: parsedDate known → remind 24h before
+  // Strategy A: parsedDate known → remind 24–36h before appointment.
+  // [FIX-7] Add 30-min tolerance on the upper bound too: a job that runs
+  // a minute early would otherwise miss a booking at exactly 36h01m.
   if (booking.parsedDate) {
     const msUntil = new Date(booking.parsedDate).getTime() - now.getTime();
-    const h24 = 24 * 60 * 60 * 1000;
-    const h36 = 36 * 60 * 60 * 1000;
-    return msUntil > 0 && msUntil <= h36 && msUntil >= h24 - 30 * 60 * 1000;
+    const h24     = 24 * 60 * 60 * 1000;
+    const h36     = 36 * 60 * 60 * 1000;
+    const slack   = 30 * 60 * 1000; // 30 minutes
+    return msUntil > 0 && msUntil <= h36 + slack && msUntil >= h24 - slack;
   }
   // Strategy B: no parsedDate → send in the 18–20 UTC evening window
   const hour = now.getUTCHours();

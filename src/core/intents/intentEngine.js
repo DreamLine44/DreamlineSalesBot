@@ -161,7 +161,7 @@ async function classifyWithAI({ message, business }) {
     `Pick exactly ONE intent from: ${validIntents.join(', ')}\n` +
     `Reply with ONLY the intent word, nothing else.`;
 
-  const result = await getAIReply({ customerMessage: prompt, business: null, intent: 'CLASSIFICATION' });
+  const result = await getAIReply({ customerMessage: prompt, business, intent: 'CLASSIFICATION' });
   const classified = String(result || '').trim().toUpperCase();
   return validIntents.includes(classified) ? classified : 'UNKNOWN';
 }
@@ -196,6 +196,7 @@ function intentToAction(intent, business) {
     SHOW_MENU:          'SHOW_MENU',
     ADD_TO_CART:        'START_ORDER',
     CHECKOUT:           'START_ORDER',
+    REMOVE_FROM_CART:   'START_ORDER',       // re-enter order flow to adjust
     RECOMMENDATION:     'ENQUIRY',
     // [FIX] SPEC_REQUEST and SKINCARE_ADVICE were mapped to generic ENQUIRY.
     // That bypassed their dedicated flow handlers entirely — AI got the raw question
@@ -205,6 +206,11 @@ function intentToAction(intent, business) {
     AVAILABILITY_CHECK: 'ENQUIRY',
     SKINCARE_ADVICE:    'SKINCARE_ADVICE',
     SIZE_GUIDE:         'ENQUIRY',
+    // [FIX-5] These were listed as valid AI intents but absent from this map —
+    // intentToAction returned 'FALLBACK' for all of them. Now correctly routed.
+    PRODUCT_INQUIRY:    'ENQUIRY',           // FASHION: question about a specific product
+    COMPATIBILITY_CHECK:'ENQUIRY',           // ELECTRONICS: "does X work with Y"
+    COLLECTION_SCHEDULE:'START_BOOKING',     // BAKERY: schedule a collection/pickup
   };
   return map[intent] || 'FALLBACK';
 }

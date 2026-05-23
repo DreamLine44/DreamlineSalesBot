@@ -14,7 +14,8 @@
 import { updateSession }           from '../sessions/sessionService.js';
 import { completeFlow }            from './flowEngine.js';
 import { saveBooking }             from '../../services/bookingService.js';
-import { buildAdminBookingAlert }  from '../../services/adminCommandService.js';
+// buildAdminBookingAlertBody is imported dynamically inside BOOKING_CONFIRM to stay consistent
+// with the dynamic import already there. The static buildAdminBookingAlert alias was dead code.
 import { trackBookingAnalytics }   from '../analytics/analyticsService.js';
 import { dispatchText }            from '../whatsapp/dispatcher.js';
 import logger                      from '../../config/logger.js';
@@ -33,6 +34,11 @@ export function tryParseDate(dateStr) {
     const lower = String(dateStr).toLowerCase().trim();
 
     if (lower === 'today') return new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    // [FIX-12] Handle "yesterday" so it resolves to a real Date — validateDate
+    // then correctly rejects it as a past date instead of silently storing the string.
+    if (lower === 'yesterday') {
+      const d = new Date(now); d.setDate(d.getDate() - 1); d.setHours(0,0,0,0); return d;
+    }
     if (lower === 'tomorrow') {
       const d = new Date(now); d.setDate(d.getDate() + 1); d.setHours(0,0,0,0); return d;
     }
@@ -52,8 +58,15 @@ export function tryParseDate(dateStr) {
     // Native parse on stripped string
     const parsed = new Date(stripped);
     if (!isNaN(parsed.getTime())) {
-      // If year is implausible, add current year
-      if (parsed.getFullYear() < now.getFullYear()) {
+      const yr = parsed.getFullYear();
+      // Correct implausible past year
+      if (yr < now.getFullYear()) {
+        const withYear = `${stripped} ${now.getFullYear()}`;
+        const p2 = new Date(withYear);
+        if (!isNaN(p2.getTime())) return p2;
+      }
+      // [FIX-6] Correct implausible far-future year (engine quirk on ambiguous formats)
+      if (yr > now.getFullYear() + 2) {
         const withYear = `${stripped} ${now.getFullYear()}`;
         const p2 = new Date(withYear);
         if (!isNaN(p2.getTime())) return p2;
@@ -124,7 +137,7 @@ export async function handleBookingFlow({ session, message, business, tenant, is
   if (message === null) {
     // Determine first step
     const firstStep = services.length ? 'SELECT_SERVICE' : 'DATE';
-    await updateSession(session.customerPhone, session.tenantId, { step: firstStep, data: {} });
+    await updateSession(session.customerPhone, session.tenantId, { step: firstStep, data: { ...data } });
 
     if (firstStep === 'SELECT_SERVICE') {
       const serviceList = services.map((s, i) => `*${i+1}.* ${s.name}${s.price ? ` — D${s.price}` : ''}${s.duration ? ` (${s.duration} min)` : ''}`).join('\n');
@@ -137,7 +150,7 @@ export async function handleBookingFlow({ session, message, business, tenant, is
     // No services — for restaurants ask party size first, then date
     const isRestaurant = (business?.businessMode || '').toUpperCase() === 'RESTAURANT';
     if (isRestaurant) {
-      await updateSession(session.customerPhone, session.tenantId, { step: 'PARTY_SIZE', data: {} });
+      await updateSession(session.customerPhone, session.tenantId, { step: 'PARTY_SIZE', data: { ...data } });
       return {
         type:    'buttons',
         body:    `How many guests will be dining? 👥\n\n(e.g. *2*, *4*, *six*)`,
@@ -336,9 +349,12 @@ export async function handleBookingFlow({ session, message, business, tenant, is
           buttons: [{ id: 'CONFIRM', title: '✅ Yes' }, { id: 'TIME_BACK', title: '❌ Re-enter' }],
         };
       }
+      // [FIX-13] Use a local `confirmedTime` that both the inline-new-time branch
+      // and the fallback message read from, so they're always consistent.
+      const confirmedTime = data.time;
       return {
         type:    'buttons',
-        body:    `Please confirm *${data.time}*, or go back to re-enter.`,
+        body:    `Please confirm *${confirmedTime}*, or go back to re-enter.`,
         buttons: [{ id: 'CONFIRM', title: '✅ Yes, that time' }, { id: 'TIME_BACK', title: '❌ Re-enter' }],
       };
     }
@@ -355,7 +371,14 @@ export async function handleBookingFlow({ session, message, business, tenant, is
 
       // Save booking
       const customerName = session.customerName || null;
-      const { date, time, service, parsedDate, partySize } = data;
+      const { date, time, service, partySize } = data;
+      // [FIX-16] parsedDate is stored as a Date object but comes back from
+      // session.data (lean MongoDB read) as an ISO string. Coerce explicitly
+      // so saveBooking always receives a real Date or null — never a string.
+      const rawParsedDate = data.parsedDate;
+      const parsedDate = rawParsedDate
+        ? (rawParsedDate instanceof Date ? rawParsedDate : new Date(rawParsedDate))
+        : tryParseDate(date);
 
       let savedBooking = null;
       try {
@@ -364,7 +387,7 @@ export async function handleBookingFlow({ session, message, business, tenant, is
           customerName,
           date, time, service,
           partySize:    partySize || null,
-          parsedDate:   parsedDate || tryParseDate(date),
+          parsedDate,
           tenantId:     session.tenantId,
           businessId:   business._id,
         });
@@ -425,9 +448,9 @@ export async function handleBookingFlow({ session, message, business, tenant, is
         type:    'buttons',
         body:    confirmBody,
         buttons: [
-          { id: 'ORDER',     title: '🛍 Place an Order'  },
-          { id: 'QUESTION',  title: '❓ Ask a Question'  },
-          { id: 'SHOW_MENU', title: '🔄 Start Over'      },
+          { id: 'ORDER',    title: '🛒 Place New Order'  },
+          { id: 'BOOK',     title: '📅 Make a Booking'   },
+          { id: 'QUESTION', title: '❓ Ask a Question'   },
         ],
       };
     }
