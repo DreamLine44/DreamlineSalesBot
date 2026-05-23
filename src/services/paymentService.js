@@ -42,7 +42,11 @@ export async function receiveProof(customerPhone, tenantId, imageId, tenantDoc) 
   if (adminPhone && tenantDoc) {
     const { dispatchMessage } = await import('../core/whatsapp/dispatcher.js');
     const currency = business?.payment?.currency || 'D';
-    // Forward the payment proof image to admin so they can visually verify it
+    // [FIX-IMG-ORDER] Forward the payment proof image FIRST and await it.
+    // Previously this was fire-and-forget (.catch only), so the alert card
+    // raced ahead and arrived BEFORE the image in the admin chat — meaning
+    // "Screenshot sent above ↑" was wrong (screenshot was below the card).
+    // Now we await the image send + add a 500 ms gap before the card send.
     if (imageId) {
       const token   = tenantDoc?.whatsapp?.accessToken;
       const phoneId = tenantDoc?.whatsapp?.phoneNumberId;
@@ -53,15 +57,21 @@ export async function receiveProof(customerPhone, tenantId, imageId, tenantDoc) 
           to: adminPhone, type: 'image',
           image: { id: imageId, caption: `📸 Payment proof from ${customerPhone} — Order #${order.shortId}` },
         };
-        fetch(`https://graph.facebook.com/${version}/${phoneId}/messages`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-          body: JSON.stringify(imgPayload),
-        }).catch(() => {});
+        try {
+          await fetch(`https://graph.facebook.com/${version}/${phoneId}/messages`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+            body: JSON.stringify(imgPayload),
+          });
+        } catch (imgErr) {
+          logger.warn('[PaymentService] Image forward failed (non-fatal)', { err: imgErr.message });
+        }
+        // Small gap so WhatsApp delivers the image before the card
+        await new Promise(r => setTimeout(r, 500));
       }
     }
 
-    // Send interactive approval card with tap-to-approve buttons
+    // Send interactive approval card — image guaranteed to be above this
     await dispatchMessage(adminPhone, {
       type: 'buttons',
       body:
