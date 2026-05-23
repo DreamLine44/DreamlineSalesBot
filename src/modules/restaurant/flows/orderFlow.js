@@ -239,22 +239,6 @@ export async function handleOrderFlow({ session, message, business, tenant, isIn
         };
       }
 
-      // FIX #16 — No payment — notify admin of confirmed order
-      try {
-        const adminPhone = business?.adminPhone || tenant?.adminPhone;
-        if (adminPhone && tenant) {
-          const { dispatchText } = await import('../../../core/whatsapp/dispatcher.js');
-          const savedRef = session.data?.savedOrder?.shortId || null;
-          const adminMsg =
-            `🍽️ *New Order Confirmed*\n\n` +
-            `Item: *${data.item?.name}* × ${data.quantity || 1}\n` +
-            `${data.totalPrice ? `Total: *D${data.totalPrice}*\n` : ''}` +
-            `Customer: ${session.customerPhone}\n` +
-            (savedRef ? `Ref: \`${savedRef}\`` : '');
-          dispatchText(adminPhone, adminMsg, tenant).catch(() => {});
-        }
-      } catch { /* non-fatal */ }
-
       // No payment — complete flow
       await completeFlow(session, 'ORDER');
       return buildOrderSuccess({ item: data.item, qty: data.quantity, business });

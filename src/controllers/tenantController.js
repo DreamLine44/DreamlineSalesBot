@@ -22,9 +22,7 @@ export async function createTenant(req, res) {
 
     if (!name) return res.status(400).json({ error: 'name required' });
 
-    const rawKey = crypto.randomBytes(16).toString('hex');
-    const apiKey = 'wsa_' + rawKey;
-
+    const apiKey = 'wsa_' + crypto.randomBytes(16).toString('hex');
     const tenant = await Tenant.create({
       name, adminPhone, status: 'ACTIVE',
       whatsapp: {

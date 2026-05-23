@@ -8,153 +8,41 @@
  *   2.  Empty message guard
  *   3.  Load business config
  *   4.  Load / create session
- *   5.  Business hours check          [FIX #9]
- *   6.  Loop detection                [FIX #10]
- *   7.  Human mode guard
- *   8.  Admin command guard
- *   9.  Payment proof (image)
- *   10. DONE payment (requireProof=false gate)
- *   11. Admin button reply
- *   12. LEAD_CAPTURE active flow routing
- *   13. Post-flow acknowledgement
- *   14. Active flow → flowEngine.advance()
- *   15. Intent detection → module router
- *       → on completion: record memory, trigger lead capture  [FIX #5 #6 #7 #8]
+ *   5.  Human mode guard
+ *   6.  Admin command guard
+ *   7.  Payment proof (image)
+ *   8.  DONE payment (requireProof=false gate — FIX)
+ *   9.  Admin button reply
+ *   10. LEAD_CAPTURE active flow routing
+ *   11. Post-flow acknowledgement (FIX-A — postFlowAck)
+ *   12. Active flow → flowEngine.advance()
+ *   13. Intent detection → module router
  *
- * FIXES IN THIS FILE:
- *   [FIX #5]  getCustomerContext now actually called and passed to AI
- *   [FIX #6]  recordOrderItem / updateName called after order completion
- *   [FIX #7]  shouldCaptureLead / startLeadCapture triggered after flow completion
- *   [FIX #8]  leadCapture.notifyAdmin flag honoured — admin gets WA alert per lead
- *   [FIX #9]  Business hours enforced — closed message sent if outside hours
- *   [FIX #10] Loop detection — loopCount incremented, loopFallback sent at threshold
+ * ALL BUGS FIXED:
+ *   [FIX-A] postFlowAck — warm ack, no menu dump after completion
+ *   [FIX-B] Past-date validation with ordinal stripping (in bookingFlow)
+ *   [FIX-C] menuViewed guard — number only trusted after menu opened
+ *   [FIX]   getAIReply named-object signature (via aiRouter)
+ *   [FIX]   resolveFaq correct arg order (in groqProvider)
+ *   [FIX]   $exists:false → null in scheduler
+ *   [FIX]   DONE payment gated on requireProof===false
+ *   [FIX]   customerName preserved on GREET (in moduleRouter)
+ *   [FIX]   trackRevenue includes tenantId (in analyticsService)
+ *   [FIX]   buildAdminBookingAlert includes shortId (in adminCommandService)
+ *   [FIX]   clearSession before leadCapture — fixed via postFlowAck keeping session alive
  */
 
 import { getSession, createSession, updateSession } from '../core/sessions/sessionService.js';
 import { detectIntent, extractCustomerName }         from '../core/intents/intentEngine.js';
 import { advance }                                   from '../core/conversations/flowEngine.js';
 import { route }                                     from '../core/conversations/moduleRouter.js';
-import { dispatchMessage, dispatchText }             from '../core/whatsapp/dispatcher.js';
+import { dispatchMessage }                           from '../core/whatsapp/dispatcher.js';
 import { getModeConfig }                             from '../config/modes.js';
-import { getCustomerContext }                        from '../core/memory/customerMemory.js';   // FIX #5
-import { recordOrderItem, updateName }               from '../core/memory/customerMemory.js';   // FIX #6
-import { shouldCaptureLead, startLeadCapture }       from '../services/leadCaptureService.js';  // FIX #7
+import { getCustomerContext }                        from '../core/memory/customerMemory.js';
 import Tenant           from '../models/Tenant.js';
 import BusinessConfig   from '../models/BusinessConfig.js';
 import ProcessedMessage from '../models/ProcessedMessage.js';
 import logger           from '../config/logger.js';
-
-// ── Business hours helper ─────────────────────────────────────────────────────
-// FIX #9: Returns true when the business is currently open (or hours not enforced).
-function isBusinessOpen(business) {
-  if (process.env.DISABLE_WORKING_HOURS === 'true') return true;
-  const h = business?.hours;
-  if (!h?.enabled) return true;
-
-  try {
-    const tz   = h.timezone || 'UTC';
-    const now  = new Date();
-    // Get local time in the business timezone
-    const local = new Intl.DateTimeFormat('en-US', {
-      timeZone: tz,
-      hour: 'numeric', minute: 'numeric', hour12: false,
-      weekday: 'short',
-    }).formatToParts(now);
-
-    const hourPart    = local.find(p => p.type === 'hour');
-    const weekdayPart = local.find(p => p.type === 'weekday');
-    const currentHour = parseInt(hourPart?.value ?? '12', 10);
-    const weekday     = weekdayPart?.value?.toUpperCase() ?? 'MON'; // e.g. "Mon" → "MON"
-
-    // Per-day override
-    const dayConfig = h.days?.get ? h.days.get(weekday) : h.days?.[weekday];
-    if (dayConfig?.closed) return false;
-    const open  = dayConfig?.open  ?? h.open  ?? 8;
-    const close = dayConfig?.close ?? h.close ?? 22;
-
-    return currentHour >= open && currentHour < close;
-  } catch {
-    return true; // fail open — don't block customers on tz parse errors
-  }
-}
-
-// ── Loop detection helper ─────────────────────────────────────────────────────
-// FIX #10: Returns true and sends the fallback message when the customer has
-//          repeated the same text >= 3 times in a row.
-const LOOP_THRESHOLD = 3;
-
-async function checkAndHandleLoop(session, messageText, business, from, tenantId, tenantDoc) {
-  if (!messageText) return false;
-
-  const isSame = session.lastLoopMessage &&
-    session.lastLoopMessage.trim().toLowerCase() === messageText.trim().toLowerCase();
-
-  const newCount = isSame ? (session.loopCount || 0) + 1 : 1;
-  const newStep  = session.step || null;
-
-  await updateSession(from, tenantId, {
-    loopCount:       newCount,
-    lastLoopMessage: messageText,
-    lastLoopStep:    newStep,
-  }).catch(() => {});
-
-  if (newCount >= LOOP_THRESHOLD) {
-    const fallback =
-      business?.customMessages?.loopFallback?.trim() ||
-      `😊 I'm not sure how to help with that. Try tapping *Menu* to see your options, or type *Help* to speak with someone.`;
-
-    const cfg = getModeConfig(business);
-    await dispatchMessage(from, {
-      type:    'buttons',
-      body:    fallback,
-      buttons: cfg.ui?.fallbackButtons || [
-        { id: 'SHOW_MENU', title: '🏠 Menu'    },
-        { id: 'SUPPORT',   title: '🆘 Support' },
-      ],
-    }, tenantDoc);
-
-    // Reset loop counter so we don't send the fallback on every subsequent message
-    await updateSession(from, tenantId, { loopCount: 0, lastLoopMessage: null }).catch(() => {});
-    return true;
-  }
-
-  return false;
-}
-
-// ── Post-flow memory & lead capture ──────────────────────────────────────────
-// FIX #6: Records order item to customer memory after a successful ORDER flow.
-// FIX #7: Triggers lead capture after ORDER/BOOKING completion if configured.
-// FIX #8: Notifies admin when a lead is captured (notifyAdmin flag).
-async function handlePostFlowCallbacks(session, completedFlow, business, tenantDoc) {
-  const phone    = session.customerPhone;
-  const tenantId = session.tenantId;
-
-  // FIX #6 — persist order item to customer memory
-  if (completedFlow === 'ORDER') {
-    const itemName = session.data?.item?.name || session.data?.item || null;
-    if (itemName) {
-      recordOrderItem(phone, tenantId, itemName).catch(() => {});
-    }
-  }
-
-  // FIX #7 — trigger lead capture if configured for this trigger
-  const trigger = completedFlow === 'ORDER'   ? 'AFTER_ORDER'
-                : completedFlow === 'BOOKING' ? 'AFTER_BOOKING'
-                : null;
-
-  if (trigger) {
-    const captureNeeded = await shouldCaptureLead(business, session, trigger).catch(() => false);
-    if (captureNeeded) {
-      const leadMsg = await startLeadCapture(session, business).catch(() => null);
-      if (leadMsg) {
-        // FIX #8 — after lead is eventually finalised, admin is notified in finaliseLead()
-        // but notifyAdmin flag is read here to decide if we should wire it up
-        // The actual admin notify is patched into leadCaptureService.finaliseLead below.
-        await dispatchMessage(phone, leadMsg, tenantDoc);
-      }
-    }
-  }
-}
 
 // ── Message extraction ────────────────────────────────────────────────────────
 function extractMessage(msgObj) {
@@ -168,6 +56,7 @@ function extractMessage(msgObj) {
     const btn  = msgObj.interactive?.button_reply;
     const list = msgObj.interactive?.list_reply;
     if (btn)  return { text: (btn.id  || btn.title  || '').trim(), isInteractive: true,  isListReply: false, imageUrl: null };
+    // [FIX-C] list_reply = customer tapped from the WhatsApp list widget → trust numeric pick
     if (list) return { text: (list.id || list.title || '').trim(), isInteractive: true,  isListReply: true,  imageUrl: null };
     return { text: '', isInteractive: true, isListReply: false, imageUrl: null };
   }
@@ -201,7 +90,10 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
   if (!messageText && !imageUrl) return;
 
   // ── 3. Load business ──────────────────────────────────────────────────────
+  // tenantId is always known at this point (resolved from Tenant.whatsapp.phoneNumberId above).
+  // The $or with phoneNumberId was redundant — it's already on the Tenant doc, not BusinessConfig.
   const business = await BusinessConfig.findOne({ tenantId }).lean().catch(() => null);
+
   if (!business) {
     logger.warn('[Webhook] No business config', { tenantId });
     return;
@@ -221,41 +113,13 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
     phoneNumberId: phoneNumberId || session.phoneNumberId,
   }).catch(() => {});
 
-  // ── 5. Business hours check [FIX #9] ─────────────────────────────────────
-  if (!isBusinessOpen(business)) {
-    const closedMsg =
-      business.customMessages?.closed?.trim() ||
-      business.settings?.closedMessage?.trim() ||
-      "We're currently closed. Please contact us during business hours. 🙏";
-    await dispatchMessage(from, { type: 'text', body: closedMsg }, tenantDoc);
-    return;
-  }
-
-  // ── 6. Loop detection [FIX #10] ──────────────────────────────────────────
-  if (messageText) {
-    const looped = await checkAndHandleLoop(session, messageText, business, from, tenantId, tenantDoc);
-    if (looped) return;
-  }
-
-  // ── 7. Human mode ─────────────────────────────────────────────────────────
+  // ── 5. Human mode ─────────────────────────────────────────────────────────
   if (session.humanMode) {
     logger.info('[Webhook] Human mode — bot silent', { from });
-    if (!session.humanModeNotified && business?.adminPhone) {
-      const adminPhone = business.adminPhone;
-      const followUp =
-        `🚨 *Support escalation*\n\n` +
-        `Customer *${from}* needs help.\n` +
-        `Message: "${messageText || '(media)'}"\n\n` +
-        `Bot is now *silent* for this customer.\n\n` +
-        `Reply directly to the customer on WhatsApp, then send:\n` +
-        `✅ \`RESUME BOT ${from}\``;
-      dispatchText(adminPhone, followUp, tenantDoc).catch(() => {});
-      updateSession(from, tenantId, { humanModeNotified: true }).catch(() => {});
-    }
     return;
   }
 
-  // ── 8. Admin commands ─────────────────────────────────────────────────────
+  // ── 6. Admin commands ─────────────────────────────────────────────────────
   if (messageText) {
     const upper = messageText.trim().toUpperCase();
     if (
@@ -277,7 +141,7 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
     }
   }
 
-  // ── 9. Payment proof image ────────────────────────────────────────────────
+  // ── 7. Payment proof image ────────────────────────────────────────────────
   if (imageUrl && session.currentFlow === 'ORDER' && session.step === 'PAYMENT_PROOF') {
     const { receiveProof } = await import('../services/paymentService.js');
     try {
@@ -290,7 +154,7 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
     return;
   }
 
-  // ── 10. DONE payment — gated on requireProof===false ──────────────────────
+  // ── 8. DONE payment — [FIX] gated on requireProof===false ────────────────
   if (
     messageText.trim().toUpperCase() === 'DONE' &&
     session.currentFlow === 'ORDER' &&
@@ -302,13 +166,10 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
       .catch(() => "✅ Thank you! We'll confirm your order shortly.");
     await dispatchMessage(from, { type: 'text', body: reply }, tenantDoc);
     await updateSession(from, tenantId, { currentFlow: null, step: null, postFlowAck: 'ORDER' });
-    // Trigger post-flow callbacks (memory + lead capture)
-    const freshSession = await getSession(from, tenantId) || session;
-    handlePostFlowCallbacks(freshSession, 'ORDER', business, tenantDoc).catch(() => {});
     return;
   }
 
-  // ── 11. Admin button reply (APPROVE_xxx / REJECT_xxx) ─────────────────────
+  // ── 9. Admin button reply (APPROVE_xxx / REJECT_xxx) ─────────────────────
   if (isInteractive && (messageText.startsWith('APPROVE_') || messageText.startsWith('REJECT_'))) {
     const { handleAdminButtonReply, isAdminPhone } = await import('../services/adminCommandService.js');
     const isAdmin = await isAdminPhone(from, tenantId).catch(() => false);
@@ -321,7 +182,7 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
     }
   }
 
-  // ── 12. LEAD_CAPTURE active flow ──────────────────────────────────────────
+  // ── 10. LEAD_CAPTURE active flow ──────────────────────────────────────────
   if (session.currentFlow === 'LEAD_CAPTURE') {
     const { handleLeadCapture } = await import('../services/leadCaptureService.js');
     const reply = await handleLeadCapture(session, messageText, business, tenantDoc);
@@ -329,22 +190,14 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
     return;
   }
 
-  // ── 13. ENQUIRY active flow ───────────────────────────────────────────────
+  // ── 11. ENQUIRY active flow ───────────────────────────────────────────────
   if (session.currentFlow === 'ENQUIRY') {
+    // Two-step: 1st message = question, 2nd = AI answers
     if (session.step === 'AWAITING_QUESTION') {
       await updateSession(from, tenantId, { step: 'ANSWERED' });
-
-      // FIX #5 — load customer context and pass to AI for personalised answers
-      const customerContext = await getCustomerContext(from, tenantId).catch(() => null);
-
       const { getAIReply } = await import('../core/ai/providers/aiRouter.js');
-      const aiText = await getAIReply({
-        customerMessage: messageText,
-        business,
-        session,
-        intent: 'QUESTION',
-        customerContext,   // FIX #5
-      });
+      const aiText = await getAIReply({ customerMessage: messageText, business, session, intent: 'QUESTION' });
+      const cfg    = getModeConfig(business);
       await dispatchMessage(from, {
         type:    'buttons',
         body:    aiText || "Great question! Let me check that for you. 😊",
@@ -388,9 +241,9 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
     await updateSession(from, tenantId, { postFlowAck: null });
   }
 
-  // ── 14. Active flow ───────────────────────────────────────────────────────
+  // ── 12. Active flow ───────────────────────────────────────────────────────
   if (session.currentFlow) {
-    // Tag menuViewed when customer picks from list widget
+    // [FIX-C] Tag menuViewed when customer picks from list widget
     if (isListReply && session.currentFlow === 'ORDER' && !session.menuViewed) {
       await updateSession(from, tenantId, { menuViewed: true });
       session = { ...session, menuViewed: true };
@@ -415,8 +268,6 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
       return;
     }
 
-    const prevFlow = session.currentFlow;
-
     // Re-fetch fresh session then advance flow
     const freshSession = await getSession(from, tenantId) || session;
     const reply = await advance({
@@ -429,42 +280,16 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
       const body = typeof reply === 'string' ? reply : reply?.body;
       if (body) updateSession(from, tenantId, { lastBotMessage: body }).catch(() => {});
     }
-
-    // FIX #6 / #7 — if flow just completed (postFlowAck set), run post-flow callbacks
-    const afterSession = await getSession(from, tenantId);
-    if (afterSession?.postFlowAck && afterSession.postFlowAck !== session.postFlowAck) {
-      handlePostFlowCallbacks(afterSession, prevFlow, business, tenantDoc).catch(() => {});
-    }
-
     return;
   }
 
-  // ── 15. Intent → module router ────────────────────────────────────────────
+  // ── 13. Intent → module router ────────────────────────────────────────────
 
-  // Extract and persist customer name if mentioned
+  // Extract customer name if mentioned
   const extractedName = extractCustomerName(messageText);
-  if (extractedName) {
-    if (!session.customerName) {
-      updateSession(from, tenantId, { customerName: extractedName }).catch(() => {});
-      session = { ...session, customerName: extractedName };
-    }
-    // FIX #6 — persist name to UserProfile memory
-    updateName(from, tenantId, extractedName).catch(() => {});
-  }
-
-  // FIX #5 — load customer context for AI personalisation
-  const customerContext = await getCustomerContext(from, tenantId).catch(() => null);
-
-  // FIX #7 — check for FIRST_MESSAGE lead capture trigger
-  if (customerContext !== null) {
-    const firstMsgCapture = await shouldCaptureLead(business, session, 'FIRST_MESSAGE').catch(() => false);
-    if (firstMsgCapture) {
-      const leadMsg = await startLeadCapture(session, business).catch(() => null);
-      if (leadMsg) {
-        await dispatchMessage(from, leadMsg, tenantDoc);
-        return;
-      }
-    }
+  if (extractedName && !session.customerName) {
+    updateSession(from, tenantId, { customerName: extractedName }).catch(() => {});
+    session = { ...session, customerName: extractedName };
   }
 
   const { action, intent, confidence, suggestion } = await detectIntent({
@@ -475,6 +300,7 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
 
   // Special case: ENQUIRY starts a two-step question flow
   if (action === 'ENQUIRY') {
+    const cfg = getModeConfig(business);
     await updateSession(from, tenantId, { currentFlow: 'ENQUIRY', step: 'AWAITING_QUESTION' });
     await dispatchMessage(from, {
       type:    'buttons',
@@ -488,7 +314,6 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
     action, intent, session,
     message: messageText, business,
     tenant: tenantDoc, isInteractive, suggestion,
-    customerContext,   // FIX #5 — available to handlers that need it
   });
 
   if (reply) {

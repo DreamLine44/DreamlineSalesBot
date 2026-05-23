@@ -107,44 +107,11 @@ export async function handleFashionOrder({ session, message, business, tenant, i
       if (!/^(yes|y|confirm|ok)$/i.test(clean)) {
         return { type: 'text', body: 'Tap *Confirm* to place your order.' };
       }
-
-      const itemLabel = `${data.item?.name}${data.size ? ` (${data.size})` : ''}`;
-      let savedOrder = null;
       try {
-        savedOrder = await saveOrder({
-          item: itemLabel, quantity: data.quantity, totalPrice: data.totalPrice,
-          customerPhone: session.customerPhone, tenantId: session.tenantId, businessId: business._id,
-        });
+        await saveOrder({ item: `${data.item?.name}${data.size ? ` (${data.size})` : ''}`,
+          quantity: data.quantity, totalPrice: data.totalPrice,
+          customerPhone: session.customerPhone, tenantId: session.tenantId, businessId: business._id });
       } catch (err) { logger.error('[FashionModule] saveOrder failed', { err: err.message }); }
-
-      // FIX #15 — track analytics
-      try {
-        const { trackOrderAnalytics, recordRevenue } = await import('../../../core/analytics/analyticsService.js');
-        trackOrderAnalytics(itemLabel, session.phoneNumberId, data.quantity, data.totalPrice, session.tenantId).catch(() => {});
-        if (data.totalPrice) recordRevenue({ item: itemLabel, quantity: data.quantity, revenue: data.totalPrice, tenantId: session.tenantId, customerPhone: session.customerPhone, phoneNumberId: session.phoneNumberId }).catch(() => {});
-      } catch { /* non-fatal */ }
-
-      // FIX #16 — notify admin of confirmed order
-      const adminPhone = business?.adminPhone || tenant?.adminPhone;
-      if (adminPhone && tenant) {
-        const { dispatchText } = await import('../../../core/whatsapp/dispatcher.js');
-        const adminMsg =
-          `🛍️ *New Fashion Order*\n\n` +
-          `Item: *${itemLabel}* × ${data.quantity || 1}\n` +
-          `${data.totalPrice ? `Total: *D${data.totalPrice}*\n` : ''}` +
-          `Customer: ${session.customerPhone}\n` +
-          (savedOrder?.shortId ? `Ref: \`${savedOrder.shortId}\`` : '');
-        dispatchText(adminPhone, adminMsg, tenant).catch(() => {});
-      }
-
-      // FIX #14 — payment gate (same as restaurant orderFlow)
-      if (business?.payment?.enabled && data.totalPrice) {
-        await updateSession(session.customerPhone, session.tenantId, { step: 'PAYMENT_PROOF' });
-        const { buildPaymentInstructionsUI } = await import('../../../services/paymentService.js');
-        const last4 = savedOrder?._id?.toString().slice(-4) || '****';
-        return buildPaymentInstructionsUI(business, data.totalPrice, last4);
-      }
-
       await completeFlow(session, 'ORDER');
       return { type: 'text', body: `✅ *Order confirmed!*\n\n👗 *${data.quantity}× ${data.item?.name}*\n\nWe'll reach out with delivery details. Thank you! ✨` };
     }

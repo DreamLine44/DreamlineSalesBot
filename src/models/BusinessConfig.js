@@ -20,7 +20,6 @@ const menuItemSchema = new mongoose.Schema({
   name:        { type: String, required: true, trim: true, maxlength: 100 },
   price:       { type: Number, default: 0, min: 0, max: 999999 },
   description: { type: String, default: '', trim: true, maxlength: 300 },
-  category:    { type: String, default: '', trim: true, maxlength: 60 },   // FIX #13: was silently dropped by strict mode
   keywords:    { type: [String], default: [], validate: { validator: v => v.length <= 20, message: 'Max 20 keywords per item' } },
   available:   { type: Boolean, default: true },
 

@@ -13,7 +13,6 @@
 import { startFlow, cancelFlow, completeFlow } from './flowEngine.js';
 import { updateSession }   from '../sessions/sessionService.js';
 import { generateGreeting } from '../ai/providers/aiRouter.js';
-import { dispatchText }    from '../whatsapp/dispatcher.js';
 import logger from '../../config/logger.js';
 
 // ── Action handlers registry ──────────────────────────────────────────────────
@@ -82,28 +81,13 @@ export async function route({ action, intent, session, message, business, tenant
 
     case 'SUPPORT': {
       const adminPhone = business?.adminPhone || tenant?.adminPhone || null;
-      const customerPhone = session?.customerPhone || 'unknown';
-
-      // ── Set human mode & suppress bot ────────────────────────────────────
-      await updateSession(customerPhone, session.tenantId, {
-        humanMode: true, humanModeNotified: true, currentFlow: null, step: null,
-      });
-
-      // ── Notify admin on WhatsApp (only if not already notified this session) ──
-      if (adminPhone && tenant && !session.humanModeNotified) {
-        const escalationAlert =
-          `🚨 *Support escalation*\n\n` +
-          `Customer *${customerPhone}* needs help.\n` +
-          `Message: "${message || '(no message)'}"\n\n` +
-          `Bot is now *silent* for this customer.\n\n` +
-          `Reply directly to the customer on WhatsApp, then send:\n` +
-          `✅ \`RESUME BOT ${customerPhone}\``;
-        dispatchText(adminPhone, escalationAlert, tenant).catch(() => {});
-      }
-
       const body = adminPhone
-        ? `🆘 *Support Request*\n\nI've passed this to our team. Someone will contact you shortly.`
+        ? `🆘 *Support Request*\n\nI've flagged this to our team.\n\n📞 You can also reach us directly at *${adminPhone}*`
         : `🆘 *Support Request*\n\nI've flagged this to our team. Someone will contact you shortly.`;
+      // Escalate to human mode
+      await updateSession(session.customerPhone, session.tenantId, {
+        humanMode: true, currentFlow: null, step: null,
+      });
       return { type: 'text', body };
     }
 
@@ -142,62 +126,6 @@ export async function route({ action, intent, session, message, business, tenant
 
     case 'DONE': {
       return { type: 'text', body: '✅ Thank you! We\'ll be in touch shortly.' };
-    }
-
-    // FIX #1: CONTINUE_FLOW — received when customer sends a number/short text with no active flow.
-    // Just show the menu silently (no "unknown action" warning).
-    case 'CONTINUE_FLOW': {
-      const { getModeConfig: getMC2 } = await import('../../config/modes.js');
-      const cfg3 = getMC2(business);
-      return {
-        type:    'buttons',
-        body:    cfg3.labels?.welcome || cfg3.messages?.welcome || '👋 What would you like to do?',
-        buttons: cfg3.ui?.welcomeButtons || [],
-      };
-    }
-
-    // FIX #2: PAYMENT — customer tapped a payment button or typed "pay" outside an active flow.
-    case 'PAYMENT': {
-      const payment = business?.payment;
-      if (!payment?.enabled) {
-        return { type: 'text', body: `💳 Payment is handled at checkout when you place an order. Type *Order* to get started!` };
-      }
-      const waveNo  = payment.wavePhone || payment.phone || '—';
-      const currency = payment.currency || 'D';
-      return {
-        type:    'buttons',
-        body:    `💳 *Payment Info*\n\nSend payment via *Wave* to: *${waveNo}*\n\nOnce you've paid, send us your *screenshot* and we'll confirm your order.`,
-        buttons: [{ id: 'ORDER', title: '🛍 Place an Order' }, { id: 'SHOW_MENU', title: '🏠 Main Menu' }],
-      };
-    }
-
-    // FIX #3: SWITCH_YES / SWITCH_NO — customer tapping a flow-switch confirmation button.
-    // These appear in active-flow contexts. If we reach the router it means there's no active flow
-    // — treat SWITCH_YES as starting the ORDER flow, SWITCH_NO as returning to menu.
-    case 'SWITCH_YES': {
-      return startFlow({ flowName: 'ORDER', session, business, tenant });
-    }
-    case 'SWITCH_NO': {
-      const { getModeConfig: getMC3 } = await import('../../config/modes.js');
-      const cfg4 = getMC3(business);
-      await updateSession(session.customerPhone, session.tenantId, { currentFlow: null, step: null });
-      return { type: 'buttons', body: cfg4.messages?.welcome || '👋 What would you like to do?', buttons: cfg4.ui?.welcomeButtons || [] };
-    }
-
-    // FIX #4: REJECTION_* buttons — sent after payment rejection. By the time they reach the
-    // router it means the session flow was cleared. Route to the appropriate recovery action.
-    case 'REJECTION_RESEND': {
-      return startFlow({ flowName: 'ORDER', session, business, tenant });
-    }
-    case 'REJECTION_SUPPORT': {
-      // Re-use the SUPPORT case logic
-      return route({ action: 'SUPPORT', intent, session, message, business, tenant, isInteractive, suggestion });
-    }
-    case 'REJECTION_CANCEL': {
-      const { getModeConfig: getMC4 } = await import('../../config/modes.js');
-      const cfg5 = getMC4(business);
-      await updateSession(session.customerPhone, session.tenantId, { currentFlow: null, step: null, data: {} });
-      return { type: 'buttons', body: cfg5.messages?.welcome || '👋 What else can we help with?', buttons: cfg5.ui?.welcomeButtons || [] };
     }
   }
 

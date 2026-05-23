@@ -5,7 +5,6 @@ import { Router } from 'express';
 import {
   getBusinessConfig, updateBusinessConfig,
   getMenu, updateMenu, addMenuItem, deleteMenuItem,
-  addService, updateServices, deleteService,
   getModeInfo, listSupportedModes,
 } from '../controllers/businessController.js';
 
@@ -33,12 +32,4 @@ r.get('/:tenantId/menu',                     enforceTenantScope, getMenu);
 r.put('/:tenantId/menu',                     enforceTenantScope, updateMenu);
 r.post('/:tenantId/menu',                    enforceTenantScope, addMenuItem);
 r.delete('/:tenantId/menu/:itemName',        enforceTenantScope, deleteMenuItem);
-// FIX #17: Services CRUD endpoints (previously only accessible via raw PUT /:tenantId)
-r.get('/:tenantId/services',                 enforceTenantScope, (req, res) => {
-  // Reuse getMenu — it already returns both menuItems and services
-  return getMenu(req, res);
-});
-r.put('/:tenantId/services',                 enforceTenantScope, updateServices);
-r.post('/:tenantId/services',                enforceTenantScope, addService);
-r.delete('/:tenantId/services/:serviceName', enforceTenantScope, deleteService);
 export default r;

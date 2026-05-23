@@ -43,13 +43,11 @@ export async function receiveProof(customerPhone, tenantId, imageId, tenantDoc) 
   if (adminPhone && tenantDoc) {
     const adminMsg =
       `📸 *Payment Proof Received*\n\n` +
-      `Order: *${order.item}* × ${order.quantity || 1}\n` +
+      `Order: *${order.item}* × ${order.quantity}\n` +
       `Amount: *D${order.totalPrice || '—'}*\n` +
       `Customer: ${customerPhone}\n` +
       `Ref: \`${order.shortId}\`\n\n` +
-      `Reply:\n` +
-      `✅ \`APPROVE ${order.shortId}\`\n` +
-      `❌ \`REJECT ${order.shortId}\``;
+      `Reply:\n✅ \`APPROVE ${order.shortId}\`\n❌ \`REJECT ${order.shortId}\``;
     dispatchText(adminPhone, adminMsg, tenantDoc).catch(() => {});
   }
 

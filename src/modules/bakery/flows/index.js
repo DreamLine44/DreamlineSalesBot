@@ -94,11 +94,9 @@ export async function handleCakeCustomization({ session, message, business, tena
       if (!/^(yes|y|confirm|ok|sure)$/i.test(raw.toLowerCase())) {
         return { type: 'text', body: 'Tap *Confirm* to place your cake order, or *Cancel* to start over.' };
       }
-      const itemLabel = `Custom Cake — ${data.flavor} (${data.size})`;
-      let savedOrder = null;
       try {
-        savedOrder = await saveOrder({
-          item:         itemLabel,
+        await saveOrder({
+          item:         `Custom Cake — ${data.flavor} (${data.size})`,
           quantity:     1,
           totalPrice:   0,
           customerPhone: session.customerPhone,
@@ -108,26 +106,6 @@ export async function handleCakeCustomization({ session, message, business, tena
       } catch (err) {
         logger.error('[BakeryModule] saveCakeOrder failed', { err: err.message });
       }
-
-      // FIX #15 — analytics
-      try {
-        const { trackOrderAnalytics } = await import('../../../core/analytics/analyticsService.js');
-        trackOrderAnalytics(itemLabel, session.phoneNumberId, 1, 0, session.tenantId).catch(() => {});
-      } catch { /* non-fatal */ }
-
-      // FIX #16 — admin notification
-      const adminPhone = business?.adminPhone || tenant?.adminPhone;
-      if (adminPhone && tenant) {
-        const { dispatchText } = await import('../../../core/whatsapp/dispatcher.js');
-        const adminMsg =
-          `🎂 *New Custom Cake Order*\n\n` +
-          `Cake: *${itemLabel}*\n` +
-          `Event date: *${data.eventDate}*\n` +
-          `Customer: ${session.customerPhone}\n` +
-          (savedOrder?.shortId ? `Ref: \`${savedOrder.shortId}\`` : '');
-        dispatchText(adminPhone, adminMsg, tenant).catch(() => {});
-      }
-
       await completeFlow(session, 'ORDER');
       return {
         type: 'text',

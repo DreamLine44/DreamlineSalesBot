@@ -78,7 +78,7 @@ export async function handleAdminTextCommand(text, tenantId, adminPhone, tenantD
 
   // RESUME BOT <phone>
   const resumeMatch = upper.match(/^RESUME BOT\s+(\d+)$/);
-  if (resumeMatch) return resumeBot(resumeMatch[1], tenantId, tenantDoc);
+  if (resumeMatch) return resumeBot(resumeMatch[1], tenantId);
 
   return null;
 }
@@ -98,12 +98,7 @@ async function confirmPayment(shortId, tenantId, adminPhone, tenantDoc, business
   } });
   await dispatchText(order.customerPhone, `✅ *Payment confirmed!*\n\nYour order *${order.item}* is now being processed. Thank you! 🙏`, tenantDoc);
   logger.info('[AdminCmd] Payment confirmed', { shortId, adminPhone });
-  return (
-    `✅ *Payment confirmed*\n\n` +
-    `Order #${shortId} — ${order.item} × ${order.quantity || 1}\n` +
-    `Amount: D${order.totalPrice || '—'}\n` +
-    `Customer ${order.customerPhone} notified.`
-  );
+  return `✅ *Payment confirmed*\n\nOrder #${shortId} — ${order.item}\nCustomer ${order.customerPhone} notified.`;
 }
 
 // ── Reject payment ────────────────────────────────────────────────────────────
@@ -114,34 +109,15 @@ async function rejectPayment(shortId, tenantId, adminPhone, tenantDoc, business)
   if (order.status === 'cancelled') return `ℹ️ Order #${shortId} already cancelled.`;
 
   await Order.updateOne({ _id: order._id }, { $set: {
-    paymentStatus:     'rejected',
+    paymentStatus:     'rejected',        // [FIX] now in enum (was 'rejected' which was missing)
     status:            'payment_failed',
-    paymentReviewedBy: adminPhone,
-    paymentReviewedAt: new Date(),
+    paymentReviewedBy: adminPhone,        // [FIX] schema field (was rejectedBy — not in schema)
+    paymentReviewedAt: new Date(),        // [FIX] schema field (was rejectedAt — not in schema)
   } });
-
-  // FIX #20: Send recovery buttons with REJECTION_* IDs (registered in patterns.js).
-  // Customer session stays in PAYMENT_PROOF so they can resend a screenshot directly.
-  const { dispatchMessage } = await import('../core/whatsapp/dispatcher.js');
-  await dispatchMessage(order.customerPhone, {
-    type:    'buttons',
-    body:
-      `❌ *Payment could not be verified.*\n\n` +
-      `Please check the Wave number and amount sent, then resend your screenshot.\n\n` +
-      `Or choose an option below:`,
-    buttons: [
-      { id: 'REJECTION_RESEND',  title: '🔄 Resend Screenshot' },
-      { id: 'REJECTION_SUPPORT', title: '🆘 Contact Support'   },
-      { id: 'REJECTION_CANCEL',  title: '❌ Cancel Order'      },
-    ],
-  }, tenantDoc);
-
+  await dispatchText(order.customerPhone,
+    `❌ *Payment could not be verified.*\n\nPlease check the amount and Wave number, then resend your screenshot, or type *Order* to start again.`, tenantDoc);
   logger.info('[AdminCmd] Payment rejected', { shortId, adminPhone });
-  return (
-    `❌ *Payment rejected*\n\n` +
-    `Order #${shortId} — ${order.item}\n` +
-    `Customer ${order.customerPhone} notified with recovery options.`
-  );
+  return `❌ *Payment rejected*\n\nOrder #${shortId} — ${order.item}\nCustomer ${order.customerPhone} notified.`;
 }
 
 // ── Confirm booking ───────────────────────────────────────────────────────────
@@ -157,11 +133,7 @@ async function confirmBooking(shortId, tenantId, adminPhone, tenantDoc) {
   await dispatchText(booking.customerPhone,
     `✅ *Booking Confirmed!*\n\nYour booking${serviceStr} for *${when}* is confirmed.\n\nWe look forward to seeing you! 😊`, tenantDoc);
   logger.info('[AdminCmd] Booking confirmed', { shortId, adminPhone });
-  return (
-    `✅ *Booking confirmed*\n\n` +
-    `Booking #${shortId} — ${when}${serviceStr}\n` +
-    `Customer ${booking.customerPhone} notified.`
-  );
+  return `✅ *Booking confirmed*\n\nBooking #${shortId} — ${when}${serviceStr}\nCustomer ${booking.customerPhone} notified.`;
 }
 
 // ── Decline booking ───────────────────────────────────────────────────────────
@@ -182,19 +154,9 @@ async function declineBooking(shortId, reason, tenantId, adminPhone, tenantDoc) 
 }
 
 // ── Resume bot ────────────────────────────────────────────────────────────────
-async function resumeBot(customerPhone, tenantId, tenantDoc) {
+async function resumeBot(customerPhone, tenantId) {
   await updateSession(customerPhone, tenantId, { humanMode: false, humanModeNotified: false });
-
-  // Notify the customer that the bot is back
-  if (tenantDoc) {
-    dispatchText(
-      customerPhone,
-      `✅ Our team has finished assisting you. Our automated assistant is back and ready to help! 😊\n\nType *menu* or *hi* to continue.`,
-      tenantDoc,
-    ).catch(() => {});
-  }
-
-  return `✅ *Bot resumed for ${customerPhone}*. Automation is active again.`;
+  return `✅ Bot resumed for *${customerPhone}*. Automation is active again.`;
 }
 
 // ── Build admin booking alert (includes shortId) ──────────────────────────────
@@ -207,8 +169,9 @@ export function buildAdminBookingAlert({ customerPhone, date, time, service, bus
 
   return (
     `🔔 *New Booking — ${bizName}*\n\n` +
-    `👤 ${customerPhone}\n` +
-    `📅 ${date}${timeStr}${serviceStr}${idStr}\n\n` +
+    `👤 Customer: ${customerPhone}\n` +
+    `📅 Date: *${date}*${timeStr}${serviceStr}${idStr}\n\n` +
+    `Status: *Pending* — please confirm.\n\n` +
     `Reply:\n` +
     `✅ \`CONFIRM BOOK ${shortId || '?'}\`\n` +
     `❌ \`DECLINE BOOK ${shortId || '?'} <reason>\``

@@ -106,40 +106,10 @@ export async function handleElectronicsOrder({ session, message, business, tenan
       if (!/^(yes|y|confirm|ok)$/i.test(clean)) {
         return { type: 'text', body: 'Tap *Confirm* to place your order.' };
       }
-      let savedOrder = null;
       try {
-        savedOrder = await saveOrder({ item: data.item?.name, quantity: data.quantity, totalPrice: data.totalPrice,
+        await saveOrder({ item: data.item?.name, quantity: data.quantity, totalPrice: data.totalPrice,
           customerPhone: session.customerPhone, tenantId: session.tenantId, businessId: business._id });
       } catch (err) { logger.error('[ElectronicsModule] saveOrder failed', { err: err.message }); }
-
-      // FIX #15 — analytics
-      try {
-        const { trackOrderAnalytics, recordRevenue } = await import('../../../core/analytics/analyticsService.js');
-        trackOrderAnalytics(data.item?.name, session.phoneNumberId, data.quantity, data.totalPrice, session.tenantId).catch(() => {});
-        if (data.totalPrice) recordRevenue({ item: data.item?.name, quantity: data.quantity, revenue: data.totalPrice, tenantId: session.tenantId, customerPhone: session.customerPhone, phoneNumberId: session.phoneNumberId }).catch(() => {});
-      } catch { /* non-fatal */ }
-
-      // FIX #16 — admin notification
-      const adminPhone = business?.adminPhone || tenant?.adminPhone;
-      if (adminPhone && tenant) {
-        const { dispatchText } = await import('../../../core/whatsapp/dispatcher.js');
-        const adminMsg =
-          `📱 *New Electronics Order*\n\n` +
-          `Item: *${data.item?.name}* × ${data.quantity || 1}\n` +
-          `${data.totalPrice ? `Total: *D${data.totalPrice}*\n` : ''}` +
-          `Customer: ${session.customerPhone}\n` +
-          (savedOrder?.shortId ? `Ref: \`${savedOrder.shortId}\`` : '');
-        dispatchText(adminPhone, adminMsg, tenant).catch(() => {});
-      }
-
-      // FIX #14 — payment gate
-      if (business?.payment?.enabled && data.totalPrice) {
-        await updateSession(session.customerPhone, session.tenantId, { step: 'PAYMENT_PROOF' });
-        const { buildPaymentInstructionsUI } = await import('../../../services/paymentService.js');
-        const last4 = savedOrder?._id?.toString().slice(-4) || '****';
-        return buildPaymentInstructionsUI(business, data.totalPrice, last4);
-      }
-
       await completeFlow(session, 'ORDER');
       return { type: 'text', body: `✅ *Order received!*\n\n📦 *${data.quantity}× ${data.item?.name}*\n\nWe'll verify stock and reach out with delivery details. Thank you! 📱` };
     }
