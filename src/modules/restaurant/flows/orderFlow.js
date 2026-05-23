@@ -104,6 +104,19 @@ export async function handleOrderFlow({ session, message, business, tenant, isIn
         };
       }
 
+      // Casual chat / greetings — customer is in ordering mode, redirect politely
+      const CASUAL_RE = /^(hello|hi+|hey|helo|howdy|yo|sup|good morning|good afternoon|good evening|gm|ok|okay|k+|yes|no|nope|yep|yeah|sure|thanks|thank you|thx|ty|tq|lol|haha|why|what|how|who|huh|hmm|test|ping)$/i;
+      if (CASUAL_RE.test(clean)) {
+        return {
+          type:    'buttons',
+          body:    `Hi there! 😊 You're currently in the middle of placing an order.\n\nPlease type the name of what you'd like to order, or browse our menu:`,
+          buttons: [
+            { id: 'SHOW_MENU', title: '🔄 View Menu' },
+            { id: 'CANCEL',    title: '❌ Cancel'    },
+          ],
+        };
+      }
+
       // Fuzzy name match
       const { item, confidenceLevel } = findBestMatch(menu, clean);
 

@@ -18,7 +18,7 @@ import Booking        from '../models/Booking.js';
 import Tenant         from '../models/Tenant.js';
 import BusinessConfig from '../models/BusinessConfig.js';
 import { updateSession } from '../core/sessions/sessionService.js';
-import { dispatchText }  from '../core/whatsapp/dispatcher.js';
+import { dispatchText, dispatchMessage } from '../core/whatsapp/dispatcher.js';
 import logger            from '../config/logger.js';
 
 // ── Admin phone check ─────────────────────────────────────────────────────────
@@ -88,12 +88,29 @@ async function confirmPayment(shortId, tenantId, adminPhone, tenantDoc, business
     paymentReviewedAt: new Date(),
   }});
 
-  await dispatchText(order.customerPhone,
-    `✅ *Payment Confirmed!*\n\n` +
-    `Your order of *${order.item}* × ${order.quantity} has been verified.\n\n` +
-    `🍽 We're now preparing your order. Thank you! 🙏\n\n` +
-    `_(Ref: #${order.shortId || shortId})_`,
-    tenantDoc);
+  // Send proactive interactive message — customer doesn't need to reply first
+  const biz      = await BusinessConfig.findOne({ tenantId }).lean().catch(() => null);
+  const canBook  = (biz?.services || []).length > 0;
+  const custBtns = [
+    { id: 'ORDER',    title: '🛒 Place New Order'  },
+    canBook ? { id: 'BOOK', title: '📅 Make a Booking' } : null,
+    { id: 'QUESTION', title: '❓ Ask a Question'   },
+  ].filter(Boolean).slice(0, 3);
+
+  await dispatchMessage(order.customerPhone, {
+    type:    'buttons',
+    body:
+      `✅ *Payment Confirmed!*\n\n` +
+      `Your order of *${order.item}* × ${order.quantity} has been verified and is now being prepared.\n\n` +
+      `🍽 Thank you for your order! We'll have it ready shortly. 🙏\n\n` +
+      `_(Ref: #${order.shortId || shortId})_`,
+    buttons: custBtns,
+  }, tenantDoc).catch(() => {});
+
+  // Clear session state — customer already has action buttons
+  updateSession(order.customerPhone, tenantId, {
+    currentFlow: null, step: null, postFlowAck: null,
+  }).catch(() => {});
 
   logger.info('[AdminCmd] Payment confirmed', { shortId, adminPhone });
   return `✅ *Payment confirmed*\n\nOrder #${shortId} — ${order.item}\nCustomer ${order.customerPhone} notified.`;
@@ -109,25 +126,39 @@ async function rejectPayment(shortId, tenantId, adminPhone, tenantDoc, business)
   if (!order) return `⚠️ No order found: ${shortId}`;
   if (order.status === 'cancelled') return `ℹ️ Order #${shortId} already cancelled.`;
 
+  // Reset paymentStatus to 'unpaid' so the customer CAN retry their screenshot
+  // (receiveProof looks for paymentStatus:'unpaid' — this keeps that path open)
   await Order.updateOne({ _id: order._id }, { $set: {
-    paymentStatus:     'rejected',
+    paymentStatus:     'unpaid',
     status:            'payment_failed',
     paymentReviewedBy: adminPhone,
     paymentReviewedAt: new Date(),
   }});
 
-  await dispatchText(order.customerPhone,
-    `❌ *Payment Could Not Be Verified*\n\n` +
-    `We couldn't verify your Wave payment for order *#${order.shortId || shortId}*.\n\n` +
-    `*Common reasons:*\n` +
-    `• Wrong amount sent\n` +
-    `• Payment sent to wrong number\n` +
-    `• Screenshot was not clear\n\n` +
-    `Please check and resend your screenshot, or type *Order* to start a new order.`,
-    tenantDoc);
+  // Put customer session back into PAYMENT_PROOF so a new screenshot is accepted
+  updateSession(order.customerPhone, tenantId, {
+    currentFlow: 'ORDER',
+    step:        'PAYMENT_PROOF',
+  }).catch(() => {});
+
+  // Interactive rejection message — customer can resend or cancel
+  await dispatchMessage(order.customerPhone, {
+    type:    'buttons',
+    body:
+      `❌ *Payment Verification Failed*\n\n` +
+      `We could not verify your Wave payment for order *#${order.shortId || shortId}*.\n\n` +
+      `*Possible reasons:*\n` +
+      `• Incorrect amount sent\n` +
+      `• Payment sent to the wrong number\n` +
+      `• Screenshot was unclear or incomplete\n\n` +
+      `Please send a *new, clear screenshot* of your Wave confirmation, or cancel the order below.`,
+    buttons: [
+      { id: 'CANCEL', title: '❌ Cancel Order' },
+    ],
+  }, tenantDoc).catch(() => {});
 
   logger.info('[AdminCmd] Payment rejected', { shortId, adminPhone });
-  return `❌ *Payment rejected*\n\nOrder #${shortId} — ${order.item}\nCustomer ${order.customerPhone} notified.`;
+  return `❌ *Payment rejected*\n\nOrder #${shortId} — ${order.item}\nCustomer ${order.customerPhone} notified. Retry window open.`;
 }
 
 // ── Confirm booking ───────────────────────────────────────────────────────────

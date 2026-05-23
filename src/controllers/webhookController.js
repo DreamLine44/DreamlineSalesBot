@@ -274,6 +274,46 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
     return;
   }
 
+  // ── 10.5. PAYMENT_PROOF — strict text guard ───────────────────────────────
+  // Any text while awaiting a payment screenshot is intercepted here.
+  // NOTHING bleeds through to intent detection / order restart from this stage.
+  if (
+    session.currentFlow === 'ORDER' &&
+    session.step        === 'PAYMENT_PROOF' &&
+    !imageUrl
+  ) {
+    const upper = messageText.trim().toUpperCase();
+
+    // Allow explicit cancellation
+    if (upper === 'CANCEL' || upper === 'CANCEL_ORDER' || upper === 'NEW_ORDER') {
+      const { default: Order } = await import('../models/Order.js');
+      await Order.findOneAndUpdate(
+        { customerPhone: from, tenantId, paymentStatus: { $in: ['unpaid', 'proof_received'] } },
+        { $set: { status: 'cancelled', paymentStatus: 'cancelled' } },
+        { sort: { createdAt: -1 } }
+      ).catch(() => {});
+      await updateSession(from, tenantId, { currentFlow: null, step: null, data: {} });
+      const cfg = getModeConfig(business);
+      await dispatchMessage(from, {
+        type:    'buttons',
+        body:    '❌ Your order has been cancelled.\n\nWhat would you like to do next?',
+        buttons: cfg.ui?.welcomeButtons || [{ id: 'ORDER', title: '🛒 Place New Order' }],
+      }, tenantDoc);
+      return;
+    }
+
+    // All other text (greetings, questions, anything) → strict reminder
+    await dispatchMessage(from, {
+      type:    'buttons',
+      body:
+        '⏳ *Awaiting your payment screenshot.*\n\n' +
+        'Please send a clear image of your Wave payment confirmation to complete your order.\n\n' +
+        '_To cancel this order, tap the button below._',
+      buttons: [{ id: 'CANCEL', title: '❌ Cancel Order' }],
+    }, tenantDoc);
+    return;
+  }
+
   // ── 11. Admin button reply (APPROVE_xxx / REJECT_xxx / CONFIRM_BOOK_xxx) ──
   if (isInteractive && (
     messageText.startsWith('APPROVE_') || messageText.startsWith('REJECT_')  ||
@@ -333,7 +373,7 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
         : `You're welcome${custName}! 😊 We're preparing your order. Anything else we can help with at *${business.name || 'us'}*?`;
 
       const buttons = [
-        canOrder ? { id: 'ORDER',    title: '🛍 Place Another Order' } : null,
+        canOrder ? { id: 'ORDER',    title: '🛒 Place New Order' } : null,
         canBook  ? { id: 'BOOK',     title: '📅 Make a Booking'      } : null,
         { id: 'QUESTION', title: '❓ Ask a Question' },
       ].filter(Boolean).slice(0, 3);

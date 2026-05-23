@@ -49,7 +49,7 @@ export function buildOrderSuccess({ item, qty, business }) {
   const quantity = qty || 1;
   const canBook  = (business?.services || []).length > 0;
   const buttons  = [
-    { id: 'ORDER',    title: '🛍 Order Again'  },
+    { id: 'ORDER',    title: '🛒 Place New Order' },
     canBook ? { id: 'BOOK', title: '📅 Book a Table' } : null,
     { id: 'SHOW_MENU', title: '🔄 Start Over' },
   ].filter(Boolean).slice(0, 3);
