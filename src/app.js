@@ -15,7 +15,7 @@
  *  - Trust proxy correctly set for reverse-proxy deployments (Railway, Render, etc.)
  *  - /health exposes version and uptime — no simulation flag in production
  */
-
+ 
 import './config/env.js';
 import { validateEnv } from './config/env.js';
 validateEnv(); // ← crashes early if .env is misconfigured
