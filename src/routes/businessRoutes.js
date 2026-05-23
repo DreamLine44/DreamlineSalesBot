@@ -1,5 +1,9 @@
 /**
  * routes/businessRoutes.js
+ *
+ * [FIX-BIZ-2] deleteMenuItem route now uses /:itemId (not /:itemName) to match
+ *             the updated controller that deletes by MongoDB _id — avoids
+ *             accidentally deleting multiple items with the same name.
  */
 import { Router } from 'express';
 import {
@@ -19,7 +23,7 @@ function enforceTenantScope(req, res, next) {
   if (req.isSuperAdmin) return next();
   if (!req.tenantId) return res.status(401).json({ error: 'Unauthorized' });
   if (req.params.tenantId && req.params.tenantId !== req.tenantId) {
-    return res.status(403).json({ error: 'Forbidden — cannot access another tenant\'s data' });
+    return res.status(403).json({ error: "Forbidden — cannot access another tenant's data" });
   }
   next();
 }
@@ -31,5 +35,6 @@ r.put('/:tenantId',                          enforceTenantScope, updateBusinessC
 r.get('/:tenantId/menu',                     enforceTenantScope, getMenu);
 r.put('/:tenantId/menu',                     enforceTenantScope, updateMenu);
 r.post('/:tenantId/menu',                    enforceTenantScope, addMenuItem);
-r.delete('/:tenantId/menu/:itemName',        enforceTenantScope, deleteMenuItem);
+// [FIX-BIZ-2] Changed :itemName → :itemId for safe, precise deletion by MongoDB _id
+r.delete('/:tenantId/menu/:itemId',          enforceTenantScope, deleteMenuItem);
 export default r;

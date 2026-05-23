@@ -6,9 +6,20 @@
  * [FIX-BUG1]  cfg.labels → cfg.messages — ALL module configs export .messages,
  *             not .labels. Using .labels returned undefined everywhere, causing
  *             blank bot responses on GREET / SHOW_MENU / FALLBACK / CLARIFY.
+ *
+ * [FIX #2]    PAYMENT case added. Previously the intent was detected but had no
+ *             handler, silently falling through to the Unknown-action logger.
+ *             If an unpaid pending order exists, re-opens the PAYMENT_PROOF step.
+ *             Otherwise shows generic Wave payment info from the business config.
+ *
+ * [FIX #3]    CONTINUE_FLOW returns null (no reply) instead of falling through to
+ *             the Unknown-action handler and sending a spurious menu.
+ *
  * [FIX-BUG8]  SUPPORT sets humanModeNotified=true so a 2nd message from the same
  *             customer doesn't trigger a duplicate admin escalation alert.
+ *
  * [FIX-BUG10] DONE action returns mode-appropriate welcome buttons, not a dead-end.
+ *
  * [FIX-BUG12] TRACK_ORDER returns follow-up buttons (New Order, Start Over).
  */
 
@@ -53,8 +64,7 @@ export async function route({ action, intent, session, message, business, tenant
         customerName: existingName,
       });
 
-      // [FIX-BUG1] cfg.messages not cfg.labels — module configs use .messages
-      // Also honour customMessages.welcomeMessage when set by the operator
+      // [FIX-BUG1] cfg.messages not cfg.labels; also honour operator customMessages
       const customWelcome = business?.customMessages?.welcomeMessage;
       const body = greetMsg
         || customWelcome
@@ -70,11 +80,7 @@ export async function route({ action, intent, session, message, business, tenant
       await updateSession(session.customerPhone, session.tenantId, {
         currentFlow: null, step: null, postFlowAck: null,
       });
-      // [FIX] SHOW_MENU ≠ GREET. When a customer taps "Start Over" mid-session
-      // they should NOT see the full welcome greeting (business description, etc.)
-      // again — that's jarring and feels like the bot forgot the conversation.
-      // SHOW_MENU shows a short "what else can I help with?" prompt + action buttons.
-      // GREET (first message / fresh start) shows the full branded welcome.
+      // SHOW_MENU ≠ GREET — short "what next?" prompt, not the full branded greeting
       return {
         type:    'buttons',
         body:    '👇 What would you like to do?',
@@ -89,7 +95,7 @@ export async function route({ action, intent, session, message, business, tenant
     case 'SUPPORT': {
       const adminPhone = business?.adminPhone || tenant?.adminPhone || null;
 
-      // [FIX-BUG8] Set humanModeNotified=true so second message doesn't re-alert admin
+      // [FIX-BUG8] humanModeNotified=true prevents duplicate admin alerts
       await updateSession(session.customerPhone, session.tenantId, {
         humanMode: true, humanModeNotified: true, currentFlow: null, step: null,
       });
@@ -161,7 +167,7 @@ export async function route({ action, intent, session, message, business, tenant
     }
 
     case 'DONE': {
-      // [FIX-BUG10] Return welcome buttons instead of dead-end plain text
+      // [FIX-BUG10] Return welcome buttons — not a dead-end plain text response
       const { getModeConfig } = await import('../../config/modes.js');
       const cfg = getModeConfig(business);
       return {
@@ -170,7 +176,72 @@ export async function route({ action, intent, session, message, business, tenant
         buttons: cfg.ui?.welcomeButtons || [{ id: 'SHOW_MENU', title: '🔄 Start Over' }],
       };
     }
-  }
+
+    // [FIX #3] CONTINUE_FLOW: pure-digit / very-short input with no active flow context.
+    // Nothing to continue — return null so the webhook sends nothing.
+    case 'CONTINUE_FLOW': {
+      return null;
+    }
+
+    // [FIX #2] PAYMENT: detected but previously had no handler — fell through to
+    // the Unknown-action logger and returned a generic fallback to a customer
+    // asking how to pay.
+    //
+    // If there is an unpaid pending order, re-open the PAYMENT_PROOF step so the
+    // customer can send their screenshot without restarting the order flow.
+    // Otherwise show generic Wave payment instructions from the business config.
+    case 'PAYMENT': {
+      const handler = ACTION_REGISTRY.get('PAYMENT');
+      if (handler) return handler({ session, message, business, tenant, intent, isInteractive, suggestion });
+
+      // Try to find an existing unpaid order for this session
+      let unpaidOrder = null;
+      try {
+        const { default: OrderModel } = await import('../../models/Order.js');
+        unpaidOrder = await OrderModel.findOne({
+          customerPhone: session.customerPhone,
+          tenantId:      session.tenantId,
+          paymentStatus: 'unpaid',
+          status:        'pending',
+        }).sort({ createdAt: -1 }).lean();
+      } catch { /* non-fatal — fall through to generic info */ }
+
+      if (unpaidOrder) {
+        // Re-open the payment proof step for the existing order
+        await updateSession(session.customerPhone, session.tenantId, {
+          currentFlow: 'ORDER',
+          step:        'PAYMENT_PROOF',
+          data:        { ...(session.data || {}), shortId: unpaidOrder.shortId },
+        });
+
+        const { buildPaymentInstructionsUI } = await import('../../services/paymentService.js');
+        return buildPaymentInstructionsUI(
+          business,
+          unpaidOrder.totalPrice,
+          unpaidOrder.shortId,
+          unpaidOrder.paymentReference,  // use stored ref — avoids day-boundary mismatch
+        );
+      }
+
+      // No pending order — show generic payment info
+      const payment  = business?.payment || {};
+      const waveNo   = payment.wavePhone || payment.phone || null;
+      const currency = payment.currency || 'D';
+
+      const body = waveNo
+        ? `💳 *Payment Information*\n\nWe accept payment via *Wave*.\n\n📱 Send to: *${waveNo}*\n\nPlease place an order first, then send your payment screenshot here.`
+        : `💳 *Payment*\n\nPlease complete your order first and we'll send you full payment instructions.`;
+
+      const { getModeConfig } = await import('../../config/modes.js');
+      const cfg = getModeConfig(business);
+      return {
+        type:    'buttons',
+        body,
+        buttons: cfg.ui?.welcomeButtons || [{ id: 'SHOW_MENU', title: '🔄 Start Over' }],
+      };
+    }
+
+  } // end switch
 
   // ── Module-registered actions ─────────────────────────────────────────────
   const handler = ACTION_REGISTRY.get(upper);

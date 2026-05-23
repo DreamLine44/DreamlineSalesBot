@@ -12,12 +12,26 @@ import crypto from 'crypto';
 import Tenant  from '../models/Tenant.js';
 import logger  from '../config/logger.js';
 
-/** Constant-time string comparison — prevents timing side-channel attacks. */
+/** Constant-time string comparison — prevents timing side-channel attacks.
+ *
+ * [FIX #14] The old implementation used padEnd(64), which is a no-op for
+ * strings longer than 64 chars. timingSafeEqual then received buffers of
+ * different lengths and threw ERR_CRYPTO_TIMINGSAFE_UNEQUAL_BUFFERS before
+ * the safe a.length===b.length guard could run. SUPER_ADMIN_API_KEY can be
+ * arbitrarily long, so this was a real crash path.
+ *
+ * Fix: allocate both buffers to max(a.length, b.length, 64) so they are
+ * always the same size regardless of key length.
+ */
 function safeCompare(a, b) {
   if (typeof a !== 'string' || typeof b !== 'string') return false;
-  // Pad to same length so the XOR doesn't short-circuit
-  const aBuf = Buffer.from(a.padEnd(64));
-  const bBuf = Buffer.from(b.padEnd(64));
+  const len  = Math.max(a.length, b.length, 64);
+  const aBuf = Buffer.alloc(len);
+  const bBuf = Buffer.alloc(len);
+  Buffer.from(a).copy(aBuf);
+  Buffer.from(b).copy(bBuf);
+  // timingSafeEqual gives constant-time XOR; the length check catches mismatches
+  // that the padded XOR would pass (e.g. 'abc\0\0…' vs 'abcde\0…').
   return crypto.timingSafeEqual(aBuf, bBuf) && a.length === b.length;
 }
 

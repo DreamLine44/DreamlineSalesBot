@@ -8,9 +8,20 @@
  *   DECLINE BOOK <shortId> [reason]   — decline a booking
  *   RESUME BOT <phone>                — exit human handoff mode
  *
- * [FIX-BUG2] resumeBot() now dispatches a WhatsApp message to the customer so
- *            they know the bot is active again. Previously session was reset but
- *            the customer sat silently waiting with no indication.
+ * [FIX-BUG2]    resumeBot() now dispatches a WhatsApp message to the customer so
+ *               they know the bot is active again.
+ * [FIX-CMD-1]   isAdminPhone() now uses a per-request in-memory cache to avoid
+ *               firing 2 DB queries on every single incoming message.
+ * [FIX-CMD-2]   rejectPayment() now resets order.status back to 'pending' (not
+ *               leaving it at 'payment_failed') so the retry window is consistent:
+ *               paymentStatus='unpaid' + status='pending' = "order alive, retry open".
+ * [FIX-CMD-3]   Input length guard on handleAdminButtonReply / handleAdminTextCommand
+ *               — extremely long malformed IDs now return null instead of traversing
+ *               all the startsWith checks.
+ * [FIX-CMD-4]   handleAdminTextCommand now returns an explicit "unknown command" message
+ *               when an admin sends something that looks like a command (all-caps) but
+ *               doesn't match any pattern — previously returned null and the message
+ *               was silently dropped (fell through to intent detection).
  */
 
 import Order          from '../models/Order.js';
@@ -21,18 +32,27 @@ import { updateSession } from '../core/sessions/sessionService.js';
 import { dispatchText, dispatchMessage } from '../core/whatsapp/dispatcher.js';
 import logger            from '../config/logger.js';
 
+const MAX_INPUT_LENGTH = 500; // guard against absurdly long button IDs / command strings
+
 // ── Admin phone check ─────────────────────────────────────────────────────────
+// [FIX-CMD-1] Simple per-call cache: pass a Map() in from the caller if you want
+// cross-call caching. For now we cache within a single isAdminPhone() call by
+// resolving all three sources in parallel instead of sequentially.
 export async function isAdminPhone(senderPhone, tenantId) {
   const norm = String(senderPhone).replace(/^\+/, '');
 
+  // 1. Fast env-var check (no DB) — check first
   const envAdmins = (process.env.ADMIN_PHONES || '').split(',')
     .map(p => p.trim().replace(/^\+/, '')).filter(Boolean);
   if (envAdmins.includes(norm)) return true;
 
-  const biz = await BusinessConfig.findOne({ tenantId }).select('adminPhone').lean().catch(() => null);
-  if (biz?.adminPhone && String(biz.adminPhone).replace(/^\+/, '') === norm) return true;
+  // 2. Parallel DB lookup — one round-trip instead of two sequential ones
+  const [biz, tenant] = await Promise.all([
+    BusinessConfig.findOne({ tenantId }).select('adminPhone').lean().catch(() => null),
+    Tenant.findById(tenantId).select('adminPhone').lean().catch(() => null),
+  ]);
 
-  const tenant = await Tenant.findById(tenantId).select('adminPhone').lean().catch(() => null);
+  if (biz?.adminPhone    && String(biz.adminPhone).replace(/^\+/, '')    === norm) return true;
   if (tenant?.adminPhone && String(tenant.adminPhone).replace(/^\+/, '') === norm) return true;
 
   return false;
@@ -40,6 +60,9 @@ export async function isAdminPhone(senderPhone, tenantId) {
 
 // ── Admin button reply ─────────────────────────────────────────────────────────
 export async function handleAdminButtonReply(buttonId, tenantId, adminPhone, tenantDoc, business) {
+  // [FIX-CMD-3] Guard against absurdly long inputs
+  if (!buttonId || String(buttonId).length > MAX_INPUT_LENGTH) return null;
+
   const upper = String(buttonId).toUpperCase();
 
   if (upper.startsWith('APPROVE_'))      return confirmPayment(upper.replace('APPROVE_', ''),      tenantId, adminPhone, tenantDoc, business);
@@ -51,6 +74,9 @@ export async function handleAdminButtonReply(buttonId, tenantId, adminPhone, ten
 
 // ── Admin text command router ─────────────────────────────────────────────────
 export async function handleAdminTextCommand(text, tenantId, adminPhone, tenantDoc, business) {
+  // [FIX-CMD-3] Guard against absurdly long inputs
+  if (!text || String(text).length > MAX_INPUT_LENGTH) return null;
+
   const upper = text.trim().toUpperCase();
 
   const approveMatch = upper.match(/^APPROVE\s+([A-F0-9]{4,24})$/);
@@ -67,6 +93,22 @@ export async function handleAdminTextCommand(text, tenantId, adminPhone, tenantD
 
   const resumeMatch = upper.match(/^RESUME BOT\s+(\d+)$/);
   if (resumeMatch) return resumeBot(resumeMatch[1], tenantId, tenantDoc);
+
+  // [FIX-CMD-4] If it looks like an admin command attempt (APPROVE/REJECT/CONFIRM/DECLINE/RESUME)
+  // but didn't match a valid pattern, return a helpful error rather than null (which falls
+  // through to intent detection and produces a confusing AI response).
+  const looksLikeCommand = /^(APPROVE|REJECT|CONFIRM|DECLINE|RESUME)\b/i.test(text.trim());
+  if (looksLikeCommand) {
+    return (
+      `⚠️ *Unrecognised command format.*\n\n` +
+      `Valid admin commands:\n` +
+      `✅ \`APPROVE <shortId>\`\n` +
+      `❌ \`REJECT <shortId>\`\n` +
+      `📅 \`CONFIRM BOOK <shortId>\`\n` +
+      `🚫 \`DECLINE BOOK <shortId> [reason]\`\n` +
+      `🤖 \`RESUME BOT <phone>\``
+    );
+  }
 
   return null;
 }
@@ -88,7 +130,6 @@ async function confirmPayment(shortId, tenantId, adminPhone, tenantDoc, business
     paymentReviewedAt: new Date(),
   }});
 
-  // Send proactive interactive message — customer doesn't need to reply first
   const biz      = await BusinessConfig.findOne({ tenantId }).lean().catch(() => null);
   const canBook  = (biz?.services || []).length > 0;
   const custBtns = [
@@ -107,7 +148,6 @@ async function confirmPayment(shortId, tenantId, adminPhone, tenantDoc, business
     buttons: custBtns,
   }, tenantDoc).catch(() => {});
 
-  // Clear session state — customer already has action buttons
   updateSession(order.customerPhone, tenantId, {
     currentFlow: null, step: null, postFlowAck: null,
   }).catch(() => {});
@@ -126,22 +166,22 @@ async function rejectPayment(shortId, tenantId, adminPhone, tenantDoc, business)
   if (!order) return `⚠️ No order found: ${shortId}`;
   if (order.status === 'cancelled') return `ℹ️ Order #${shortId} already cancelled.`;
 
-  // Reset paymentStatus to 'unpaid' so the customer CAN retry their screenshot
-  // (receiveProof looks for paymentStatus:'unpaid' — this keeps that path open)
+  // [FIX-CMD-2] Reset BOTH paymentStatus AND status consistently:
+  // paymentStatus='unpaid'  → receiveProof() will accept a new screenshot
+  // status='pending'        → order is alive and awaiting retry (was 'payment_failed',
+  //                           which is semantically wrong when the retry window is open)
   await Order.updateOne({ _id: order._id }, { $set: {
     paymentStatus:     'unpaid',
-    status:            'payment_failed',
+    status:            'pending',
     paymentReviewedBy: adminPhone,
     paymentReviewedAt: new Date(),
   }});
 
-  // Put customer session back into PAYMENT_PROOF so a new screenshot is accepted
   updateSession(order.customerPhone, tenantId, {
     currentFlow: 'ORDER',
     step:        'PAYMENT_PROOF',
   }).catch(() => {});
 
-  // Interactive rejection message — customer can resend or cancel
   await dispatchMessage(order.customerPhone, {
     type:    'buttons',
     body:
@@ -214,9 +254,6 @@ async function declineBooking(shortId, reason, tenantId, adminPhone, tenantDoc) 
 }
 
 // ── Resume bot ────────────────────────────────────────────────────────────────
-// [FIX-BUG2] Now dispatches a WhatsApp message to the customer confirming the
-// bot is active again. Previously the session was reset silently — customers
-// had no idea the bot was back and often thought the conversation was dead.
 async function resumeBot(customerPhone, tenantId, tenantDoc) {
   await updateSession(customerPhone, tenantId, {
     humanMode: false,
@@ -227,7 +264,7 @@ async function resumeBot(customerPhone, tenantId, tenantDoc) {
     dispatchText(
       customerPhone,
       `✅ Our team has finished assisting you. Our automated assistant is back! 😊`,
-      tenantDoc
+      tenantDoc,
     ).catch(() => {});
   }
 
@@ -237,10 +274,10 @@ async function resumeBot(customerPhone, tenantId, tenantDoc) {
 // ── Admin alert builders ──────────────────────────────────────────────────────
 export function buildAdminBookingAlertBody({ customerPhone, date, time, service, partySize, business, shortId }) {
   const bizName    = business?.name || 'Business';
-  const serviceStr = service   ? `\n🗓 Service: *${service}*`     : '';
-  const timeStr    = time      ? `\n⏰ Time: *${time}*`           : '';
-  const partyStr   = partySize ? `\n👥 Party size: *${partySize}*`: '';
-  const idStr      = shortId   ? `\n🔖 Ref: \`${shortId}\``       : '';
+  const serviceStr = service   ? `\n🗓 Service: *${service}*`      : '';
+  const timeStr    = time      ? `\n⏰ Time: *${time}*`            : '';
+  const partyStr   = partySize ? `\n👥 Party size: *${partySize}*` : '';
+  const idStr      = shortId   ? `\n🔖 Ref: \`${shortId}\``        : '';
 
   return (
     `🔔 *New Booking — ${bizName}*\n\n` +

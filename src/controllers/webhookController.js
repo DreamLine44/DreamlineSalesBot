@@ -210,9 +210,14 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
     }
     return;
   }
-  // Clear closedMsgSent once we're open again — awaited so a DB failure is visible in logs
+  // Clear closedMsgSent once we're open again.
+  // [FIX #10] This does not need to be awaited — it's a non-critical bookkeeping write.
+  // Awaiting it added an extra DB round-trip to EVERY open-hours message for any customer
+  // whose closedMsgSent flag was true (i.e. the first N messages after a closed period).
+  // Fire-and-forget with .catch() to surface DB failures in logs without blocking.
   if (session.closedMsgSent) {
-    await updateSession(from, tenantId, { closedMsgSent: false });
+    updateSession(from, tenantId, { closedMsgSent: false }).catch(err =>
+      logger.warn('[Webhook] closedMsgSent reset failed (non-fatal)', { err: err.message }));
   }
 
   // ── 6. Human mode ─────────────────────────────────────────────────────────
@@ -334,12 +339,14 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
     const { handleAdminButtonReply, isAdminPhone } = await import('../services/adminCommandService.js');
     const isAdmin = await isAdminPhone(from, tenantId).catch(() => false);
     if (!isAdmin) {
-      // Non-admin tapping an admin button — treat as a stale/unknown button and fall through
-      logger.warn('[Webhook] Non-admin tapped admin button', { from, buttonId: messageText });
-    } else {
-      const reply = await handleAdminButtonReply(messageText, tenantId, from, tenantDoc, business).catch(() => null);
-      if (reply) { await dispatchMessage(from, { type: 'text', body: reply }, tenantDoc); return; }
+      // [FIX-WH-1] Non-admin tapping a stale admin button — return silently.
+      // Previously fell through to intent detection which produced a confusing
+      // AI response to an internal button ID like "APPROVE_ABC123".
+      logger.warn('[Webhook] Non-admin tapped admin button — ignoring', { from, buttonId: messageText });
+      return;
     }
+    const reply = await handleAdminButtonReply(messageText, tenantId, from, tenantDoc, business).catch(() => null);
+    if (reply) { await dispatchMessage(from, { type: 'text', body: reply }, tenantDoc); return; }
   }
 
   // ── 12. LEAD_CAPTURE active flow ──────────────────────────────────────────

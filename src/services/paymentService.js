@@ -2,7 +2,21 @@
  * services/paymentService.js — WhatSalesAgent2
  *
  * Handles payment proof receipt and admin approval/rejection flow.
- * [FIX] DONE path in webhookController is now gated on requireProof===false.
+ *
+ * [FIX] DONE path in webhookController is gated on requireProof===false.
+ *
+ * [FIX #5a] buildPaymentInstructionsUI accepts a storedRef param. When the order
+ *           already has a paymentReference in DB, that value is used instead of
+ *           recomputing it — avoids day-boundary mismatch (order at 23:55, reminder
+ *           at 00:05 generates a different reference than the stored one).
+ *
+ * [FIX #5b] Date formatting uses explicit zero-padded arithmetic (padStart) rather
+ *           than Intl.DateTimeFormat or toLocaleDateString, both of which vary across
+ *           Node.js ICU builds and locale environments.
+ *
+ * [FIX-IMG-ORDER] receiveProof forwards the payment proof image to the admin BEFORE
+ *                 the approval card, then waits 500 ms. The old code sent them
+ *                 concurrently so the card often arrived before the image.
  */
 
 import Order          from '../models/Order.js';
@@ -13,7 +27,7 @@ import logger from '../config/logger.js';
 const PROOF_WINDOW_HOURS = Number(process.env.PROOF_ELIGIBLE_HOURS || 4);
 
 /**
- * receiveProof — customer has sent a payment screenshot
+ * receiveProof — customer has sent a payment screenshot.
  */
 export async function receiveProof(customerPhone, tenantId, imageId, tenantDoc) {
   const windowStart = new Date(Date.now() - PROOF_WINDOW_HOURS * 60 * 60 * 1000);
@@ -30,23 +44,22 @@ export async function receiveProof(customerPhone, tenantId, imageId, tenantDoc) 
 
   await Order.updateOne({ _id: order._id }, {
     $set: {
-      paymentStatus:    'proof_received',
-      paymentProof:     imageId,          // [FIX] schema field is paymentProof, not proofImageId
-      proofReceivedAt:  new Date(),
+      paymentStatus:   'proof_received',
+      paymentProof:    imageId,         // [FIX] schema field is paymentProof, not proofImageId
+      proofReceivedAt: new Date(),
     },
   });
 
-  // Notify admin with interactive buttons
-  const business = await BusinessConfig.findOne({ tenantId }).lean();
+  // Notify admin
+  const business  = await BusinessConfig.findOne({ tenantId }).lean();
   const adminPhone = business?.adminPhone || tenantDoc?.adminPhone;
   if (adminPhone && tenantDoc) {
     const { dispatchMessage } = await import('../core/whatsapp/dispatcher.js');
     const currency = business?.payment?.currency || 'D';
-    // [FIX-IMG-ORDER] Forward the payment proof image FIRST and await it.
-    // Previously this was fire-and-forget (.catch only), so the alert card
-    // raced ahead and arrived BEFORE the image in the admin chat — meaning
-    // "Screenshot sent above ↑" was wrong (screenshot was below the card).
-    // Now we await the image send + add a 500 ms gap before the card send.
+
+    // [FIX-IMG-ORDER] Forward the image FIRST (awaited), then the approval card.
+    // Previously both were fire-and-forget so the card often arrived before the image,
+    // making "Screenshot sent above ↑" incorrect.
     if (imageId) {
       const token   = tenantDoc?.whatsapp?.accessToken;
       const phoneId = tenantDoc?.whatsapp?.phoneNumberId;
@@ -59,15 +72,15 @@ export async function receiveProof(customerPhone, tenantId, imageId, tenantDoc) 
         };
         try {
           await fetch(`https://graph.facebook.com/${version}/${phoneId}/messages`, {
-            method: 'POST',
+            method:  'POST',
             headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-            body: JSON.stringify(imgPayload),
+            body:    JSON.stringify(imgPayload),
           });
         } catch (imgErr) {
           logger.warn('[PaymentService] Image forward failed (non-fatal)', { err: imgErr.message });
         }
-        // Small gap so WhatsApp delivers the image before the card
-        await new Promise(r => setTimeout(r, 500));
+        // Brief gap so WhatsApp delivers the image before the interactive card
+        await new Promise(resolve => setTimeout(resolve, 500));
       }
     }
 
@@ -96,9 +109,9 @@ export async function receiveProof(customerPhone, tenantId, imageId, tenantDoc) 
 }
 
 /**
- * handleDonePayment — for businesses where requireProof=false
+ * handleDonePayment — for businesses where requireProof=false.
  * Customer types DONE to self-confirm without a screenshot.
- * [FIX] This is now only called when requireProof===false (gated in webhookController)
+ * This is only called when requireProof===false (gated in webhookController).
  */
 export async function handleDonePayment(customerPhone, tenantId) {
   const order = await Order.findOne({
@@ -109,9 +122,9 @@ export async function handleDonePayment(customerPhone, tenantId) {
 
   await Order.updateOne({ _id: order._id }, {
     $set: {
-      paymentStatus:    'self_confirmed', // [FIX] now in enum
-      status:           'confirmed',
-      proofReceivedAt:  new Date(),       // reuse proofReceivedAt as the self-confirm timestamp
+      paymentStatus:   'self_confirmed', // in enum
+      status:          'confirmed',
+      proofReceivedAt: new Date(),       // reuse as self-confirm timestamp
     },
   });
 
@@ -119,13 +132,34 @@ export async function handleDonePayment(customerPhone, tenantId) {
 }
 
 /**
- * buildPaymentInstructionsUI — shown after order confirm when payment is enabled
+ * buildPaymentInstructionsUI — shown after order confirm when payment is enabled.
+ *
+ * [FIX #5a] Accept storedRef and use it when available. Only generate a new reference
+ *           when none exists yet (first call from orderFlow).
+ *
+ * [FIX #5b] Use explicit zero-padded arithmetic for the date prefix — avoids ICU
+ *           separator variance (Intl '/' vs '-' across Node builds) and locale
+ *           unpredictability of toLocaleDateString.
+ *
+ * @param {object} business
+ * @param {number} totalPrice
+ * @param {string} shortId
+ * @param {string|null} storedRef  - existing paymentReference from the Order doc, if any
  */
-export function buildPaymentInstructionsUI(business, totalPrice, shortId) {
+export function buildPaymentInstructionsUI(business, totalPrice, shortId, storedRef = null) {
   const payment  = business?.payment || {};
   const waveNo   = payment.wavePhone || payment.phone || '—';
   const currency = payment.currency || 'D';
-  const ref      = shortId ? `DSB-${new Date().toLocaleDateString('en-GB', { day:'2-digit', month:'2-digit' }).replace('/','')}-${shortId}` : null;
+
+  // Prefer the stored reference; only compute a new one when none exists
+  let ref = storedRef || null;
+  if (!ref && shortId) {
+    // [FIX #5b] Explicit arithmetic — ICU-independent, always zero-padded
+    const now = new Date();
+    const dd  = String(now.getDate()).padStart(2, '0');
+    const mm  = String(now.getMonth() + 1).padStart(2, '0');
+    ref = `DSB-${dd}${mm}-${shortId}`;
+  }
 
   return {
     type: 'text',

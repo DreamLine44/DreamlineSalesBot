@@ -1,23 +1,34 @@
 /**
- * controllers/dashboardController.js — WhatSalesAgent (Merged v1+v2)
+ * controllers/dashboardController.js — WhatSalesAgent (Final Merged)
  *
  * FIXES applied:
- * [FIX-6a] updateOrderStatus now validates the status value and notifies the customer
- *          via WhatsApp when their order is confirmed or rejected/cancelled.
- *          V2 was silently updating DB with no customer notification.
  *
- * [FIX-6b] updateBookingStatus now notifies customer on confirm/cancel — mirrors
- *          v1 dashboard behaviour. V2 was silently updating DB only.
+ * [FIX-6a]   updateOrderStatus validates status and notifies the customer via WhatsApp
+ *            when their order is confirmed, completed, or cancelled/rejected.
+ *            V2 was silently updating DB with no customer notification.
  *
- * [FIX-9]  Status enum validation on both update endpoints — unhandled Mongoose
- *          ValidationError previously returned a 500 with a raw Mongoose stack trace.
+ * [FIX-6b]   updateBookingStatus notifies customer on confirm/cancel/complete.
  *
- * [MERGED] Full FAQ + Services CRUD from v1 dashboard, now available on the
- *          dashboard routes so operators don't need separate /business calls.
- *          v2 only had these under /business/:tenantId — added here for convenience.
+ * [FIX-9]    Status enum validation on both update endpoints — previously an invalid
+ *            status caused an unhandled Mongoose ValidationError (raw 500 stack trace).
  *
- * [MERGED] getOrderHistory — shows last 5 orders per customer (from v1).
- *          V2 TRACK_ORDER only showed 1 order. Added as a separate dashboard endpoint.
+ * [FIX #11]  updateBookingStatus: when date or time changes, clear parsedDate AND
+ *            reminderSentAt so the scheduler re-arms for the new appointment time.
+ *            V1 nulled both unconditionally; V2 only nulled reminderSentAt and
+ *            conditionally forwarded parsedDate from the request body.
+ *            Correct behaviour: null both parsedDate and reminderSentAt on any
+ *            date/time change — the scheduler will re-parse the new date itself.
+ *
+ * [FIX-4]    deleteMenuItem / deleteService / deleteFaq all check modifiedCount.
+ *            $pull is a no-op when the subdocument ID doesn't exist; previously
+ *            { ok: true } was always returned, making stale/typo IDs undetectable.
+ *
+ * [FIX-DASH-1] getCustomers supports ?page pagination (previously only ?limit existed).
+ *
+ * [MERGED]   Full Menu / Services / FAQ CRUD available on dashboard routes.
+ *            V2 only had these under /business/:tenantId.
+ *
+ * [MERGED]   getCustomerOrderHistory — returns last N orders for a customer phone.
  */
 
 import Order          from '../models/Order.js';
@@ -83,7 +94,7 @@ export async function updateOrderStatus(req, res) {
     const { tenantId, orderId } = req.params;
     const { status, notes } = req.body;
 
-    // [FIX-9] Validate status before hitting Mongoose to return a clean 400
+    // [FIX-9] Validate status before hitting Mongoose
     const VALID_ORDER_STATUSES = ['pending', 'confirmed', 'completed', 'cancelled', 'payment_failed', 'rejected'];
     if (!VALID_ORDER_STATUSES.includes(status)) {
       return res.status(400).json({ error: `Invalid status. Must be one of: ${VALID_ORDER_STATUSES.join(', ')}` });
@@ -96,7 +107,7 @@ export async function updateOrderStatus(req, res) {
     );
     if (!order) return res.status(404).json({ error: 'Order not found' });
 
-    // [FIX-6a] Notify customer — V2 was silently updating DB with no customer message
+    // [FIX-6a] Notify customer
     try {
       const tenant = await loadTenant(tenantId);
       if (tenant && order.customerPhone) {
@@ -124,7 +135,7 @@ export async function updateOrderStatus(req, res) {
   }
 }
 
-// [MERGED from V1] Customer order history — last 5 orders
+// Customer order history — last N orders for a phone number
 export async function getCustomerOrderHistory(req, res) {
   try {
     const { tenantId, customerPhone } = req.params;
@@ -165,14 +176,29 @@ export async function updateBookingStatus(req, res) {
       return res.status(400).json({ error: `Invalid status. Must be one of: ${VALID_BOOKING_STATUSES.join(', ')}` });
     }
 
+    const updateFields = { status, ...(adminNote ? { adminNote } : {}) };
+
+    // [FIX #11] When date or time changes, null BOTH parsedDate AND reminderSentAt.
+    // parsedDate holds the last scheduler-parsed DateTime — it must be cleared so the
+    // scheduler re-parses the new date string rather than targeting the old appointment.
+    // reminderSentAt must be cleared so the reminder re-arms for the new slot.
+    // V1 cleared both but also forwarded parsedDate from the body (wrong — stale value);
+    // V2 kept the body's parsedDate (also wrong). Correct: null both, let scheduler re-parse.
+    if (req.body.date !== undefined || req.body.time !== undefined) {
+      if (req.body.date !== undefined) updateFields.date = req.body.date;
+      if (req.body.time !== undefined) updateFields.time = req.body.time;
+      updateFields.parsedDate     = null; // force scheduler to re-parse
+      updateFields.reminderSentAt = null; // re-arm the reminder
+    }
+
     const booking = await Booking.findOneAndUpdate(
       { _id: bookingId, tenantId },
-      { $set: { status, ...(adminNote ? { adminNote } : {}) } },
+      { $set: updateFields },
       { new: true },
     );
     if (!booking) return res.status(404).json({ error: 'Booking not found' });
 
-    // [FIX-6b] Notify customer — V2 was silently updating DB with no customer message
+    // [FIX-6b] Notify customer
     try {
       const tenant = await loadTenant(tenantId);
       if (tenant && booking.customerPhone) {
@@ -242,7 +268,7 @@ export async function setHumanMode(req, res) {
     const session = await updateSession(phone, tenantId, { humanMode });
     if (!session) return res.status(404).json({ error: 'Session not found' });
 
-    // If handing back to bot, let the customer know
+    // When handing back to bot, let the customer know
     if (!humanMode) {
       try {
         const tenant = await loadTenant(tenantId);
@@ -264,10 +290,27 @@ export async function setHumanMode(req, res) {
 export async function getCustomers(req, res) {
   try {
     const { tenantId } = req.params;
-    const { limit = 50 } = req.query;
-    const profiles = await UserProfile.find({ tenantId })
-      .sort({ updatedAt: -1 }).limit(Number(limit)).lean();
-    res.json({ customers: profiles, count: profiles.length });
+    // [FIX-DASH-1] ?page pagination support
+    const limit = Math.min(Number(req.query.limit) || 50, 200);
+    const page  = Math.max(Number(req.query.page)  || 1, 1);
+    const skip  = (page - 1) * limit;
+
+    const [profiles, total] = await Promise.all([
+      UserProfile.find({ tenantId })
+        .sort({ updatedAt: -1 })
+        .skip(skip)
+        .limit(limit)
+        .lean(),
+      UserProfile.countDocuments({ tenantId }),
+    ]);
+
+    res.json({
+      customers: profiles,
+      count:     profiles.length,
+      total,
+      page,
+      pages: Math.ceil(total / limit),
+    });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -307,7 +350,7 @@ export async function updateBusinessSettings(req, res) {
   }
 }
 
-// ── Menu CRUD [MERGED from V1] ─────────────────────────────────────────────────
+// ── Menu CRUD ─────────────────────────────────────────────────────────────────
 export async function getMenu(req, res) {
   try {
     const biz = await BusinessConfig.findOne({ tenantId: req.params.tenantId })
@@ -321,11 +364,11 @@ export async function addMenuItem(req, res) {
   try {
     const { tenantId } = req.params;
     const { name, price, description, category, available = true, keywords = [] } = req.body;
-    if (!name) return res.status(400).json({ error: 'name required' });
+    if (!name || !String(name).trim()) return res.status(400).json({ error: 'name required' });
 
     const biz = await BusinessConfig.findOneAndUpdate(
       { tenantId },
-      { $push: { menuItems: { name, price: Number(price) || 0, description, category, available, keywords } } },
+      { $push: { menuItems: { name: String(name).trim(), price: Number(price) || 0, description, category, available, keywords } } },
       { new: true },
     );
     if (!biz) return res.status(404).json({ error: 'Not found' });
@@ -345,6 +388,8 @@ export async function updateMenuItem(req, res) {
     if (available   !== undefined) patch['menuItems.$.available']   = available;
     if (keywords    !== undefined) patch['menuItems.$.keywords']    = keywords;
 
+    if (!Object.keys(patch).length) return res.status(400).json({ error: 'No fields to update' });
+
     const biz = await BusinessConfig.findOneAndUpdate(
       { tenantId, 'menuItems._id': itemId },
       { $set: patch },
@@ -358,12 +403,18 @@ export async function updateMenuItem(req, res) {
 export async function deleteMenuItem(req, res) {
   try {
     const { tenantId, itemId } = req.params;
-    await BusinessConfig.updateOne({ tenantId }, { $pull: { menuItems: { _id: itemId } } });
+    // [FIX-4] $pull is a no-op when subdoc ID doesn't exist; check modifiedCount
+    const result = await BusinessConfig.updateOne(
+      { tenantId },
+      { $pull: { menuItems: { _id: itemId } } },
+    );
+    if (result.matchedCount === 0) return res.status(404).json({ error: 'Business not found' });
+    if (result.modifiedCount === 0) return res.status(404).json({ error: 'Menu item not found' });
     res.json({ ok: true });
   } catch (err) { res.status(500).json({ error: err.message }); }
 }
 
-// ── Services CRUD [MERGED from V1] ────────────────────────────────────────────
+// ── Services CRUD ─────────────────────────────────────────────────────────────
 export async function getServices(req, res) {
   try {
     const biz = await BusinessConfig.findOne({ tenantId: req.params.tenantId })
@@ -400,6 +451,8 @@ export async function updateService(req, res) {
     if (duration    !== undefined) patch['services.$.duration']    = Number(duration);
     if (available   !== undefined) patch['services.$.available']   = available;
 
+    if (!Object.keys(patch).length) return res.status(400).json({ error: 'No fields to update' });
+
     const biz = await BusinessConfig.findOneAndUpdate(
       { tenantId, 'services._id': serviceId },
       { $set: patch },
@@ -413,12 +466,18 @@ export async function updateService(req, res) {
 export async function deleteService(req, res) {
   try {
     const { tenantId, serviceId } = req.params;
-    await BusinessConfig.updateOne({ tenantId }, { $pull: { services: { _id: serviceId } } });
+    // [FIX-4] Check modifiedCount
+    const result = await BusinessConfig.updateOne(
+      { tenantId },
+      { $pull: { services: { _id: serviceId } } },
+    );
+    if (result.matchedCount === 0) return res.status(404).json({ error: 'Business not found' });
+    if (result.modifiedCount === 0) return res.status(404).json({ error: 'Service not found' });
     res.json({ ok: true });
   } catch (err) { res.status(500).json({ error: err.message }); }
 }
 
-// ── FAQ CRUD [MERGED from V1] ──────────────────────────────────────────────────
+// ── FAQ CRUD ──────────────────────────────────────────────────────────────────
 export async function getFaqs(req, res) {
   try {
     const biz = await BusinessConfig.findOne({ tenantId: req.params.tenantId })
@@ -452,6 +511,8 @@ export async function updateFaq(req, res) {
     if (trigger !== undefined) patch['faq.$.trigger'] = trigger;
     if (reply   !== undefined) patch['faq.$.reply']   = reply;
 
+    if (!Object.keys(patch).length) return res.status(400).json({ error: 'No fields to update' });
+
     const biz = await BusinessConfig.findOneAndUpdate(
       { tenantId, 'faq._id': faqId },
       { $set: patch },
@@ -465,7 +526,13 @@ export async function updateFaq(req, res) {
 export async function deleteFaq(req, res) {
   try {
     const { tenantId, faqId } = req.params;
-    await BusinessConfig.updateOne({ tenantId }, { $pull: { faq: { _id: faqId } } });
+    // [FIX-4] Check modifiedCount
+    const result = await BusinessConfig.updateOne(
+      { tenantId },
+      { $pull: { faq: { _id: faqId } } },
+    );
+    if (result.matchedCount === 0) return res.status(404).json({ error: 'Business not found' });
+    if (result.modifiedCount === 0) return res.status(404).json({ error: 'FAQ not found' });
     res.json({ ok: true });
   } catch (err) { res.status(500).json({ error: err.message }); }
 }
