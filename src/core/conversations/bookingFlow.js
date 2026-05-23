@@ -165,7 +165,11 @@ export async function handleBookingFlow({ session, message, business, tenant, is
 
       if (!service) {
         const list = services.map((s, i) => `*${i+1}.* ${s.name}`).join('\n');
-        return { type: 'text', body: `Please choose a service by number or name:\n\n${list}` };
+        return {
+          type:    'buttons',
+          body:    `Please choose a service by number or name:\n\n${list}`,
+          buttons: [{ id: 'CANCEL', title: '❌ Cancel' }],
+        };
       }
 
       // [FIX-7] For RESTAURANT mode, ask how many people (partySize) after service selection.
@@ -197,10 +201,18 @@ export async function handleBookingFlow({ session, message, business, tenant, is
       const { parseQuantity } = await import('../../utils/parseQuantity.js');
       const partySize = parseQuantity(raw);
       if (!partySize || partySize < 1) {
-        return { type: 'text', body: `Please enter the number of guests (e.g. *2*, *four*, *6*):` };
+        return {
+          type:    'buttons',
+          body:    `Please enter the number of guests (e.g. *2*, *four*, *6*):`,
+          buttons: [{ id: 'CANCEL', title: '❌ Cancel' }],
+        };
       }
       if (partySize > 50) {
-        return { type: 'text', body: `⚠️ Maximum party size is *50*. For larger groups please call us directly.` };
+        return {
+          type:    'buttons',
+          body:    `⚠️ Maximum party size is *50*. For larger groups please contact us directly.`,
+          buttons: [{ id: 'SUPPORT', title: '💬 Contact Us' }, { id: 'CANCEL', title: '❌ Cancel' }],
+        };
       }
       await updateSession(session.customerPhone, session.tenantId, {
         step: 'DATE', data: { ...data, partySize },
@@ -248,7 +260,11 @@ export async function handleBookingFlow({ session, message, business, tenant, is
       }
       if (clean === 'date_back' || /^(no|n|re-enter|change|back)$/i.test(clean)) {
         await updateSession(session.customerPhone, session.tenantId, { step: 'DATE' });
-        return { type: 'text', body: `What date would you like? 📅\n\n(e.g. *25 June*, *tomorrow*, *next Monday*)` };
+        return {
+          type:    'buttons',
+          body:    `What date would you like? 📅\n\n(e.g. *25 June*, *tomorrow*, *next Monday*)`,
+          buttons: [{ id: 'CANCEL', title: '❌ Cancel' }],
+        };
       }
       // Inline new date
       if (looksLikeDate(raw)) {
@@ -263,12 +279,20 @@ export async function handleBookingFlow({ session, message, business, tenant, is
           buttons: [{ id: 'CONFIRM', title: '✅ Yes, that date' }, { id: 'DATE_BACK', title: '❌ No, re-enter' }],
         };
       }
-      return { type: 'text', body: `Please tap *Yes* to confirm *${data.date}*, or tap *No* to re-enter a date.` };
+      return {
+        type:    'buttons',
+        body:    `Please confirm *${data.date}*, or go back to re-enter.`,
+        buttons: [{ id: 'CONFIRM', title: '✅ Yes, that date' }, { id: 'DATE_BACK', title: '❌ Re-enter' }],
+      };
     }
 
     case 'TIME': {
       if (!looksLikeTime(raw)) {
-        return { type: 'text', body: `Please enter a valid time ⏰\n\n(e.g. *10:00*, *2pm*, *14:30*)` };
+        return {
+          type:    'buttons',
+          body:    `Please enter a valid time ⏰\n\n(e.g. *10:00*, *2pm*, *14:30*)`,
+          buttons: [{ id: 'CANCEL', title: '❌ Cancel' }],
+        };
       }
       await updateSession(session.customerPhone, session.tenantId, {
         step: 'TIME_CONFIRM', data: { ...data, time: raw },
@@ -296,7 +320,11 @@ export async function handleBookingFlow({ session, message, business, tenant, is
       }
       if (clean === 'time_back' || /^(no|n|back|change)$/i.test(clean)) {
         await updateSession(session.customerPhone, session.tenantId, { step: 'TIME' });
-        return { type: 'text', body: `What time works for you? ⏰\n\n(e.g. *10:00*, *2pm*, *14:30*)` };
+        return {
+          type:    'buttons',
+          body:    `What time works for you? ⏰\n\n(e.g. *10:00*, *2pm*, *14:30*)`,
+          buttons: [{ id: 'CANCEL', title: '❌ Cancel' }],
+        };
       }
       if (looksLikeTime(raw)) {
         await updateSession(session.customerPhone, session.tenantId, {
@@ -308,7 +336,11 @@ export async function handleBookingFlow({ session, message, business, tenant, is
           buttons: [{ id: 'CONFIRM', title: '✅ Yes' }, { id: 'TIME_BACK', title: '❌ Re-enter' }],
         };
       }
-      return { type: 'text', body: `Tap *Yes* to confirm *${data.time}*, or *No* to re-enter.` };
+      return {
+        type:    'buttons',
+        body:    `Please confirm *${data.time}*, or go back to re-enter.`,
+        buttons: [{ id: 'CONFIRM', title: '✅ Yes, that time' }, { id: 'TIME_BACK', title: '❌ Re-enter' }],
+      };
     }
 
     case 'BOOKING_CONFIRM': {
@@ -388,7 +420,15 @@ export async function handleBookingFlow({ session, message, business, tenant, is
         (partySize ? `👥 *${partySize} guest${partySize > 1 ? 's' : ''}*\n` : '') +
         `\nWe look forward to seeing you! 😊`;
 
-      return { type: 'text', body: confirmBody };
+      return {
+        type:    'buttons',
+        body:    confirmBody,
+        buttons: [
+          { id: 'ORDER',     title: '🛍 Place an Order'  },
+          { id: 'QUESTION',  title: '❓ Ask a Question'  },
+          { id: 'SHOW_MENU', title: '🔄 Start Over'      },
+        ],
+      };
     }
 
     default:

@@ -9,7 +9,7 @@
  * [FIX-BUG8]  SUPPORT sets humanModeNotified=true so a 2nd message from the same
  *             customer doesn't trigger a duplicate admin escalation alert.
  * [FIX-BUG10] DONE action returns mode-appropriate welcome buttons, not a dead-end.
- * [FIX-BUG12] TRACK_ORDER returns follow-up buttons (New Order, Main Menu).
+ * [FIX-BUG12] TRACK_ORDER returns follow-up buttons (New Order, Start Over).
  */
 
 import { startFlow, cancelFlow } from './flowEngine.js';
@@ -70,7 +70,7 @@ export async function route({ action, intent, session, message, business, tenant
       await updateSession(session.customerPhone, session.tenantId, {
         currentFlow: null, step: null, postFlowAck: null,
       });
-      // [FIX] SHOW_MENU ≠ GREET. When a customer taps "Main Menu" mid-session
+      // [FIX] SHOW_MENU ≠ GREET. When a customer taps "Start Over" mid-session
       // they should NOT see the full welcome greeting (business description, etc.)
       // again — that's jarring and feels like the bot forgot the conversation.
       // SHOW_MENU shows a short "what else can I help with?" prompt + action buttons.
@@ -113,7 +113,7 @@ export async function route({ action, intent, session, message, business, tenant
       return {
         type:    'buttons',
         body,
-        buttons: [{ id: 'SHOW_MENU', title: '📋 Main Menu' }],
+        buttons: [{ id: 'SHOW_MENU', title: '🔄 Start Over' }],
       };
     }
 
@@ -131,7 +131,7 @@ export async function route({ action, intent, session, message, business, tenant
               (phone ? `\n\n📞 *${phone}*` : ''),
         buttons: [
           canOrder ? { id: 'ORDER', title: '🛍 New Order' } : null,
-          { id: 'SHOW_MENU', title: '📋 Main Menu' },
+          { id: 'SHOW_MENU', title: '🔄 Start Over' },
         ].filter(Boolean),
       };
     }
@@ -156,7 +156,7 @@ export async function route({ action, intent, session, message, business, tenant
       return {
         type:    'buttons',
         body,
-        buttons: cfg.ui?.welcomeButtons || [{ id: 'SHOW_MENU', title: '📋 Main Menu' }],
+        buttons: cfg.ui?.welcomeButtons || [{ id: 'SHOW_MENU', title: '🔄 Start Over' }],
       };
     }
 
@@ -167,7 +167,7 @@ export async function route({ action, intent, session, message, business, tenant
       return {
         type:    'buttons',
         body:    '✅ Thank you! Is there anything else we can help with?',
-        buttons: cfg.ui?.welcomeButtons || [{ id: 'SHOW_MENU', title: '📋 Main Menu' }],
+        buttons: cfg.ui?.welcomeButtons || [{ id: 'SHOW_MENU', title: '🔄 Start Over' }],
       };
     }
   }

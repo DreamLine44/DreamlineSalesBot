@@ -90,8 +90,9 @@ export async function handleSkincareAdvice({ session, message, business, tenant 
     if (mappedSkinType) {
       // Button tap — ask for their specific concern
       return {
-        type: 'text',
-        body: `Got it — *${skinType} skin* 💄\n\nWhat's your main concern? (e.g. acne, dark spots, moisturiser, routine)`,
+        type:    'buttons',
+        body:    `Got it — *${skinType} skin* 💄\n\nWhat's your main concern? (e.g. acne, dark spots, moisturiser, routine)`,
+        buttons: [{ id: 'SHOW_MENU', title: '🔄 Start Over' }],
       };
     }
     // They typed a description — treat it as their question immediately
@@ -113,7 +114,7 @@ async function _buildSkincareAdvice(question, skinType, business, session) {
     buttons: [
       { id: 'ORDER',     title: '💄 Shop Now'         },
       { id: 'QUESTION',  title: '❓ Another Question'  },
-      { id: 'SHOW_MENU', title: '📋 Main Menu'      },
+      { id: 'SHOW_MENU', title: '🔄 Start Over' },
     ],
   };
 }

@@ -56,7 +56,11 @@ export async function handleOrderFlow({ session, message, business, tenant, isIn
 
   // ── No menu configured ────────────────────────────────────────────────────
   if (!menu.length) {
-    return { type: 'text', body: '⚠️ Our menu is not set up yet. Please contact us directly.' };
+    return {
+      type:    'buttons',
+      body:    '⚠️ Our menu is being updated. Please contact us directly.',
+      buttons: [{ id: 'SUPPORT', title: '💬 Contact Us' }],
+    };
   }
 
   // ── INIT (message = null — start of flow) ─────────────────────────────────
@@ -97,7 +101,7 @@ export async function handleOrderFlow({ session, message, business, tenant, isIn
         return {
           type:    'buttons',
           body:    `Please type the name of what you'd like to order, or tap *View Menu* to see all options:`,
-          buttons: [{ id: 'SHOW_MENU', title: '📋 View Menu' }],
+          buttons: [{ id: 'SHOW_MENU', title: '🔄 Start Over' }],
         };
       }
 
@@ -117,7 +121,7 @@ export async function handleOrderFlow({ session, message, business, tenant, isIn
           body:    `🤔 Did you mean *${item.name}*?`,
           buttons: [
             { id: 'CONFIRM', title: `✅ Yes, ${item.name.slice(0,15)}` },
-            { id: 'SHOW_MENU', title: '📋 View full menu' },
+            { id: 'SHOW_MENU', title: '🔄 Start Over' },
           ],
         };
       }
@@ -126,7 +130,7 @@ export async function handleOrderFlow({ session, message, business, tenant, isIn
       return {
         type:    'buttons',
         body:    `I couldn't find "*${raw.slice(0,30)}*" on our menu.\n\nTap below to browse all items:`,
-        buttons: [{ id: 'SHOW_MENU', title: '📋 View Menu' }],
+        buttons: [{ id: 'SHOW_MENU', title: '🔄 Start Over' }],
       };
     }
 
@@ -150,15 +154,17 @@ export async function handleOrderFlow({ session, message, business, tenant, isIn
       // Can't parse at all (e.g. "any", "yes", blank)
       if (!qty || qty < 1) {
         return {
-          type: 'text',
-          body: `Please enter a number — e.g. *1*, *2*, *three*\n\n_(Maximum: ${MAX_QTY} per order)_`,
+          type:    'buttons',
+          body:    `Please enter a number — e.g. *1*, *2*, *three*\n\n_(Maximum: ${MAX_QTY} per order)_`,
+          buttons: [{ id: 'CANCEL', title: '❌ Cancel' }],
         };
       }
       // Parsed fine but exceeds the business max
       if (qty > MAX_QTY) {
         return {
-          type: 'text',
-          body: `⚠️ Maximum order quantity is *${MAX_QTY}*. Please enter a number between *1* and *${MAX_QTY}*.`,
+          type:    'buttons',
+          body:    `⚠️ Maximum order quantity is *${MAX_QTY}*. Please enter a number between *1* and *${MAX_QTY}*.`,
+          buttons: [{ id: 'CANCEL', title: '❌ Cancel' }],
         };
       }
       const item   = data.item;
@@ -356,7 +362,8 @@ async function _selectItem(item, session, business, data) {
     : '';
 
   return {
-    type: 'text',
+    type: 'buttons',
     body: `You've chosen *${item.name}* 👌${addOnText}\n\nHow many *${item.name}* would you like?\n\n_(Enter a number — e.g. *1*, *2*, *three*)_`,
+    buttons: [{ id: 'CANCEL', title: '❌ Cancel' }],
   };
 }

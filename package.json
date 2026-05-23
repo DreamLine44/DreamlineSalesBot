@@ -1,7 +1,7 @@
 {
   "name": "whatsalesagent2",
   "version": "2.0.0",
-  "description": "WhatSalesAgent2 — AI-powered WhatsApp Business Assistant Platform",
+  "description": "WhatSalesAgent2 \u2014 AI-powered WhatsApp Business Assistant Platform",
   "type": "module",
   "main": "src/app.js",
   "scripts": {
@@ -27,7 +27,7 @@
     "winston": "^3.11.0"
   },
   "devDependencies": {
-    "cross-env": "^10.1.0"
+    "cross-env": "10.1.0"
   },
   "engines": {
     "node": ">=18.0.0"

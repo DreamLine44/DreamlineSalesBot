@@ -72,7 +72,7 @@ export const EMOJI_MAP = {
   '📅': 'BOOKING', '📆': 'BOOKING', '🗓': 'BOOKING', '💇': 'BOOKING',
   '❓': 'QUESTION', '🤔': 'QUESTION', '💬': 'QUESTION',
   '💳': 'PAYMENT', '💰': 'PAYMENT',
-  '🏠': 'SHOW_MENU', '🔄': 'REPEAT_ORDER',
+  '🏠': 'SHOW_MENU', '🔄': 'SHOW_MENU',
 };
 
 // ── Keyword → Intent map ──────────────────────────────────────────────────────

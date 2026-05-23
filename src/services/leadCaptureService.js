@@ -146,6 +146,6 @@ async function finaliseLead({ session, lead, business, tenantDoc }) {
   return {
     type:    'buttons',
     body:    thankYou,
-    buttons: modeCfg.ui?.welcomeButtons || [{ id: 'SHOW_MENU', title: '📋 Main Menu' }],
+    buttons: modeCfg.ui?.welcomeButtons || [{ id: 'SHOW_MENU', title: '🔄 Start Over' }],
   };
 }

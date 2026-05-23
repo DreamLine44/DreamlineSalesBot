@@ -65,7 +65,7 @@ export async function handleFashionOrder({ session, message, business, tenant, i
         if (confidenceLevel === 'HIGH') item = matched;
         else if (confidenceLevel === 'LOW') {
           return { type: 'buttons', body: `Did you mean *${matched.name}*?`,
-            buttons: [{ id: 'CONFIRM', title: `✅ Yes, ${matched.name}` }, { id: 'SHOW_MENU', title: '📋 Full catalogue' }] };
+            buttons: [{ id: 'CONFIRM', title: `✅ Yes, ${matched.name}` }, { id: 'SHOW_MENU', title: '🔄 Start Over' }] };
         }
       }
       if (!item) return buildCatalogUI(business);
@@ -74,16 +74,28 @@ export async function handleFashionOrder({ session, message, business, tenant, i
       if (item.variants?.length) {
         const sizeList = item.variants.map((v, i) => `*${i+1}.* ${v}`).join('\n');
         await updateSession(session.customerPhone, session.tenantId, { step: 'SELECT_SIZE', data: { item } });
-        return { type: 'text', body: `✨ *${item.name}*${item.price ? ` — D${item.price}` : ''}\n\nWhat *size* would you like?\n\n${sizeList}` };
+        return {
+          type: 'buttons',
+          body: `✨ *${item.name}*${item.price ? ` — D${item.price}` : ''}\n\nWhat *size* would you like?\n\n${sizeList}`,
+          buttons: [{ id: 'CANCEL', title: '❌ Cancel' }],
+        };
       }
       await updateSession(session.customerPhone, session.tenantId, { step: 'QUANTITY', data: { item } });
-      return { type: 'text', body: `✨ *${item.name}* selected!\n\nHow many would you like?` };
+      return {
+        type: 'buttons',
+        body: `✨ *${item.name}* selected!\n\nHow many would you like?`,
+        buttons: [{ id: 'CANCEL', title: '❌ Cancel' }],
+      };
     }
 
     case 'SELECT_SIZE': {
       const size = SIZES.find(s => clean.includes(s.toLowerCase())) || raw;
       await updateSession(session.customerPhone, session.tenantId, { step: 'QUANTITY', data: { ...data, size } });
-      return { type: 'text', body: `Size *${size}* — got it! ✅\n\nHow many would you like?` };
+      return {
+        type: 'buttons',
+        body: `Size *${size}* — got it! ✅\n\nHow many would you like?`,
+        buttons: [{ id: 'CANCEL', title: '❌ Cancel' }],
+      };
     }
 
     case 'QUANTITY': {
@@ -92,12 +104,18 @@ export async function handleFashionOrder({ session, message, business, tenant, i
       const qty = parseQuantity(raw);
       const MAX_QTY = business?.settings?.maxOrderQuantity || 20;
       if (!qty || qty < 1) {
-        return { type: 'text', body: `Please enter a number — e.g. *1*, *2*, *three*
-
-_(Maximum: ${MAX_QTY} per order)_` };
+        return {
+          type:    'buttons',
+          body:    `Please enter a number — e.g. *1*, *2*, *three*\n\n_(Maximum: ${MAX_QTY} per order)_`,
+          buttons: [{ id: 'CANCEL', title: '❌ Cancel' }],
+        };
       }
       if (qty > MAX_QTY) {
-        return { type: 'text', body: `⚠️ Maximum order quantity is *${MAX_QTY}*. Please enter a number between *1* and *${MAX_QTY}*.` };
+        return {
+          type:    'buttons',
+          body:    `⚠️ Maximum order quantity is *${MAX_QTY}*. Please enter a number between *1* and *${MAX_QTY}*.`,
+          buttons: [{ id: 'CANCEL', title: '❌ Cancel' }],
+        };
       }
       const total = (data.item?.price || 0) * qty;
       await updateSession(session.customerPhone, session.tenantId, { step: 'CONFIRM', data: { ...data, quantity: qty, totalPrice: total } });
@@ -111,7 +129,11 @@ _(Maximum: ${MAX_QTY} per order)_` };
 
     case 'CONFIRM': {
       if (!/^(yes|y|confirm|ok)$/i.test(clean)) {
-        return { type: 'text', body: 'Tap *Confirm* to place your order.' };
+        return {
+          type: 'buttons',
+          body: '👗 Ready to place your order?',
+          buttons: [{ id: 'CONFIRM', title: '✅ Confirm Order' }, { id: 'CANCEL', title: '❌ Cancel' }],
+        };
       }
       let savedOrder = null;
       try {
@@ -150,7 +172,15 @@ _(Maximum: ${MAX_QTY} per order)_` };
       } catch {}
 
       await completeFlow(session, 'ORDER');
-      return { type: 'text', body: `✅ *Order confirmed!*\n\n👗 *${data.quantity}× ${data.item?.name}*\n\nWe'll reach out with delivery details. Thank you! ✨` };
+      return {
+        type: 'buttons',
+        body: `✅ *Order confirmed!*\n\n👗 *${data.quantity}× ${data.item?.name}*\n\nWe'll reach out with delivery details. Thank you! ✨`,
+        buttons: [
+          { id: 'ORDER',     title: '👗 Shop More'      },
+          { id: 'QUESTION',  title: '❓ Style Help'      },
+          { id: 'SHOW_MENU', title: '🔄 Start Over'      },
+        ],
+      };
     }
 
     default: return buildCatalogUI(business);
@@ -159,7 +189,13 @@ _(Maximum: ${MAX_QTY} per order)_` };
 
 function buildCatalogUI(business) {
   const items = (business?.menuItems || []).filter(i => i.available !== false);
-  if (!items.length) return { type: 'text', body: '⚠️ Catalogue not available. Please contact us.' };
+  if (!items.length) {
+    return {
+      type:    'buttons',
+      body:    '⚠️ Our collection is being updated. Please contact us or check back soon.',
+      buttons: [{ id: 'SUPPORT', title: '💬 Contact Us' }],
+    };
+  }
   const rows = items.map((item, i) => ({
     id: String(i + 1), title: item.name.slice(0, 24),
     description: [item.description, item.price ? `D${item.price}` : ''].filter(Boolean).join(' — ').slice(0, 72),

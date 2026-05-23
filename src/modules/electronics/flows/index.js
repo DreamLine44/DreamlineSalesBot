@@ -64,7 +64,7 @@ export async function handleElectronicsOrder({ session, message, business, tenan
         if (confidenceLevel === 'HIGH') item = m;
         else if (confidenceLevel === 'LOW') {
           return { type: 'buttons', body: `Did you mean *${m.name}*?`,
-            buttons: [{ id: 'CONFIRM', title: `✅ Yes` }, { id: 'SHOW_MENU', title: '📋 Browse' }] };
+            buttons: [{ id: 'CONFIRM', title: `✅ Yes` }, { id: 'SHOW_MENU', title: '🔄 Start Over' }] };
         }
       }
       if (!item) {
@@ -73,7 +73,7 @@ export async function handleElectronicsOrder({ session, message, business, tenan
         return {
           type: 'buttons',
           body: aiReply || "I couldn't find that product. Here's our catalogue:",
-          buttons: [{ id: 'SHOW_MENU', title: '📱 Browse Products' }],
+          buttons: [{ id: 'SHOW_MENU', title: '🔄 Start Over' }],
         };
       }
       // Show spec + upsell accessories
@@ -92,12 +92,18 @@ export async function handleElectronicsOrder({ session, message, business, tenan
       const qty = parseQuantity(raw);
       const MAX_QTY = business?.settings?.maxOrderQuantity || 20;
       if (!qty || qty < 1) {
-        return { type: 'text', body: `Please enter a number — e.g. *1*, *2*, *three*
-
-_(Maximum: ${MAX_QTY} per order)_` };
+        return {
+          type:    'buttons',
+          body:    `Please enter a number — e.g. *1*, *2*, *three*\n\n_(Maximum: ${MAX_QTY} per order)_`,
+          buttons: [{ id: 'CANCEL', title: '❌ Cancel' }],
+        };
       }
       if (qty > MAX_QTY) {
-        return { type: 'text', body: `⚠️ Maximum order quantity is *${MAX_QTY}*. Please enter a number between *1* and *${MAX_QTY}*.` };
+        return {
+          type:    'buttons',
+          body:    `⚠️ Maximum order quantity is *${MAX_QTY}*. Please enter a number between *1* and *${MAX_QTY}*.`,
+          buttons: [{ id: 'CANCEL', title: '❌ Cancel' }],
+        };
       }
       const total = (data.item?.price || 0) * qty;
       await updateSession(session.customerPhone, session.tenantId, { step: 'CONFIRM', data: { ...data, quantity: qty, totalPrice: total } });
@@ -110,7 +116,11 @@ _(Maximum: ${MAX_QTY} per order)_` };
 
     case 'CONFIRM': {
       if (!/^(yes|y|confirm|ok)$/i.test(clean)) {
-        return { type: 'text', body: 'Tap *Confirm* to place your order.' };
+        return {
+          type:    'buttons',
+          body:    '📱 Ready to place your order?',
+          buttons: [{ id: 'CONFIRM', title: '✅ Confirm Order' }, { id: 'CANCEL', title: '❌ Cancel' }],
+        };
       }
       let savedOrder = null;
       try {
@@ -147,7 +157,15 @@ _(Maximum: ${MAX_QTY} per order)_` };
       } catch {}
 
       await completeFlow(session, 'ORDER');
-      return { type: 'text', body: `✅ *Order received!*\n\n📦 *${data.quantity}× ${data.item?.name}*\n\nWe'll verify stock and reach out with delivery details. Thank you! 📱` };
+      return {
+        type: 'buttons',
+        body: `✅ *Order received!*\n\n📦 *${data.quantity}× ${data.item?.name}*\n\nWe'll verify stock and reach out with delivery details. Thank you! 📱`,
+        buttons: [
+          { id: 'ORDER',     title: '📱 Browse More'  },
+          { id: 'QUESTION',  title: '❓ Ask a Question' },
+          { id: 'SHOW_MENU', title: '🔄 Start Over'    },
+        ],
+      };
     }
 
     default: return buildProductCatalog(business);
@@ -168,7 +186,11 @@ export async function handleSpecRequest({ session, message, business, tenant }) 
 
   const raw = String(message || '').trim();
   if (!raw) {
-    return { type: 'text', body: 'What product or spec would you like help with? 📱' };
+    return {
+      type:    'buttons',
+      body:    'What product or spec would you like help with? 📱',
+      buttons: [{ id: 'SHOW_MENU', title: '🔄 Start Over' }],
+    };
   }
 
   const aiReply = await getAIReply({ customerMessage: raw, business, session, intent: 'SPEC_REQUEST' });
@@ -178,14 +200,20 @@ export async function handleSpecRequest({ session, message, business, tenant }) 
     buttons: [
       { id: 'ORDER',     title: '📱 Buy Now'        },
       { id: 'QUESTION',  title: '❓ More Questions'  },
-      { id: 'SHOW_MENU', title: '📋 Main Menu'   },
+      { id: 'SHOW_MENU', title: '🔄 Start Over' },
     ],
   };
 }
 
 function buildProductCatalog(business) {
   const items = (business?.menuItems || []).filter(i => i.available !== false);
-  if (!items.length) return { type: 'text', body: '⚠️ Catalogue not available. Please contact us.' };
+  if (!items.length) {
+    return {
+      type:    'buttons',
+      body:    '⚠️ Our catalogue is being updated. Please contact us or check back soon.',
+      buttons: [{ id: 'SUPPORT', title: '💬 Contact Us' }],
+    };
+  }
   const rows = items.map((item, i) => ({
     id: String(i + 1), title: item.name.slice(0, 24),
     description: [item.description, item.price ? `D${item.price}` : ''].filter(Boolean).join(' — ').slice(0, 72),

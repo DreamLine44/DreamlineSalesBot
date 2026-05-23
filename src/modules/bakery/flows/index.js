@@ -71,8 +71,9 @@ export async function handleCakeCustomization({ session, message, business, tena
         step: 'CAKE_EVENT_DATE', data: { ...data, size: raw },
       });
       return {
-        type: 'text',
+        type: 'buttons',
         body: `*${raw}* — perfect! 🎉\n\nWhat *date* do you need this for? 📅\n\n(e.g. *25 June*, *next Saturday*)`,
+        buttons: [{ id: 'CANCEL', title: '❌ Cancel' }],
       };
     }
     case 'CAKE_EVENT_DATE': {
@@ -92,7 +93,11 @@ export async function handleCakeCustomization({ session, message, business, tena
     }
     case 'CAKE_CONFIRM': {
       if (!/^(yes|y|confirm|ok|sure)$/i.test(raw.toLowerCase())) {
-        return { type: 'text', body: 'Tap *Confirm* to place your cake order, or *Cancel* to start over.' };
+        return {
+          type: 'buttons',
+          body: '🎂 Ready to place your cake order?',
+          buttons: [{ id: 'CONFIRM', title: '✅ Place Order' }, { id: 'CANCEL', title: '❌ Cancel' }],
+        };
       }
       let savedOrder = null;
       try {
@@ -127,12 +132,21 @@ export async function handleCakeCustomization({ session, message, business, tena
 
       await completeFlow(session, 'ORDER');
       return {
-        type: 'text',
+        type: 'buttons',
         body: `✅ *Cake order placed!*\n\n🎂 *${data.flavor} cake (${data.size})*\n📅 For: *${data.eventDate}*\n\nWe'll be in touch to confirm details and pricing. Thank you! 🥐`,
+        buttons: [
+          { id: 'ORDER',     title: '🧁 Order More'      },
+          { id: 'BOOK',      title: '📅 Book Collection' },
+          { id: 'SHOW_MENU', title: '🔄 Start Over'      },
+        ],
       };
     }
     default:
-      return { type: 'text', body: 'What flavour would you like for your cake? 🎂' };
+      return {
+        type: 'buttons',
+        body: '🎂 What flavour would you like for your cake?',
+        buttons: [{ id: 'CANCEL', title: '❌ Cancel' }],
+      };
   }
 }
 

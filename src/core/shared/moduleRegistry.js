@@ -95,8 +95,9 @@ export async function registerAllModules() {
         data: { item: { name: lastItem } }, menuViewed: true,
       });
       return {
-        type: 'text',
+        type: 'buttons',
         body: `🔁 *Repeat your last order*\n\nYou previously ordered *${lastItem}*.\n\nHow many would you like this time?\n\n_(Enter a number or word — e.g. *1*, *2*, *three*)_`,
+        buttons: [{ id: 'CANCEL', title: '❌ Cancel' }],
       };
     }
     return startFlow({ flowName: 'ORDER', session, business, tenant });
@@ -104,15 +105,24 @@ export async function registerAllModules() {
 
   registerAction('TRACK_ORDER', async ({ session, business }) => {
     const { getRecentOrders } = await import('../../services/orderService.js');
+    const { getModeConfig }   = await import('../../config/modes.js');
     const orders = await getRecentOrders(session.customerPhone, session.tenantId, 1).catch(() => []);
     const last   = orders[0];
     const phone  = business?.adminPhone;
+    const cfg    = getModeConfig(business);
+    const canOrder = cfg.flows?.includes('ORDER');
+    const body = last
+      ? `📦 *Your latest order*\n\n🍽 *${last.item}* × ${last.quantity}\n📅 ${new Date(last.createdAt).toLocaleDateString()}\n🔖 Status: *${last.status}*\n\n` +
+        (phone ? `For live updates: 📞 *${phone}*` : 'Contact us for live updates.')
+      : `📦 No recent orders found.\n\n${phone ? `Contact us: 📞 *${phone}*` : 'Contact us directly for help.'}`;
     return {
-      type: 'text',
-      body: last
-        ? `📦 *Your latest order*\n\n🍽 *${last.item}* × ${last.quantity}\n📅 ${new Date(last.createdAt).toLocaleDateString()}\n🔖 Status: *${last.status}*\n\n` +
-          (phone ? `For live updates: 📞 *${phone}*` : 'Contact us for live updates.')
-        : `📦 No recent orders found.\n\n${phone ? `Contact us: 📞 *${phone}*` : 'Contact us directly for help.'}`,
+      type: 'buttons',
+      body,
+      buttons: [
+        canOrder ? { id: 'ORDER', title: '🛍 New Order' } : null,
+        { id: 'SUPPORT',   title: '💬 Contact Support' },
+        { id: 'SHOW_MENU', title: '🔄 Start Over'       },
+      ].filter(Boolean).slice(0, 3),
     };
   });
 

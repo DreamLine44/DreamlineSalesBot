@@ -119,7 +119,7 @@ async function checkAndHandleLoop(session, messageText, tenantId, business) {
       return {
         type:    'buttons',
         body:    loopMsg,
-        buttons: cfg.ui?.welcomeButtons || [{ id: 'SHOW_MENU', title: '📋 Main Menu' }],
+        buttons: cfg.ui?.welcomeButtons || [{ id: 'SHOW_MENU', title: '🔄 Start Over' }],
       };
     }
   } else {
@@ -251,7 +251,11 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
       await updateSession(from, tenantId, { currentFlow: null, step: null, postFlowAck: 'ORDER' });
     } catch (err) {
       logger.error('[Webhook] receiveProof failed', { err: err.message });
-      await dispatchMessage(from, { type: 'text', body: '⚠️ Could not process your screenshot. Please try again.' }, tenantDoc);
+      await dispatchMessage(from, {
+        type:    'buttons',
+        body:    '⚠️ Could not process your screenshot. Please try again — send a clear image of your payment confirmation.',
+        buttons: [{ id: 'SUPPORT', title: '💬 Contact Support' }],
+      }, tenantDoc);
     }
     return;
   }
@@ -305,7 +309,7 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
         body:    aiText || 'Let me check that for you. 😊',
         buttons: [
           { id: 'QUESTION',  title: '❓ Ask again'  },
-          { id: 'SHOW_MENU', title: '📋 Main Menu'  },
+          { id: 'SHOW_MENU', title: '🔄 Start Over' },
         ],
       }, tenantDoc);
       return;
@@ -371,7 +375,7 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
     if (upperMsg === '0' || upperMsg === 'SHOW_MENU' || upperMsg === 'MENU' || upperMsg === 'HOME') {
       await updateSession(from, tenantId, { currentFlow: null, step: null, postFlowAck: null });
       const cfg = getModeConfig(business);
-      // [FIX] Mid-session "Main Menu" tap → short prompt, NOT full welcome greeting
+      // [FIX] Mid-session "Start Over" tap → short prompt, NOT full welcome greeting
       await dispatchMessage(from, {
         type:    'buttons',
         body:    '👇 What would you like to do?',
@@ -412,7 +416,7 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
     await dispatchMessage(from, {
       type:    'buttons',
       body:    '❓ What would you like to know? Type your question below.',
-      buttons: [{ id: 'SHOW_MENU', title: '📋 Main Menu' }],
+      buttons: [{ id: 'SHOW_MENU', title: '🔄 Start Over' }],
     }, tenantDoc);
     return;
   }

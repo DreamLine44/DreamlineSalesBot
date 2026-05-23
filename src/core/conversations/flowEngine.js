@@ -50,7 +50,11 @@ export function registerGenericFlow(flowName, handler) {
  */
 export async function advance({ session, message, business, tenant, isInteractive = false }) {
   if (!session?.currentFlow) {
-    return { type: 'text', body: '⚠️ No active flow. Please send a message to get started.' };
+    return {
+      type:    'buttons',
+      body:    '⚠️ No active session. Please tap below to get started.',
+      buttons: [{ id: 'SHOW_MENU', title: '🔄 Start Over' }],
+    };
   }
 
   const flow      = session.currentFlow.toUpperCase();
@@ -63,15 +67,27 @@ export async function advance({ session, message, business, tenant, isInteractiv
 
   if (!handler) {
     logger.warn(`[FlowEngine] No handler for ${specificKey}`);
-    return { type: 'text', body: '⚠️ Flow unavailable. Type *0* to return to menu.' };
+    return {
+      type:    'buttons',
+      body:    '⚠️ This option is not available right now.',
+      buttons: [{ id: 'SHOW_MENU', title: '🔄 Start Over' }],
+    };
   }
 
   try {
     const response = await handler({ session, message, business, tenant, isInteractive });
-    return response || { type: 'text', body: '⚠️ Something went wrong. Type *0* to return to menu.' };
+    return response || {
+      type:    'buttons',
+      body:    '⚠️ Something went wrong. Please try again.',
+      buttons: [{ id: 'SHOW_MENU', title: '🔄 Start Over' }],
+    };
   } catch (err) {
     logger.error('[FlowEngine] Handler threw', { flow: specificKey, err: err.message });
-    return { type: 'text', body: '⚠️ Something went wrong. Please try again or type *0*.' };
+    return {
+      type:    'buttons',
+      body:    '⚠️ Something went wrong. Please try again.',
+      buttons: [{ id: 'SHOW_MENU', title: '🔄 Start Over' }],
+    };
   }
 }
 
@@ -95,7 +111,11 @@ export async function startFlow({ flowName, session, business, tenant }) {
   const handler = FLOW_REGISTRY.get(key) || GENERIC_REGISTRY.get(flowName.toUpperCase());
   if (!handler) {
     logger.warn(`[FlowEngine] No handler to start ${key}`);
-    return { type: 'text', body: '⚠️ This option is not available. Type *0* to return to menu.' };
+    return {
+      type:    'buttons',
+      body:    '⚠️ This option is not available. Please choose another action.',
+      buttons: [{ id: 'SHOW_MENU', title: '🔄 Start Over' }],
+    };
   }
 
   // Call handler with null message to trigger first-step UI
@@ -130,7 +150,7 @@ export async function cancelFlow(session, business) {
   return {
     type:    'buttons',
     body:    CANCEL_MSGS[mode] || '✅ Cancelled.',
-    buttons: cfg.ui?.welcomeButtons || [{ id: 'SHOW_MENU', title: '📋 Main Menu' }],
+    buttons: cfg.ui?.welcomeButtons || [{ id: 'SHOW_MENU', title: '🔄 Start Over' }],
   };
 }
 
