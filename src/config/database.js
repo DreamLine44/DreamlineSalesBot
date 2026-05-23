@@ -26,7 +26,7 @@ export const connectToDB = async () => {
 
   try {
     await mongoose.connect(MONGODB_URI, {
-      serverSelectionTimeoutMS: 10_000,  // Fail fast if DB unreachable at boot
+      serverSelectionTimeoutMS: 25_000,  // Allow time for Atlas cold start on Railway
       socketTimeoutMS:          45_000,  // Abort slow queries
       bufferCommands:           false,   // Fail immediately on DB ops before connection
       maxPoolSize:              10,      // Connection pool size

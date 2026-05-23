@@ -63,6 +63,14 @@ const FLOW_PASSTHROUGH_IDS = new Set([
   'DATE_BACK','TIME_BACK',
   // Lead capture
   'LEAD_SKIP',
+  // Party size (restaurant booking flow)
+  'PARTY_1', 'PARTY_2', 'PARTY_4',
+  // Date/time confirmation (flow-internal, should not hit route())
+  'CONFIRM_DATE', 'CONFIRM_TIME',
+  // Suggestion confirm (orderFlow SUGGESTION_CONFIRM step)
+  'SUGGESTION_CONFIRM',
+  // Upsell
+  'UPSELL_YES', 'UPSELL_NO',
 ]);
 
 // ── [FIX-BUG3] Hours enforcement ─────────────────────────────────────────────

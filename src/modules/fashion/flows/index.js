@@ -139,7 +139,8 @@ export async function handleFashionOrder({ session, message, business, tenant, i
       try {
         savedOrder = await saveOrder({ item: `${data.item?.name}${data.size ? ` (${data.size})` : ''}`,
           quantity: data.quantity, totalPrice: data.totalPrice,
-          customerPhone: session.customerPhone, tenantId: session.tenantId, businessId: business._id });
+          customerPhone: session.customerPhone, tenantId: session.tenantId, businessId: business._id,
+          status: (business?.payment?.enabled && data.totalPrice) ? 'pending_payment' : 'confirmed' });
       } catch (err) { logger.error('[FashionModule] saveOrder failed', { err: err.message }); }
 
       // [FIX-5] Payment flow — fashion was skipping payment even when payment.enabled=true

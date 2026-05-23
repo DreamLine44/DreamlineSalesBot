@@ -233,6 +233,7 @@ export async function handleOrderFlow({ session, message, business, tenant, isIn
           customerPhone: session.customerPhone,
           tenantId:      session.tenantId,
           businessId:    business._id,
+          status:        'pending_payment',
         });
 
         // Track analytics

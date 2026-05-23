@@ -8,7 +8,6 @@
 import Order          from '../models/Order.js';
 import BusinessConfig from '../models/BusinessConfig.js';
 import { dispatchText } from '../core/whatsapp/dispatcher.js';
-import { buildAdminBookingAlert } from './adminCommandService.js';
 import logger from '../config/logger.js';
 
 const PROOF_WINDOW_HOURS = Number(process.env.PROOF_ELIGIBLE_HOURS || 4);

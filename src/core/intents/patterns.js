@@ -63,6 +63,15 @@ export const BUTTON_ID_MAP = {
   'SKIN_OILY':          'CONTINUE_FLOW',
   'SKIN_COMBO':         'CONTINUE_FLOW',
   'SKIN_CUSTOM':        'CONTINUE_FLOW',
+
+  // Party size buttons (restaurant booking PARTY_SIZE step)
+  'PARTY_1':            'CONTINUE_FLOW',
+  'PARTY_2':            'CONTINUE_FLOW',
+  'PARTY_4':            'CONTINUE_FLOW',
+
+  // Date/time confirmation — must stay in active flow, not hit route()
+  'CONFIRM_DATE':       'CONTINUE_FLOW',
+  'CONFIRM_TIME':       'CONTINUE_FLOW',
 };
 
 // ── Emoji → Intent map ────────────────────────────────────────────────────────

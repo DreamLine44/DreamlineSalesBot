@@ -108,6 +108,7 @@ export async function handleCakeCustomization({ session, message, business, tena
           customerPhone: session.customerPhone,
           tenantId:     session.tenantId,
           businessId:   business._id,
+          status:       'pending',  // Admin will confirm pricing manually
         });
       } catch (err) {
         logger.error('[BakeryModule] saveCakeOrder failed', { err: err.message });
