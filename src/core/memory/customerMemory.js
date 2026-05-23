@@ -14,13 +14,20 @@
 
 import UserProfile from '../../models/UserProfile.js';
 import Order       from '../../models/Order.js';
+import mongoose    from 'mongoose';
 import logger      from '../../config/logger.js';
+
+function toOid(id) {
+  if (!id) return id;
+  if (id instanceof mongoose.Types.ObjectId) return id;
+  try { return new mongoose.Types.ObjectId(String(id)); } catch { return id; }
+}
 
 export async function getOrCreate(phone, tenantId) {
   try {
     return await UserProfile.findOneAndUpdate(
-      { phone, tenantId },
-      { $setOnInsert: { phone, tenantId, 'activity.firstSeen': new Date(), 'activity.lastSeen': new Date() } },
+      { phone, tenantId: toOid(tenantId) },
+      { $setOnInsert: { phone, tenantId: toOid(tenantId), 'activity.firstSeen': new Date(), 'activity.lastSeen': new Date() } },
       { upsert: true, new: true }
     ).lean();
   } catch (err) {
@@ -33,7 +40,7 @@ export async function recordOrderItem(phone, tenantId, itemName) {
   if (!phone || !tenantId || !itemName) return;
   try {
     const updated = await UserProfile.findOneAndUpdate(
-      { phone, tenantId, 'preferences.favoriteItems.name': itemName },
+      { phone, tenantId: toOid(tenantId), 'preferences.favoriteItems.name': itemName },
       {
         $inc: { 'preferences.favoriteItems.$.count': 1, 'stats.totalOrders': 1 },
         $set: { 'activity.lastSeen': new Date() },
@@ -42,7 +49,7 @@ export async function recordOrderItem(phone, tenantId, itemName) {
     );
     if (!updated) {
       await UserProfile.findOneAndUpdate(
-        { phone, tenantId },
+        { phone, tenantId: toOid(tenantId) },
         {
           $push: { 'preferences.favoriteItems': { name: itemName, count: 1 } },
           $inc:  { 'stats.totalOrders': 1 },
@@ -60,7 +67,7 @@ export async function recordBooking(phone, tenantId) {
   if (!phone || !tenantId) return;
   try {
     await UserProfile.findOneAndUpdate(
-      { phone, tenantId },
+      { phone, tenantId: toOid(tenantId) },
       { $inc: { 'stats.totalBookings': 1 }, $set: { 'activity.lastSeen': new Date() } },
       { upsert: true }
     );
@@ -73,7 +80,7 @@ export async function updateName(phone, tenantId, name) {
   if (!phone || !tenantId || !name) return;
   try {
     await UserProfile.findOneAndUpdate(
-      { phone, tenantId },
+      { phone, tenantId: toOid(tenantId) },
       { $set: { 'lead.name': name, 'activity.lastSeen': new Date() } },
       { upsert: true }
     );
@@ -84,7 +91,7 @@ export async function updateName(phone, tenantId, name) {
 
 export async function getTopItem(phone, tenantId) {
   try {
-    const profile = await UserProfile.findOne({ phone, tenantId }).select('preferences.favoriteItems').lean();
+    const profile = await UserProfile.findOne({ phone, tenantId: toOid(tenantId) }).select('preferences.favoriteItems').lean();
     const items = profile?.preferences?.favoriteItems || [];
     if (items.length) {
       return items.sort((a, b) => b.count - a.count)[0]?.name || null;
@@ -109,7 +116,7 @@ export async function isReturningCustomer(phone, tenantId) {
 export async function getCustomerContext(phone, tenantId) {
   try {
     const [profile, lastOrder] = await Promise.all([
-      UserProfile.findOne({ phone, tenantId }).lean(),
+      UserProfile.findOne({ phone, tenantId: toOid(tenantId) }).lean(),
       Order.findOne({ customerPhone: phone, tenantId }).sort({ createdAt: -1 }).lean(),
     ]);
     return {

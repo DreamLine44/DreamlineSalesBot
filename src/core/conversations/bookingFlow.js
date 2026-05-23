@@ -411,7 +411,8 @@ export async function handleBookingFlow({ session, message, business, tenant, is
         logger.warn('[BookingFlow] Admin notification failed (non-fatal)', { err: err.message });
       }
 
-      await completeFlow(session, 'BOOKING');
+      const _lcRb = await completeFlow(session, 'BOOKING', business, tenant);
+      if (_lcRb) return _lcRb;
 
       const confirmBody =
         `✅ *Booking confirmed!*\n\n` +

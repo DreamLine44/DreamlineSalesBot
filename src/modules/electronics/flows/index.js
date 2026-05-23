@@ -8,6 +8,7 @@ import { getAIReply }     from '../../../core/ai/providers/aiRouter.js';
 import { findBestMatch }  from '../../../utils/matchEngine.js';
 import { saveOrder }      from '../../../services/orderService.js';
 import { parseQuantity }  from '../../../utils/parseQuantity.js';
+import { trackOrderAnalytics, recordRevenue } from '../../../core/analytics/analyticsService.js';
 import logger             from '../../../config/logger.js';
 
 export const ELECTRONICS_CONFIG = {
@@ -125,8 +126,7 @@ export async function handleElectronicsOrder({ session, message, business, tenan
       let savedOrder = null;
       try {
         savedOrder = await saveOrder({ item: data.item?.name, quantity: data.quantity, totalPrice: data.totalPrice,
-          customerPhone: session.customerPhone, tenantId: session.tenantId, businessId: business._id,
-          status: (business?.payment?.enabled && data.totalPrice) ? 'pending_payment' : 'confirmed' });
+          customerPhone: session.customerPhone, tenantId: session.tenantId, businessId: business._id });
       } catch (err) { logger.error('[ElectronicsModule] saveOrder failed', { err: err.message }); }
 
       // [FIX-5] Payment flow — electronics was skipping this entirely even when payment.enabled=true
@@ -157,7 +157,14 @@ export async function handleElectronicsOrder({ session, message, business, tenan
         }
       } catch {}
 
-      await completeFlow(session, 'ORDER');
+      const _lcRe = await completeFlow(session, 'ORDER', business, tenant);
+      if (_lcRe) return _lcRe;
+
+      // Track analytics
+      trackOrderAnalytics(data.item?.name, null, data.quantity, data.totalPrice || 0, session.tenantId).catch(() => {});
+      if (data.totalPrice) {
+        recordRevenue({ item: data.item?.name, quantity: data.quantity, revenue: data.totalPrice, tenantId: session.tenantId, customerPhone: session.customerPhone }).catch(() => {});
+      }
       return {
         type: 'buttons',
         body: `✅ *Order received!*\n\n📦 *${data.quantity}× ${data.item?.name}*\n\nWe'll verify stock and reach out with delivery details. Thank you! 📱`,

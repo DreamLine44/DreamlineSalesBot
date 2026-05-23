@@ -84,33 +84,20 @@ export async function registerAllModules() {
   });
 
   registerAction('REPEAT_ORDER', async ({ session, message, business, tenant }) => {
-    const { getLastOrder }  = await import('../../services/orderService.js');
-    const { startFlow }     = await import('../conversations/flowEngine.js');
-    const { updateSession } = await import('../sessions/sessionService.js');
+    const { getLastOrderItem } = await import('../../services/orderService.js');
+    const { startFlow }        = await import('../conversations/flowEngine.js');
+    const { updateSession }    = await import('../sessions/sessionService.js');
 
-    // [FIX] getLastOrder returns full doc (with price). Without price, QUANTITY step
-    // computes totalPrice = 0 * qty = D0 and shows the customer an incorrect D0 total.
-    const lastOrder = await getLastOrder(session.customerPhone, session.tenantId).catch(() => null);
-    if (lastOrder?.item) {
-      const savedUnit = (lastOrder.totalPrice && lastOrder.quantity)
-        ? Math.round(lastOrder.totalPrice / lastOrder.quantity) : 0;
-      const liveItem  = (business?.menuItems || []).find(
-        i => i.name?.toLowerCase() === lastOrder.item?.toLowerCase()
-      );
-      const item = liveItem || { name: lastOrder.item, price: savedUnit };
-
+    const lastItem = await getLastOrderItem(session.customerPhone, session.tenantId).catch(() => null);
+    if (lastItem) {
       await updateSession(session.customerPhone, session.tenantId, {
         currentFlow: 'ORDER', step: 'QUANTITY',
-        data: { item }, menuViewed: true,
+        data: { item: { name: lastItem } }, menuViewed: true,
       });
       return {
         type: 'buttons',
-        body: `🔁 *Repeat your last order*\n\nYou ordered *${item.name}*${item.price ? \` — D\${item.price} each\` : ''}.\n\nHow many would you like this time?`,
-        buttons: [
-          { id: 'QTY_1', title: '1️⃣ One'   },
-          { id: 'QTY_2', title: '2️⃣ Two'   },
-          { id: 'QTY_3', title: '3️⃣ Three' },
-        ],
+        body: `🔁 *Repeat your last order*\n\nYou previously ordered *${lastItem}*.\n\nHow many would you like this time?\n\n_(Enter a number or word — e.g. *1*, *2*, *three*)_`,
+        buttons: [{ id: 'CANCEL', title: '❌ Cancel' }],
       };
     }
     return startFlow({ flowName: 'ORDER', session, business, tenant });

@@ -31,7 +31,6 @@ import { parseQuantity }    from '../../../utils/parseQuantity.js';
 import { saveOrder }        from '../../../services/orderService.js';
 import { recordRevenue, trackOrderAnalytics } from '../../../core/analytics/analyticsService.js';
 import { dispatchText }     from '../../../core/whatsapp/dispatcher.js';
-import { buildAdminOrderAlert } from '../handlers/uiBuilders.js';
 import logger               from '../../../config/logger.js';
 
 // ── Normalise — [FIX-1] /\s+/ was missing the 'g' flag ──────────────────────
@@ -233,7 +232,6 @@ export async function handleOrderFlow({ session, message, business, tenant, isIn
           customerPhone: session.customerPhone,
           tenantId:      session.tenantId,
           businessId:    business._id,
-          status:        'pending_payment',
         });
 
         // Track analytics
@@ -342,7 +340,8 @@ export async function handleOrderFlow({ session, message, business, tenant, isIn
         logger.warn('[OrderFlow] Admin notification failed (non-fatal)', { err: err.message });
       }
 
-      await completeFlow(session, 'ORDER');
+      const _lcR = await completeFlow(session, 'ORDER', business, tenant);
+      if (_lcR) return _lcR;
       return buildOrderSuccess({ item: data.item, qty: data.quantity, business });
     }
 

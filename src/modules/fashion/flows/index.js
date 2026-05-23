@@ -8,6 +8,7 @@ import { getAIReply }     from '../../../core/ai/providers/aiRouter.js';
 import { findBestMatch }  from '../../../utils/matchEngine.js';
 import { saveOrder }      from '../../../services/orderService.js';
 import { parseQuantity }  from '../../../utils/parseQuantity.js';
+import { trackOrderAnalytics, recordRevenue } from '../../../core/analytics/analyticsService.js';
 import logger             from '../../../config/logger.js';
 
 export const FASHION_CONFIG = {
@@ -139,8 +140,7 @@ export async function handleFashionOrder({ session, message, business, tenant, i
       try {
         savedOrder = await saveOrder({ item: `${data.item?.name}${data.size ? ` (${data.size})` : ''}`,
           quantity: data.quantity, totalPrice: data.totalPrice,
-          customerPhone: session.customerPhone, tenantId: session.tenantId, businessId: business._id,
-          status: (business?.payment?.enabled && data.totalPrice) ? 'pending_payment' : 'confirmed' });
+          customerPhone: session.customerPhone, tenantId: session.tenantId, businessId: business._id });
       } catch (err) { logger.error('[FashionModule] saveOrder failed', { err: err.message }); }
 
       // [FIX-5] Payment flow — fashion was skipping payment even when payment.enabled=true
@@ -172,7 +172,21 @@ export async function handleFashionOrder({ session, message, business, tenant, i
         }
       } catch {}
 
-      await completeFlow(session, 'ORDER');
+      const _lcRf = await completeFlow(session, 'ORDER', business, tenant);
+      if (_lcRf) return _lcRf;
+
+      // Track analytics + revenue
+      trackOrderAnalytics(
+        `${data.item?.name}${data.size ? ` (${data.size})` : ''}`,
+        null, data.quantity, data.totalPrice || 0, session.tenantId
+      ).catch(() => {});
+      if (data.totalPrice) {
+        recordRevenue({
+          item: data.item?.name, quantity: data.quantity,
+          revenue: data.totalPrice, tenantId: session.tenantId,
+          customerPhone: session.customerPhone,
+        }).catch(() => {});
+      }
       return {
         type: 'buttons',
         body: `✅ *Order confirmed!*\n\n👗 *${data.quantity}× ${data.item?.name}*\n\nWe'll reach out with delivery details. Thank you! ✨`,

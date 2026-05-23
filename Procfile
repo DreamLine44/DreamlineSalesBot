@@ -1,1 +1,1 @@
-web: NODE_ENV=production node src/app.js
+web: npm start

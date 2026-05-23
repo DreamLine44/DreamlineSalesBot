@@ -137,8 +137,8 @@ export async function cancelFlow(session, business) {
   const CANCEL_MSGS = {
     RESTAURANT:  '✅ No problem! What would you like to do?',
     BAKERY:      '✅ No problem! What would you like to do?',
-    SALON:       '✅ No problem — just tap below whenever you\'re ready. ✂️',
-    BARBERSHOP:  '✅ No problem — just tap below whenever you\'re ready. 💈',
+    SALON:       "✅ No problem — just tap below whenever you're ready. ✂️",
+    BARBERSHOP:  "✅ No problem — just tap below whenever you're ready. 💈",
     FASHION:     '✅ No problem! Browse our collection anytime. 👗',
     COSMETICS:   '✅ No problem! Browse our products anytime. 💄',
     ELECTRONICS: '✅ No problem! Browse our range anytime. 📱',
@@ -155,15 +155,31 @@ export async function cancelFlow(session, business) {
 }
 
 /**
- * completeFlow(session, completedFlow)
+ * completeFlow(session, completedFlow, business?, tenant?)
  * Marks flow complete — writes postFlowAck so the next "Thanks/Ok"
  * gets a warm reply instead of the full welcome menu.
+ * When business is provided, checks if lead capture should fire.
  */
-export async function completeFlow(session, completedFlow) {
+export async function completeFlow(session, completedFlow, business = null, tenant = null) {
   await updateSession(session.customerPhone, session.tenantId, {
     currentFlow: null,
     step:        null,
     data:        {},
     postFlowAck: completedFlow.toUpperCase(),
   });
+
+  // Lead capture trigger — fire after ORDER or BOOKING if configured
+  if (business) {
+    try {
+      const trigger = completedFlow.toUpperCase() === 'BOOKING' ? 'AFTER_BOOKING' : 'AFTER_ORDER';
+      const { shouldCaptureLead, startLeadCapture } = await import('../../services/leadCaptureService.js');
+      const freshSession = (await getSession(session.customerPhone, session.tenantId)) || session;
+      if (await shouldCaptureLead(business, freshSession, trigger)) {
+        return await startLeadCapture(freshSession, business);
+      }
+    } catch (err) {
+      logger.debug('[FlowEngine] Lead capture check failed (non-fatal)', { err: err.message });
+    }
+  }
+  return null;
 }

@@ -12,7 +12,15 @@
  */
 
 import Analytics from '../../models/Analytics.js';
+import mongoose   from 'mongoose';
 import logger    from '../../config/logger.js';
+
+/** Safely cast a string tenantId to ObjectId — returns null if invalid */
+function toOid(id) {
+  if (!id) return null;
+  if (id instanceof mongoose.Types.ObjectId) return id;
+  try { return new mongoose.Types.ObjectId(String(id)); } catch { return null; }
+}
 
 export const EVENT = {
   ORDER_PLACED:    'ORDER_PLACED',
@@ -44,9 +52,9 @@ const EVENT_TO_TYPE = {
 async function track(event, data = {}) {
   try {
     const type = EVENT_TO_TYPE[event] || 'ORDER';
-    // Omit `event` and `timestamp` — not in schema. Use `type` instead.
-    const { event: _e, timestamp: _t, ...rest } = data;
-    await Analytics.create({ type, ...rest });
+    const { event: _e, timestamp: _t, tenantId: rawTid, ...rest } = data;
+    const tenantId = toOid(rawTid);
+    await Analytics.create({ type, tenantId, ...rest });
   } catch (err) {
     logger.debug('[Analytics] track failed (non-fatal)', { event, err: err.message });
   }
@@ -86,12 +94,14 @@ export async function trackFailedInteraction(phone, message, tenantId) {
  */
 export async function getAnalyticsSummary(tenantId, days = 30) {
   const since = new Date(Date.now() - days * 86400000);
+  const tid   = toOid(tenantId);
+  if (!tid) return { orders: 0, bookings: 0, revenue: 0, days };
   try {
     const [orders, bookings, revenue] = await Promise.all([
-      Analytics.countDocuments({ type: 'ORDER',   tenantId, createdAt: { $gte: since } }),
-      Analytics.countDocuments({ type: 'BOOKING', tenantId, createdAt: { $gte: since } }),
+      Analytics.countDocuments({ type: 'ORDER',   tenantId: tid, createdAt: { $gte: since } }),
+      Analytics.countDocuments({ type: 'BOOKING', tenantId: tid, createdAt: { $gte: since } }),
       Analytics.aggregate([
-        { $match: { type: 'REVENUE', tenantId, createdAt: { $gte: since } } },
+        { $match: { type: 'REVENUE', tenantId: tid, createdAt: { $gte: since } } },
         { $group: { _id: null, total: { $sum: '$revenue' } } },
       ]),
     ]);

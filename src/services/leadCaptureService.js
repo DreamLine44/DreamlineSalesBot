@@ -12,7 +12,14 @@ import { updateSession, getSession } from '../core/sessions/sessionService.js';
 import { updateName }                from '../core/memory/customerMemory.js';
 import UserProfile from '../models/UserProfile.js';
 import Tenant      from '../models/Tenant.js';
+import mongoose    from 'mongoose';
 import logger      from '../config/logger.js';
+
+function toOid(id) {
+  if (!id) return id;
+  if (id instanceof mongoose.Types.ObjectId) return id;
+  try { return new mongoose.Types.ObjectId(String(id)); } catch { return id; }
+}
 
 export async function shouldCaptureLead(business, session, trigger) {
   const cfg = business?.leadCapture;
@@ -20,7 +27,7 @@ export async function shouldCaptureLead(business, session, trigger) {
   if (cfg.triggerOn !== trigger) return false;
   if (session?.data?.leadCaptured) return false;
   try {
-    const prof = await UserProfile.findOne({ phone: session.customerPhone, tenantId: session.tenantId }).lean();
+    const prof = await UserProfile.findOne({ phone: session.customerPhone, tenantId: toOid(session.tenantId) }).lean();
     if (prof?.lead?.capturedAt) return false;
   } catch { /* non-fatal */ }
   return true;
@@ -96,7 +103,7 @@ async function finaliseLead({ session, lead, business, tenantDoc }) {
 
   try {
     await UserProfile.findOneAndUpdate(
-      { phone: session.customerPhone, tenantId: session.tenantId },
+      { phone: session.customerPhone, tenantId: toOid(session.tenantId) },
       {
         $set: {
           'lead.name':       lead.name       || null,

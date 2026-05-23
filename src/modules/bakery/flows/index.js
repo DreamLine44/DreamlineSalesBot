@@ -108,7 +108,6 @@ export async function handleCakeCustomization({ session, message, business, tena
           customerPhone: session.customerPhone,
           tenantId:     session.tenantId,
           businessId:   business._id,
-          status:       'pending',  // Admin will confirm pricing manually
         });
       } catch (err) {
         logger.error('[BakeryModule] saveCakeOrder failed', { err: err.message });
@@ -131,7 +130,7 @@ export async function handleCakeCustomization({ session, message, business, tena
         }
       } catch {}
 
-      await completeFlow(session, 'ORDER');
+      await completeFlow(session, 'ORDER', business, tenant);
       return {
         type: 'buttons',
         body: `✅ *Cake order placed!*\n\n🎂 *${data.flavor} cake (${data.size})*\n📅 For: *${data.eventDate}*\n\nWe'll be in touch to confirm details and pricing. Thank you! 🥐`,
