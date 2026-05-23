@@ -1,5 +1,5 @@
 /**
- * WhatSalesAgent2 — app.js (Production)
+ * WhatSalesAgent — app.js (Production)
  * AI-powered WhatsApp Business Assistant Platform
  *
  * Architecture: Intent Engine → Module Router → Flow Engine → AI Fallback
