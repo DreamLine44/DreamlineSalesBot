@@ -103,6 +103,20 @@ function buildPayload(to, ui) {
     };
   }
 
+  // ── Image message ─────────────────────────────────────────────────────────
+  // ui.type === 'image' → { type: 'image', url: '...', caption?: '...' }
+  if (type === 'image') {
+    if (!ui.url) return null;
+    return {
+      messaging_product: 'whatsapp', recipient_type: 'individual',
+      to, type: 'image',
+      image: {
+        link:    String(ui.url),
+        ...(ui.caption ? { caption: String(ui.caption).slice(0, 1024) } : {}),
+      },
+    };
+  }
+
   // Fallback: plain text
   return {
     messaging_product: 'whatsapp', recipient_type: 'individual',
@@ -114,7 +128,12 @@ function buildPayload(to, ui) {
 export async function dispatchMessage(to, ui, tenant) {
   if (!ui) return;
 
-  // Simulation mode: resolve the waiting slot instead of calling Meta
+  // Simulation mode: resolve the waiting slot instead of calling Meta.
+  // When called with an image payload followed by a buttons payload (array dispatch),
+  // only the LAST call should resolve the slot — earlier ones (image) are stored
+  // and the slot is only resolved when an interactive/text payload arrives.
+  // Strategy: resolve immediately for interactive/text types; for image-only, store
+  // and let the next call overwrite so the slot always gets the most useful payload.
   if (SIM_MODE()) {
     const payload = buildPayload(to, ui);
     logger.info('[Dispatch:SIM]', {
@@ -122,7 +141,13 @@ export async function dispatchMessage(to, ui, tenant) {
       type: ui.type,
       body: (ui.body || '').slice(0, 100),
     });
-    _resolveSlot(to, ui); // ui is the raw response object for simulate controller
+    // For image-only messages, don't resolve the slot yet — the quantity-prompt
+    // buttons message arrives next and is more useful to the simulate endpoint.
+    // For everything else (text, buttons, list), resolve immediately.
+    if (ui.type !== 'image') {
+      _resolveSlot(to, ui);
+    }
+    // Always return the payload so callers can inspect it
     return { simulated: true, payload };
   }
 

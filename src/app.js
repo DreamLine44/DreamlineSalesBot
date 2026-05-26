@@ -34,6 +34,7 @@ const { version } = _require('../package.json');
 
 import { connectToDB }           from './config/database.js';
 import logger                    from './config/logger.js';
+import { CLOUDINARY_ENABLED }    from './config/cloudinary.js'; // initialise at boot, not on first request
 import { errorHandler }          from './middleware/errorHandler.js';
 import { createRateLimiter, webhookLimiter, adminLimiter } from './middleware/rateLimiter.js';
 import { requireApiKey, requireSuperAdminKey } from './middleware/authMiddleware.js';
@@ -151,6 +152,7 @@ async function start() {
     logger.info(`  Modules: restaurant · bakery · salon`);
     logger.info(`           fashion · cosmetics · electronics`);
     logger.info(`  Simulation: ${process.env.SIMULATION_MODE === 'true' ? 'ON (dev)' : 'OFF (live Meta webhook)'}`);
+    logger.info(`  Cloudinary: ${CLOUDINARY_ENABLED ? 'ON (image uploads enabled)' : 'OFF (set CLOUDINARY_* vars to enable)'}`);
     logger.info(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
   });
 }

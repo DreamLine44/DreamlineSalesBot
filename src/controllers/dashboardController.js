@@ -40,6 +40,7 @@ import Tenant         from '../models/Tenant.js';
 import { getAnalyticsSummary } from '../core/analytics/analyticsService.js';
 import { dispatchText }        from '../core/whatsapp/dispatcher.js';
 import logger from '../config/logger.js';
+import { uploadMenuImage, deleteMenuImage, CLOUDINARY_ENABLED } from '../config/cloudinary.js';
 
 // ── Helper: load tenant doc for WhatsApp dispatch ─────────────────────────────
 async function loadTenant(tenantId) {
@@ -363,12 +364,50 @@ export async function getMenu(req, res) {
 export async function addMenuItem(req, res) {
   try {
     const { tenantId } = req.params;
-    const { name, price, description, category, available = true, keywords = [] } = req.body;
+    const { name, price, description, available = true, showImageOnSelect = true } = req.body;
     if (!name || !String(name).trim()) return res.status(400).json({ error: 'name required' });
+
+    // ── Parse array fields sent as JSON strings from multipart/form-data ─────
+    // When using multipart (for image upload), array fields arrive as strings.
+    let keywords = req.body.keywords ?? [];
+    if (typeof keywords === 'string') {
+      try { keywords = JSON.parse(keywords); } catch { keywords = keywords ? [keywords] : []; }
+    }
+    let tags = req.body.tags ?? [];
+    if (typeof tags === 'string') {
+      try { tags = JSON.parse(tags); } catch { tags = tags ? [tags] : []; }
+    }
+
+    // ── Cloudinary image upload (optional) ────────────────────────────────────
+    let image = { url: null, public_id: null };
+    if (req.file) {
+      if (!CLOUDINARY_ENABLED) {
+        return res.status(503).json({ error: 'Image uploads are not configured on this server. Set CLOUDINARY_CLOUD_NAME, CLOUDINARY_API_KEY, and CLOUDINARY_API_SECRET.' });
+      }
+      try {
+        const dataUri = `data:${req.file.mimetype};base64,${req.file.buffer.toString('base64')}`;
+        image = await uploadMenuImage(dataUri, { tenantId });
+        logger.info('[Dashboard] Menu image uploaded', { tenantId, public_id: image.public_id });
+      } catch (uploadErr) {
+        logger.error('[Dashboard] Cloudinary upload failed', { err: uploadErr.message });
+        return res.status(502).json({ error: `Image upload failed: ${uploadErr.message}` });
+      }
+    }
+
+    const newItem = {
+      name:             String(name).trim(),
+      price:            Number(price) || 0,
+      description,
+      available:        available === 'false' ? false : Boolean(available),
+      keywords,
+      tags,
+      showImageOnSelect: showImageOnSelect === 'false' ? false : Boolean(showImageOnSelect),
+      image,
+    };
 
     const biz = await BusinessConfig.findOneAndUpdate(
       { tenantId },
-      { $push: { menuItems: { name: String(name).trim(), price: Number(price) || 0, description, category, available, keywords } } },
+      { $push: { menuItems: newItem } },
       { new: true },
     );
     if (!biz) return res.status(404).json({ error: 'Not found' });
@@ -379,14 +418,62 @@ export async function addMenuItem(req, res) {
 export async function updateMenuItem(req, res) {
   try {
     const { tenantId, itemId } = req.params;
-    const { name, price, description, category, available, keywords } = req.body;
+    const { name, price, description, available, showImageOnSelect, removeImage } = req.body;
     const patch = {};
-    if (name        !== undefined) patch['menuItems.$.name']        = name;
-    if (price       !== undefined) patch['menuItems.$.price']       = Number(price);
-    if (description !== undefined) patch['menuItems.$.description'] = description;
-    if (category    !== undefined) patch['menuItems.$.category']    = category;
-    if (available   !== undefined) patch['menuItems.$.available']   = available;
-    if (keywords    !== undefined) patch['menuItems.$.keywords']    = keywords;
+    if (name              !== undefined) patch['menuItems.$.name']             = name;
+    if (price             !== undefined) patch['menuItems.$.price']            = Number(price);
+    if (description       !== undefined) patch['menuItems.$.description']      = description;
+    if (available         !== undefined) patch['menuItems.$.available']        = available === 'false' ? false : Boolean(available);
+    if (showImageOnSelect !== undefined) patch['menuItems.$.showImageOnSelect'] = showImageOnSelect === 'false' ? false : Boolean(showImageOnSelect);
+
+    // ── Parse array fields sent as JSON strings from multipart/form-data ─────
+    let keywords = req.body.keywords;
+    if (keywords !== undefined) {
+      if (typeof keywords === 'string') {
+        try { keywords = JSON.parse(keywords); } catch { keywords = keywords ? [keywords] : []; }
+      }
+      patch['menuItems.$.keywords'] = keywords;
+    }
+    let tags = req.body.tags;
+    if (tags !== undefined) {
+      if (typeof tags === 'string') {
+        try { tags = JSON.parse(tags); } catch { tags = tags ? [tags] : []; }
+      }
+      patch['menuItems.$.tags'] = tags;
+    }
+
+    // ── Image logic: upload and remove are mutually exclusive ─────────────────
+    // If both req.file and removeImage arrive (malformed request), upload wins.
+    if (req.file) {
+      if (!CLOUDINARY_ENABLED) {
+        return res.status(503).json({ error: 'Image uploads are not configured on this server.' });
+      }
+      // Single DB read: fetch existing public_id so we can overwrite cleanly
+      const existing = await BusinessConfig.findOne(
+        { tenantId, 'menuItems._id': itemId },
+        { 'menuItems.$': 1 },
+      ).lean();
+      const oldPublicId = existing?.menuItems?.[0]?.image?.public_id || null;
+
+      try {
+        const dataUri = `data:${req.file.mimetype};base64,${req.file.buffer.toString('base64')}`;
+        const uploaded = await uploadMenuImage(dataUri, { tenantId, publicId: oldPublicId || undefined });
+        patch['menuItems.$.image'] = { url: uploaded.url, public_id: uploaded.public_id };
+        logger.info('[Dashboard] Menu image replaced', { tenantId, itemId, public_id: uploaded.public_id });
+      } catch (uploadErr) {
+        logger.error('[Dashboard] Cloudinary upload failed', { err: uploadErr.message });
+        return res.status(502).json({ error: `Image upload failed: ${uploadErr.message}` });
+      }
+    } else if (removeImage === 'true' || removeImage === true) {
+      // Remove image — only runs when no new file is being uploaded
+      const existing = await BusinessConfig.findOne(
+        { tenantId, 'menuItems._id': itemId },
+        { 'menuItems.$': 1 },
+      ).lean();
+      const oldPublicId = existing?.menuItems?.[0]?.image?.public_id;
+      if (oldPublicId) await deleteMenuImage(oldPublicId);
+      patch['menuItems.$.image'] = { url: null, public_id: null };
+    }
 
     if (!Object.keys(patch).length) return res.status(400).json({ error: 'No fields to update' });
 
@@ -403,6 +490,14 @@ export async function updateMenuItem(req, res) {
 export async function deleteMenuItem(req, res) {
   try {
     const { tenantId, itemId } = req.params;
+
+    // Fetch the item's image public_id before deleting (for Cloudinary cleanup)
+    const existing = await BusinessConfig.findOne(
+      { tenantId, 'menuItems._id': itemId },
+      { 'menuItems.$': 1 },
+    ).lean();
+    const imagePublicId = existing?.menuItems?.[0]?.image?.public_id;
+
     // [FIX-4] $pull is a no-op when subdoc ID doesn't exist; check modifiedCount
     const result = await BusinessConfig.updateOne(
       { tenantId },
@@ -410,6 +505,10 @@ export async function deleteMenuItem(req, res) {
     );
     if (result.matchedCount === 0) return res.status(404).json({ error: 'Business not found' });
     if (result.modifiedCount === 0) return res.status(404).json({ error: 'Menu item not found' });
+
+    // Clean up Cloudinary image (non-fatal — item is already removed from DB)
+    if (imagePublicId) await deleteMenuImage(imagePublicId);
+
     res.json({ ok: true });
   } catch (err) { res.status(500).json({ error: err.message }); }
 }

@@ -31,6 +31,8 @@ import { parseQuantity }    from '../../../utils/parseQuantity.js';
 import { saveOrder }        from '../../../services/orderService.js';
 import { recordRevenue, trackOrderAnalytics } from '../../../core/analytics/analyticsService.js';
 import { dispatchText }     from '../../../core/whatsapp/dispatcher.js';
+import { buildPaymentInstructionsUI } from '../../../services/paymentService.js';
+import { buildWhatsAppImageUrl }       from '../../../config/cloudinary.js';
 import logger               from '../../../config/logger.js';
 
 // ── Normalise — [FIX-1] /\s+/ was missing the 'g' flag ──────────────────────
@@ -276,12 +278,14 @@ export async function handleOrderFlow({ session, message, business, tenant, isIn
       // Payment configured?
       const payment = business?.payment;
       if (payment?.enabled && data.totalPrice) {
-        const waveNo = payment.wavePhone || payment.phone || 'N/A';
         const shortId = savedOrder?.shortId || '';
-        // Generate reference: DSB-MMDD-XXXX
-        const now    = new Date();
-        const mmdd   = String(now.getMonth()+1).padStart(2,'0') + String(now.getDate()).padStart(2,'0');
-        const ref    = `DSB-${mmdd}-${shortId}`;
+        // [FIX-INLINE] Generate reference centrally (MMDD format) and store it.
+        // Previously orderFlow had its own inline builder duplicating buildPaymentInstructionsUI
+        // with an inconsistent date format. Now one source of truth.
+        const now  = new Date();
+        const mm   = String(now.getMonth() + 1).padStart(2, '0');
+        const dd   = String(now.getDate()).padStart(2, '0');
+        const ref  = `DSB-${mm}${dd}-${shortId}`;
 
         // Store the reference on the order
         if (savedOrder?._id) {
@@ -312,20 +316,8 @@ export async function handleOrderFlow({ session, message, business, tenant, isIn
           }
         } catch { /* non-fatal */ }
 
-        return {
-          type: 'text',
-          body:
-            `💳 *Payment Instructions*\n\n` +
-            `🛒 Total: *${payment.currency || 'D'}${data.totalPrice}*\n` +
-            `📝 Reference: *${ref}*\n\n` +
-            `─────────────────────\n` +
-            `📲 Send *${payment.currency || 'D'}${data.totalPrice}* via *Wave* to:\n\n` +
-            `📱 *${waveNo}*\n\n` +
-            `⚠️ Use *${ref}* as your payment reference.\n` +
-            `─────────────────────\n\n` +
-            `After sending, please *reply with a screenshot* of your Wave confirmation.\n\n` +
-            `We'll verify and confirm your order shortly ✅`,
-        };
+        // [FIX-INLINE] Use shared buildPaymentInstructionsUI — no more inline duplication
+        return buildPaymentInstructionsUI(business, data.totalPrice, shortId, ref);
       }
 
       // [FIX-3] No payment — notify admin with interactive buttons
@@ -377,9 +369,34 @@ async function _selectItem(item, session, business, data) {
     ? `\n\n💡 *${addOns[0].name}* pairs well with this — we'll ask at checkout!`
     : '';
 
-  return {
+  // ── Send item image if available and showImageOnSelect is not disabled ────
+  // The image message is dispatched separately BEFORE the quantity-prompt reply.
+  // We return an array of UI payloads; flowEngine dispatches them in sequence.
+  const imageUrl = item?.image?.url;
+  const showImage = item?.showImageOnSelect !== false; // default true
+
+  const quantityPrompt = {
     type: 'buttons',
     body: `You've chosen *${item.name}* 👌${addOnText}\n\nHow many *${item.name}* would you like?\n\n_(Enter a number — e.g. *1*, *2*, *three*)_`,
     buttons: [{ id: 'CANCEL', title: '❌ Cancel' }],
   };
+
+  if (imageUrl && showImage) {
+    // Return array — flowEngine will dispatch both in order: image first, then buttons.
+    // [FIX-IMG-URL] Apply WhatsApp delivery optimization (q_auto, f_auto, max w_1600)
+    // before sending. The stored URL may have no transformation segment; this adds one.
+    const whatsappImageUrl = buildWhatsAppImageUrl(imageUrl);
+    return [
+      {
+        type:    'image',
+        url:     whatsappImageUrl,
+        caption: item.description
+          ? `*${item.name}*\n${item.description}${item.price ? `\n💰 D${item.price}` : ''}`
+          : `*${item.name}*${item.price ? ` — D${item.price}` : ''}`,
+      },
+      quantityPrompt,
+    ];
+  }
+
+  return quantityPrompt;
 }

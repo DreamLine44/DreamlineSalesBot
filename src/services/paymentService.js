@@ -112,8 +112,12 @@ export async function receiveProof(customerPhone, tenantId, imageId, tenantDoc) 
  * handleDonePayment — for businesses where requireProof=false.
  * Customer types DONE to self-confirm without a screenshot.
  * This is only called when requireProof===false (gated in webhookController).
+ *
+ * [FIX-PAY-1] Now accepts tenantDoc so it can notify the admin when a customer
+ *             self-confirms. Previously the admin was never told, so cash orders
+ *             silently appeared in the DB with no admin alert.
  */
-export async function handleDonePayment(customerPhone, tenantId) {
+export async function handleDonePayment(customerPhone, tenantId, tenantDoc) {
   const order = await Order.findOne({
     customerPhone, tenantId, paymentStatus: 'unpaid', status: 'pending',
   }).sort({ createdAt: -1 });
@@ -128,6 +132,34 @@ export async function handleDonePayment(customerPhone, tenantId) {
     },
   });
 
+  // [FIX-PAY-1] Notify admin on self-confirm (cash/no-proof orders)
+  if (tenantDoc) {
+    try {
+      const business   = await BusinessConfig.findOne({ tenantId }).lean();
+      const adminPhone = business?.adminPhone || tenantDoc?.adminPhone;
+      if (adminPhone) {
+        const { dispatchMessage } = await import('../core/whatsapp/dispatcher.js');
+        const currency = business?.payment?.currency || 'D';
+        await dispatchMessage(adminPhone, {
+          type: 'buttons',
+          body:
+            `✅ *Self-Confirmed Order*\n\n` +
+            `👤 Customer: *${customerPhone}*\n` +
+            `🛒 Item: *${order.item}* × ${order.quantity}\n` +
+            `💰 Total: *${currency}${order.totalPrice || '—'}*\n` +
+            `🔖 Ref: \`${order.shortId}\`\n\n` +
+            `Customer has confirmed payment (cash/self-confirm). Please prepare.`,
+          buttons: [
+            { id: `APPROVE_${order.shortId}`, title: '✅ Mark Done' },
+            { id: `REJECT_${order.shortId}`,  title: '❌ Cancel'    },
+          ],
+        }, tenantDoc).catch(() => {});
+      }
+    } catch (err) {
+      logger.warn('[PaymentService] Admin notification for self-confirm failed (non-fatal)', { err: err.message });
+    }
+  }
+
   return `✅ *Thank you!* Your order of *${order.item}* has been received.\n\nWe'll process it shortly. 🙏`;
 }
 
@@ -140,6 +172,9 @@ export async function handleDonePayment(customerPhone, tenantId) {
  * [FIX #5b] Use explicit zero-padded arithmetic for the date prefix — avoids ICU
  *           separator variance (Intl '/' vs '-' across Node builds) and locale
  *           unpredictability of toLocaleDateString.
+ *
+ * [FIX #5c] Date format standardised to MMDD to match orderFlow.js reference generator.
+ *           Was DDMM here vs MMDD there — now consistent everywhere.
  *
  * @param {object} business
  * @param {number} totalPrice
@@ -154,11 +189,11 @@ export function buildPaymentInstructionsUI(business, totalPrice, shortId, stored
   // Prefer the stored reference; only compute a new one when none exists
   let ref = storedRef || null;
   if (!ref && shortId) {
-    // [FIX #5b] Explicit arithmetic — ICU-independent, always zero-padded
+    // [FIX #5b,5c] Explicit arithmetic — ICU-independent, MMDD format (month-day)
     const now = new Date();
-    const dd  = String(now.getDate()).padStart(2, '0');
     const mm  = String(now.getMonth() + 1).padStart(2, '0');
-    ref = `DSB-${dd}${mm}-${shortId}`;
+    const dd  = String(now.getDate()).padStart(2, '0');
+    ref = `DSB-${mm}${dd}-${shortId}`;
   }
 
   return {

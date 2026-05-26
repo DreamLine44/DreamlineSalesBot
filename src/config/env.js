@@ -20,6 +20,7 @@ export const { ENCRYPTION_KEY } = process.env;
 export const { SCHEDULER_ENABLED, ADMIN_PHONES } = process.env;
 export const { TEMPLATE_LANGUAGE = 'en' } = process.env;
 export const { DISABLE_WORKING_HOURS = 'false' } = process.env;
+export const { CLOUDINARY_CLOUD_NAME, CLOUDINARY_API_KEY, CLOUDINARY_API_SECRET, CLOUDINARY_UPLOAD_PRESET } = process.env;
 
 // ── Production validation ─────────────────────────────────────────────────────
 // Called by app.js before any I/O — crashes fast if critical vars are absent.

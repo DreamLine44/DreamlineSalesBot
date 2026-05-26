@@ -18,6 +18,8 @@ import {
   getServices, addService, updateService, deleteService,
   getFaqs, addFaq, updateFaq, deleteFaq,
 } from '../controllers/dashboardController.js';
+import { uploadSingle } from '../middleware/uploadMiddleware.js';
+import { uploadMenuItemImage, removeMenuItemImage } from '../controllers/menuImageController.js';
 
 const r = Router();
 
@@ -58,10 +60,18 @@ r.get('/:tenantId/settings',                          enforceTenantScope, getBus
 r.patch('/:tenantId/settings',                        enforceTenantScope, updateBusinessSettings);
 
 // ── Menu CRUD ─────────────────────────────────────────────────────────────────
+// uploadSingle parses multipart/form-data so image files can be included.
+// JSON-only requests (no file) still work — req.file will simply be undefined.
 r.get('/:tenantId/menu',                              enforceTenantScope, getMenu);
-r.post('/:tenantId/menu',                             enforceTenantScope, addMenuItem);
-r.patch('/:tenantId/menu/:itemId',                    enforceTenantScope, updateMenuItem);
+r.post('/:tenantId/menu',                             enforceTenantScope, uploadSingle, addMenuItem);
+r.patch('/:tenantId/menu/:itemId',                    enforceTenantScope, uploadSingle, updateMenuItem);
 r.delete('/:tenantId/menu/:itemId',                   enforceTenantScope, deleteMenuItem);
+
+// ── Menu item image upload / removal (dedicated endpoints) ────────────────────
+// POST  /:tenantId/menu/:itemId/image  — multipart/form-data, field "image"
+// DELETE /:tenantId/menu/:itemId/image — removes image from item + Cloudinary
+r.post('/:tenantId/menu/:itemId/image',               enforceTenantScope, uploadSingle, uploadMenuItemImage);
+r.delete('/:tenantId/menu/:itemId/image',             enforceTenantScope, removeMenuItemImage);
 
 // ── Services CRUD ─────────────────────────────────────────────────────────────
 r.get('/:tenantId/services',                          enforceTenantScope, getServices);

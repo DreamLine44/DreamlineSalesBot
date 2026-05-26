@@ -1,7 +1,7 @@
 {
   "name": "whatsalesagent2",
   "version": "2.0.0",
-  "description": "WhatSalesAgent2 \u2014 AI-powered WhatsApp Business Assistant Platform",
+  "description": "WhatSalesAgent2 — AI-powered WhatsApp Business Assistant Platform",
   "type": "module",
   "main": "src/app.js",
   "scripts": {
@@ -16,6 +16,7 @@
   "dependencies": {
     "axios": "^1.6.0",
     "bcryptjs": "^2.4.3",
+    "cloudinary": "^2.10.0",
     "cors": "^2.8.5",
     "dotenv": "^16.3.1",
     "express": "^4.18.2",
@@ -23,6 +24,7 @@
     "fast-levenshtein": "^3.0.0",
     "helmet": "^7.1.0",
     "mongoose": "^8.0.0",
+    "multer": "^2.1.1",
     "openai": "^4.20.0",
     "winston": "^3.11.0"
   },

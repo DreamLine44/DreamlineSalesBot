@@ -16,6 +16,7 @@
 import BusinessConfig from '../models/BusinessConfig.js';
 import { getModeConfig, getSupportedModes } from '../config/modes.js';
 import logger from '../config/logger.js';
+import { uploadMenuImage, deleteMenuImage, CLOUDINARY_ENABLED } from '../config/cloudinary.js';
 
 export async function getBusinessConfig(req, res) {
   try {
@@ -91,16 +92,54 @@ export async function updateMenu(req, res) {
 export async function addMenuItem(req, res) {
   try {
     const { tenantId } = req.params;
-    const { name, price, description, category, available = true, keywords = [] } = req.body;
+    const { name, price, description, available = true, showImageOnSelect = true } = req.body;
 
-    // [FIX-BIZ-1] Validation was already here but no try/catch around the DB call
     if (!name || !name.trim()) {
       return res.status(400).json({ error: 'name is required' });
     }
 
+    // ── Parse array fields (keywords, tags) — arrive as strings from multipart ─
+    let keywords = req.body.keywords ?? [];
+    if (typeof keywords === 'string') {
+      try { keywords = JSON.parse(keywords); } catch { keywords = keywords ? [keywords] : []; }
+    }
+    let tags = req.body.tags ?? [];
+    if (typeof tags === 'string') {
+      try { tags = JSON.parse(tags); } catch { tags = tags ? [tags] : []; }
+    }
+
+    // ── Cloudinary image upload (optional) ────────────────────────────────────
+    let image = { url: null, public_id: null };
+    if (req.file) {
+      if (!CLOUDINARY_ENABLED) {
+        return res.status(503).json({ error: 'Image uploads are not configured on this server.' });
+      }
+      try {
+        const dataUri = `data:${req.file.mimetype};base64,${req.file.buffer.toString('base64')}`;
+        image = await uploadMenuImage(dataUri, { tenantId });
+        logger.info('[Business] Menu image uploaded', { tenantId, public_id: image.public_id });
+      } catch (uploadErr) {
+        logger.error('[Business] Cloudinary upload failed', { err: uploadErr.message });
+        return res.status(502).json({ error: `Image upload failed: ${uploadErr.message}` });
+      }
+    }
+
     const biz = await BusinessConfig.findOneAndUpdate(
       { tenantId },
-      { $push: { menuItems: { name: name.trim(), price: Number(price) || 0, description, category, available, keywords } } },
+      {
+        $push: {
+          menuItems: {
+            name:             name.trim(),
+            price:            Number(price) || 0,
+            description,
+            available:        available === 'false' ? false : Boolean(available),
+            keywords,
+            tags,
+            showImageOnSelect: showImageOnSelect === 'false' ? false : Boolean(showImageOnSelect),
+            image,
+          },
+        },
+      },
       { new: true },
     );
     if (!biz) return res.status(404).json({ error: 'Not found' });
@@ -114,15 +153,29 @@ export async function addMenuItem(req, res) {
 // [FIX-BIZ-2] Match by _id (not name) — precise, safe, consistent with dashboard CRUD
 // [FIX #13]  Kept in sync with dashboardController.deleteMenuItem: both now check
 //            modifiedCount so callers can detect a stale/wrong itemId.
+// [FIX-BIZ-4] Cloudinary cleanup on delete — previously orphaned assets on Cloudinary
+//             when a menu item with an image was deleted via this route.
 export async function deleteMenuItem(req, res) {
   try {
     const { tenantId, itemId } = req.params;
+
+    // Fetch image public_id BEFORE deleting so we can clean up Cloudinary
+    const existing = await BusinessConfig.findOne(
+      { tenantId, 'menuItems._id': itemId },
+      { 'menuItems.$': 1 },
+    ).lean();
+    const imagePublicId = existing?.menuItems?.[0]?.image?.public_id;
+
     const result = await BusinessConfig.updateOne(
       { tenantId },
       { $pull: { menuItems: { _id: itemId } } },
     );
     if (result.matchedCount === 0) return res.status(404).json({ error: 'Business not found' });
     if (result.modifiedCount === 0) return res.status(404).json({ error: 'Menu item not found' });
+
+    // Clean up Cloudinary asset (non-fatal — item is already removed from DB)
+    if (imagePublicId) await deleteMenuImage(imagePublicId);
+
     res.json({ ok: true });
   } catch (err) {
     logger.error('[Business] deleteMenuItem failed', { err: err.message });

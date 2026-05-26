@@ -586,8 +586,13 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
       const freshSession = await getSession(from, tenantId) || session;
       const reply = await advance({ session: freshSession, message: messageText, business, tenant: tenantDoc, isInteractive });
       if (reply) {
-        await dispatchMessage(from, reply, tenantDoc);
-        const body = typeof reply === 'string' ? reply : reply?.body;
+        // reply can be an array (e.g. [image, buttons]) — dispatch each in order
+        const payloads = Array.isArray(reply) ? reply : [reply];
+        for (const payload of payloads) {
+          await dispatchMessage(from, payload, tenantDoc);
+        }
+        const lastPayload = payloads[payloads.length - 1];
+        const body = typeof lastPayload === 'string' ? lastPayload : lastPayload?.body;
         if (body) updateSession(from, tenantId, { lastBotMessage: body }).catch(() => {});
       }
       return;
@@ -624,8 +629,13 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
       business, tenant: tenantDoc, isInteractive,
     });
     if (reply) {
-      await dispatchMessage(from, reply, tenantDoc);
-      const body = typeof reply === 'string' ? reply : reply?.body;
+      // reply can be an array (e.g. [imagePayload, buttonsPayload]) — dispatch each in order
+      const payloads = Array.isArray(reply) ? reply : [reply];
+      for (const payload of payloads) {
+        await dispatchMessage(from, payload, tenantDoc);
+      }
+      const lastPayload = payloads[payloads.length - 1];
+      const body = typeof lastPayload === 'string' ? lastPayload : lastPayload?.body;
       if (body) updateSession(from, tenantId, { lastBotMessage: body }).catch(() => {});
     }
     return;
@@ -661,8 +671,13 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
   });
 
   if (reply) {
-    await dispatchMessage(from, reply, tenantDoc);
-    const body = typeof reply === 'string' ? reply : reply?.body;
+    // reply can be an array (e.g. [imagePayload, buttonsPayload]) — dispatch each in order
+    const payloads = Array.isArray(reply) ? reply : [reply];
+    for (const payload of payloads) {
+      await dispatchMessage(from, payload, tenantDoc);
+    }
+    const lastPayload = payloads[payloads.length - 1];
+    const body = typeof lastPayload === 'string' ? lastPayload : lastPayload?.body;
     if (body) updateSession(from, tenantId, { lastBotMessage: body }).catch(() => {});
   }
 }

@@ -11,6 +11,8 @@ import {
   getMenu, updateMenu, addMenuItem, deleteMenuItem,
   getModeInfo, listSupportedModes,
 } from '../controllers/businessController.js';
+import { CLOUDINARY_ENABLED } from '../config/cloudinary.js';
+import { uploadSingle } from '../middleware/uploadMiddleware.js';
 
 const r = Router();
 
@@ -30,11 +32,12 @@ function enforceTenantScope(req, res, next) {
 
 r.get('/modes',                              listSupportedModes);
 r.get('/mode-info',                          getModeInfo);
+r.get('/cloudinary-status',                  (_req, res) => res.json({ cloudinaryEnabled: CLOUDINARY_ENABLED }));
 r.get('/:tenantId',                          enforceTenantScope, getBusinessConfig);
 r.put('/:tenantId',                          enforceTenantScope, updateBusinessConfig);
 r.get('/:tenantId/menu',                     enforceTenantScope, getMenu);
 r.put('/:tenantId/menu',                     enforceTenantScope, updateMenu);
-r.post('/:tenantId/menu',                    enforceTenantScope, addMenuItem);
+r.post('/:tenantId/menu',                    enforceTenantScope, uploadSingle, addMenuItem);
 // [FIX-BIZ-2] Changed :itemName → :itemId for safe, precise deletion by MongoDB _id
 r.delete('/:tenantId/menu/:itemId',          enforceTenantScope, deleteMenuItem);
 export default r;
