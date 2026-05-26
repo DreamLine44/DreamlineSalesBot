@@ -59,9 +59,34 @@ app.use(helmet({
   // hsts is enabled by default in helmet — good for HTTPS deployments
 }));
 
+
+// // ── CORS ──────────────────────────────────────────────────────────────────────
+// const allowedOrigins = (process.env.CORS_ORIGIN || '')
+//   .split(',').map(o => o.trim()).filter(Boolean);
+
+// if (!isProduction) {
+//   allowedOrigins.push('http://localhost:3000', 'http://localhost:5000');
+// }
+
+// app.use(cors({
+//   origin: (origin, cb) => {
+//     // Allow requests with no origin (server-to-server, curl, Postman)
+//     if (!origin) return cb(null, true);
+//     if (allowedOrigins.includes(origin)) return cb(null, true);
+//     // In production, reject unknown origins
+//     if (isProduction) return cb(new Error(`CORS: origin ${origin} not allowed`));
+//     // In dev, allow all (developer convenience)
+//     return cb(null, true);
+//   },
+//   methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+//   allowedHeaders: ['Content-Type', 'x-api-key', 'x-sim-key'],
+// }));
+
 // ── CORS ──────────────────────────────────────────────────────────────────────
 const allowedOrigins = (process.env.CORS_ORIGIN || '')
-  .split(',').map(o => o.trim()).filter(Boolean);
+  .split(',')
+  .map(o => o.trim())
+  .filter(Boolean);
 
 if (!isProduction) {
   allowedOrigins.push('http://localhost:3000', 'http://localhost:5000');
@@ -69,16 +94,33 @@ if (!isProduction) {
 
 app.use(cors({
   origin: (origin, cb) => {
-    // Allow requests with no origin (server-to-server, curl, Postman)
+    // Allow requests with no origin (Postman, curl, server-to-server)
     if (!origin) return cb(null, true);
-    if (allowedOrigins.includes(origin)) return cb(null, true);
-    // In production, reject unknown origins
-    if (isProduction) return cb(new Error(`CORS: origin ${origin} not allowed`));
-    // In dev, allow all (developer convenience)
+
+    // Allow approved origins
+    if (allowedOrigins.includes(origin)) {
+      return cb(null, true);
+    }
+
+    // Reject unknown origins in production
+    if (isProduction) {
+      return cb(new Error(`CORS: origin ${origin} not allowed`));
+    }
+
+    // Allow all in development
     return cb(null, true);
   },
+
+  credentials: true,
+
   methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'x-api-key', 'x-sim-key'],
+
+  allowedHeaders: [
+    'Content-Type',
+    'Authorization',
+    'x-api-key',
+    'x-sim-key',
+  ],
 }));
 
 // ── Body parsing ──────────────────────────────────────────────────────────────
