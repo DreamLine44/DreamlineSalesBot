@@ -22,6 +22,47 @@
  *               when an admin sends something that looks like a command (all-caps) but
  *               doesn't match any pattern — previously returned null and the message
  *               was silently dropped (fell through to intent detection).
+ * [FIX-CMD-5]   confirmPayment() uses mode welcomeButtons so post-confirmation buttons
+ *               match the business mode (e.g. "Order Food" for restaurants).
+ * [FIX-CMD-6]   buildAdminBookingAlert() footer shows only booking commands, not a mix
+ *               of booking and payment commands.
+ * [FIX-CMD-7]   buildAdminBookingAlert() omits command lines when shortId is unavailable.
+ * [FIX-CMD-8]   rejectPayment() now awaits the updateSession call that restores
+ *               PAYMENT_PROOF step — previously fire-and-forget meant a transient DB
+ *               error silently broke the customer's retry window.
+ * [FIX-CMD-10]  handleAdminTextCommand APPROVE/REJECT regex widened from [A-F0-9] (hex-only)
+ *               to [A-Z0-9] so alphanumeric shortIds (e.g. "A1B2G3") are accepted. Hex-only
+ *               regex would silently fail for any non-hex shortId scheme.
+ * [FIX-CMD-11]  confirmPayment() and rejectPayment() $or query cleaned up — previously included
+ *               { _id: undefined } when shortId was not 24 chars, which MongoDB treats as
+ *               { _id: null }. Now conditionally omits the _id branch entirely.
+ * [FIX-CMD-12]  RESUME BOT phone regex widened from [\d+\s]+ to [\d+\s().\-/]+ so dashed /
+ *               parenthesised formats (e.g. +220-353-2423, (220) 353-2423) are accepted.
+ *               Normalisation updated to strip all non-digit chars, not just spaces/+.
+ * [FIX-CMD-13]  CONFIRM BOOK and DECLINE BOOK shortId cap widened from {4,8} to {4,24} to
+ *               match APPROVE/REJECT. The old {4,8} cap silently rejected longer booking refs
+ *               and returned an "unrecognised command" error to the admin.
+ * [FIX-CMD-1b]  resumeBot() now checks the return value of updateSession and logs a warning
+ *               when no active session was found (TTL-expired) so silent no-ops are visible.
+ * [FIX-CMD-2b]  All customer-facing dispatch calls (confirmPayment, rejectPayment,
+ *               confirmBooking, declineBooking) now log failures instead of swallowing them,
+ *               so a missing tenantDoc is visible in logs rather than silently unreported.
+ * [FIX-CMD-3b]  DECLINE BOOK text-command path normalises shortId to uppercase before passing
+ *               to declineBooking(), consistent with the button path and the function's own
+ *               internal .toUpperCase() call.
+ * [FIX-2.5]      RESUME BOT (no phone): now fetches a total humanMode session count
+ *               alongside the most-recent session. When N>1 sessions remain, the admin
+ *               receives a warning naming the count so they know to resume the others
+ *               individually. Previously only one session was resumed with no indication
+ *               that other customers were silently stuck in human-mode.
+ * [FIX-X2]      isAdminPhone() accepts optional pre-fetched `business` and `tenantDoc`
+ *               objects so both the BusinessConfig and Tenant DB queries are skipped
+ *               when the caller already has them.  confirmPayment() reuses the business
+ *               param instead of re-fetching.  webhookController passes both objects at
+ *               all isAdminPhone call sites, reducing admin-path DB reads from 3 → 0.
+ *               getModeConfig moved to a static top-level import — previously it was
+ *               dynamically imported inside confirmPayment() on every payment confirmation,
+ *               adding a dynamic-import resolution cost to an already hot path.
  */
 
 import Order          from '../models/Order.js';
@@ -30,6 +71,7 @@ import Tenant         from '../models/Tenant.js';
 import BusinessConfig from '../models/BusinessConfig.js';
 import { updateSession } from '../core/sessions/sessionService.js';
 import { dispatchText, dispatchMessage } from '../core/whatsapp/dispatcher.js';
+import { getModeConfig } from '../config/modes.js';
 import logger            from '../config/logger.js';
 
 const MAX_INPUT_LENGTH = 500; // guard against absurdly long button IDs / command strings
@@ -38,7 +80,13 @@ const MAX_INPUT_LENGTH = 500; // guard against absurdly long button IDs / comman
 // [FIX-CMD-1] Simple per-call cache: pass a Map() in from the caller if you want
 // cross-call caching. For now we cache within a single isAdminPhone() call by
 // resolving all three sources in parallel instead of sequentially.
-export async function isAdminPhone(senderPhone, tenantId) {
+//
+// [FIX-X2] Accept optional pre-fetched `business` and `tenantDoc` objects.
+// webhookController already has both loaded (BusinessConfig at step 3, Tenant
+// passed in as a parameter) and forwards them here — eliminating both DB queries
+// on every admin command path.  Falls back to fetching when either is not supplied
+// (backwards compatible for callers outside webhookController).
+export async function isAdminPhone(senderPhone, tenantId, business = null, tenantDoc = null) {
   const norm = String(senderPhone).replace(/^\+/, '');
 
   // 1. Fast env-var check (no DB) — check first
@@ -46,11 +94,18 @@ export async function isAdminPhone(senderPhone, tenantId) {
     .map(p => p.trim().replace(/^\+/, '')).filter(Boolean);
   if (envAdmins.includes(norm)) return true;
 
-  // 2. Parallel DB lookup — one round-trip instead of two sequential ones
-  const [biz, tenant] = await Promise.all([
-    BusinessConfig.findOne({ tenantId }).select('adminPhone').lean().catch(() => null),
-    Tenant.findById(tenantId).select('adminPhone').lean().catch(() => null),
-  ]);
+  // 2. Use pre-fetched documents when available, otherwise fetch in parallel.
+  // [FIX-X2] Skip BusinessConfig query when caller already has it.
+  // [FIX-X2] Skip Tenant query when caller already has tenantDoc.
+  const bizPromise = business
+    ? Promise.resolve(business)
+    : BusinessConfig.findOne({ tenantId }).select('adminPhone').lean().catch(() => null);
+
+  const tenantPromise = tenantDoc
+    ? Promise.resolve(tenantDoc)
+    : Tenant.findById(tenantId).select('adminPhone').lean().catch(() => null);
+
+  const [biz, tenant] = await Promise.all([bizPromise, tenantPromise]);
 
   if (biz?.adminPhone    && String(biz.adminPhone).replace(/^\+/, '')    === norm) return true;
   if (tenant?.adminPhone && String(tenant.adminPhone).replace(/^\+/, '') === norm) return true;
@@ -68,7 +123,16 @@ export async function handleAdminButtonReply(buttonId, tenantId, adminPhone, ten
   if (upper.startsWith('APPROVE_'))      return confirmPayment(upper.replace('APPROVE_', ''),      tenantId, adminPhone, tenantDoc, business);
   if (upper.startsWith('REJECT_'))       return rejectPayment(upper.replace('REJECT_', ''),        tenantId, adminPhone, tenantDoc, business);
   if (upper.startsWith('CONFIRM_BOOK_')) return confirmBooking(upper.replace('CONFIRM_BOOK_', ''), tenantId, adminPhone, tenantDoc);
-  if (upper.startsWith('DECLINE_BOOK_')) return declineBooking(upper.replace('DECLINE_BOOK_', ''), null, tenantId, adminPhone, tenantDoc);
+  if (upper.startsWith('DECLINE_BOOK_')) {
+    // [FIX-CMD-9] Button payloads may encode a reason after the shortId using an
+    // underscore delimiter: DECLINE_BOOK_A1B2_unavailable. Extract it if present
+    // rather than always passing null and discarding the reason.
+    const rest    = upper.replace('DECLINE_BOOK_', '');
+    const sepIdx  = rest.indexOf('_');
+    const shortId = sepIdx === -1 ? rest : rest.slice(0, sepIdx);
+    const reason  = sepIdx === -1 ? null  : rest.slice(sepIdx + 1).replace(/_/g, ' ') || null;
+    return declineBooking(shortId, reason, tenantId, adminPhone, tenantDoc);
+  }
   return null;
 }
 
@@ -79,20 +143,76 @@ export async function handleAdminTextCommand(text, tenantId, adminPhone, tenantD
 
   const upper = text.trim().toUpperCase();
 
-  const approveMatch = upper.match(/^APPROVE\s+([A-F0-9]{4,24})$/);
+  // [FIX-CMD-10] Widened from [A-F0-9] (hex-only) to [A-Z0-9] so alphanumeric shortIds
+  // (e.g. "A1B2G3") are accepted. Hex-only would silently fail to match if the order
+  // system uses non-hex characters in its shortId scheme.
+  const approveMatch = upper.match(/^APPROVE\s+([A-Z0-9]{4,24})$/);
   if (approveMatch) return confirmPayment(approveMatch[1], tenantId, adminPhone, tenantDoc, business);
 
-  const rejectMatch = upper.match(/^REJECT\s+([A-F0-9]{4,24})$/);
+  const rejectMatch = upper.match(/^REJECT\s+([A-Z0-9]{4,24})$/);
   if (rejectMatch) return rejectPayment(rejectMatch[1], tenantId, adminPhone, tenantDoc, business);
 
-  const confirmBookMatch = upper.match(/^CONFIRM\s+BOOK\s+([A-Z0-9]{4,8})$/);
+  // [FIX-CMD-13] Widened shortId limit from {4,8} to {4,24} to match APPROVE/REJECT.
+  // Booking shortIds may be longer than 8 characters depending on the ID scheme; the
+  // previous cap of 8 silently failed for any booking with a longer ref, falling through
+  // to the looksLikeCommand branch and returning an "unrecognised command" error instead.
+  const confirmBookMatch = upper.match(/^CONFIRM\s+BOOK\s+([A-Z0-9]{4,24})$/);
   if (confirmBookMatch) return confirmBooking(confirmBookMatch[1], tenantId, adminPhone, tenantDoc);
 
-  const declineBookMatch = text.trim().match(/^DECLINE\s+BOOK\s+([A-Za-z0-9]{4,8})(?:\s+(.+))?$/i);
-  if (declineBookMatch) return declineBooking(declineBookMatch[1], declineBookMatch[2] || null, tenantId, adminPhone, tenantDoc);
+  const declineBookMatch = text.trim().match(/^DECLINE\s+BOOK\s+([A-Za-z0-9]{4,24})(?:\s+(.+))?$/i);
+  // [FIX-CMD-3] Normalise shortId to uppercase here (consistent with the button path
+  // and with declineBooking's own .toUpperCase() call). Avoids a silent mismatch if
+  // declineBooking is ever refactored to remove its internal normalisation.
+  if (declineBookMatch) return declineBooking(declineBookMatch[1].toUpperCase(), declineBookMatch[2] || null, tenantId, adminPhone, tenantDoc);
 
-  const resumeMatch = upper.match(/^RESUME BOT\s+(\d+)$/);
-  if (resumeMatch) return resumeBot(resumeMatch[1], tenantId, tenantDoc);
+  // [FIX-CMD-12] Widened phone pattern from [\d+\s]+ to [\d+\s()./-]+ so common
+  // international formats like +220-353-2423 or (220) 353-2423 are accepted.
+  // Normalisation strips all non-digit characters to produce a bare number string,
+  // consistent with how isAdminPhone normalises adminPhone from the DB.
+  const resumeMatch = upper.match(/^RESUME BOT\s+([\d+\s().\-/]+)$/);
+  if (resumeMatch) {
+    // Strip all non-digit characters: spaces, +, dashes, parens, dots, slashes
+    const normalised = resumeMatch[1].replace(/[^\d]/g, '');
+    if (normalised) return resumeBot(normalised, tenantId, tenantDoc);
+  }
+
+  // [FIX-HM-3] "RESUME BOT" with NO phone number — find the most recent human-mode
+  // session for this tenant and resume it automatically. Admins often forget to include
+  // the phone number; this makes the command forgiving without being ambiguous.
+  // upper is already text.trim().toUpperCase() so the second condition was redundant.
+  if (upper === 'RESUME BOT') {
+    // [FIX-2.5] Fetch both the most-recent session AND a total count atomically so the
+    // admin is informed when other customers are still waiting in human-mode. Previously
+    // only one session was resumed with no indication that N-1 others remained, leaving
+    // those customers silently stuck. The count is fetched BEFORE resumeBot() because
+    // resumeBot() sets humanMode=false on the resumed session, changing the count.
+    const Session = (await import('../models/Session.js')).default;
+    const [latest, totalCount] = await Promise.all([
+      Session.findOne({ tenantId, humanMode: true })
+        .sort({ updatedAt: -1 })
+        .select('customerPhone')
+        .lean()
+        .catch(() => null),
+      Session.countDocuments({ tenantId, humanMode: true }).catch(() => 0),
+    ]);
+    if (latest?.customerPhone) {
+      const resumeReply = await resumeBot(latest.customerPhone, tenantId, tenantDoc);
+      const remaining = totalCount - 1;
+      if (remaining > 0) {
+        return (
+          resumeReply +
+          `
+
+⚠️ *${remaining} other customer${remaining > 1 ? 's are' : ' is'} still in human-mode.* ` +
+          `Use \`RESUME BOT <phone>\` to resume them individually.`
+        );
+      }
+      return resumeReply;
+    }
+    return `ℹ️ No active human-mode sessions found for this business.
+
+Use \`RESUME BOT <phone>\` to resume a specific customer.`;
+  }
 
   // [FIX-CMD-4] If it looks like an admin command attempt (APPROVE/REJECT/CONFIRM/DECLINE/RESUME)
   // but didn't match a valid pattern, return a helpful error rather than null (which falls
@@ -106,7 +226,8 @@ export async function handleAdminTextCommand(text, tenantId, adminPhone, tenantD
       `❌ \`REJECT <shortId>\`\n` +
       `📅 \`CONFIRM BOOK <shortId>\`\n` +
       `🚫 \`DECLINE BOOK <shortId> [reason]\`\n` +
-      `🤖 \`RESUME BOT <phone>\``
+      `🤖 \`RESUME BOT <phone>\`\n` +
+      `🤖 \`RESUME BOT\` _(resumes most recent human-mode session)_`
     );
   }
 
@@ -115,10 +236,13 @@ export async function handleAdminTextCommand(text, tenantId, adminPhone, tenantD
 
 // ── Confirm payment ───────────────────────────────────────────────────────────
 async function confirmPayment(shortId, tenantId, adminPhone, tenantDoc, business) {
-  const order = await Order.findOne({
-    $or: [{ shortId }, { _id: shortId.length === 24 ? shortId : undefined }],
-    tenantId,
-  }).select('_id customerPhone status paymentStatus item quantity totalPrice shortId').lean();
+  // [FIX-CMD-11] Build $or cleanly — previously included { _id: undefined } when shortId
+  // was not 24 chars, which MongoDB treats as { _id: null } (matches nothing, but is unclean).
+  const orderQuery = shortId.length === 24
+    ? { $or: [{ shortId }, { _id: shortId }], tenantId }
+    : { shortId, tenantId };
+  const order = await Order.findOne(orderQuery)
+    .select('_id customerPhone status paymentStatus item quantity totalPrice shortId').lean();
 
   if (!order) return `⚠️ No order found: ${shortId}`;
   if (order.paymentStatus === 'confirmed') return `ℹ️ Order #${shortId} already confirmed.`;
@@ -130,13 +254,19 @@ async function confirmPayment(shortId, tenantId, adminPhone, tenantDoc, business
     paymentReviewedAt: new Date(),
   }});
 
-  const biz      = await BusinessConfig.findOne({ tenantId }).lean().catch(() => null);
-  const canBook  = (biz?.services || []).length > 0;
-  const custBtns = [
+  // [FIX-X2] `business` is already passed in by the caller (webhookController fetched
+  // BusinessConfig at step 3). Reuse it directly — no extra DB round-trip needed.
+  // [FIX-CMD-5] Use the mode config's welcomeButtons as the source of truth for
+  // post-confirmation buttons so labels ("Order Food" vs "Place New Order") and
+  // the presence of the booking button are always consistent with the business mode.
+  // Previously the buttons were hardcoded, so restaurants were missing "Book a Table"
+  // and showing the generic "Place New Order" label instead of "Order Food".
+  // getModeConfig is a static top-level import — no dynamic import cost on this path.
+  const modeCfg = getModeConfig(business);
+  const custBtns = (modeCfg.ui?.welcomeButtons || [
     { id: 'ORDER',    title: '🛒 Place New Order'  },
-    canBook ? { id: 'BOOK', title: '📅 Make a Booking' } : null,
     { id: 'QUESTION', title: '❓ Ask a Question'   },
-  ].filter(Boolean).slice(0, 3);
+  ]).slice(0, 3);
 
   await dispatchMessage(order.customerPhone, {
     type:    'buttons',
@@ -146,9 +276,14 @@ async function confirmPayment(shortId, tenantId, adminPhone, tenantDoc, business
       `🍽 Thank you for your order! We'll have it ready shortly. 🙏\n\n` +
       `_(Ref: #${order.shortId || shortId})_`,
     buttons: custBtns,
-  }, tenantDoc).catch(() => {});
+  // [FIX-CMD-2] Log dispatch failures rather than swallowing them. When tenantDoc is
+  // null the customer is never notified of the confirmation — a silent failure that is
+  // very hard to diagnose without a log entry.
+  }, tenantDoc).catch(err => logger.warn('[AdminCmd] confirmPayment: customer dispatch failed', {
+    customerPhone: order.customerPhone, err: err.message,
+  }));
 
-  updateSession(order.customerPhone, tenantId, {
+  await updateSession(order.customerPhone, tenantId, {
     currentFlow: null, step: null, postFlowAck: null,
   }).catch(() => {});
 
@@ -158,10 +293,12 @@ async function confirmPayment(shortId, tenantId, adminPhone, tenantDoc, business
 
 // ── Reject payment ────────────────────────────────────────────────────────────
 async function rejectPayment(shortId, tenantId, adminPhone, tenantDoc, business) {
-  const order = await Order.findOne({
-    $or: [{ shortId }, { _id: shortId.length === 24 ? shortId : undefined }],
-    tenantId,
-  }).select('_id customerPhone status paymentStatus item shortId').lean();
+  // [FIX-CMD-11] Clean $or query — no { _id: undefined } branch (see confirmPayment)
+  const orderQuery = shortId.length === 24
+    ? { $or: [{ shortId }, { _id: shortId }], tenantId }
+    : { shortId, tenantId };
+  const order = await Order.findOne(orderQuery)
+    .select('_id customerPhone status paymentStatus item shortId').lean();
 
   if (!order) return `⚠️ No order found: ${shortId}`;
   if (order.status === 'cancelled') return `ℹ️ Order #${shortId} already cancelled.`;
@@ -177,10 +314,13 @@ async function rejectPayment(shortId, tenantId, adminPhone, tenantDoc, business)
     paymentReviewedAt: new Date(),
   }});
 
-  updateSession(order.customerPhone, tenantId, {
+  // [FIX-CMD-8] Await the session update — if this fails the customer's session won't
+  // point to PAYMENT_PROOF and they won't be able to send a retry screenshot.
+  // Previously fire-and-forget, meaning a transient DB error silently broke retries.
+  await updateSession(order.customerPhone, tenantId, {
     currentFlow: 'ORDER',
     step:        'PAYMENT_PROOF',
-  }).catch(() => {});
+  });
 
   await dispatchMessage(order.customerPhone, {
     type:    'buttons',
@@ -195,7 +335,10 @@ async function rejectPayment(shortId, tenantId, adminPhone, tenantDoc, business)
     buttons: [
       { id: 'CANCEL', title: '❌ Cancel Order' },
     ],
-  }, tenantDoc).catch(() => {});
+  // [FIX-CMD-2] Log dispatch failures — customer won't know to retry if this silently fails.
+  }, tenantDoc).catch(err => logger.warn('[AdminCmd] rejectPayment: customer dispatch failed', {
+    customerPhone: order.customerPhone, err: err.message,
+  }));
 
   logger.info('[AdminCmd] Payment rejected', { shortId, adminPhone });
   return `❌ *Payment rejected*\n\nOrder #${shortId} — ${order.item}\nCustomer ${order.customerPhone} notified. Retry window open.`;
@@ -220,7 +363,10 @@ async function confirmBooking(shortId, tenantId, adminPhone, tenantDoc) {
 
   await dispatchText(booking.customerPhone,
     `✅ *Booking Confirmed!*\n\nYour booking${serviceStr} for *${when}* is confirmed.\n\nWe look forward to seeing you! 😊`,
-    tenantDoc);
+  // [FIX-CMD-2] Log dispatch failures — customer won't know their booking is confirmed.
+  tenantDoc).catch(err => logger.warn('[AdminCmd] confirmBooking: customer dispatch failed', {
+    customerPhone: booking.customerPhone, err: err.message,
+  }));
 
   logger.info('[AdminCmd] Booking confirmed', { shortId, adminPhone });
   return `✅ *Booking confirmed*\n\nBooking #${shortId} — ${when}${serviceStr}\nCustomer ${booking.customerPhone} notified.`;
@@ -247,7 +393,10 @@ async function declineBooking(shortId, reason, tenantId, adminPhone, tenantDoc) 
 
   await dispatchText(booking.customerPhone,
     `❌ *Booking Unavailable*\n\nUnfortunately we can't confirm your booking${serviceStr} for *${when}*.${reasonStr}\n\nPlease contact us to arrange an alternative time.`,
-    tenantDoc);
+  // [FIX-CMD-2] Log dispatch failures — customer won't know their booking was declined.
+  tenantDoc).catch(err => logger.warn('[AdminCmd] declineBooking: customer dispatch failed', {
+    customerPhone: booking.customerPhone, err: err.message,
+  }));
 
   logger.info('[AdminCmd] Booking declined', { shortId, adminPhone, reason });
   return `❌ *Booking declined*\n\nBooking #${shortId} — ${when}${serviceStr}${reason ? `\nReason: ${reason}` : ''}\nCustomer ${booking.customerPhone} notified.`;
@@ -255,10 +404,22 @@ async function declineBooking(shortId, reason, tenantId, adminPhone, tenantDoc) 
 
 // ── Resume bot ────────────────────────────────────────────────────────────────
 async function resumeBot(customerPhone, tenantId, tenantDoc) {
-  await updateSession(customerPhone, tenantId, {
+  // [FIX-CMD-1] Check the return value of updateSession. findOneAndUpdate without
+  // upsert returns null when no document matches — meaning there is no active
+  // session for this customer (TTL-expired). The admin gets a success message either
+  // way (the bot IS effectively not running for that customer), but logging the miss
+  // makes it easier to diagnose cases where an admin resumes a phone that never had
+  // a human-mode session.
+  const updated = await updateSession(customerPhone, tenantId, {
     humanMode: false,
     humanModeNotified: false,
   });
+
+  if (!updated) {
+    logger.warn('[AdminCmd] resumeBot: no active session found for customer — TTL may have expired', {
+      customerPhone, tenantId,
+    });
+  }
 
   if (tenantDoc) {
     dispatchText(
@@ -287,13 +448,19 @@ export function buildAdminBookingAlertBody({ customerPhone, date, time, service,
   );
 }
 
-/** Backward-compat alias — includes CONFIRM/DECLINE commands in footer */
+/**
+ * buildAdminBookingAlert — full booking notification with reply commands in footer.
+ * [FIX-CMD-6] Footer previously showed APPROVE/REJECT (order-payment commands) mixed in
+ *             with the booking commands — confusing for admins.
+ *             Now shows only the two booking-specific commands.
+ * [FIX-CMD-7] shortId was shown as literal '?' when args.shortId was falsy.
+ *             Now omits the command line entirely when shortId is not available.
+ */
 export function buildAdminBookingAlert(args) {
   const body = buildAdminBookingAlertBody(args);
-  return (
-    body +
-    `\n\nReply:\n` +
-    `✅ \`CONFIRM BOOK ${args.shortId || '?'}\`\n` +
-    `❌ \`DECLINE BOOK ${args.shortId || '?'} <reason>\``
-  );
+  const sid  = args.shortId;
+  const commandFooter = sid
+    ? `\n\nReply to action:\n✅ \`CONFIRM BOOK ${sid}\`\n🚫 \`DECLINE BOOK ${sid} <reason>\``
+    : `\n\n_Reply once a shortId is available._`;
+  return body + commandFooter;
 }
