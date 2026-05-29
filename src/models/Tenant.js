@@ -20,7 +20,9 @@ const tenantSchema = new mongoose.Schema({
     sparse: true,       // only index when present — allows multiple tenants with no email
     lowercase: true,
     trim: true,
-    default: null,
+    // NOTE: NO default: null here — sparse: true only skips indexing when the field
+    // is absent/undefined. An explicit null IS indexed, so two null emails collide.
+    // Omitting the default keeps the field genuinely absent when not supplied.
   },
 
   // ================= AUTH =================
@@ -103,6 +105,16 @@ const tenantSchema = new mongoose.Schema({
   usage: {
     messagesThisMonth: { type: Number, default: 0 },
     resetDate:         { type: Date, default: () => new Date() }
+  },
+
+  // ================= BUSINESS MODE =================
+  // Stored on the Tenant doc directly (mirrors BusinessConfig.businessMode) so
+  // listTenants can return it in a single query without a BusinessConfig join.
+  businessMode: {
+    type: String,
+    enum: ['RESTAURANT', 'SALON', 'BARBERSHOP', 'RETAIL', 'BAKERY', 'SUPERMARKET',
+           'FASHION', 'COSMETICS', 'ELECTRONICS', 'PHARMACY', 'DELIVERY'],
+    default: 'RESTAURANT',
   },
 
   // ================= STATUS =================
