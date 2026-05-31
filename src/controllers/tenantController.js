@@ -220,7 +220,9 @@ export async function updateTenant(req, res) {
     const whatsappFieldsChanged = Object.keys(updates).some(k => k.startsWith('whatsapp.'));
     if (whatsappFieldsChanged) {
       const phoneId    = tenant.whatsapp?.phoneNumberId;
-      const token      = tenant.whatsapp?.accessToken;
+      // [FIX-SHARED-APP] Fall back to global META_WHATSAPP_TOKEN — operators using
+      // one system-user token for all tenants don't need to save per-tenant accessToken.
+      const token      = tenant.whatsapp?.accessToken || process.env.META_WHATSAPP_TOKEN;
       const apiVersion = tenant.whatsapp?.apiVersion || process.env.META_API_VERSION || 'v21.0';
 
       if (phoneId && token) {
@@ -375,13 +377,21 @@ export async function verifyWhatsAppConnection(req, res) {
     if (!tenant) return res.status(404).json({ error: 'Not found' });
 
     const phoneId    = tenant.whatsapp?.phoneNumberId;
-    const token      = tenant.whatsapp?.accessToken;
+    // [FIX-SHARED-APP] Use per-tenant token if saved, otherwise global system-user token.
+    const token      = tenant.whatsapp?.accessToken || process.env.META_WHATSAPP_TOKEN;
     const apiVersion = tenant.whatsapp?.apiVersion || process.env.META_API_VERSION || 'v21.0';
 
-    if (!phoneId || !token) {
+    if (!phoneId) {
       return res.status(422).json({
         connected: false,
-        error: 'Missing WhatsApp credentials — set phoneNumberId and accessToken first.',
+        error: 'Missing phoneNumberId — get it from Meta Developer Console → WhatsApp → API Setup and save it via the admin panel.',
+      });
+    }
+
+    if (!token) {
+      return res.status(422).json({
+        connected: false,
+        error: 'No access token available. Set META_WHATSAPP_TOKEN in your Railway environment variables (your Meta system-user permanent token).',
       });
     }
 

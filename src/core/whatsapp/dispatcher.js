@@ -155,12 +155,20 @@ export async function dispatchMessage(to, ui, tenant) {
   const payload   = buildPayload(to, ui);
   if (!payload) return;
 
-  const token   = tenant?.whatsapp?.accessToken;
+  // [FIX-SHARED-APP] One Meta app, many tenants.
+  // Token: use the tenant's own accessToken if saved, otherwise fall back to the
+  // global META_WHATSAPP_TOKEN system-user token that covers all tenants on the app.
+  // phoneNumberId: always per-tenant (it identifies WHICH number sends the reply).
+  const token   = tenant?.whatsapp?.accessToken || process.env.META_WHATSAPP_TOKEN;
   const phoneId = tenant?.whatsapp?.phoneNumberId;
   const version = tenant?.whatsapp?.apiVersion || process.env.META_API_VERSION || 'v21.0';
 
-  if (!token || !phoneId) {
-    logger.warn('[Dispatch] Missing WhatsApp credentials', { tenantId: tenant?._id });
+  if (!token) {
+    logger.warn('[Dispatch] No access token — set META_WHATSAPP_TOKEN in env or save whatsapp.accessToken on the tenant', { tenantId: tenant?._id });
+    return;
+  }
+  if (!phoneId) {
+    logger.warn('[Dispatch] Missing whatsapp.phoneNumberId on tenant — cannot route outbound message', { tenantId: tenant?._id });
     return;
   }
 

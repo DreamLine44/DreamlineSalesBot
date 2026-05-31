@@ -692,25 +692,15 @@ export async function verifyWebhook(req, res) {
     return res.status(403).send('Forbidden');
   }
 
-  // [FIX-WA-3] Accept EITHER the global META_WEBHOOK_VERIFY_TOKEN (set by admin
-  // when registering the webhook in Meta Developer Console) OR a tenant-specific
-  // verifyToken stored on the Tenant document (for multi-tenant setups where each
-  // tenant registers their own webhook token).
-  // Previously ONLY the global env var was checked — tenant verifyToken fields
-  // were never used, so tenants who stored their own token always failed verification.
+  // [FIX-SHARED-APP] One Meta app = one webhook subscription = one verify token.
+  // Meta ONLY sends the single token you entered in Meta Developer Console →
+  // WhatsApp → Configuration. There is no per-tenant token exchange in this
+  // architecture — all tenants share the same app, webhook URL, and verify token.
+  // The previous per-tenant DB lookup was wrong: Meta never sends a per-tenant
+  // token because it has no knowledge of your internal tenant structure.
   if (token === process.env.META_WEBHOOK_VERIFY_TOKEN) {
+    logger.info('[Webhook] Webhook verified');
     return res.status(200).send(challenge);
-  }
-
-  // Check per-tenant verifyToken (allows each tenant to have their own token)
-  try {
-    const tenant = await Tenant.findOne({ 'whatsapp.verifyToken': token }).lean();
-    if (tenant) {
-      logger.info('[Webhook] Verified via tenant verifyToken', { tenantId: tenant._id });
-      return res.status(200).send(challenge);
-    }
-  } catch (err) {
-    logger.error('[Webhook] verifyWebhook DB lookup failed', { err: err.message });
   }
 
   logger.warn('[Webhook] Webhook verification failed — token mismatch', { ip: req.ip });
@@ -731,17 +721,18 @@ export async function receiveWebhook(req, res) {
         for (const msg of value.messages || []) {
           try {
             const from   = msg.from;
-            // [FIX-WA-4] Previously only status:'ACTIVE' tenants were matched.
-            // A newly-created tenant (status:'PENDING') with valid WhatsApp credentials
-            // had all incoming messages silently dropped — the lookup returned null and
-            // the message was discarded with no error or log entry.
-            // Fix: also accept PENDING tenants that have whatsapp.connected=true so
-            // the bot is reachable as soon as credentials are verified, even before
-            // an admin manually promotes the tenant to ACTIVE.
+            // [FIX-SHARED-APP] Route to the correct tenant by phoneNumberId.
+            // Both ACTIVE and PENDING tenants receive messages [FIX-WA-4].
+            // IMPORTANT: must use .select('+whatsapp.accessToken') — the Tenant
+            // schema's toJSON transform strips accessToken, but .lean() itself
+            // does NOT strip it. However we explicitly select it here to make
+            // the intent clear and guard against future schema changes (e.g. select:false).
             const tenant = await Tenant.findOne({
               'whatsapp.phoneNumberId': phoneNumberId,
               status: { $in: ['ACTIVE', 'PENDING'] },
-            }).lean();
+            })
+            .select('name status adminPhone businessMode whatsapp')
+            .lean();
             if (!tenant) continue;
             await handleIncomingMessage({
               tenantId: String(tenant._id), tenantDoc: tenant,

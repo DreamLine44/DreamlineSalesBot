@@ -14,7 +14,7 @@ config({ path: '.env', override: false });
 // ── Exported env vars ─────────────────────────────────────────────────────────
 export const { NODE_ENV, PORT, MONGODB_URI, SUPER_ADMIN_API_KEY, BASE_URL, LOG_LEVEL, CORS_ORIGIN } = process.env;
 export const { GROQ_API_KEY, OPENAI_API_KEY } = process.env;
-export const { META_APP_SECRET, META_WEBHOOK_VERIFY_TOKEN } = process.env;
+export const { META_APP_SECRET, META_WEBHOOK_VERIFY_TOKEN, META_WHATSAPP_TOKEN, META_API_VERSION } = process.env;
 export const { SIMULATION_MODE, SIMULATION_SECRET } = process.env;
 export const { ENCRYPTION_KEY } = process.env;
 export const { SCHEDULER_ENABLED, ADMIN_PHONES } = process.env;
@@ -51,6 +51,12 @@ export function validateEnv() {
     }
     if (!process.env.META_APP_SECRET) {
       errors.push('Missing required env var: META_APP_SECRET');
+    }
+    // [FIX-SHARED-APP] Required: the system-user permanent access token used to send
+    // messages for all tenants. Get it from Meta Business Suite → System Users →
+    // your system user → Generate Token (needs whatsapp_business_messaging permission).
+    if (!process.env.META_WHATSAPP_TOKEN) {
+      errors.push('Missing required env var: META_WHATSAPP_TOKEN — your Meta system-user permanent access token');
     }
 
     // Warn on insecure placeholder defaults
