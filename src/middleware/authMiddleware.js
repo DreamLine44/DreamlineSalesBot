@@ -58,7 +58,7 @@ export async function requireApiKey(req, res, next) {
   // Per-tenant key lookup via SHA-256 hash
   try {
     const hash   = crypto.createHash('sha256').update(key).digest('hex');
-    const tenant = await Tenant.findOne({ apiKeyHash: hash, status: 'ACTIVE' }).lean();
+    const tenant = await Tenant.findOne({ apiKeyHash: hash, status: { $in: ['ACTIVE', 'PENDING'] } }).lean(); // [FIX-AUTH-1] PENDING tenants must also auth so they can complete setup
     if (tenant) {
       req.tenant      = tenant;
       req.tenantId    = String(tenant._id);

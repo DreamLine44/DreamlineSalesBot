@@ -61,7 +61,11 @@ export async function receiveProof(customerPhone, tenantId, imageId, tenantDoc) 
     // Previously both were fire-and-forget so the card often arrived before the image,
     // making "Screenshot sent above ↑" incorrect.
     if (imageId) {
-      const token   = tenantDoc?.whatsapp?.accessToken;
+      // [FIX-PAY-IMG] Fall back to global META_WHATSAPP_TOKEN when no per-tenant
+      // accessToken is set — consistent with dispatcher.js shared-app architecture.
+      // Previously this used tenantDoc?.whatsapp?.accessToken only, so image forwarding
+      // silently broke for all tenants relying on the global system-user token.
+      const token   = tenantDoc?.whatsapp?.accessToken || process.env.META_WHATSAPP_TOKEN;
       const phoneId = tenantDoc?.whatsapp?.phoneNumberId;
       const version = tenantDoc?.whatsapp?.apiVersion || process.env.META_API_VERSION || 'v21.0';
       if (token && phoneId) {
