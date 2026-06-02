@@ -54,13 +54,13 @@ import adminRoutes       from './routes/adminRoutes.js';
 const app        = express();
 const isProduction = process.env.NODE_ENV === 'production';
 
-// ── Security headers ──────────────────────────────────────────────────────────
+// ── Security headers ───────────────────────────────────────────────────────
 app.use(helmet({
   contentSecurityPolicy: false, // Bot API — no HTML served
   // hsts is enabled by default in helmet — good for HTTPS deployments
 }));
 
-// ── CORS ──────────────────────────────────────────────────────────────────────
+// ── CORS ───────────────────────────────────────────────────────────────────
 const allowedOrigins = (process.env.CORS_ORIGIN || '')
   .split(',').map(o => o.trim()).filter(Boolean);
 
