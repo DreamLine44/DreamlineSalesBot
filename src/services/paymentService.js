@@ -21,7 +21,7 @@
 
 import Order          from '../models/Order.js';
 import BusinessConfig from '../models/BusinessConfig.js';
-import { dispatchText } from '../core/whatsapp/dispatcher.js';
+import { decryptToken } from '../controllers/tenantController.js';
 import logger from '../config/logger.js';
 
 const PROOF_WINDOW_HOURS = Number(process.env.PROOF_ELIGIBLE_HOURS || 4);
@@ -60,12 +60,18 @@ export async function receiveProof(customerPhone, tenantId, imageId, tenantDoc) 
     // [FIX-IMG-ORDER] Forward the image FIRST (awaited), then the approval card.
     // Previously both were fire-and-forget so the card often arrived before the image,
     // making "Screenshot sent above ↑" incorrect.
+    // [FIX-SCOPE] imageForwarded is declared here (outer scope) so the approval card
+    // template literal below can always read it. Previously it was declared inside
+    // `if (token && phoneId)` — when token/phoneId was falsy the variable was undefined
+    // at the point of use, causing the card to incorrectly say "Screenshot delivery failed."
+    let imageForwarded = false;
     if (imageId) {
-      // [FIX-PAY-IMG] Fall back to global META_WHATSAPP_TOKEN when no per-tenant
-      // accessToken is set — consistent with dispatcher.js shared-app architecture.
-      // Previously this used tenantDoc?.whatsapp?.accessToken only, so image forwarding
-      // silently broke for all tenants relying on the global system-user token.
-      const token   = tenantDoc?.whatsapp?.accessToken || process.env.META_WHATSAPP_TOKEN;
+      // [FIX-PAY-2] decryptToken() must be called before using the stored access token.
+      // tenantDoc.whatsapp.accessToken is AES-256-GCM encrypted (enc:<iv>:<tag>:<ct>)
+      // in production. Sending the raw ciphertext to Meta results in a 400 auth error
+      // on every image forward. All other Meta calls route through dispatcher.js which
+      // calls decryptToken() — this direct fetch() was the only path that did not.
+      const token   = decryptToken(tenantDoc?.whatsapp?.accessToken);
       const phoneId = tenantDoc?.whatsapp?.phoneNumberId;
       const version = tenantDoc?.whatsapp?.apiVersion || process.env.META_API_VERSION || 'v21.0';
       if (token && phoneId) {
@@ -74,14 +80,31 @@ export async function receiveProof(customerPhone, tenantId, imageId, tenantDoc) 
           to: adminPhone, type: 'image',
           image: { id: imageId, caption: `📸 Payment proof from ${customerPhone} — Order #${order.shortId}` },
         };
-        try {
-          await fetch(`https://graph.facebook.com/${version}/${phoneId}/messages`, {
-            method:  'POST',
-            headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-            body:    JSON.stringify(imgPayload),
-          });
-        } catch (imgErr) {
-          logger.warn('[PaymentService] Image forward failed (non-fatal)', { err: imgErr.message });
+        // [FIX-PAY-3] Retry image forward up to 2 times on transient Meta 5xx.
+        // Previously a single failed fetch() silently dropped the image — the admin
+        // received the approval card with "Screenshot sent above ↑" but no image,
+        // causing blind approve/reject decisions. On persistent failure, include an
+        // explicit warning in the approval card body so the admin knows to ask the
+        // customer to resend.
+        for (let attempt = 0; attempt < 3; attempt++) {
+          try {
+            const imgRes = await fetch(`https://graph.facebook.com/${version}/${phoneId}/messages`, {
+              method:  'POST',
+              headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+              body:    JSON.stringify(imgPayload),
+            });
+            if (imgRes.ok) { imageForwarded = true; break; }
+            // Non-2xx from Meta — log and retry on 5xx only
+            const status = imgRes.status;
+            logger.warn('[PaymentService] Image forward non-OK', { attempt: attempt + 1, status, orderId: order._id });
+            if (status < 500) break; // 4xx (bad token, bad media ID) — retrying won't help
+          } catch (imgErr) {
+            logger.warn('[PaymentService] Image forward network error', { attempt: attempt + 1, err: imgErr.message });
+          }
+          if (attempt < 2) await new Promise(r => setTimeout(r, 1000 * (attempt + 1))); // 1s, 2s backoff
+        }
+        if (!imageForwarded) {
+          logger.error('[PaymentService] Image forward failed after 3 attempts — admin will be warned', { orderId: order._id });
         }
         // Brief gap so WhatsApp delivers the image before the interactive card
         await new Promise(resolve => setTimeout(resolve, 500));
@@ -97,7 +120,9 @@ export async function receiveProof(customerPhone, tenantId, imageId, tenantDoc) 
         `👤 Customer: *${customerPhone}*\n` +
         `🛒 Items: *${order.item}* × ${order.quantity}\n` +
         `💰 Amount: *${currency}${order.totalPrice || '—'}*\n\n` +
-        `Screenshot sent above ↑\nPlease approve or reject:`,
+        (imageForwarded
+          ? `Screenshot sent above ↑\nPlease approve or reject:`
+          : `⚠️ *Screenshot delivery failed* — ask the customer to resend.\nYou may still approve or reject based on other confirmation:`),
       buttons: [
         { id: `APPROVE_${order.shortId}`, title: '✅ Approve' },
         { id: `REJECT_${order.shortId}`,  title: '❌ Reject'  },
@@ -180,6 +205,10 @@ export async function handleDonePayment(customerPhone, tenantId, tenantDoc) {
  * [FIX #5c] Date format standardised to MMDD to match orderFlow.js reference generator.
  *           Was DDMM here vs MMDD there — now consistent everywhere.
  *
+ * [FIX-MULTICHAN] Supports multiple payment channels (Wave, GT Bank, EcoBank, Trust Bank, etc.)
+ *                 Clients send a screenshot; the tenant admin confirms it manually.
+ *                 Falls back to legacy wavePhone if no channels[] configured.
+ *
  * @param {object} business
  * @param {number} totalPrice
  * @param {string} shortId
@@ -187,7 +216,6 @@ export async function handleDonePayment(customerPhone, tenantId, tenantDoc) {
  */
 export function buildPaymentInstructionsUI(business, totalPrice, shortId, storedRef = null) {
   const payment  = business?.payment || {};
-  const waveNo   = payment.wavePhone || payment.phone || '—';
   const currency = payment.currency || 'D';
 
   // Prefer the stored reference; only compute a new one when none exists
@@ -200,18 +228,47 @@ export function buildPaymentInstructionsUI(business, totalPrice, shortId, stored
     ref = `DSB-${mm}${dd}-${shortId}`;
   }
 
+  // Build channel list — prefer channels[] array, fall back to legacy wavePhone
+  const channels = Array.isArray(payment.channels) && payment.channels.length > 0
+    ? payment.channels
+    : (payment.wavePhone || payment.phone)
+      ? [{ provider: 'Wave', accountNo: payment.wavePhone || payment.phone, isDefault: true }]
+      : [];
+
+  let channelBlock = '';
+  if (channels.length === 1) {
+    const ch = channels[0];
+    channelBlock =
+      `📲 Send *${currency}${totalPrice}* via *${ch.provider}* to:\n\n` +
+      `📱 *${ch.accountNo}*${ch.label ? ` (${ch.label})` : ''}`;
+  } else if (channels.length > 1) {
+    const lines = channels.map((ch, i) =>
+      `${i + 1}. *${ch.provider}* → \`${ch.accountNo}\`${ch.label ? ` (${ch.label})` : ''}${ch.isDefault ? ' ⭐' : ''}`
+    ).join('\n');
+    channelBlock =
+      `📲 Send *${currency}${totalPrice}* to any of the following:\n\n${lines}`;
+  } else {
+    channelBlock = `📲 Please contact us to get payment details.`;
+  }
+
+  // [UX-2] Return as 'buttons' so customers have a clear tap-to-confirm next step.
+  // Previously 'text' — left customers staring at instructions with no tappable action,
+  // causing drop-offs and repeat "I already sent" messages without the screenshot.
   return {
-    type: 'text',
+    type: 'buttons',
     body:
       `💳 *Payment Instructions*\n\n` +
       `🛒 Total: *${currency}${totalPrice}*` +
       (ref ? `\n📝 Reference: *${ref}*` : '') +
       `\n\n─────────────────────\n` +
-      `📲 Send *${currency}${totalPrice}* via *Wave* to:\n\n` +
-      `📱 *${waveNo}*\n` +
+      `${channelBlock}\n` +
       (ref ? `\n⚠️ Use *${ref}* as your payment reference.\n` : '') +
       `─────────────────────\n\n` +
-      `After sending, please *reply with a screenshot* of your Wave confirmation.\n\n` +
-      `We'll verify and confirm your order shortly ✅`,
+      `Send your payment screenshot here, then tap *"✅ Sent Screenshot"* below. We'll verify and confirm your order shortly ✅`,
+    buttons: [
+      { id: 'DONE',    title: '✅ Sent Screenshot' },
+      { id: 'SUPPORT', title: '❓ Need Help'        },
+      { id: 'CANCEL',  title: '❌ Cancel Order'     },
+    ],
   };
 }

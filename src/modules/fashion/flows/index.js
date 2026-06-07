@@ -1,26 +1,6 @@
 /**
  * modules/fashion/flows/index.js
  * Fashion module — product catalog + variants + recommendations
- *
- * [FIX-FA-1] SELECT_COLOR step was listed in steps.ORDER but never implemented.
- *            Any customer who reached it hit the default branch which returned
- *            buildCatalogUI(), silently wiping their order state mid-flow.
- *            Added a full SELECT_COLOR case. SELECT_SIZE now routes to SELECT_COLOR
- *            when item.colors is configured, otherwise goes straight to QUANTITY.
- *
- * [FIX-FA-2] Payment path now uses buildPaymentInstructionsUI (shared, ICU-safe),
- *            stores paymentReference on the order, and notifies the admin with an
- *            interactive Approve/Reject card — consistent with restaurant orderFlow.
- *            The old inline plain-text payment message had no reference, no stored ref,
- *            and no admin notification.
- *
- * [FIX-FA-3] No-payment admin alert upgraded from plain dispatchText to an interactive
- *            Approve/Reject buttons card, consistent with restaurant orderFlow [FIX-3].
- *
- * [FIX-FA-4] Analytics/revenue tracking moved to BEFORE completeFlow. Previously they
- *            ran after the `if (_lcRf) return _lcRf` guard — if lead capture fired,
- *            completeFlow returned a response and the code returned early, silently
- *            skipping all analytics for that order.
  */
 import { updateSession }  from '../../../core/sessions/sessionService.js';
 import { completeFlow }   from '../../../core/conversations/flowEngine.js';
@@ -29,7 +9,6 @@ import { findBestMatch }  from '../../../utils/matchEngine.js';
 import { saveOrder }      from '../../../services/orderService.js';
 import { parseQuantity }  from '../../../utils/parseQuantity.js';
 import { trackOrderAnalytics, recordRevenue } from '../../../core/analytics/analyticsService.js';
-import { buildPaymentInstructionsUI } from '../../../services/paymentService.js';
 import logger             from '../../../config/logger.js';
 
 export const FASHION_CONFIG = {
@@ -94,67 +73,143 @@ export async function handleFashionOrder({ session, message, business, tenant, i
 
       // Check if item has variants
       if (item.variants?.length) {
-        const sizeList = item.variants.map((v, i) => `*${i+1}.* ${v}`).join('\n');
         await updateSession(session.customerPhone, session.tenantId, { step: 'SELECT_SIZE', data: { item } });
+        // Show up to 3 variants as buttons; if more, use a list
+        const variantButtons = item.variants.slice(0, 3).map(v => ({
+          id: `SIZE_${String(v).toUpperCase().replace(/\s+/g, '_')}`,
+          title: String(v),
+        }));
+        if (item.variants.length > 3) {
+          return {
+            type: 'list',
+            body: `✨ *${item.name}*${item.price ? ` — D${item.price}` : ''}\n\nWhat *size* would you like?`,
+            button: 'Choose size',
+            sections: [{ title: 'Available Sizes', rows: item.variants.map(v => ({ id: `SIZE_${String(v).toUpperCase().replace(/\s+/g, '_')}`, title: String(v) })) }],
+          };
+        }
         return {
           type: 'buttons',
-          body: `✨ *${item.name}*${item.price ? ` — D${item.price}` : ''}\n\nWhat *size* would you like?\n\n${sizeList}`,
-          buttons: [{ id: 'CANCEL', title: '❌ Cancel' }],
+          body: `✨ *${item.name}*${item.price ? ` — D${item.price}` : ''}\n\nWhat *size* would you like?`,
+          buttons: [...variantButtons, { id: 'CANCEL', title: '❌ Cancel' }].slice(0, 3),
         };
       }
       await updateSession(session.customerPhone, session.tenantId, { step: 'QUANTITY', data: { item } });
       return {
         type: 'buttons',
         body: `✨ *${item.name}* selected!\n\nHow many would you like?`,
-        buttons: [{ id: 'CANCEL', title: '❌ Cancel' }],
+        buttons: [
+          { id: 'QTY_1', title: '1️⃣  1' },
+          { id: 'QTY_2', title: '2️⃣  2' },
+          { id: 'QTY_3', title: '3️⃣  3' },
+        ],
+        footer: 'Or type any number e.g. 4, 5',
       };
     }
 
     case 'SELECT_SIZE': {
-      const size = SIZES.find(s => clean.includes(s.toLowerCase())) || raw;
-      // [FIX-FA-1] Route to SELECT_COLOR when the item has color options,
-      // otherwise go straight to QUANTITY. Previously always went to QUANTITY,
-      // making SELECT_COLOR unreachable despite being in the steps config.
-      const itemColors = data.item?.colors || [];
-      if (itemColors.length) {
-        const colorList = itemColors.map((c, i) => `*${i+1}.* ${c}`).join('\n');
+      // Handle both button IDs (SIZE_XL) and typed values (XL, xl)
+      const item = data.item;
+      let size;
+      if (raw.toUpperCase().startsWith('SIZE_')) {
+        size = raw.slice(5).replace(/_/g, ' ');
+        // Try to match back to item variants for proper casing
+        if (item?.variants?.length) {
+          const matched = item.variants.find(v => String(v).toUpperCase().replace(/\s+/g, '_') === raw.slice(5));
+          if (matched) size = matched;
+        }
+      } else {
+        size = SIZES.find(s => clean.includes(s.toLowerCase())) || raw;
+      }
+
+      // [UX-4] Route to SELECT_COLOR if the item has defined colors, or if the business
+      // has a global color list. Skip the step cleanly when neither is present so the
+      // flow doesn't stall at a step with no options.
+      const itemColors = Array.isArray(item?.colors) && item.colors.length > 0
+        ? item.colors
+        : COLORS;
+      const skipColor = item?.skipColor === true || (business?.settings?.skipColorStep === true);
+
+      if (!skipColor) {
         await updateSession(session.customerPhone, session.tenantId, { step: 'SELECT_COLOR', data: { ...data, size } });
+        const colorButtons = itemColors.slice(0, 9); // WhatsApp list max 10 rows per section
+        if (colorButtons.length > 3) {
+          return {
+            type: 'list',
+            body: `Size *${size}* — perfect! ✅\n\nWhat *colour* would you like?`,
+            button: 'Choose colour',
+            sections: [{
+              title: 'Available Colours',
+              rows: colorButtons.map(c => ({
+                id:    `COLOR_${String(c).toUpperCase().replace(/\s+/g, '_')}`,
+                title: String(c),
+              })),
+            }],
+          };
+        }
         return {
           type: 'buttons',
-          body: `Size *${size}* ✅\n\nWhat *colour* would you like?\n\n${colorList}`,
-          buttons: [{ id: 'CANCEL', title: '❌ Cancel' }],
+          body: `Size *${size}* — perfect! ✅\n\nWhat *colour* would you like?`,
+          buttons: [
+            ...colorButtons.slice(0, 2).map(c => ({
+              id:    `COLOR_${String(c).toUpperCase().replace(/\s+/g, '_')}`,
+              title: String(c),
+            })),
+            { id: 'COLOR_SKIP', title: '⏭ No preference' },
+          ],
         };
       }
+
       await updateSession(session.customerPhone, session.tenantId, { step: 'QUANTITY', data: { ...data, size } });
       return {
         type: 'buttons',
         body: `Size *${size}* — got it! ✅\n\nHow many would you like?`,
-        buttons: [{ id: 'CANCEL', title: '❌ Cancel' }],
+        buttons: [
+          { id: 'QTY_1', title: '1️⃣  1' },
+          { id: 'QTY_2', title: '2️⃣  2' },
+          { id: 'QTY_3', title: '3️⃣  3' },
+        ],
+        footer: 'Or type any number',
       };
     }
 
-    // [FIX-FA-1] SELECT_COLOR — was in steps config but never implemented.
+    // [UX-4] SELECT_COLOR — was declared in config steps but never implemented.
+    // Customers would silently skip colour selection; orders had no colour recorded.
     case 'SELECT_COLOR': {
-      const itemColors = data.item?.colors || [];
-      const numIdx = parseInt(raw, 10) - 1;
-      let color = (!isNaN(numIdx) && itemColors[numIdx]) ? itemColors[numIdx] : null;
-      if (!color) {
-        color = COLORS.find(c => clean.includes(c.toLowerCase()))
-          || itemColors.find(c => clean.includes(c.toLowerCase()))
-          || raw;
+      let color;
+      if (raw.toUpperCase().startsWith('COLOR_')) {
+        const colorKey = raw.slice(6);
+        if (colorKey === 'SKIP') {
+          color = null; // no preference
+        } else {
+          color = colorKey.replace(/_/g, ' ');
+          // Try proper casing from COLORS list
+          const matched = COLORS.find(c => c.toUpperCase().replace(/\s+/g, '_') === colorKey);
+          if (matched) color = matched;
+        }
+      } else {
+        color = COLORS.find(c => clean.includes(c.toLowerCase())) || (raw.length >= 2 ? raw : null);
       }
-      await updateSession(session.customerPhone, session.tenantId, { step: 'QUANTITY', data: { ...data, color } });
+
+      await updateSession(session.customerPhone, session.tenantId, {
+        step: 'QUANTITY', data: { ...data, color: color || null },
+      });
+      const colorConfirm = color ? `Colour *${color}* — ` : '';
       return {
         type: 'buttons',
-        body: `Colour *${color}* — perfect! ✅\n\nHow many would you like?`,
-        buttons: [{ id: 'CANCEL', title: '❌ Cancel' }],
+        body: `${colorConfirm}got it! ✅\n\nHow many would you like?`,
+        buttons: [
+          { id: 'QTY_1', title: '1️⃣  1' },
+          { id: 'QTY_2', title: '2️⃣  2' },
+          { id: 'QTY_3', title: '3️⃣  3' },
+        ],
+        footer: 'Or type any number',
       };
     }
 
     case 'QUANTITY': {
-      // [FIX] parseInt(raw,10)||1 silently coerces 'five' or '' to 1.
-      // Use parseQuantity() which handles word numbers and validates range.
-      const qty = parseQuantity(raw);
+      // Handle quick-pick buttons
+      const QTY_SHORTCUTS = { 'QTY_1': 1, 'QTY_2': 2, 'QTY_3': 3 };
+      const qty = QTY_SHORTCUTS[raw.toUpperCase()] ?? parseQuantity(raw);
       const MAX_QTY = business?.settings?.maxOrderQuantity || 20;
       if (!qty || qty < 1) {
         return {
@@ -172,10 +227,11 @@ export async function handleFashionOrder({ session, message, business, tenant, i
       }
       const total = (data.item?.price || 0) * qty;
       await updateSession(session.customerPhone, session.tenantId, { step: 'CONFIRM', data: { ...data, quantity: qty, totalPrice: total } });
-      const sizeStr = data.size ? ` (${data.size})` : '';
+      const sizeStr  = data.size  ? ` (${data.size})`  : '';
+      const colorStr = data.color ? ` — ${data.color}` : '';
       return {
         type: 'buttons',
-        body: `🧾 *Order Summary*\n\n👗 *${qty}× ${data.item?.name}${sizeStr}*${total ? `\n💰 D${total}` : ''}\n\nConfirm?`,
+        body: `🧾 *Order Summary*\n\n👗 *${qty}× ${data.item?.name}${sizeStr}${colorStr}*${total ? `\n💰 D${total}` : ''}\n\nConfirm?`,
         buttons: [{ id: 'CONFIRM', title: '✅ Confirm Order' }, { id: 'CANCEL', title: '❌ Cancel' }],
       };
     }
@@ -188,18 +244,44 @@ export async function handleFashionOrder({ session, message, business, tenant, i
           buttons: [{ id: 'CONFIRM', title: '✅ Confirm Order' }, { id: 'CANCEL', title: '❌ Cancel' }],
         };
       }
-      const itemLabel = `${data.item?.name}${data.size ? ` (${data.size})` : ''}${data.color ? ` — ${data.color}` : ''}`;
       let savedOrder = null;
       try {
-        savedOrder = await saveOrder({ item: itemLabel,
+        savedOrder = await saveOrder({ item: `${data.item?.name}${data.size ? ` (${data.size})` : ''}${data.color ? ` — ${data.color}` : ''}`,
           quantity: data.quantity, totalPrice: data.totalPrice,
           customerPhone: session.customerPhone, tenantId: session.tenantId, businessId: business._id });
       } catch (err) { logger.error('[FashionModule] saveOrder failed', { err: err.message }); }
 
-      // [FIX-FA-4] Track analytics BEFORE completeFlow so they always fire even
-      // when completeFlow triggers lead capture and returns early.
+      // [FIX-5] Payment flow — fashion was skipping payment even when payment.enabled=true
+      const payment = business?.payment;
+      if (payment?.enabled && data.totalPrice) {
+        const { buildPaymentInstructionsUI } = await import('../../../services/paymentService.js');
+        await updateSession(session.customerPhone, session.tenantId, {
+          step: 'PAYMENT_PROOF', currentFlow: 'ORDER',
+        });
+        return buildPaymentInstructionsUI(business, data.totalPrice, savedOrder?.shortId || null, null);
+      }
+
+      // No payment — notify admin
+      try {
+        const adminPhone = business?.adminPhone || tenant?.adminPhone;
+        if (adminPhone && tenant && savedOrder) {
+          const { buildAdminOrderAlert } = await import('../../restaurant/handlers/uiBuilders.js');
+          const alert = buildAdminOrderAlert({
+            customerPhone: session.customerPhone,
+            item: `${data.item?.name}${data.size ? ` (${data.size})` : ''}`,
+            quantity: data.quantity, totalPrice: data.totalPrice,
+            shortId: savedOrder.shortId, business,
+          });
+          const { dispatchText } = await import('../../../core/whatsapp/dispatcher.js');
+          dispatchText(adminPhone, alert, tenant).catch(() => {});
+        }
+      } catch {}
+
+      // Track analytics + revenue BEFORE completeFlow — completeFlow may trigger lead
+      // capture and return early, so anything after it may never execute.
       trackOrderAnalytics(
-        itemLabel, null, data.quantity, data.totalPrice || 0, session.tenantId
+        `${data.item?.name}${data.size ? ` (${data.size})` : ''}`,
+        null, data.quantity, data.totalPrice || 0, session.tenantId
       ).catch(() => {});
       if (data.totalPrice) {
         recordRevenue({
@@ -209,77 +291,11 @@ export async function handleFashionOrder({ session, message, business, tenant, i
         }).catch(() => {});
       }
 
-      // [FIX-FA-2] Payment path — use shared buildPaymentInstructionsUI, store ref, notify admin
-      const payment = business?.payment;
-      if (payment?.enabled && data.totalPrice) {
-        const shortId = savedOrder?.shortId || '';
-        const now = new Date();
-        const mm  = String(now.getMonth() + 1).padStart(2, '0');
-        const dd  = String(now.getDate()).padStart(2, '0');
-        const ref = `DSB-${mm}${dd}-${shortId}`;
-
-        if (savedOrder?._id) {
-          const { default: Order } = await import('../../../models/Order.js');
-          Order.updateOne({ _id: savedOrder._id }, { $set: { paymentReference: ref } }).catch(() => {});
-        }
-
-        await updateSession(session.customerPhone, session.tenantId, {
-          step: 'PAYMENT_PROOF', currentFlow: 'ORDER',
-        });
-
-        // Notify admin of pending payment order
-        try {
-          const adminPhone = business?.adminPhone || tenant?.adminPhone;
-          if (adminPhone && tenant && savedOrder) {
-            const { dispatchMessage } = await import('../../../core/whatsapp/dispatcher.js');
-            const currency = payment.currency || 'D';
-            await dispatchMessage(adminPhone, {
-              type: 'text',
-              body:
-                `🔔 *New Fashion Order — ${business.name || 'Shop'}*\n\n` +
-                `👤 Customer: *${session.customerPhone}*\n` +
-                `👗 Item: *${data.quantity}× ${itemLabel}*\n` +
-                `💰 Total: *${currency}${data.totalPrice}*\n` +
-                `📝 Ref: *${ref}*\n\n` +
-                `⏳ Status: *Pending* — awaiting payment screenshot.`,
-            }, tenant).catch(() => {});
-          }
-        } catch { /* non-fatal */ }
-
-        return buildPaymentInstructionsUI(business, data.totalPrice, shortId, ref);
-      }
-
-      // [FIX-FA-3] No payment — notify admin with interactive Approve/Reject card
-      try {
-        const adminPhone = business?.adminPhone || tenant?.adminPhone;
-        if (adminPhone && tenant && savedOrder) {
-          const { buildAdminOrderAlertBody } = await import('../../restaurant/handlers/uiBuilders.js');
-          const { dispatchMessage } = await import('../../../core/whatsapp/dispatcher.js');
-          const alertBody = buildAdminOrderAlertBody({
-            customerPhone: session.customerPhone,
-            item: itemLabel,
-            quantity: data.quantity, totalPrice: data.totalPrice,
-            shortId: savedOrder.shortId, business,
-          });
-          await dispatchMessage(adminPhone, {
-            type:    'buttons',
-            body:    alertBody,
-            buttons: [
-              { id: `APPROVE_${savedOrder.shortId}`, title: '✅ Confirm Received' },
-              { id: `REJECT_${savedOrder.shortId}`,  title: '❌ Cancel Order'     },
-            ],
-          }, tenant).catch(() => {});
-        }
-      } catch (err) {
-        logger.warn('[FashionModule] Admin notification failed (non-fatal)', { err: err.message });
-      }
-
       const _lcRf = await completeFlow(session, 'ORDER', business, tenant);
       if (_lcRf) return _lcRf;
-
       return {
         type: 'buttons',
-        body: `✅ *Order confirmed!*\n\n👗 *${data.quantity}× ${itemLabel}*\n\nWe'll reach out with delivery details. Thank you! ✨`,
+        body: `✅ *Order confirmed!*\n\n👗 *${data.quantity}× ${data.item?.name}*\n\nWe'll reach out with delivery details. Thank you! ✨`,
         buttons: [
           { id: 'ORDER',     title: '👗 Shop More'      },
           { id: 'QUESTION',  title: '❓ Style Help'      },
@@ -305,5 +321,5 @@ function buildCatalogUI(business) {
     id: String(i + 1), title: item.name.slice(0, 24),
     description: [item.description, item.price ? `D${item.price}` : ''].filter(Boolean).join(' — ').slice(0, 72),
   }));
-  return { type: 'list', header: business?.name || 'Collection', body: "Our latest collection — choose an item:", buttonLabel: 'View Collection', rows };
+  return { type: 'list', header: business?.name || 'Collection', body: "Our latest collection — choose an item:", button: 'View Collection', rows };
 }

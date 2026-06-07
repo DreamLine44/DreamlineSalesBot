@@ -38,6 +38,7 @@ import UserProfile    from '../models/UserProfile.js';
 import BusinessConfig from '../models/BusinessConfig.js';
 import Tenant         from '../models/Tenant.js';
 import { getAnalyticsSummary } from '../core/analytics/analyticsService.js';
+import { updateSession }       from '../core/sessions/sessionService.js';
 import { dispatchText }        from '../core/whatsapp/dispatcher.js';
 import logger from '../config/logger.js';
 import { uploadMenuImage, deleteMenuImage, CLOUDINARY_ENABLED } from '../config/cloudinary.js';
@@ -77,15 +78,20 @@ export async function getDashboardOverview(req, res) {
 export async function getOrders(req, res) {
   try {
     const { tenantId } = req.params;
-    const { status, limit = 50, page = 1 } = req.query;
+    const { status } = req.query;
+    // Cap at 200 — matches the admin sessions endpoint. Prevents a caller passing
+    // limit=100000 from triggering a full collection scan on a large tenant.
+    const limit  = Math.min(Math.max(Number(req.query.limit)  || 50, 1), 200);
+    const page   = Math.max(Number(req.query.page) || 1, 1);
     const filter = { tenantId, ...(status ? { status } : {}) };
-    const skip   = (Number(page) - 1) * Number(limit);
+    const skip   = (page - 1) * limit;
     const [orders, total] = await Promise.all([
-      Order.find(filter).sort({ createdAt: -1 }).skip(skip).limit(Number(limit)).lean(),
+      Order.find(filter).sort({ createdAt: -1 }).skip(skip).limit(limit).lean(),
       Order.countDocuments(filter),
     ]);
-    res.json({ orders, total, page: Number(page), pages: Math.ceil(total / Number(limit)) });
+    res.json({ orders, total, page, pages: Math.ceil(total / limit), limit });
   } catch (err) {
+    logger.error('[Dashboard] getOrders failed', { err: err.message });
     res.status(500).json({ error: err.message });
   }
 }
@@ -96,14 +102,27 @@ export async function updateOrderStatus(req, res) {
     const { status, notes } = req.body;
 
     // [FIX-9] Validate status before hitting Mongoose
-    const VALID_ORDER_STATUSES = ['pending', 'confirmed', 'completed', 'cancelled', 'payment_failed', 'rejected'];
+    // [FIX-DASH-7] payment_pending_verification is a valid Order.status enum value
+    // (in Order model schema) but was absent from this local allowlist — any dashboard
+    // PATCH to set an order to that intermediate status got a 400 "Invalid status" error.
+    // Mirrors the same fix applied to adminRoutes in v6.
+    const VALID_ORDER_STATUSES = ['pending', 'payment_pending_verification', 'confirmed', 'completed', 'cancelled', 'payment_failed', 'rejected'];
     if (!VALID_ORDER_STATUSES.includes(status)) {
       return res.status(400).json({ error: `Invalid status. Must be one of: ${VALID_ORDER_STATUSES.join(', ')}` });
     }
 
     const order = await Order.findOneAndUpdate(
       { _id: orderId, tenantId },
-      { $set: { status, ...(notes ? { notes } : {}) } },
+      { $set: {
+          status,
+          ...(notes ? { notes } : {}),
+          // [FIX-DASH-6] When an order is rolled back to 'pending' the old paymentReference
+          // is stale — it pointed to the previous payment cycle. Clear it so a new reference
+          // is generated when the customer is shown payment instructions again. Without this
+          // the scheduler / payment instructions UI would continue to display the old ref.
+          ...(status === 'pending' ? { paymentReference: null } : {}),
+        },
+      },
       { new: true },
     );
     if (!order) return res.status(404).json({ error: 'Order not found' });
@@ -132,6 +151,7 @@ export async function updateOrderStatus(req, res) {
 
     res.json({ order });
   } catch (err) {
+    logger.error('[Dashboard] updateOrderStatus failed', { err: err.message });
     res.status(500).json({ error: err.message });
   }
 }
@@ -140,11 +160,12 @@ export async function updateOrderStatus(req, res) {
 export async function getCustomerOrderHistory(req, res) {
   try {
     const { tenantId, customerPhone } = req.params;
-    const { limit = 5 } = req.query;
+    const limit = Math.min(Math.max(Number(req.query.limit) || 5, 1), 50);
     const orders = await Order.find({ tenantId, customerPhone })
-      .sort({ createdAt: -1 }).limit(Number(limit)).lean();
+      .sort({ createdAt: -1 }).limit(limit).lean();
     res.json({ orders, count: orders.length, customerPhone });
   } catch (err) {
+    logger.error('[Dashboard] getCustomerOrderHistory failed', { err: err.message });
     res.status(500).json({ error: err.message });
   }
 }
@@ -153,15 +174,18 @@ export async function getCustomerOrderHistory(req, res) {
 export async function getBookings(req, res) {
   try {
     const { tenantId } = req.params;
-    const { status, limit = 50, page = 1 } = req.query;
+    const { status } = req.query;
+    const limit  = Math.min(Math.max(Number(req.query.limit)  || 50, 1), 200);
+    const page   = Math.max(Number(req.query.page) || 1, 1);
     const filter = { tenantId, ...(status ? { status } : {}) };
-    const skip   = (Number(page) - 1) * Number(limit);
+    const skip   = (page - 1) * limit;
     const [bookings, total] = await Promise.all([
-      Booking.find(filter).sort({ createdAt: -1 }).skip(skip).limit(Number(limit)).lean(),
+      Booking.find(filter).sort({ createdAt: -1 }).skip(skip).limit(limit).lean(),
       Booking.countDocuments(filter),
     ]);
-    res.json({ bookings, total, page: Number(page), pages: Math.ceil(total / Number(limit)) });
+    res.json({ bookings, total, page, pages: Math.ceil(total / limit), limit });
   } catch (err) {
+    logger.error('[Dashboard] getBookings failed', { err: err.message });
     res.status(500).json({ error: err.message });
   }
 }
@@ -228,6 +252,7 @@ export async function updateBookingStatus(req, res) {
 
     res.json({ booking });
   } catch (err) {
+    logger.error('[Dashboard] updateBookingStatus failed', { err: err.message });
     res.status(500).json({ error: err.message });
   }
 }
@@ -240,6 +265,7 @@ export async function getAnalytics(req, res) {
     const summary = await getAnalyticsSummary(tenantId, Number(days));
     res.json(summary);
   } catch (err) {
+    logger.error('[Dashboard] Request failed', { err: err.message });
     res.status(500).json({ error: err.message });
   }
 }
@@ -248,12 +274,26 @@ export async function getAnalytics(req, res) {
 export async function getConversations(req, res) {
   try {
     const { tenantId } = req.params;
-    const { limit = 30 } = req.query;
-    const sessions = await Session.find({ tenantId })
-      .sort({ lastSeen: -1 }).limit(Number(limit))
+    const limit = Math.min(Math.max(Number(req.query.limit) || 30, 1), 200);
+    // [FIX-CONV-1] Always include humanMode sessions regardless of TTL.
+    // A session with humanMode=true may have expired from MongoDB's TTL sweep, but the
+    // customer is still in the human handoff queue waiting for an admin response. Filtering
+    // strictly by expiresAt > now hides these customers from the dashboard, making it appear
+    // no one is waiting when actually they are — the admin has no way to find them.
+    // Fix: use $or so live sessions AND expired humanMode sessions both appear.
+    const now = new Date();
+    const sessions = await Session.find({
+      tenantId,
+      $or: [
+        { expiresAt: { $gt: now } },          // active sessions
+        { humanMode: true },                   // expired but still in human handoff
+      ],
+    })
+      .sort({ lastSeen: -1 }).limit(limit)
       .select('customerPhone customerName lastSeen messageCount humanMode currentFlow').lean();
     res.json({ conversations: sessions, count: sessions.length });
   } catch (err) {
+    logger.error('[Dashboard] Request failed', { err: err.message });
     res.status(500).json({ error: err.message });
   }
 }
@@ -265,7 +305,10 @@ export async function setHumanMode(req, res) {
     if (typeof humanMode !== 'boolean') {
       return res.status(400).json({ error: 'humanMode must be a boolean' });
     }
-    const { updateSession } = await import('../core/sessions/sessionService.js');
+    // [FIX-DASH-2] updateSession is now a static top-level import.
+    // The previous dynamic import() was unnecessary — sessionService has no circular
+    // dependencies with dashboardController — and added async resolution overhead on
+    // every humanMode toggle (a frequent admin action).
     const session = await updateSession(phone, tenantId, { humanMode });
     if (!session) return res.status(404).json({ error: 'Session not found' });
 
@@ -283,6 +326,7 @@ export async function setHumanMode(req, res) {
 
     res.json({ ok: true, humanMode: session.humanMode });
   } catch (err) {
+    logger.error('[Dashboard] Request failed', { err: err.message });
     res.status(500).json({ error: err.message });
   }
 }
@@ -313,6 +357,7 @@ export async function getCustomers(req, res) {
       pages: Math.ceil(total / limit),
     });
   } catch (err) {
+    logger.error('[Dashboard] Request failed', { err: err.message });
     res.status(500).json({ error: err.message });
   }
 }
@@ -327,6 +372,7 @@ export async function getBusinessSettings(req, res) {
     if (!business) return res.status(404).json({ error: 'Business not found' });
     res.json({ business });
   } catch (err) {
+    logger.error('[Dashboard] Request failed', { err: err.message });
     res.status(500).json({ error: err.message });
   }
 }
@@ -347,6 +393,7 @@ export async function updateBusinessSettings(req, res) {
     if (!business) return res.status(404).json({ error: 'Business not found' });
     res.json({ ok: true, business });
   } catch (err) {
+    logger.error('[Dashboard] Request failed', { err: err.message });
     res.status(500).json({ error: err.message });
   }
 }
@@ -358,7 +405,7 @@ export async function getMenu(req, res) {
       .select('menuItems').lean();
     if (!biz) return res.status(404).json({ error: 'Not found' });
     res.json({ menuItems: biz.menuItems || [], count: (biz.menuItems || []).length });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { logger.error('[Dashboard] Request failed', { err: err.message }); res.status(500).json({ error: err.message }); }
 }
 
 export async function addMenuItem(req, res) {
@@ -412,7 +459,7 @@ export async function addMenuItem(req, res) {
     );
     if (!biz) return res.status(404).json({ error: 'Not found' });
     res.status(201).json({ menuItems: biz.menuItems });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { logger.error('[Dashboard] Request failed', { err: err.message }); res.status(500).json({ error: err.message }); }
 }
 
 export async function updateMenuItem(req, res) {
@@ -484,7 +531,7 @@ export async function updateMenuItem(req, res) {
     );
     if (!biz) return res.status(404).json({ error: 'Item not found' });
     res.json({ menuItems: biz.menuItems });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { logger.error('[Dashboard] Request failed', { err: err.message }); res.status(500).json({ error: err.message }); }
 }
 
 export async function deleteMenuItem(req, res) {
@@ -510,7 +557,7 @@ export async function deleteMenuItem(req, res) {
     if (imagePublicId) await deleteMenuImage(imagePublicId);
 
     res.json({ ok: true });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { logger.error('[Dashboard] Request failed', { err: err.message }); res.status(500).json({ error: err.message }); }
 }
 
 // ── Services CRUD ─────────────────────────────────────────────────────────────
@@ -520,7 +567,7 @@ export async function getServices(req, res) {
       .select('services').lean();
     if (!biz) return res.status(404).json({ error: 'Not found' });
     res.json({ services: biz.services || [], count: (biz.services || []).length });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { logger.error('[Dashboard] Request failed', { err: err.message }); res.status(500).json({ error: err.message }); }
 }
 
 export async function addService(req, res) {
@@ -536,7 +583,7 @@ export async function addService(req, res) {
     );
     if (!biz) return res.status(404).json({ error: 'Not found' });
     res.status(201).json({ services: biz.services });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { logger.error('[Dashboard] Request failed', { err: err.message }); res.status(500).json({ error: err.message }); }
 }
 
 export async function updateService(req, res) {
@@ -559,7 +606,7 @@ export async function updateService(req, res) {
     );
     if (!biz) return res.status(404).json({ error: 'Service not found' });
     res.json({ services: biz.services });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { logger.error('[Dashboard] Request failed', { err: err.message }); res.status(500).json({ error: err.message }); }
 }
 
 export async function deleteService(req, res) {
@@ -573,7 +620,7 @@ export async function deleteService(req, res) {
     if (result.matchedCount === 0) return res.status(404).json({ error: 'Business not found' });
     if (result.modifiedCount === 0) return res.status(404).json({ error: 'Service not found' });
     res.json({ ok: true });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { logger.error('[Dashboard] Request failed', { err: err.message }); res.status(500).json({ error: err.message }); }
 }
 
 // ── FAQ CRUD ──────────────────────────────────────────────────────────────────
@@ -583,7 +630,7 @@ export async function getFaqs(req, res) {
       .select('faq').lean();
     if (!biz) return res.status(404).json({ error: 'Not found' });
     res.json({ faq: biz.faq || [], count: (biz.faq || []).length });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { logger.error('[Dashboard] Request failed', { err: err.message }); res.status(500).json({ error: err.message }); }
 }
 
 export async function addFaq(req, res) {
@@ -599,7 +646,7 @@ export async function addFaq(req, res) {
     );
     if (!biz) return res.status(404).json({ error: 'Not found' });
     res.status(201).json({ faq: biz.faq });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { logger.error('[Dashboard] Request failed', { err: err.message }); res.status(500).json({ error: err.message }); }
 }
 
 export async function updateFaq(req, res) {
@@ -619,7 +666,7 @@ export async function updateFaq(req, res) {
     );
     if (!biz) return res.status(404).json({ error: 'FAQ not found' });
     res.json({ faq: biz.faq });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { logger.error('[Dashboard] Request failed', { err: err.message }); res.status(500).json({ error: err.message }); }
 }
 
 export async function deleteFaq(req, res) {
@@ -633,114 +680,5 @@ export async function deleteFaq(req, res) {
     if (result.matchedCount === 0) return res.status(404).json({ error: 'Business not found' });
     if (result.modifiedCount === 0) return res.status(404).json({ error: 'FAQ not found' });
     res.json({ ok: true });
-  } catch (err) { res.status(500).json({ error: err.message }); }
-}
-
-// ── WhatsApp connection status (tenant setup page) ────────────────────────────
-
-/**
- * getWhatsAppStatus — GET /dashboard/:tenantId/whatsapp/status
- *
- * [FIX-SETUP-1] The tenant setup page needs to read:
- *   - whatsapp.connected (drives the "Not Connected" / "Connected" badge)
- *   - whatsapp.phoneNumberId (checklist item 1 — is it set?)
- *   - whether a global META_WHATSAPP_TOKEN exists (checklist item 2)
- *   - whether META_WEBHOOK_VERIFY_TOKEN is configured (checklist item 4)
- *   - the tenant's own ID (checklist "Your Tenant ID" row)
- *
- * Returns ONLY safe fields — accessToken and apiKey are NEVER sent.
- * The presence/absence of the global token is exposed as a boolean, not the value.
- */
-export async function getWhatsAppStatus(req, res) {
-  try {
-    const { tenantId } = req.params;
-    const tenant = await Tenant.findById(tenantId)
-      .select('whatsapp.phoneNumberId whatsapp.connected whatsapp.wabaId whatsapp.verifyToken status')
-      .lean();
-    if (!tenant) return res.status(404).json({ error: 'Not found' });
-
-    const phoneNumberId = tenant.whatsapp?.phoneNumberId || null;
-    const connected     = tenant.whatsapp?.connected     || false;
-    const wabaId        = tenant.whatsapp?.wabaId        || null;
-
-    // Checklist: which of the 4 items are configured?
-    // Item 1: phoneNumberId — tenant sets this in admin panel
-    // Item 2: accessToken   — either per-tenant OR global env var (don't reveal which)
-    // Item 3: webhookVerifyToken — global env var (META_WEBHOOK_VERIFY_TOKEN)
-    // Item 4: wabaId        — optional but shown for reference
-    const hasAccessToken   = !!(process.env.META_WHATSAPP_TOKEN);   // global token present
-    const hasVerifyToken   = !!(process.env.META_WEBHOOK_VERIFY_TOKEN);
-
-    const checklist = {
-      tenantId:      { set: true,             value: tenantId },
-      phoneNumberId: { set: !!phoneNumberId,  hint: 'Meta Developer Console → WhatsApp → API Setup' },
-      accessToken:   { set: hasAccessToken,   hint: 'META_WHATSAPP_TOKEN in Railway environment variables' },
-      verifyToken:   { set: hasVerifyToken,   hint: 'META_WEBHOOK_VERIFY_TOKEN in Railway environment variables' },
-    };
-
-    res.json({
-      connected,
-      status:      tenant.status,
-      phoneNumberId,
-      wabaId,
-      checklist,
-      allSet: !!phoneNumberId && hasAccessToken && hasVerifyToken,
-    });
-  } catch (err) {
-    logger.error('[Dashboard] getWhatsAppStatus failed', { err: err.message });
-    res.status(500).json({ error: err.message });
-  }
-}
-
-/**
- * requestWhatsAppSetup — POST /dashboard/:tenantId/whatsapp/request
- *
- * [FIX-SETUP-2] Lets a tenant signal to the WhatsSales admin that they are
- * ready for WhatsApp connection. The admin receives an alert on their own
- * WhatsApp number so they can then enter credentials in the admin panel.
- * This is a fire-and-forget notification — it never blocks setup.
- */
-export async function requestWhatsAppSetup(req, res) {
-  try {
-    const { tenantId } = req.params;
-    const tenant = await Tenant.findById(tenantId)
-      .select('name adminPhone status whatsapp.connected whatsapp.phoneNumberId')
-      .lean();
-    if (!tenant) return res.status(404).json({ error: 'Not found' });
-
-    // Notify the platform super-admin via WhatsApp if ADMIN_PHONES is configured
-    const adminPhones = (process.env.ADMIN_PHONES || '').split(',').map(p => p.trim()).filter(Boolean);
-    if (adminPhones.length) {
-      const msg =
-        `🔔 *WhatsApp Setup Request*\n\n` +
-        `Tenant: *${tenant.name}*\n` +
-        `ID: \`${tenantId}\`\n` +
-        `Admin phone: ${tenant.adminPhone || '—'}\n\n` +
-        `They're ready to connect WhatsApp. Please enter their credentials in the admin panel:\n` +
-        `➡️ /admin → Edit Tenant → WhatsApp Credentials`;
-
-      // Use the first configured admin phone as a surrogate tenant for dispatch.
-      // We load the system tenant (any active tenant with a phoneNumberId) to send from.
-      // If none is available the alert is skipped (non-fatal).
-      try {
-        const systemTenant = await Tenant.findOne({
-          'whatsapp.phoneNumberId': { $exists: true, $ne: null },
-          status: 'ACTIVE',
-        }).select('whatsapp').lean();
-
-        if (systemTenant) {
-          const { dispatchText } = await import('../core/whatsapp/dispatcher.js');
-          for (const phone of adminPhones) {
-            dispatchText(phone, msg, systemTenant).catch(() => {});
-          }
-        }
-      } catch { /* non-fatal */ }
-    }
-
-    logger.info('[Dashboard] WhatsApp setup requested', { tenantId, name: tenant.name });
-    res.json({ ok: true, message: 'Setup request sent to administrator.' });
-  } catch (err) {
-    logger.error('[Dashboard] requestWhatsAppSetup failed', { err: err.message });
-    res.status(500).json({ error: err.message });
-  }
+  } catch (err) { logger.error('[Dashboard] Request failed', { err: err.message }); res.status(500).json({ error: err.message }); }
 }

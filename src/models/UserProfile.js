@@ -91,8 +91,12 @@ const userProfileSchema = new mongoose.Schema({
 
   // ================= ⏱️ ACTIVITY =================
   activity: {
-    lastSeen:  { type: Date, default: Date.now },
-    firstSeen: { type: Date, default: Date.now }
+    // [FIX-2] Date.now is a bare reference that returns a Number (milliseconds), not a
+    // Date object. Although Mongoose coerces it, the pattern is inconsistent with the
+    // fix already applied in ProcessedMessage.js and every other Date default in the
+    // codebase. Changed to () => new Date() so the type matches the field declaration.
+    lastSeen:  { type: Date, default: () => new Date() },
+    firstSeen: { type: Date, default: () => new Date() }
   },
 
   // ================= 🎯 LEAD CAPTURE =================

@@ -7,6 +7,7 @@
 
 // ── Button ID → Action map ────────────────────────────────────────────────────
 // Every interactive button sent to customers must have its ID registered here.
+// [FIX-BTN-1] ABOUT and QUOTE_FOLLOW were missing — see inline comment below.
 export const BUTTON_ID_MAP = {
   // Primary actions
   'ORDER':              'START_ORDER',
@@ -35,6 +36,13 @@ export const BUTTON_ID_MAP = {
   'REPEAT_ORDER':       'REPEAT_ORDER',
   'TRACK_ORDER':        'TRACK_ORDER',
   'TRACK':              'TRACK_ORDER',
+  // [FIX-BTN-1] ABOUT and QUOTE_FOLLOW are sent as button IDs to customers
+  // (GENERAL module welcome screen; SERVICES module welcome screen). Without
+  // entries here, detectIntent() receives an unmapped interactive ID at step 1
+  // and returns CONTINUE_FLOW, which routes to the welcome menu — completely
+  // ignoring the customer's tap. Now correctly mapped to their action names.
+  'ABOUT':              'ABOUT',
+  'QUOTE_FOLLOW':       'QUOTE_FOLLOW',
   'NEW_ORDER':          'START_ORDER',
 
   // Payment
@@ -56,6 +64,12 @@ export const BUTTON_ID_MAP = {
   '3':                  'ENQUIRY',
   '0':                  'SHOW_MENU',
 
+  // Quantity quick-pick buttons — [UX-1] route as CONTINUE_FLOW so active order
+  // handlers receive the raw QTY_N value and resolve it via their shortcut map.
+  'QTY_1':              'CONTINUE_FLOW',
+  'QTY_2':              'CONTINUE_FLOW',
+  'QTY_3':              'CONTINUE_FLOW',
+
   // Skincare advice skin-type buttons — [FIX-8] these were unmapped so tapping them
   // sent the raw button ID string ('SKIN_DRY') to AI as if it were a customer message.
   // Now correctly routed as CONTINUE_FLOW so the active SKINCARE_ADVICE handler receives them.
@@ -63,6 +77,26 @@ export const BUTTON_ID_MAP = {
   'SKIN_OILY':          'CONTINUE_FLOW',
   'SKIN_COMBO':         'CONTINUE_FLOW',
   'SKIN_CUSTOM':        'CONTINUE_FLOW',
+
+  // Fashion colour selection — [UX-4] COLOR_ prefixed IDs must route as CONTINUE_FLOW
+  // so the active fashion ORDER handler's SELECT_COLOR case receives the raw value.
+  // COLOR_SKIP is the "no preference" option.
+  'COLOR_SKIP':         'CONTINUE_FLOW',
+
+  // Delivery scheduled time slots — [UX-7]
+  'SCHED_9AM':          'CONTINUE_FLOW',
+  'SCHED_10AM':         'CONTINUE_FLOW',
+  'SCHED_11AM':         'CONTINUE_FLOW',
+  'SCHED_12PM':         'CONTINUE_FLOW',
+  'SCHED_2PM':          'CONTINUE_FLOW',
+  'SCHED_4PM':          'CONTINUE_FLOW',
+  'SCHED_6PM':          'CONTINUE_FLOW',
+  'SCHED_CUSTOM':       'CONTINUE_FLOW',
+
+  // Booking party size buttons
+  'PARTY_2':            'CONTINUE_FLOW',
+  'PARTY_4':            'CONTINUE_FLOW',
+  'PARTY_6':            'CONTINUE_FLOW',
 };
 
 // ── Emoji → Intent map ────────────────────────────────────────────────────────

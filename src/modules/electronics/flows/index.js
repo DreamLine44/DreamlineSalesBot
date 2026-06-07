@@ -1,16 +1,6 @@
 /**
  * modules/electronics/flows/index.js
  * Electronics module — specs · warranty · accessories · compatibility
- *
- * [FIX-EL-1] Payment path now uses buildPaymentInstructionsUI (shared, ICU-safe),
- *            stores paymentReference on the order, and notifies the admin with a
- *            pending-payment alert — consistent with restaurant orderFlow.
- *
- * [FIX-EL-2] No-payment admin alert upgraded from plain dispatchText to an
- *            interactive Approve/Reject buttons card, consistent with [FIX-3].
- *
- * [FIX-EL-3] Analytics/revenue tracking moved to BEFORE completeFlow to ensure
- *            they fire even when lead capture intercepts and returns early.
  */
 import { updateSession }  from '../../../core/sessions/sessionService.js';
 import { completeFlow }   from '../../../core/conversations/flowEngine.js';
@@ -19,7 +9,6 @@ import { findBestMatch }  from '../../../utils/matchEngine.js';
 import { saveOrder }      from '../../../services/orderService.js';
 import { parseQuantity }  from '../../../utils/parseQuantity.js';
 import { trackOrderAnalytics, recordRevenue } from '../../../core/analytics/analyticsService.js';
-import { buildPaymentInstructionsUI } from '../../../services/paymentService.js';
 import logger             from '../../../config/logger.js';
 
 export const ELECTRONICS_CONFIG = {
@@ -94,14 +83,20 @@ export async function handleElectronicsOrder({ session, message, business, tenan
       return {
         type: 'buttons',
         body: `📱 *${item.name}*${item.price ? ` — D${item.price}` : ''}${specStr}\n\nHow many would you like?`,
-        buttons: [{ id: 'CANCEL', title: '❌ Cancel' }],
+        buttons: [
+          { id: 'QTY_1', title: '1️⃣  1' },
+          { id: 'QTY_2', title: '2️⃣  2' },
+          { id: 'QTY_3', title: '3️⃣  3' },
+        ],
+        footer: 'Or type any number e.g. 4, 5',
       };
     }
 
     case 'QUANTITY': {
       // [FIX] parseInt(raw,10)||1 silently coerces 'five' or '' to 1.
       // Use parseQuantity() which handles word numbers and validates range.
-      const qty = parseQuantity(raw);
+      const QTY_SHORTCUTS = { 'QTY_1': 1, 'QTY_2': 2, 'QTY_3': 3 };
+      const qty = QTY_SHORTCUTS[raw.toUpperCase()] ?? parseQuantity(raw);
       const MAX_QTY = business?.settings?.maxOrderQuantity || 20;
       if (!qty || qty < 1) {
         return {
@@ -140,80 +135,40 @@ export async function handleElectronicsOrder({ session, message, business, tenan
           customerPhone: session.customerPhone, tenantId: session.tenantId, businessId: business._id });
       } catch (err) { logger.error('[ElectronicsModule] saveOrder failed', { err: err.message }); }
 
-      // [FIX-EL-3] Track analytics BEFORE completeFlow so they fire even when
-      // lead capture intercepts and returns early.
+      // [FIX-5] Payment flow — electronics was skipping this entirely even when payment.enabled=true
+      const payment = business?.payment;
+      if (payment?.enabled && data.totalPrice) {
+        const { buildPaymentInstructionsUI } = await import('../../../services/paymentService.js');
+        await updateSession(session.customerPhone, session.tenantId, {
+          step: 'PAYMENT_PROOF', currentFlow: 'ORDER',
+        });
+        return buildPaymentInstructionsUI(business, data.totalPrice, savedOrder?.shortId || null, null);
+      }
+
+      // No payment — notify admin and complete
+      try {
+        const adminPhone = business?.adminPhone || tenant?.adminPhone;
+        if (adminPhone && tenant && savedOrder) {
+          const { buildAdminOrderAlert } = await import('../../restaurant/handlers/uiBuilders.js');
+          const alert = buildAdminOrderAlert({
+            customerPhone: session.customerPhone,
+            item: data.item?.name, quantity: data.quantity, totalPrice: data.totalPrice,
+            shortId: savedOrder.shortId, business,
+          });
+          const { dispatchText } = await import('../../../core/whatsapp/dispatcher.js');
+          dispatchText(adminPhone, alert, tenant).catch(() => {});
+        }
+      } catch {}
+
+      // Track analytics BEFORE completeFlow — completeFlow may trigger lead capture
+      // and return early, so anything after it may never execute.
       trackOrderAnalytics(data.item?.name, null, data.quantity, data.totalPrice || 0, session.tenantId).catch(() => {});
       if (data.totalPrice) {
         recordRevenue({ item: data.item?.name, quantity: data.quantity, revenue: data.totalPrice, tenantId: session.tenantId, customerPhone: session.customerPhone }).catch(() => {});
       }
 
-      // [FIX-EL-1] Payment path — use shared buildPaymentInstructionsUI, store ref, notify admin
-      const payment = business?.payment;
-      if (payment?.enabled && data.totalPrice) {
-        const shortId = savedOrder?.shortId || '';
-        const now = new Date();
-        const mm  = String(now.getMonth() + 1).padStart(2, '0');
-        const dd  = String(now.getDate()).padStart(2, '0');
-        const ref = `DSB-${mm}${dd}-${shortId}`;
-
-        if (savedOrder?._id) {
-          const { default: Order } = await import('../../../models/Order.js');
-          Order.updateOne({ _id: savedOrder._id }, { $set: { paymentReference: ref } }).catch(() => {});
-        }
-
-        await updateSession(session.customerPhone, session.tenantId, {
-          step: 'PAYMENT_PROOF', currentFlow: 'ORDER',
-        });
-
-        // Notify admin of pending payment order
-        try {
-          const adminPhone = business?.adminPhone || tenant?.adminPhone;
-          if (adminPhone && tenant && savedOrder) {
-            const { dispatchMessage } = await import('../../../core/whatsapp/dispatcher.js');
-            const currency = payment.currency || 'D';
-            await dispatchMessage(adminPhone, {
-              type: 'text',
-              body:
-                `🔔 *New Electronics Order — ${business.name || 'Shop'}*\n\n` +
-                `👤 Customer: *${session.customerPhone}*\n` +
-                `📱 Item: *${data.quantity}× ${data.item?.name}*\n` +
-                `💰 Total: *${currency}${data.totalPrice}*\n` +
-                `📝 Ref: *${ref}*\n\n` +
-                `⏳ Status: *Pending* — awaiting payment screenshot.`,
-            }, tenant).catch(() => {});
-          }
-        } catch { /* non-fatal */ }
-
-        return buildPaymentInstructionsUI(business, data.totalPrice, shortId, ref);
-      }
-
-      // [FIX-EL-2] No payment — interactive Approve/Reject card instead of plain text
-      try {
-        const adminPhone = business?.adminPhone || tenant?.adminPhone;
-        if (adminPhone && tenant && savedOrder) {
-          const { buildAdminOrderAlertBody } = await import('../../restaurant/handlers/uiBuilders.js');
-          const { dispatchMessage } = await import('../../../core/whatsapp/dispatcher.js');
-          const alertBody = buildAdminOrderAlertBody({
-            customerPhone: session.customerPhone,
-            item: data.item?.name, quantity: data.quantity, totalPrice: data.totalPrice,
-            shortId: savedOrder.shortId, business,
-          });
-          await dispatchMessage(adminPhone, {
-            type:    'buttons',
-            body:    alertBody,
-            buttons: [
-              { id: `APPROVE_${savedOrder.shortId}`, title: '✅ Confirm Received' },
-              { id: `REJECT_${savedOrder.shortId}`,  title: '❌ Cancel Order'     },
-            ],
-          }, tenant).catch(() => {});
-        }
-      } catch (err) {
-        logger.warn('[ElectronicsModule] Admin notification failed (non-fatal)', { err: err.message });
-      }
-
       const _lcRe = await completeFlow(session, 'ORDER', business, tenant);
       if (_lcRe) return _lcRe;
-
       return {
         type: 'buttons',
         body: `✅ *Order received!*\n\n📦 *${data.quantity}× ${data.item?.name}*\n\nWe'll verify stock and reach out with delivery details. Thank you! 📱`,
@@ -275,5 +230,5 @@ function buildProductCatalog(business) {
     id: String(i + 1), title: item.name.slice(0, 24),
     description: [item.description, item.price ? `D${item.price}` : ''].filter(Boolean).join(' — ').slice(0, 72),
   }));
-  return { type: 'list', header: business?.name || 'Products', body: "Here's our product range:", buttonLabel: 'Browse Products', rows };
+  return { type: 'list', header: business?.name || 'Products', body: "Here's our product range:", button: 'Browse Products', rows };
 }

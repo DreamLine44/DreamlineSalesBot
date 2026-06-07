@@ -16,8 +16,14 @@
  *             session object.
  * [FIX-RTR-2] SUPPORT action: warns when tenant is missing so silent alert
  *             failures surface in logs.
- * [FIX-RTR-3] START_ORDER / START_BOOKING: documented that registry handlers
- *             registered via registerAction() take precedence over these fallbacks.
+ * [FIX-RTR-5] QUOTE_FOLLOW case now delegates to ACTION_REGISTRY first. The previous
+ *             hardcoded startFlow({ flowName: 'ENQUIRY' }) always ran before the registry
+ *             lookup, shadowing the SERVICES-mode QUOTE_FOLLOW handler registered by
+ *             moduleRegistry. SERVICES tenants never reached their dedicated quote-follow
+ *             flow — they always landed in the generic ENQUIRY path instead.
+ * [FIX-RTR-6] ABOUT case now delegates to ACTION_REGISTRY first. Same shadowing pattern:
+ *             the inline ABOUT response ran before the registry lookup, so GENERAL mode's
+ *             handleAbout flow (registered in moduleRegistry) was never reachable.
  * [FIX-RTR-4] SUPPORT action: admin alert dispatch failure is now logged instead of
  *             silently swallowed. Previously .catch(()=>{}) meant a failed WhatsApp
  *             send to the admin produced no log entry and no indication the escalation
@@ -49,6 +55,20 @@ export async function route({ action, intent, session, message, business, tenant
   logger.debug('[Router] Routing', { action: upper, mode, step: session?.step });
 
   switch (upper) {
+
+    case 'CONTINUE_FLOW': {
+      // CONTINUE_FLOW arrives when the customer sends a numeric, single-char, or unmapped
+      // interactive message while there is NO active flow (the flow engine handles it when
+      // a flow IS active, before reaching detectIntent). Without this case the router falls
+      // through to the unknown-action logger and returns the generic fallback, which is
+      // jarring for a customer who typed "5" from the main menu. Show the welcome menu instead.
+      const cfg = getModeConfig(business);
+      return {
+        type:    'buttons',
+        body:    business?.customMessages?.welcomeMessage || cfg.messages?.welcome || '👋 How can I help you today?',
+        buttons: cfg.ui?.welcomeButtons || [],
+      };
+    }
 
     case 'GREET': {
       const existingName = session?.customerName || null;
@@ -197,6 +217,51 @@ export async function route({ action, intent, session, message, business, tenant
         body,
         buttons: cfg.ui?.welcomeButtons || [{ id: 'SHOW_MENU', title: '🔄 Start Over' }],
       };
+    }
+
+    case 'ABOUT': {
+      // [FIX-RTR-6] Delegate to ACTION_REGISTRY when a handler is registered (e.g. GENERAL
+      // mode registers handleAbout which builds a richer flow-backed response). The previous
+      // inline implementation always ran regardless of mode, shadowing the registered handler.
+      // [FIX-8] The ABOUT action handler now returns null for non-GENERAL modes so the
+      // inline fallback below runs. A non-null return means GENERAL handled it via startFlow.
+      const aboutHandler = ACTION_REGISTRY.get('ABOUT');
+      if (aboutHandler) {
+        const aboutResult = await aboutHandler({ session, message, business, tenant, intent, isInteractive, suggestion });
+        if (aboutResult) return aboutResult;
+      }
+      // Generic fallback for modes without a dedicated ABOUT handler
+      const bizName = business?.businessName || business?.name || 'us';
+      const desc    = business?.description  || null;
+      const address = business?.address      || null;
+      const hours   = business?.hours?.enabled
+        ? 'Please check our operating hours below or contact us directly.'
+        : null;
+      const lines = [`ℹ️ *About ${bizName}*\n`];
+      if (desc)    lines.push(desc);
+      if (address) lines.push(`\n📍 *Location:* ${address}`);
+      if (hours)   lines.push(`\n🕐 *Hours:* ${hours}`);
+      lines.push('\n_Tap below to continue:_');
+      const cfgAbout = getModeConfig(business);
+      return {
+        type:    'buttons',
+        body:    lines.join(''),
+        buttons: (cfgAbout.ui?.welcomeButtons || [{ id: 'SHOW_MENU', title: '🔄 Start Over' }]).slice(0, 3),
+      };
+    }
+
+    case 'QUOTE_FOLLOW': {
+      // [FIX-RTR-5] For SERVICES mode, use the registered QUOTE_FOLLOW flow handler
+      // (which starts the dedicated quote-follow-up flow). The switch-case previously
+      // always started ENQUIRY, bypassing the ACTION_REGISTRY.get('QUOTE_FOLLOW')
+      // handler that moduleRegistry registers for SERVICES — that handler is never
+      // reachable because switch-cases run before the ACTION_REGISTRY lookup below.
+      // Fix: delegate to ACTION_REGISTRY first when a handler is registered for this
+      // mode, fall back to the generic ENQUIRY redirect only when none is registered.
+      const qfHandler = ACTION_REGISTRY.get('QUOTE_FOLLOW');
+      if (qfHandler) return qfHandler({ session, message, business, tenant, intent, isInteractive, suggestion });
+      // Generic fallback for modes without a dedicated QUOTE_FOLLOW flow
+      return startFlow({ flowName: 'ENQUIRY', session, business, tenant });
     }
 
     case 'DONE': {

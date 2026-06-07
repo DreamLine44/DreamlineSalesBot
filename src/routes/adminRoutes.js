@@ -23,11 +23,14 @@ import Session  from '../models/Session.js';
 import Tenant   from '../models/Tenant.js';
 import { updateSession } from '../core/sessions/sessionService.js';
 import { dispatchText }  from '../core/whatsapp/dispatcher.js';
+import { humanModeLimiter } from '../middleware/rateLimiter.js';
 import logger from '../config/logger.js';
 
 const r = Router();
 
-const VALID_ORDER_STATUSES   = ['pending', 'confirmed', 'completed', 'cancelled', 'payment_failed', 'rejected'];
+// [FIX-ADMIN-7] payment_pending_verification is a valid Order.status value (in schema enum)
+// but was absent here — any admin PATCH to set that status got a 400 "Invalid status" error.
+const VALID_ORDER_STATUSES   = ['pending', 'payment_pending_verification', 'confirmed', 'completed', 'cancelled', 'payment_failed', 'rejected'];
 const VALID_BOOKING_STATUSES = ['pending', 'confirmed', 'completed', 'cancelled'];
 
 /** Reject non-superadmins accessing another tenant's data */
@@ -46,7 +49,10 @@ async function loadTenant(tenantId) {
 }
 
 // ── Human mode toggle ─────────────────────────────────────────────────────────
-r.patch('/sessions/:tenantId/:phone/human', async (req, res) => {
+// [FIX-ADMIN-5] Apply a dedicated humanModeLimiter (5 req/min) that is stricter than
+// the global adminLimiter (30 req/min). The toggle directly silences/restores the bot —
+// rapid toggling could expose a customer to the bot mid-human-mode handoff.
+r.patch('/sessions/:tenantId/:phone/human', humanModeLimiter, async (req, res) => {
   const { tenantId, phone } = req.params;
   if (!assertTenant(req, res, tenantId)) return;
   try {
@@ -54,10 +60,14 @@ r.patch('/sessions/:tenantId/:phone/human', async (req, res) => {
     if (typeof humanMode !== 'boolean') {
       return res.status(400).json({ error: 'humanMode must be a boolean' });
     }
-    await updateSession(phone, tenantId, { humanMode: Boolean(humanMode) });
+    // [FIX-ADMIN-NULL] Capture updateSession result — returns null when no active session
+    // exists (TTL-expired). Only dispatch the resume notification when the session was
+    // actually updated; firing it on a null return sends a confusing message to a customer
+    // whose session is already expired and who may have moved on entirely.
+    const updatedSession = await updateSession(phone, tenantId, { humanMode: Boolean(humanMode) });
 
     // [FIX-ADMIN-3] Notify customer when bot is resumed (humanMode OFF)
-    if (!humanMode) {
+    if (!humanMode && updatedSession) {
       try {
         const tenant = await loadTenant(tenantId);
         if (tenant) {
@@ -83,6 +93,15 @@ r.patch('/sessions/:tenantId/:phone/human', async (req, res) => {
 r.patch('/orders/:id/status', async (req, res) => {
   try {
     const { status, notes } = req.body;
+
+    // [FIX-ADMIN-6] Explicit early guard: non-super-admins must have a resolved
+    // tenantId from requireApiKey. Without this, a middleware bug that sets
+    // req.tenantId to undefined would produce filter.tenantId=undefined, which
+    // MongoDB silently treats as {tenantId: null} — matching no document but
+    // returning 404 rather than 403, masking the auth gap in logs.
+    if (!req.isSuperAdmin && !req.tenantId) {
+      return res.status(403).json({ error: 'Forbidden' });
+    }
 
     // [FIX-ADMIN-1] Validate status before touching DB
     if (!VALID_ORDER_STATUSES.includes(status)) {
@@ -140,6 +159,11 @@ r.patch('/orders/:id/status', async (req, res) => {
 r.patch('/bookings/:id/status', async (req, res) => {
   try {
     const { status, adminNote } = req.body;
+
+    // [FIX-ADMIN-6] Same defence-in-depth guard as order status route.
+    if (!req.isSuperAdmin && !req.tenantId) {
+      return res.status(403).json({ error: 'Forbidden' });
+    }
 
     // [FIX-ADMIN-2] Validate status
     if (!VALID_BOOKING_STATUSES.includes(status)) {

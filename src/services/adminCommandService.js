@@ -199,12 +199,24 @@ export async function handleAdminTextCommand(text, tenantId, adminPhone, tenantD
       const resumeReply = await resumeBot(latest.customerPhone, tenantId, tenantDoc);
       const remaining = totalCount - 1;
       if (remaining > 0) {
+        // [FIX-2.5b] Fetch remaining human-mode phone numbers so admin gets actionable
+        // info. Previously only the COUNT was shown, leaving the admin to guess which
+        // phones to type "RESUME BOT <phone>" for.
+        const remainingSessions = await Session.find({ tenantId, humanMode: true })
+          .sort({ updatedAt: -1 })
+          .select('customerPhone')
+          .limit(10)
+          .lean()
+          .catch(() => []);
+        const phoneList = remainingSessions
+          .map(s => `  \u2022 \`RESUME BOT ${s.customerPhone}\``)
+          .join('\n');
         return (
           resumeReply +
-          `
-
-⚠️ *${remaining} other customer${remaining > 1 ? 's are' : ' is'} still in human-mode.* ` +
-          `Use \`RESUME BOT <phone>\` to resume them individually.`
+          `\n\n⚠️ *${remaining} other customer${remaining > 1 ? 's are' : ' is'} still in human-mode.*\n` +
+          (phoneList
+            ? `Resume them individually:\n${phoneList}`
+            : `Use \`RESUME BOT <phone>\` to resume them individually.`)
         );
       }
       return resumeReply;
@@ -236,11 +248,10 @@ Use \`RESUME BOT <phone>\` to resume a specific customer.`;
 
 // ── Confirm payment ───────────────────────────────────────────────────────────
 async function confirmPayment(shortId, tenantId, adminPhone, tenantDoc, business) {
-  // [FIX-CMD-11] Build $or cleanly — previously included { _id: undefined } when shortId
-  // was not 24 chars, which MongoDB treats as { _id: null } (matches nothing, but is unclean).
-  const orderQuery = shortId.length === 24
-    ? { $or: [{ shortId }, { _id: shortId }], tenantId }
-    : { shortId, tenantId };
+  // [FIX-CMD-11] shortId-only query. shortId is always 6 chars (pre-save hook sets it to the
+  // last 6 hex chars of the ObjectId). The previous length===24 branch (treating shortId as
+  // a full ObjectId) was dead code that could never match in practice. Removed.
+  const orderQuery = { shortId, tenantId };
   const order = await Order.findOne(orderQuery)
     .select('_id customerPhone status paymentStatus item quantity totalPrice shortId').lean();
 
@@ -293,10 +304,8 @@ async function confirmPayment(shortId, tenantId, adminPhone, tenantDoc, business
 
 // ── Reject payment ────────────────────────────────────────────────────────────
 async function rejectPayment(shortId, tenantId, adminPhone, tenantDoc, business) {
-  // [FIX-CMD-11] Clean $or query — no { _id: undefined } branch (see confirmPayment)
-  const orderQuery = shortId.length === 24
-    ? { $or: [{ shortId }, { _id: shortId }], tenantId }
-    : { shortId, tenantId };
+  // [FIX-CMD-11] shortId-only query (see confirmPayment for full explanation)
+  const orderQuery = { shortId, tenantId };
   const order = await Order.findOne(orderQuery)
     .select('_id customerPhone status paymentStatus item shortId').lean();
 
@@ -326,12 +335,12 @@ async function rejectPayment(shortId, tenantId, adminPhone, tenantDoc, business)
     type:    'buttons',
     body:
       `❌ *Payment Verification Failed*\n\n` +
-      `We could not verify your Wave payment for order *#${order.shortId || shortId}*.\n\n` +
+      `We could not verify your payment for order *#${order.shortId || shortId}*.\n\n` +
       `*Possible reasons:*\n` +
       `• Incorrect amount sent\n` +
-      `• Payment sent to the wrong number\n` +
+      `• Payment sent to the wrong account\n` +
       `• Screenshot was unclear or incomplete\n\n` +
-      `Please send a *new, clear screenshot* of your Wave confirmation, or cancel the order below.`,
+      `Please send a *new, clear screenshot* of your payment confirmation, or cancel the order below.`,
     buttons: [
       { id: 'CANCEL', title: '❌ Cancel Order' },
     ],
@@ -421,7 +430,12 @@ async function resumeBot(customerPhone, tenantId, tenantDoc) {
     });
   }
 
-  if (tenantDoc) {
+  // [FIX-CMD-1b] Only notify the customer when an active session was found.
+  // If the session TTL has expired (updated===null), the customer's session no longer
+  // exists in the DB — firing a "bot is back!" message for a conversation that is gone
+  // is confusing. The bot will re-create the session correctly on the customer's next
+  // message regardless of whether we send this notification now.
+  if (updated && tenantDoc) {
     dispatchText(
       customerPhone,
       `✅ Our team has finished assisting you. Our automated assistant is back! 😊`,

@@ -11,7 +11,13 @@
  * BEFORE WhatsApp is connected (step 3). Sparse index prevents two tenants
  * sharing the same phoneNumberId once it is set.
  *
- * All user-facing strings flow through customMessages → getLabel() in config/modes.js.
+ * [FIX-TONE-1] tone.industry enum was missing 'SERVICES'. businessMode='SERVICES' tenants
+ *              triggering a tone sync on save would get a Mongoose validation error on
+ *              the industry field, causing the document save to fail entirely.
+ * [FIX-TONE-2] toneMap in the pre-save hook was missing SERVICES and GENERAL entries.
+ *              When a SERVICES or GENERAL tenant changed their businessMode, toneMap lookup
+ *              returned undefined → the if(t) guard silently skipped the sync, leaving
+ *              stale tone values from any previous businessMode on the document.
  */
 
 import mongoose from 'mongoose';
@@ -70,7 +76,12 @@ const businessConfigSchema = new mongoose.Schema({
   // v15 canonical mode field
   businessMode: {
     type: String,
-    enum: ['RESTAURANT', 'SALON', 'BARBERSHOP', 'RETAIL', 'BAKERY', 'SUPERMARKET', 'FASHION', 'COSMETICS', 'ELECTRONICS', 'PHARMACY', 'DELIVERY'],
+    enum: ['RESTAURANT', 'SALON', 'BARBERSHOP', 'RETAIL', 'BAKERY', 'SUPERMARKET', 'FASHION', 'COSMETICS', 'ELECTRONICS', 'PHARMACY', 'DELIVERY',
+      // [FIX-MODE-ENUM] SERVICES and GENERAL are registered modules with full configs
+      // in modes.js and moduleRegistry.js but were missing from this enum. Any tenant
+      // saving businessMode='SERVICES' or 'GENERAL' would get a Mongoose validation
+      // error (or silently be rejected), making those modules unusable.
+      'SERVICES', 'GENERAL'],
     default: 'RESTAURANT',
     index: true,
   },
@@ -93,9 +104,22 @@ const businessConfigSchema = new mongoose.Schema({
     // (payment?.enabled) but was absent from the schema — Mongoose strict mode
     // silently dropped every write, so payment was always treated as disabled.
     enabled:      { type: Boolean, default: false },
+    // Legacy single wavePhone — kept for backward-compat; prefer channels[] below
     wavePhone:    { type: String, default: null, trim: true },
     currency:     { type: String, default: 'GMD', trim: true },
     requireProof: { type: Boolean, default: true },
+    // Multi-channel payment accounts. Each entry has a provider name and account number/phone.
+    // Supported providers: Wave, GT Bank, EcoBank, Trust Bank (and any custom name).
+    // Clients send a screenshot; the tenant admin confirms it — no automated verification.
+    channels: {
+      type: [{
+        provider:    { type: String, required: true, trim: true, maxlength: 50 },  // e.g. "Wave", "GT Bank"
+        accountNo:   { type: String, required: true, trim: true, maxlength: 100 }, // phone number or account number
+        label:       { type: String, default: '', trim: true, maxlength: 100 },    // optional display label
+        isDefault:   { type: Boolean, default: false },
+      }],
+      default: [],
+    },
   },
 
   // [FIX-D] addOns array — read by orderFlow.js (business?.addOns) and written
@@ -112,13 +136,20 @@ const businessConfigSchema = new mongoose.Schema({
   hours: {
     enabled:  { type: Boolean, default: false },
     timezone: { type: String, default: 'UTC', trim: true },
-    open:     { type: Number, default: 8, min: 0, max: 23 },
-    close:    { type: Number, default: 22, min: 0, max: 23 },
+    // [FIX-4/13] Changed from { type: Number, max: 23 } (integer-only) to plain Number
+    // with no max. Hours are now stored as decimal values: 8.5 = 08:30, 22.75 = 22:45.
+    // isWithinBusinessHours() in webhookController already computes decimal hours
+    // (h + m / 60) for the current time — previously the schema capped stored values
+    // at integers, making minutes from any business-hours config always 0 and rendering
+    // the decimal-hour comparison logic completely dead. Same fix applied to per-day
+    // override fields below.
+    open:     { type: Number, default: 8,  min: 0, max: 24 },
+    close:    { type: Number, default: 22, min: 0, max: 24 },
     days: {
       type: Map,
       of: {
-        open:   { type: Number, min: 0, max: 23 },
-        close:  { type: Number, min: 0, max: 23 },
+        open:   { type: Number, min: 0, max: 24 }, // [FIX-13] was max: 23
+        close:  { type: Number, min: 0, max: 24 }, // [FIX-13] was max: 23
         closed: { type: Boolean, default: false },
       },
       default: {},
@@ -142,7 +173,10 @@ const businessConfigSchema = new mongoose.Schema({
 
   tone: {
     style:    { type: String, enum: ['PROFESSIONAL', 'FRIENDLY', 'PREMIUM'], default: 'PROFESSIONAL' },
-    industry: { type: String, enum: ['RESTAURANT', 'SALON', 'BARBERSHOP', 'RETAIL', 'BAKERY', 'SUPERMARKET', 'FASHION', 'COSMETICS', 'ELECTRONICS', 'PHARMACY', 'DELIVERY', 'GENERAL'], default: 'GENERAL' },
+    // [FIX-TONE-1] SERVICES was present in businessMode enum but missing here.
+    // Any tenant saving businessMode='SERVICES' and triggering a tone sync would
+    // get a Mongoose validation error on the industry field, preventing the save.
+    industry: { type: String, enum: ['RESTAURANT', 'SALON', 'BARBERSHOP', 'RETAIL', 'BAKERY', 'SUPERMARKET', 'FASHION', 'COSMETICS', 'ELECTRONICS', 'PHARMACY', 'DELIVERY', 'SERVICES', 'GENERAL'], default: 'GENERAL' },
   },
 
   // All user-facing strings — owner overrides these; getLabel() reads them first
@@ -215,6 +249,12 @@ businessConfigSchema.pre('save', function (next) {
       ELECTRONICS: { style: 'PROFESSIONAL', industry: 'ELECTRONICS'  },
       PHARMACY:    { style: 'PROFESSIONAL', industry: 'PHARMACY'     },
       DELIVERY:    { style: 'FRIENDLY',     industry: 'DELIVERY'     },
+      // [FIX-TONE-2] SERVICES and GENERAL were in businessMode enum but missing
+      // from toneMap. When a SERVICES or GENERAL tenant saved, toneMap lookup
+      // returned undefined → the if(t) guard silently skipped the tone sync,
+      // leaving stale tone values from a previous businessMode on the document.
+      SERVICES:    { style: 'PROFESSIONAL', industry: 'SERVICES'     },
+      GENERAL:     { style: 'FRIENDLY',     industry: 'GENERAL'      },
     };
     const t = toneMap[this.businessMode];
     if (t) { this.tone.style = t.style; this.tone.industry = t.industry; }

@@ -57,15 +57,17 @@ export async function handleSkincareAdvice({ session, message, business, tenant 
   // ── INIT ──────────────────────────────────────────────────────────────────
   if (message === null) {
     await updateSession(session.customerPhone, session.tenantId, { step: 'SKIN_QUESTION', data: {} });
+    // [UX-COSM-3] 4 skin-type options → WhatsApp list so all 4 show cleanly.
     return {
-      type: 'buttons',
+      type: 'list',
       body: '💄 *Beauty Advice*\n\nWhat would you like help with today?',
-      buttons: [
-        { id: 'SKIN_DRY',    title: '💧 Dry Skin'    },
-        { id: 'SKIN_OILY',   title: '✨ Oily Skin'   },
-        { id: 'SKIN_COMBO',  title: '🌟 Combination' },
-        { id: 'SKIN_CUSTOM', title: '💬 Describe it'  },
-      ],
+      button: 'Choose skin type',
+      sections: [{ title: 'Skin Type', rows: [
+        { id: 'SKIN_DRY',    title: '💧 Dry Skin',     description: 'Feels tight, flaky, or dull'       },
+        { id: 'SKIN_OILY',   title: '✨ Oily Skin',    description: 'Shiny, prone to breakouts'         },
+        { id: 'SKIN_COMBO',  title: '🌟 Combination',  description: 'Oily T-zone, dry cheeks'           },
+        { id: 'SKIN_CUSTOM', title: '💬 Describe it',  description: 'Type your specific skin concern'   },
+      ]}],
     };
   }
 
@@ -88,11 +90,20 @@ export async function handleSkincareAdvice({ session, message, business, tenant 
     });
 
     if (mappedSkinType) {
-      // Button tap — ask for their specific concern
+      // [UX-COSM-1] Offer common concern quick-picks as a list so the customer doesn't
+      // have to type — most concerns map to one of these 5 options.
       return {
-        type:    'buttons',
-        body:    `Got it — *${skinType} skin* 💄\n\nWhat's your main concern? (e.g. acne, dark spots, moisturiser, routine)`,
-        buttons: [{ id: 'SHOW_MENU', title: '🔄 Start Over' }],
+        type: 'list',
+        body: `Got it — *${skinType} skin* 💄\n\nWhat's your main concern?`,
+        button: 'Choose concern',
+        sections: [{ title: 'Common Concerns', rows: [
+          { id: 'CONCERN_ACNE',  title: '🔴 Acne / Breakouts',    description: 'Spots, pimples, oiliness'       },
+          { id: 'CONCERN_DARK',  title: '🌑 Dark Spots / Uneven', description: 'Pigmentation, tone'              },
+          { id: 'CONCERN_MOIST', title: '💧 Moisture / Dryness',  description: 'Hydration, flakiness'            },
+          { id: 'CONCERN_AGE',   title: '✨ Anti-Ageing',          description: 'Fine lines, firmness'            },
+          { id: 'CONCERN_SENSE', title: '🌿 Sensitive Skin',       description: 'Redness, irritation, reactions'  },
+        ]}],
+        footer: 'Or type your specific concern',
       };
     }
     // They typed a description — treat it as their question immediately
@@ -100,7 +111,17 @@ export async function handleSkincareAdvice({ session, message, business, tenant 
   }
 
   // ── SKIN_ADVICE: they described their concern — answer it ─────────────────
-  return await _buildSkincareAdvice(raw, data.skinType || null, business, session);
+  // [UX-COSM-2] Map concern button IDs to human-readable phrases for the AI prompt.
+  const CONCERN_MAP = {
+    'CONCERN_ACNE':  'acne and breakouts',
+    'CONCERN_DARK':  'dark spots and uneven skin tone',
+    'CONCERN_MOIST': 'dryness and lack of moisture',
+    'CONCERN_AGE':   'fine lines and anti-ageing',
+    'CONCERN_SENSE': 'sensitive skin, redness and irritation',
+  };
+  const mappedConcern = CONCERN_MAP[raw.toUpperCase()] || null;
+  const concernText = mappedConcern || raw;
+  return await _buildSkincareAdvice(concernText, data.skinType || null, business, session);
 }
 
 async function _buildSkincareAdvice(question, skinType, business, session) {

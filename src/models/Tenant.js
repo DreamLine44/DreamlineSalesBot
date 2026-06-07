@@ -20,23 +20,22 @@ const tenantSchema = new mongoose.Schema({
     sparse: true,       // only index when present — allows multiple tenants with no email
     lowercase: true,
     trim: true,
-    // NOTE: NO default: null here — sparse: true only skips indexing when the field
-    // is absent/undefined. An explicit null IS indexed, so two null emails collide.
-    // Omitting the default keeps the field genuinely absent when not supplied.
+    default: null,
   },
 
   // ================= AUTH =================
-  apiKey: {
+  // [FIX-RAWKEY] apiKey (plaintext) removed from the schema. Storing the raw key
+  // in the DB means a DB breach exposes every tenant's key directly. Only the
+  // SHA-256 hash (apiKeyHash) is stored and used for lookups. The plaintext key
+  // is generated, returned once to the caller, then discarded — never persisted.
+  // NOTE: existing rows that still have apiKey populated will continue to work;
+  // auth middleware uses apiKeyHash for lookups. Run a migration to $unset apiKey
+  // on all existing tenant documents before removing the field entirely from the DB.
+  apiKeyHash: {
     type: String,
     required: true,
     unique: true,
-    index: true
-  },
-  // Hashed version of apiKey for safe DB lookups.
-  apiKeyHash: {
-    type: String,
     index: true,
-    sparse: true,
   },
 
   // ================= WHATSAPP CREDENTIALS =================
@@ -107,16 +106,6 @@ const tenantSchema = new mongoose.Schema({
     resetDate:         { type: Date, default: () => new Date() }
   },
 
-  // ================= BUSINESS MODE =================
-  // Stored on the Tenant doc directly (mirrors BusinessConfig.businessMode) so
-  // listTenants can return it in a single query without a BusinessConfig join.
-  businessMode: {
-    type: String,
-    enum: ['RESTAURANT', 'SALON', 'BARBERSHOP', 'RETAIL', 'BAKERY', 'SUPERMARKET',
-           'FASHION', 'COSMETICS', 'ELECTRONICS', 'PHARMACY', 'DELIVERY'],
-    default: 'RESTAURANT',
-  },
-
   // ================= STATUS =================
   status: {
     type: String,
@@ -125,11 +114,16 @@ const tenantSchema = new mongoose.Schema({
   },
 
   // ================= ONBOARDING STEP =================
+  // 0 = schema default (should not persist — createTenant writes 1 immediately)
+  // 1 = tenant created, awaiting WhatsApp credentials
+  // 2 = credentials supplied, awaiting Meta verification
+  // 3 = credentials verified by Meta (whatsapp.connected = true)
+  // 4 = tenant activated (status = ACTIVE) — fully live
   onboardingStep: {
     type:    Number,
     default: 0,
     min:     0,
-    max:     3,
+    max:     4,
   },
 
   // ================= ADMIN CONTACT =================
@@ -144,21 +138,37 @@ const tenantSchema = new mongoose.Schema({
 
 }, { timestamps: true });
 
-// Auto-generate apiKey and keep apiKeyHash in sync
+// [FIX-RAWKEY] Generate a plaintext key, hash it, store only the hash.
+// The plaintext key is returned once by createTenant/rotateApiKey and then
+// discarded — it is never stored in the DB. This means a DB breach exposes
+// only SHA-256 hashes, which are not usable as API keys without the preimage.
+//
+// this._plaintextApiKey is a temporary in-memory property set by the hook so
+// createTenant can return it in the response. It is NOT a schema field and is
+// never saved to MongoDB.
 tenantSchema.pre("validate", function (next) {
-  if (!this.apiKey) {
-    this.apiKey = crypto.randomBytes(32).toString("hex");
-  }
-  if (!this.apiKeyHash || this.isModified("apiKey")) {
-    this.apiKeyHash = crypto.createHash("sha256").update(this.apiKey).digest("hex");
+  if (!this.apiKeyHash) {
+    const rawKey = crypto.randomBytes(32).toString("hex");
+    this._plaintextApiKey = rawKey; // transient — read once by createTenant, then gone
+    this.apiKeyHash = crypto.createHash("sha256").update(rawKey).digest("hex");
   }
   next();
 });
 
 tenantSchema.set("toJSON", {
   transform: (doc, ret) => {
-    if (ret.whatsapp) delete ret.whatsapp.accessToken;
-    delete ret.apiKey;
+    // Strip all sensitive credential fields from every serialised Tenant.
+    // apiKeyHash  — SHA-256 fingerprint; not the key but still sensitive
+    // accessToken — AES-256-GCM encrypted WhatsApp token; must never leave the server
+    // verifyToken — AES-256-GCM encrypted Meta webhook verify token; internal only
+    // [FIX-RAWKEY] apiKey field removed from schema — no need to delete it here,
+    // but we keep the delete as a safety net for any old documents still in the DB.
+    if (ret.whatsapp) {
+      delete ret.whatsapp.accessToken;
+      delete ret.whatsapp.verifyToken;
+    }
+    delete ret.apiKey;     // safety net for legacy documents
+    delete ret.apiKeyHash;
     delete ret.__v;
     return ret;
   }

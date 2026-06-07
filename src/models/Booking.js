@@ -88,4 +88,18 @@ bookingSchema.pre('save', function (next) {
   next();
 });
 
+// [FIX-8] Defensive insertMany hook — mirrors Order model. pre('save') does not fire
+// on insertMany(). No current code path calls Booking.insertMany(), but this prevents
+// a future silent shortId=null bug if bulk creation is ever added.
+bookingSchema.pre('insertMany', function (next, docs) {
+  if (Array.isArray(docs)) {
+    for (const doc of docs) {
+      if (!doc.shortId && doc._id) {
+        doc.shortId = String(doc._id).slice(-6).toUpperCase();
+      }
+    }
+  }
+  next();
+});
+
 export default mongoose.model('Booking', bookingSchema);

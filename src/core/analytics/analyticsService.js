@@ -40,7 +40,7 @@ const EVENT_TO_TYPE = {
   [EVENT.PAYMENT_MADE]:   'ORDER',   // payment events stored as ORDER type
   [EVENT.REVENUE]:        'REVENUE',
   [EVENT.ABANDONED_CART]: 'FAILED',
-  [EVENT.USER_MESSAGE]:   'ORDER',   // general message — best-fit bucket
+  [EVENT.USER_MESSAGE]:   'FAILED',  // [FIX] was 'ORDER' — inflated order analytics; no order occurred
   [EVENT.FAILED_INTENT]:  'FAILED',
 };
 

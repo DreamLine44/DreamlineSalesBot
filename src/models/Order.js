@@ -6,7 +6,7 @@
  * idempotencyKey: auto-generated UUID per order — prevents duplicate key errors
  * on the (tenantId, customerPhone, idempotencyKey) compound index.
  *
- * paymentStatus tracks Wave payment lifecycle:
+ * paymentStatus tracks payment lifecycle (screenshot-based, admin-confirmed):
  *   unpaid → payment_pending_verification → paid | payment_failed | refunded
  *
  * Note: 'failed' is retained as a backward-compat alias in the enum.
@@ -56,10 +56,12 @@ const orderSchema = new mongoose.Schema({
     index: true,
   },
 
-  // ── Wave payment fields ──────────────────────────────────────────────────
+  // ── Payment fields — supports multi-channel screenshot-based verification ───
   paymentMethod: {
     type: String,
-    enum: ["wave", "cash", "card", null],
+    // Supported channels: customer sends screenshot, admin confirms manually.
+    // "wave" kept as canonical value; new channels added alongside it.
+    enum: ["wave", "gt_bank", "ecobank", "trust_bank", "cash", "card", "other", null],
     default: null,
   },
 
@@ -74,6 +76,11 @@ const orderSchema = new mongoose.Schema({
     //   rejected            — adminCommandService.rejectPayment (admin rejected)
     //   payment_failed      — canonical failure status
     //   failed              — backward-compat alias; do not remove
+    //   cancelled           — set when customer cancels at PAYMENT_PROOF step
+    //                         (webhookController step 10.5). Without this value
+    //                         Mongoose strict mode silently drops the $set and
+    //                         the order stays 'unpaid', causing the scheduler to
+    //                         send payment reminders for cancelled orders.
     enum: [
       'unpaid',
       'proof_received',
@@ -85,6 +92,7 @@ const orderSchema = new mongoose.Schema({
       'payment_failed',
       'failed',
       'refunded',
+      'cancelled',
       null,
     ],
     default: 'unpaid',
@@ -155,6 +163,21 @@ orderSchema.index({ tenantId: 1, paymentStatus: 1, shortId: 1 });
 orderSchema.pre('save', function (next) {
   if (!this.shortId) {
     this.shortId = String(this._id).slice(-6).toUpperCase();
+  }
+  next();
+});
+
+// [FIX-8] pre('save') does not fire on insertMany(). Add a pre('insertMany') hook as
+// a defensive measure so bulk-created orders still get shortIds. Currently no code
+// path calls Order.insertMany(), but this prevents a future silent shortId=null bug
+// if bulk creation is ever added (e.g. import tooling, seed scripts, migration jobs).
+orderSchema.pre('insertMany', function (next, docs) {
+  if (Array.isArray(docs)) {
+    for (const doc of docs) {
+      if (!doc.shortId && doc._id) {
+        doc.shortId = String(doc._id).slice(-6).toUpperCase();
+      }
+    }
   }
   next();
 });

@@ -73,9 +73,9 @@ export function buildAdminOrderAlertBody({ customerPhone, item, quantity, totalP
   const addOnStr   = addOns?.length ? `\n➕ Add-ons: ${addOns.join(', ')}` : '';
   const priceStr   = totalPrice ? `\n💰 Total: *${currency}${totalPrice}*` : '';
   const idStr      = shortId ? `\n🔖 Ref: \`${shortId}\`` : '';
-  // [FIX-BUG11] Check actual payment configuration
+  // [FIX-BUG11] Check actual payment configuration; channel-agnostic label
   const paymentMode = payEnabled && totalPrice
-    ? `*Wave — awaiting screenshot verification*`
+    ? `*Screenshot verification pending*`
     : `*Cash / On delivery*`;
 
   return (

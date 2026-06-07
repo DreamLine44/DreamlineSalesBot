@@ -8,9 +8,13 @@
  * that simulateController reads synchronously instead of calling Meta.
  *
  * To swap to a different transport: edit this file ONLY.
+ *
+ * [AUDIT-P2-A] Access tokens are decrypted via decryptToken() before use.
+ *              Plaintext tokens (pre-encryption-migration) pass through unchanged.
  */
 
 import logger from '../../config/logger.js';
+import { decryptToken } from '../../controllers/tenantController.js';
 
 const SIM_MODE = () => process.env.SIMULATION_MODE === 'true';
 
@@ -83,11 +87,27 @@ function buildPayload(to, ui) {
   }
 
   if (type === 'list') {
-    const rows = (ui.rows || []).slice(0, 10).map(r => ({
+    const normalizeRow = r => ({
       id:          String(r.id).slice(0, 200),
       title:       String(r.title).slice(0, 24),
-      description: String(r.description || '').slice(0, 72),
-    }));
+      description: r.description ? String(r.description).slice(0, 72) : undefined,
+    });
+
+    let sections;
+    if (ui.sections && ui.sections.length) {
+      // Multi-section format (e.g. time picker with Morning/Afternoon/Evening)
+      sections = ui.sections.map(sec => ({
+        title: sec.title ? String(sec.title).slice(0, 24) : undefined,
+        rows:  (sec.rows || []).slice(0, 10).map(normalizeRow),
+      })).filter(sec => sec.rows.length > 0);
+    } else {
+      // Flat rows format (legacy — single unlabelled section)
+      const rows = (ui.rows || []).slice(0, 10).map(normalizeRow);
+      sections = [{ rows }];
+    }
+
+    if (!sections.length || !sections[0].rows.length) return null;
+
     return {
       messaging_product: 'whatsapp', recipient_type: 'individual',
       to, type: 'interactive',
@@ -95,9 +115,10 @@ function buildPayload(to, ui) {
         type: 'list',
         ...(ui.header ? { header: { type: 'text', text: String(ui.header).slice(0, 60) } } : {}),
         body:   { text: String(ui.body || '').slice(0, 1024) },
+        ...(ui.footer ? { footer: { text: String(ui.footer).slice(0, 60) } } : {}),
         action: {
-          button: String(ui.buttonLabel || 'Choose option').slice(0, 20),
-          sections: [{ rows }],
+          button: String(ui.button || ui.buttonLabel || 'Choose option').slice(0, 20),
+          sections,
         },
       },
     };
@@ -117,6 +138,22 @@ function buildPayload(to, ui) {
     };
   }
 
+  // ── Template message ──────────────────────────────────────────────────────
+  // ui.type === 'template' → { type: 'template', name: '...', language: '...', components: [...] }
+  // Used by schedulerService for 24h+ outbound messages that require pre-approved templates.
+  if (type === 'template') {
+    if (!ui.name) return null;
+    return {
+      messaging_product: 'whatsapp', recipient_type: 'individual',
+      to, type: 'template',
+      template: {
+        name:       String(ui.name),
+        language:   { code: String(ui.language || 'en_US') },
+        components: ui.components || [],
+      },
+    };
+  }
+
   // Fallback: plain text
   return {
     messaging_product: 'whatsapp', recipient_type: 'individual',
@@ -129,11 +166,6 @@ export async function dispatchMessage(to, ui, tenant) {
   if (!ui) return;
 
   // Simulation mode: resolve the waiting slot instead of calling Meta.
-  // When called with an image payload followed by a buttons payload (array dispatch),
-  // only the LAST call should resolve the slot — earlier ones (image) are stored
-  // and the slot is only resolved when an interactive/text payload arrives.
-  // Strategy: resolve immediately for interactive/text types; for image-only, store
-  // and let the next call overwrite so the slot always gets the most useful payload.
   if (SIM_MODE()) {
     const payload = buildPayload(to, ui);
     logger.info('[Dispatch:SIM]', {
@@ -143,32 +175,33 @@ export async function dispatchMessage(to, ui, tenant) {
     });
     // For image-only messages, don't resolve the slot yet — the quantity-prompt
     // buttons message arrives next and is more useful to the simulate endpoint.
-    // For everything else (text, buttons, list), resolve immediately.
     if (ui.type !== 'image') {
       _resolveSlot(to, ui);
     }
-    // Always return the payload so callers can inspect it
     return { simulated: true, payload };
   }
 
   // Live Meta API
-  const payload   = buildPayload(to, ui);
+  const payload = buildPayload(to, ui);
   if (!payload) return;
 
-  // [FIX-SHARED-APP] One Meta app, many tenants.
-  // Token: use the tenant's own accessToken if saved, otherwise fall back to the
-  // global META_WHATSAPP_TOKEN system-user token that covers all tenants on the app.
-  // phoneNumberId: always per-tenant (it identifies WHICH number sends the reply).
-  const token   = tenant?.whatsapp?.accessToken || process.env.META_WHATSAPP_TOKEN;
-  const phoneId = tenant?.whatsapp?.phoneNumberId;
-  const version = tenant?.whatsapp?.apiVersion || process.env.META_API_VERSION || 'v21.0';
+  // [AUDIT-P2-A] Decrypt token before use — transparently handles both encrypted
+  // (enc: prefix) and plaintext tokens (pre-migration / dev environments).
+  const rawToken = tenant?.whatsapp?.accessToken;
+  const token    = decryptToken(rawToken);
+  const phoneId  = tenant?.whatsapp?.phoneNumberId;
+  const version  = tenant?.whatsapp?.apiVersion || process.env.META_API_VERSION || 'v21.0';
 
-  if (!token) {
-    logger.warn('[Dispatch] No access token — set META_WHATSAPP_TOKEN in env or save whatsapp.accessToken on the tenant', { tenantId: tenant?._id });
+  if (!token || !phoneId) {
+    logger.warn('[Dispatch] Missing WhatsApp credentials', { tenantId: tenant?._id });
     return;
   }
-  if (!phoneId) {
-    logger.warn('[Dispatch] Missing whatsapp.phoneNumberId on tenant — cannot route outbound message', { tenantId: tenant?._id });
+
+  // Guard: don't dispatch to simulation placeholder phone IDs in production
+  if (phoneId.startsWith('SIM_')) {
+    logger.warn('[Dispatch] Refusing to call Meta with placeholder phoneNumberId', {
+      tenantId: tenant?._id, phoneId,
+    });
     return;
   }
 
@@ -194,3 +227,17 @@ export async function dispatchMessage(to, ui, tenant) {
 
 export const dispatchText = (to, text, tenant) =>
   dispatchMessage(to, { type: 'text', body: text }, tenant);
+
+/**
+ * dispatchTemplate — send a pre-approved WhatsApp template message.
+ * Required for outbound messages to users who haven't interacted in 24+ hours.
+ * See schedulerService.js for usage context.
+ *
+ * @param {string} to           - Customer phone number
+ * @param {string} templateName - Meta-approved template name (e.g. 'abandoned_cart_v1')
+ * @param {string} language     - Template language code (default: 'en_US')
+ * @param {Array}  components   - Template parameter components array
+ * @param {object} tenant       - Tenant document with whatsapp credentials
+ */
+export const dispatchTemplate = (to, templateName, language = 'en_US', components = [], tenant) =>
+  dispatchMessage(to, { type: 'template', name: templateName, language, components }, tenant);

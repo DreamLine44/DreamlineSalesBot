@@ -39,6 +39,12 @@ export async function updateBusinessConfig(req, res) {
     delete update._id;
     delete update.tenantId;
     delete update.__v;
+    // [FIX-BIZ-4] Strip phoneNumberId — it is the webhook routing key and must only
+    // be changed via PATCH /admin/tenants/:id which syncs both Tenant and BusinessConfig
+    // atomically. Allowing it to be overwritten here creates a split-brain where
+    // Tenant.whatsapp.phoneNumberId and BusinessConfig.phoneNumberId diverge and
+    // business-config lookups return stale data after the next credential update.
+    delete update.phoneNumberId;
 
     if (!update || Object.keys(update).length === 0) {
       return res.status(400).json({ error: 'Request body is empty — nothing to update' });

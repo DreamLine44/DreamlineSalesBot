@@ -1,3 +1,17 @@
+/**
+ * models/Analytics.js
+ *
+ * [AUDIT-P2-B] Added compound indexes on tenantId for dashboard analytics queries.
+ *              Previously Analytics.aggregate({ $match: { tenantId } }) was a full
+ *              collection scan. At scale with many tenants this will be a bottleneck.
+ *
+ *              New indexes:
+ *                (tenantId, type, createdAt) — primary analytics query pattern
+ *                (tenantId, createdAt)       — time-range queries per tenant
+ *
+ *              Pre-existing phoneNumberId indexes are retained for backward-compat
+ *              with any paths that still query by phoneNumberId.
+ */
 import mongoose from "mongoose";
 
 const analyticsSchema = new mongoose.Schema(
@@ -100,7 +114,8 @@ const analyticsSchema = new mongoose.Schema(
   }
 );
 
-// Compound indexes for the most common analytics query patterns:
+// ── Compound indexes ──────────────────────────────────────────────────────────
+// phoneNumberId-based indexes (legacy — retained for backward compat):
 //   getTopItem:          { type: "ORDER", phoneNumberId }  → sorted by quantity
 //   getPeakHour:         { phoneNumberId, hour }
 //   getDailyStats:       { phoneNumberId } → grouped by day
@@ -109,5 +124,11 @@ const analyticsSchema = new mongoose.Schema(
 analyticsSchema.index({ phoneNumberId: 1, type: 1, createdAt: -1 });
 analyticsSchema.index({ phoneNumberId: 1, type: 1, revenue: 1 });
 analyticsSchema.index({ type: 1, item: 1 });
+
+// [AUDIT-P2-B] tenantId-based indexes (new) — required for dashboard analytics
+// aggregate queries that filter by tenantId. Without these, every call to
+// getAnalyticsSummary() is a full collection scan.
+analyticsSchema.index({ tenantId: 1, type: 1, createdAt: -1 });
+analyticsSchema.index({ tenantId: 1, createdAt: -1 });
 
 export default mongoose.model("Analytics", analyticsSchema);

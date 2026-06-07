@@ -160,7 +160,9 @@ export async function handleOrderFlow({ session, message, business, tenant, isIn
 
     // ────────────────────────────────────────────────────────────────────────
     case 'QUANTITY': {
-      const qty = parseQuantity(raw);
+      // [UX-1] QTY_1/2/3 quick-pick buttons — resolve before parseQuantity
+      const QTY_SHORTCUTS = { 'QTY_1': 1, 'QTY_2': 2, 'QTY_3': 3 };
+      const qty = QTY_SHORTCUTS[raw.toUpperCase()] ?? parseQuantity(raw);
       // MAX_QTY is per-business configurable; default 20 for restaurants.
       // Read from business.settings.maxOrderQuantity if set, otherwise 20.
       const MAX_QTY = business?.settings?.maxOrderQuantity || 20;
@@ -169,8 +171,13 @@ export async function handleOrderFlow({ session, message, business, tenant, isIn
       if (!qty || qty < 1) {
         return {
           type:    'buttons',
-          body:    `Please enter a number — e.g. *1*, *2*, *three*\n\n_(Maximum: ${MAX_QTY} per order)_`,
-          buttons: [{ id: 'CANCEL', title: '❌ Cancel' }],
+          body:    `How many *${data.item?.name}* would you like?\n\n_(Maximum: ${MAX_QTY} per order)_`,
+          buttons: [
+            { id: 'QTY_1', title: '1️⃣  1' },
+            { id: 'QTY_2', title: '2️⃣  2' },
+            { id: 'QTY_3', title: '3️⃣  3' },
+          ],
+          footer: 'Or type any number',
         };
       }
       // Parsed fine but exceeds the business max
@@ -178,7 +185,11 @@ export async function handleOrderFlow({ session, message, business, tenant, isIn
         return {
           type:    'buttons',
           body:    `⚠️ Maximum order quantity is *${MAX_QTY}*. Please enter a number between *1* and *${MAX_QTY}*.`,
-          buttons: [{ id: 'CANCEL', title: '❌ Cancel' }],
+          buttons: [
+            { id: 'QTY_1', title: '1️⃣  1' },
+            { id: 'QTY_2', title: '2️⃣  2' },
+            { id: 'CANCEL', title: '❌ Cancel' },
+          ],
         };
       }
       const item   = data.item;
@@ -377,8 +388,16 @@ async function _selectItem(item, session, business, data) {
 
   const quantityPrompt = {
     type: 'buttons',
-    body: `You've chosen *${item.name}* 👌${addOnText}\n\nHow many *${item.name}* would you like?\n\n_(Enter a number — e.g. *1*, *2*, *three*)_`,
-    buttons: [{ id: 'CANCEL', title: '❌ Cancel' }],
+    body: `You've chosen *${item.name}* 👌${addOnText}\n\nHow many would you like?`,
+    // [UX-1] Quick-pick quantity buttons so customers don't have to type a number.
+    // Cancel sits in the third slot (WhatsApp max = 3 interactive buttons).
+    // Customers who need more than 3 can still type a number.
+    buttons: [
+      { id: 'QTY_1', title: '1️⃣  1' },
+      { id: 'QTY_2', title: '2️⃣  2' },
+      { id: 'QTY_3', title: '3️⃣  3' },
+    ],
+    footer: 'Or type any number e.g. 4, 5, 10',
   };
 
   if (imageUrl && showImage) {

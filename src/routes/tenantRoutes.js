@@ -1,25 +1,24 @@
 /**
  * routes/tenantRoutes.js
  *
- * [FIX-WA-8] Added POST /:id/whatsapp/verify — on-demand credential verification
- * that hits the Meta Graph API and updates whatsapp.connected on the Tenant doc.
- * Called by the tenant setup page "Setup Checklist" and after saving credentials
- * in the admin Edit Tenant modal.
+ * [AUDIT-P2-C] Added POST /:id/verify-whatsapp — validates Meta credentials
+ *              before tenant activation.
+ * [AUDIT-P2-D] Added POST /:id/rotate-key — rotates API key without data loss.
  */
 import { Router } from 'express';
 import {
   createTenant, listTenants, getTenant,
   updateTenant, updateTenantStatus, deleteTenant,
-  verifyWhatsAppConnection,
+  verifyWhatsApp, rotateApiKey,
 } from '../controllers/tenantController.js';
 
 const r = Router();
-r.post('/',                             createTenant);
-r.get('/',                              listTenants);
-r.get('/:id',                           getTenant);
-r.patch('/:id',                         updateTenant);
-r.patch('/:id/status',                  updateTenantStatus);
-r.delete('/:id',                        deleteTenant);
-// [FIX-WA-8] On-demand WhatsApp credential verification
-r.post('/:id/whatsapp/verify',          verifyWhatsAppConnection);
+r.post('/',                        createTenant);
+r.get('/',                         listTenants);
+r.get('/:id',                      getTenant);
+r.patch('/:id',                    updateTenant);        // [FIX #7] update credentials / metadata
+r.patch('/:id/status',             updateTenantStatus);
+r.delete('/:id',                   deleteTenant);
+r.post('/:id/verify-whatsapp',     verifyWhatsApp);      // [AUDIT-P2-C] credential verification
+r.post('/:id/rotate-key',          rotateApiKey);        // [AUDIT-P2-D] API key rotation
 export default r;

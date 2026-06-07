@@ -11,7 +11,7 @@ import mongoose from 'mongoose';
 const processedMessageSchema = new mongoose.Schema({
   wamid:       { type: String, required: true },
   tenantId:    { type: String, required: true },
-  processedAt: { type: Date,   default: Date.now },
+  processedAt: { type: Date,   default: () => new Date() },
 }, {
   timestamps: false,
   collection: 'processedmessages',

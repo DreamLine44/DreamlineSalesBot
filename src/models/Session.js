@@ -23,16 +23,27 @@ const sessionSchema = new mongoose.Schema({
 
   currentFlow: {
     type: String,
-    // All flow names used across the codebase. Adding a new flow here costs nothing;
-    // NOT adding it means Mongoose silently drops the value and the flow never starts.
+    // ⚠️  MAINTENANCE RULE: Every string passed to startFlow({ flowName }) or written
+    // directly to session.currentFlow MUST appear in this enum. Mongoose silently
+    // discards values outside the enum and stores null instead — the flow never starts
+    // and no error is thrown. When you add a new flow in moduleRegistry.js or any
+    // module handler, add its name here at the same time.
+    //
+    // Current flow → source mapping:
     enum: [
-      'ORDER',
-      'BOOKING',
+      'ORDER',              // moduleRegistry ORDER action / adminCommandService
+      'BOOKING',            // moduleRegistry BOOKING action / bookingFlow
       'LEAD_CAPTURE',       // leadCaptureService.startLeadCapture
       'ENQUIRY',            // webhookController ENQUIRY two-step
       'CAKE_CUSTOMIZATION', // bakery module — handleCakeCustomization
       'SKINCARE_ADVICE',    // cosmetics module — handleSkincareAdvice
       'SPEC_REQUEST',       // electronics module — handleSpecRequest
+      'PRODUCT_QUERY',      // retail module — handleProductQuery
+      'QUOTE_FOLLOW',       // services module — handleQuoteFollowUp
+      'ABOUT',              // general module — handleAbout (GENERAL mode only)
+      'QUESTION',           // general/services module — handleGeneralQuestion / handleServicesQuestion
+      // [FIX-7] Add new flow names here when registering in moduleRegistry.js.
+      // Failure to do so = silent null write = broken flow, no error logged.
       null,
     ],
     default: null,
@@ -118,6 +129,12 @@ sessionSchema.index({ expiresAt: 1 }, { expireAfterSeconds: 0 });
 
 // Compound unique index — sparse so null-tenantId docs never collide
 sessionSchema.index({ phone: 1, tenantId: 1 }, { unique: true, sparse: true });
+
+// [FIX-IDX-1] Partial index for humanMode queries (adminCommandService RESUME BOT,
+// dashboard conversation list, webhookController TTL-restore check).
+// These queries always filter { tenantId, humanMode: true } so a compound partial
+// index covering both is faster than a full collection scan on large tenants.
+sessionSchema.index({ tenantId: 1, humanMode: 1 }, { partialFilterExpression: { humanMode: true } });
 
 // [v11] Partial index for abandoned flow queries (analytics / re-engagement)
 sessionSchema.index({ abandonedAt: 1, tenantId: 1 }, { sparse: true });

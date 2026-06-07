@@ -30,18 +30,19 @@ import path           from 'path';
 
 const __dirname  = path.dirname(fileURLToPath(import.meta.url));
 const _require   = createRequire(import.meta.url);
-const { version } = _require('../package.json');
+const { version } = (() => { try { return _require('./package.json'); } catch { return { version: '2.0.0' }; } })();
 
+import crypto            from 'crypto';
 import { connectToDB }           from './config/database.js';
 import logger                    from './config/logger.js';
 import { CLOUDINARY_ENABLED }    from './config/cloudinary.js'; // initialise at boot, not on first request
 import { errorHandler }          from './middleware/errorHandler.js';
 import { createRateLimiter, webhookLimiter, adminLimiter } from './middleware/rateLimiter.js';
 import { requireApiKey, requireSuperAdminKey } from './middleware/authMiddleware.js';
-import { verifyMetaSignature }   from './middleware/webhookSignature.js';
 import { startScheduler, stopScheduler } from './services/schedulerService.js';
 import { aiHealthCheck }         from './core/ai/providers/aiRouter.js';
 import { registerAllModules }    from './core/shared/moduleRegistry.js';
+import { getSupportedModes }     from './config/modes.js';
 
 // Routes
 import webhookRoutes     from './routes/webhookRoutes.js';
@@ -54,13 +55,13 @@ import adminRoutes       from './routes/adminRoutes.js';
 const app        = express();
 const isProduction = process.env.NODE_ENV === 'production';
 
-// ── Security headers ───────────────────────────────────────────────────────
+// ── Security headers ──────────────────────────────────────────────────────────
 app.use(helmet({
   contentSecurityPolicy: false, // Bot API — no HTML served
   // hsts is enabled by default in helmet — good for HTTPS deployments
 }));
 
-// ── CORS ───────────────────────────────────────────────────────────────────
+// ── CORS ──────────────────────────────────────────────────────────────────────
 const allowedOrigins = (process.env.CORS_ORIGIN || '')
   .split(',').map(o => o.trim()).filter(Boolean);
 
@@ -73,8 +74,8 @@ app.use(cors({
     // Allow requests with no origin (server-to-server, curl, Postman)
     if (!origin) return cb(null, true);
     if (allowedOrigins.includes(origin)) return cb(null, true);
-    // In production, reject unknown origins
-    if (isProduction) return cb(new Error(`CORS: origin ${origin} not allowed`));
+    // In production, reject unknown origins with a clean 403 (not a thrown Error)
+    if (isProduction) return cb(null, false);
     // In dev, allow all (developer convenience)
     return cb(null, true);
   },
@@ -123,9 +124,36 @@ app.use('/business', createRateLimiter(120), requireApiKey, businessRoutes);
 // Dashboard
 app.use('/dashboard', createRateLimiter(120), requireApiKey, dashboardRoutes);
 
-// Admin (super-admin only)
+// Admin routes — ORDER IS LOAD-BEARING.
+// Express matches routes in registration order. /admin/tenants MUST be mounted
+// BEFORE /admin so requests to /admin/tenants/* hit requireSuperAdminKey (master
+// key only) and are not also caught by the broader /admin mount which accepts
+// tenant api keys via requireApiKey. If you ever add routes to adminRoutes that
+// start with /tenants they will be silently shadowed by tenantRoutes above —
+// put them in tenantRoutes instead, or use a prefix that avoids the collision.
+// [FIX-SAKEY] Super admin key rotation — POST /admin/rotate-super-key
+// IMPORTANT: This route MUST be registered BEFORE the broad `app.use('/admin', ...)` mount.
+// Express matches routes in registration order; if the /admin mount comes first it will
+// catch POST /admin/rotate-super-key (matching /rotate-super-key inside adminRoutes) before
+// this handler ever runs, making the endpoint unreachable.
+app.post('/admin/rotate-super-key', adminLimiter, requireSuperAdminKey, (_req, res) => {
+  const candidate = crypto.randomBytes(40).toString('hex'); // 80 hex chars, 320 bits
+  logger.info('[SuperAdmin] Super-admin key rotation candidate generated');
+  res.json({
+    ok: true,
+    candidate,
+    instructions: [
+      '1. Copy the candidate key above.',
+      '2. Set SUPER_ADMIN_API_KEY=<candidate> in your Railway / Render environment.',
+      '3. Redeploy the service — the new key becomes active on startup.',
+      '4. Verify access with the new key before discarding the old one.',
+    ],
+    warning: 'This endpoint does not invalidate the current key. Redeploy is required.',
+  });
+});
+
 app.use('/admin/tenants', adminLimiter, requireSuperAdminKey, tenantRoutes);
-app.use('/admin', adminLimiter, requireApiKey, adminRoutes);
+app.use('/admin',         adminLimiter, requireApiKey,        adminRoutes);
 
 app.use(errorHandler);
 
@@ -147,10 +175,18 @@ async function start() {
 
   const PORT = process.env.PORT || 5000;
   httpServer = app.listen(PORT, () => {
+    // [FIX-6] Mode list was hardcoded and listed PHARMACY/SUPERMARKET as if fully
+    // implemented. Now derived from getSupportedModes() so it auto-updates as modes
+    // are added. Stub modes (no dedicated module, fall back to RETAIL logic) are
+    // flagged with (*) so operators know they're not full implementations.
+    const STUB_MODES = new Set(['PHARMACY', 'SUPERMARKET']);
+    const modeList = getSupportedModes()
+      .map(m => STUB_MODES.has(m) ? `${m.toLowerCase()}*` : m.toLowerCase())
+      .join(' · ');
     logger.info(`\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
     logger.info(`  WhatSalesAgent2 v${version} — ${process.env.NODE_ENV} — port ${PORT}`);
-    logger.info(`  Modules: restaurant · bakery · salon`);
-    logger.info(`           fashion · cosmetics · electronics`);
+    logger.info(`  Modes: ${modeList}`);
+    logger.info(`  (* = stub mode, uses generic RETAIL logic)`);
     logger.info(`  Simulation: ${process.env.SIMULATION_MODE === 'true' ? 'ON (dev)' : 'OFF (live Meta webhook)'}`);
     logger.info(`  Cloudinary: ${CLOUDINARY_ENABLED ? 'ON (image uploads enabled)' : 'OFF (set CLOUDINARY_* vars to enable)'}`);
     logger.info(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);

@@ -43,3 +43,17 @@ export const adminLimiter = rateLimit({
   legacyHeaders: false,
   message: { error: 'Too many admin requests.' },
 });
+
+/**
+ * Extra-strict limiter for the humanMode toggle endpoint.
+ * The toggle directly affects bot silence — rapid toggling could be used to
+ * expose the bot to a customer mid-human-mode. 5 req/min is sufficient for
+ * legitimate use (an admin resuming a handful of customers) and blocks abuse.
+ */
+export const humanModeLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 5,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many humanMode toggle requests — please slow down.' },
+});

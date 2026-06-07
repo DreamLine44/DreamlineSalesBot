@@ -50,33 +50,87 @@ export async function handleCakeCustomization({ session, message, business, tena
     await updateSession(session.customerPhone, session.tenantId, { step: 'CAKE_FLAVOR', data: {} });
     return {
       type: 'buttons',
-      body: '🎂 *Custom Cake Builder*\n\nWhat *flavour* would you like?\n\n• Vanilla\n• Chocolate\n• Red Velvet\n• Carrot\n• Lemon',
-      buttons: [{ id: 'CANCEL', title: '❌ Cancel' }],
+      body: '🎂 *Custom Cake Builder*\n\nWhat *flavour* would you like?',
+      buttons: [
+        { id: 'FLAVOR_VANILLA',   title: '🍦 Vanilla'     },
+        { id: 'FLAVOR_CHOCOLATE', title: '🍫 Chocolate'   },
+        { id: 'FLAVOR_REDVELVET', title: '❤️ Red Velvet'  },
+      ],
     };
   }
 
   switch (step) {
     case 'CAKE_FLAVOR': {
+      const FLAVOR_MAP = {
+        'FLAVOR_VANILLA':   'Vanilla',
+        'FLAVOR_CHOCOLATE': 'Chocolate',
+        'FLAVOR_REDVELVET': 'Red Velvet',
+        'FLAVOR_CARROT':    'Carrot',
+        'FLAVOR_LEMON':     'Lemon',
+      };
+      const flavor = FLAVOR_MAP[raw.toUpperCase()] || raw;
       await updateSession(session.customerPhone, session.tenantId, {
-        step: 'CAKE_SIZE', data: { ...data, flavor: raw },
+        step: 'CAKE_SIZE', data: { ...data, flavor },
       });
       return {
         type: 'buttons',
-        body: `*${raw}* — great choice! 🎂\n\nWhat *size* do you need?\n\n• Small (6 inch)\n• Medium (8 inch)\n• Large (10 inch)\n• Extra Large (12 inch)`,
-        buttons: [{ id: 'CANCEL', title: '❌ Cancel' }],
+        body: `*${flavor}* — great choice! 🎂\n\nWhat *size* do you need?`,
+        buttons: [
+          { id: 'SIZE_SMALL',  title: '🎂 Small (6″)'   },
+          { id: 'SIZE_MEDIUM', title: '🎂 Medium (8″)'  },
+          { id: 'SIZE_LARGE',  title: '🎂 Large (10″)'  },
+        ],
       };
     }
     case 'CAKE_SIZE': {
+      const SIZE_MAP = {
+        'SIZE_SMALL':  'Small (6 inch)',
+        'SIZE_MEDIUM': 'Medium (8 inch)',
+        'SIZE_LARGE':  'Large (10 inch)',
+        'SIZE_XL':     'Extra Large (12 inch)',
+      };
+      const size = SIZE_MAP[raw.toUpperCase()] || raw;
       await updateSession(session.customerPhone, session.tenantId, {
-        step: 'CAKE_EVENT_DATE', data: { ...data, size: raw },
+        step: 'CAKE_EVENT_DATE', data: { ...data, size },
       });
       return {
         type: 'buttons',
-        body: `*${raw}* — perfect! 🎉\n\nWhat *date* do you need this for? 📅\n\n(e.g. *25 June*, *next Saturday*)`,
+        body: `*${size}* — perfect! 🎉\n\nWhat *date* do you need this cake for? 📅\n\n_(e.g. *25 June*, *next Saturday*)_`,
         buttons: [{ id: 'CANCEL', title: '❌ Cancel' }],
       };
     }
     case 'CAKE_EVENT_DATE': {
+      // [FIX-TIME-2] Bakery cake event date had zero validation — a customer
+      // could type "yesterday" and the order would confirm with a past date.
+      // Import shared helpers to enforce the same rules as the booking flow.
+      const { tryParseDate } = await import('../../../core/conversations/bookingFlow.js');
+      const cakeParsed = tryParseDate(raw, business?.timezone);
+      if (cakeParsed) {
+        const tz = business?.timezone || 'UTC';
+        // Midnight in the business's local clock
+        const localNow = (() => {
+          const safeZone = (() => { try { Intl.DateTimeFormat(undefined, { timeZone: tz }); return tz; } catch { return 'UTC'; } })();
+          const parts = new Intl.DateTimeFormat('en-CA', { timeZone: safeZone, year: 'numeric', month: '2-digit', day: '2-digit', hour12: false }).formatToParts(new Date());
+          const get = (type) => parseInt(parts.find(p => p.type === type)?.value || '0', 10);
+          return new Date(Date.UTC(get('year'), get('month') - 1, get('day')));
+        })();
+        if (cakeParsed < localNow) {
+          const fmt = cakeParsed.toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' });
+          return {
+            type: 'buttons',
+            body: `⚠️ *${fmt}* has already passed.\n\nPlease enter an *upcoming date* for your cake. 📅\n\n_(e.g. *25 June*, *next Saturday*)_`,
+            buttons: [{ id: 'CANCEL', title: '❌ Cancel' }],
+          };
+        }
+        const maxFuture = new Date(localNow); maxFuture.setUTCMonth(maxFuture.getUTCMonth() + 18);
+        if (cakeParsed > maxFuture) {
+          return {
+            type: 'buttons',
+            body: `⚠️ That date is too far ahead. Please choose a date within the next 18 months. 📅`,
+            buttons: [{ id: 'CANCEL', title: '❌ Cancel' }],
+          };
+        }
+      }
       await updateSession(session.customerPhone, session.tenantId, {
         step: 'CAKE_CONFIRM', data: { ...data, eventDate: raw },
       });
@@ -130,7 +184,9 @@ export async function handleCakeCustomization({ session, message, business, tena
         }
       } catch {}
 
-      await completeFlow(session, 'ORDER', business, tenant);
+      // [FIX-2] Capture return value — completeFlow may return a lead-capture UIResponse
+      const _lcRbk = await completeFlow(session, 'ORDER', business, tenant);
+      if (_lcRbk) return _lcRbk;
       return {
         type: 'buttons',
         body: `✅ *Cake order placed!*\n\n🎂 *${data.flavor} cake (${data.size})*\n📅 For: *${data.eventDate}*\n\nWe'll be in touch to confirm details and pricing. Thank you! 🥐`,

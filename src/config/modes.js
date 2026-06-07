@@ -13,52 +13,21 @@ import { SALON_CONFIG, BARBERSHOP_CONFIG } from '../modules/salon/flows/index.js
 import { FASHION_CONFIG }    from '../modules/fashion/flows/index.js';
 import { COSMETICS_CONFIG }  from '../modules/cosmetics/flows/index.js';
 import { ELECTRONICS_CONFIG } from '../modules/electronics/flows/index.js';
+import { SERVICES_CONFIG }   from '../modules/services/flows/index.js';
+import { GENERAL_CONFIG }    from '../modules/general/flows/index.js';
+import { RETAIL_CONFIG }     from '../modules/retail/flows/index.js';
+import { DELIVERY_CONFIG }   from '../modules/delivery/flows/index.js';
 
-
-// ── Generic retail / shop config ─────────────────────────────────────────────
-const RETAIL_CONFIG = {
-  businessMode: 'RETAIL',
+// ── Pharmacy — still uses generic RETAIL base (no dedicated module yet) ───────
+const PHARMACY_CONFIG = {
+  businessMode: 'PHARMACY',
   flows: ['ORDER'],
   steps: { ORDER: ['SELECT_ITEM', 'QUANTITY', 'CONFIRM'] },
   messages: {
-    welcome:   '👋 Welcome! What can we get for you today?',
-    fallback:  'Would you like to browse items, or do you have a question?',
-    cancelMsg: '✅ No problem! Let us know if you need anything.',
+    welcome:   '💊 Welcome! How can we assist you today?',
+    fallback:  'Would you like to order medication or speak to a pharmacist?',
+    cancelMsg: '✅ No problem! Feel free to ask anytime.',
   },
-  ui: {
-    welcomeButtons: [
-      { id: 'ORDER',     title: '🛍 Shop Now'      },
-      { id: 'SHOW_MENU', title: '📋 View Items'    },
-      { id: 'QUESTION',  title: '❓ Ask a Question' },
-    ],
-    fallbackButtons: [
-      { id: 'ORDER',     title: '🛍 Shop Now'    },
-      { id: 'SHOW_MENU', title: '📋 View Items'  },
-    ],
-  },
-};
-
-const SUPERMARKET_CONFIG = {
-  ...RETAIL_CONFIG,
-  businessMode: 'SUPERMARKET',
-  messages: { welcome: '🛒 Welcome! What would you like today?', fallback: 'Would you like to place an order or ask a question?', cancelMsg: '✅ No problem! Come back anytime.' },
-  ui: {
-    welcomeButtons: [
-      { id: 'ORDER',     title: '🛒 Order Now'      },
-      { id: 'SHOW_MENU', title: '📋 View Products'  },
-      { id: 'QUESTION',  title: '❓ Ask a Question' },
-    ],
-    fallbackButtons: [
-      { id: 'ORDER',     title: '🛒 Order Now'      },
-      { id: 'SHOW_MENU', title: '📋 View Products'  },
-    ],
-  },
-};
-
-const PHARMACY_CONFIG = {
-  ...RETAIL_CONFIG,
-  businessMode: 'PHARMACY',
-  messages: { welcome: '💊 Welcome! How can we assist you today?', fallback: 'Would you like to order medication or speak to a pharmacist?', cancelMsg: '✅ No problem! Feel free to ask anytime.' },
   ui: {
     welcomeButtons: [
       { id: 'ORDER',     title: '💊 Order Medication' },
@@ -66,25 +35,31 @@ const PHARMACY_CONFIG = {
       { id: 'QUESTION',  title: '❓ Ask a Pharmacist' },
     ],
     fallbackButtons: [
-      { id: 'ORDER',    title: '💊 Order'  },
-      { id: 'QUESTION', title: '❓ Ask'    },
+      { id: 'ORDER',    title: '💊 Order' },
+      { id: 'QUESTION', title: '❓ Ask'   },
     ],
   },
 };
 
-const DELIVERY_CONFIG = {
-  ...RETAIL_CONFIG,
-  businessMode: 'DELIVERY',
-  messages: { welcome: '🚚 Welcome! What would you like delivered today?', fallback: 'Would you like to place an order or ask a question?', cancelMsg: '✅ No problem! Order again whenever you are ready.' },
+// ── Supermarket — still uses generic RETAIL base (no dedicated module yet) ────
+const SUPERMARKET_CONFIG = {
+  businessMode: 'SUPERMARKET',
+  flows: ['ORDER'],
+  steps: { ORDER: ['SELECT_ITEM', 'QUANTITY', 'CONFIRM'] },
+  messages: {
+    welcome:   '🛒 Welcome! What would you like today?',
+    fallback:  'Would you like to place an order or ask a question?',
+    cancelMsg: '✅ No problem! Come back anytime.',
+  },
   ui: {
     welcomeButtons: [
-      { id: 'ORDER',     title: '🚚 Order Now'     },
-      { id: 'SHOW_MENU', title: '📋 View Menu'      },
+      { id: 'ORDER',     title: '🛒 Order Now'      },
+      { id: 'SHOW_MENU', title: '📋 View Products'  },
       { id: 'QUESTION',  title: '❓ Ask a Question' },
     ],
     fallbackButtons: [
-      { id: 'ORDER',     title: '🚚 Order Now'  },
-      { id: 'SHOW_MENU', title: '📋 View Menu'  },
+      { id: 'ORDER',     title: '🛒 Order Now'     },
+      { id: 'SHOW_MENU', title: '📋 View Products' },
     ],
   },
 };
@@ -97,10 +72,12 @@ const MODE_MAP = {
   FASHION:     FASHION_CONFIG,
   COSMETICS:   COSMETICS_CONFIG,
   ELECTRONICS: ELECTRONICS_CONFIG,
+  SERVICES:    SERVICES_CONFIG,
+  GENERAL:     GENERAL_CONFIG,
   RETAIL:      RETAIL_CONFIG,
+  DELIVERY:    DELIVERY_CONFIG,
   SUPERMARKET: SUPERMARKET_CONFIG,
   PHARMACY:    PHARMACY_CONFIG,
-  DELIVERY:    DELIVERY_CONFIG,
   // Aliases
   FOOD:        RESTAURANT_CONFIG,
   CAFE:        RESTAURANT_CONFIG,
