@@ -153,7 +153,7 @@ export async function handleEnquiryFlow({ session, message, business, tenant }) 
           { id: 'TL_WEEK',  title: '📆 This week',     description: 'Within 7 days'        },
           { id: 'TL_MONTH', title: '🗓 This month',    description: 'Within 30 days'       },
           { id: 'TL_FLEX',  title: '🌀 Flexible',      description: 'No rush, discuss it'  },
-        ],
+        ]}],
       };
     }
 
