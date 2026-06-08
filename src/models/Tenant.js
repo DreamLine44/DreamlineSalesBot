@@ -71,6 +71,15 @@ const tenantSchema = new mongoose.Schema({
       default: null
     },
 
+    // [FIX-WS] webhookSecret — HMAC secret used to verify Meta webhook POST signatures
+    // per-tenant. Stored AES-256-GCM encrypted (same pattern as accessToken/verifyToken).
+    // Never returned to callers — stripped by toJSON and getTenant lean() post-processing.
+    webhookSecret: {
+      type: String,
+      trim: true,
+      default: null
+    },
+
     apiVersion: {
       type: String,
       default: "v21.0",
@@ -166,6 +175,7 @@ tenantSchema.set("toJSON", {
     if (ret.whatsapp) {
       delete ret.whatsapp.accessToken;
       delete ret.whatsapp.verifyToken;
+      delete ret.whatsapp.webhookSecret;
     }
     delete ret.apiKey;     // safety net for legacy documents
     delete ret.apiKeyHash;

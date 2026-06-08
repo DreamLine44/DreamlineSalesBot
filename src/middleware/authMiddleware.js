@@ -55,13 +55,24 @@ export async function requireApiKey(req, res, next) {
     return next();
   }
 
-  // Per-tenant key lookup via SHA-256 hash
+  // Per-tenant key lookup via SHA-256 hash.
+  // [FIX-AUTH-1] Accept PENDING and INACTIVE tenants, not just ACTIVE.
+  // Restricting to ACTIVE caused a deadlock: a freshly created tenant is PENDING,
+  // but they need their API key to authenticate to /business and /dashboard routes
+  // in order to configure their account and reach ACTIVE in the first place.
+  // Status-based access control belongs in individual route handlers (e.g. the
+  // WhatsApp bot's receiveWebhook only dispatches for ACTIVE tenants), NOT at the
+  // authentication layer. SUSPENDED tenants are still blocked — they are explicitly
+  // disabled by an admin action.
   try {
     const hash   = crypto.createHash('sha256').update(key).digest('hex');
-    const tenant = await Tenant.findOne({ apiKeyHash: hash, status: 'ACTIVE' }).lean();
+    const tenant = await Tenant.findOne({
+      apiKeyHash: hash,
+      status: { $in: ['ACTIVE', 'PENDING', 'INACTIVE'] },
+    }).lean();
     if (tenant) {
-      req.tenant      = tenant;
-      req.tenantId    = String(tenant._id);
+      req.tenant       = tenant;
+      req.tenantId     = String(tenant._id);
       req.isSuperAdmin = false;
       return next();
     }

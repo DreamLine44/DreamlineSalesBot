@@ -340,13 +340,27 @@ export async function getCustomers(req, res) {
     const page  = Math.max(Number(req.query.page)  || 1, 1);
     const skip  = (page - 1) * limit;
 
+    const filter = { tenantId };
+    // [FIX-SEARCH] ?search= filters by name or phone with a case-insensitive prefix/substring match.
+    // Applied server-side so large tenants don't have to fetch the full customer list
+    // just to find one person.
+    if (req.query.search?.trim()) {
+      const q = req.query.search.trim();
+      filter.$or = [
+        { name:          { $regex: q, $options: 'i' } },
+        { customerName:  { $regex: q, $options: 'i' } },
+        { phone:         { $regex: q, $options: 'i' } },
+        { customerPhone: { $regex: q, $options: 'i' } },
+      ];
+    }
+
     const [profiles, total] = await Promise.all([
-      UserProfile.find({ tenantId })
+      UserProfile.find(filter)
         .sort({ updatedAt: -1 })
         .skip(skip)
         .limit(limit)
         .lean(),
-      UserProfile.countDocuments({ tenantId }),
+      UserProfile.countDocuments(filter),
     ]);
 
     res.json({

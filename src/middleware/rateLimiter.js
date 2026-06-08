@@ -45,6 +45,22 @@ export const adminLimiter = rateLimit({
 });
 
 /**
+ * Limiter for high-frequency polling endpoints hit by the frontend on timers:
+ *   - GET /dashboard/:tenantId/overview  (DashboardPage, every 120s)
+ *   - GET /admin/sessions/:tenantId      (SessionsPage, every 60s)
+ *
+ * 30 req/min per IP is generous for a single browser tab (1 req/60s) while
+ * blocking runaway loops, misconfigured clients, or scrapers.
+ */
+export const overviewLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 30,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many polling requests — please wait a moment.' },
+});
+
+/**
  * Extra-strict limiter for the humanMode toggle endpoint.
  * The toggle directly affects bot silence — rapid toggling could be used to
  * expose the bot to a customer mid-human-mode. 5 req/min is sufficient for

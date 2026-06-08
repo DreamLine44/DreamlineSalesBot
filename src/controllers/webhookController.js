@@ -780,15 +780,45 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
 }
 
 // ── Meta webhook verification ──────────────────────────────────────────────────
-export function verifyWebhook(req, res) {
+// [FIX-WH-VERIFY] Meta sends the verifyToken set in the app's webhook config.
+// Previously only the global META_WEBHOOK_VERIFY_TOKEN env var was checked —
+// this meant every tenant had to use the same verify token, making per-tenant
+// webhook configuration impossible and leaking the fact that all tenants share
+// one backend. Fix: check the global token first (backward compat), then fall
+// back to checking against any ACTIVE tenant's stored verifyToken so per-tenant
+// webhook subscriptions work correctly.
+export async function verifyWebhook(req, res) {
   const mode      = req.query['hub.mode'];
   const token     = req.query['hub.verify_token'];
   const challenge = req.query['hub.challenge'];
-  if (mode === 'subscribe' && token === process.env.META_WEBHOOK_VERIFY_TOKEN) {
-    res.status(200).send(challenge);
-  } else {
-    res.status(403).send('Forbidden');
+
+  if (mode !== 'subscribe' || !token) {
+    return res.status(403).send('Forbidden');
   }
+
+  // Check global env token first (covers single-tenant / dev setups)
+  if (process.env.META_WEBHOOK_VERIFY_TOKEN && token === process.env.META_WEBHOOK_VERIFY_TOKEN) {
+    return res.status(200).send(challenge);
+  }
+
+  // Check per-tenant verifyTokens (stored encrypted — decrypt before comparing)
+  try {
+    const { decryptToken } = await import('./tenantController.js');
+    const tenants = await Tenant.find(
+      { status: { $in: ['ACTIVE', 'PENDING'] }, 'whatsapp.verifyToken': { $exists: true, $ne: null } },
+      { 'whatsapp.verifyToken': 1 }
+    ).lean();
+    for (const t of tenants) {
+      const plain = decryptToken(t.whatsapp?.verifyToken || '');
+      if (plain && plain === token) {
+        return res.status(200).send(challenge);
+      }
+    }
+  } catch (err) {
+    logger.warn('[Webhook] verifyWebhook per-tenant check failed', { err: err.message });
+  }
+
+  res.status(403).send('Forbidden');
 }
 
 // ── Meta webhook event receiver ────────────────────────────────────────────────

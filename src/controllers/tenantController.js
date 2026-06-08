@@ -165,7 +165,7 @@ export function decryptToken(stored) {
 export async function createTenant(req, res) {
   try {
     const {
-      name, businessMode = 'RESTAURANT', adminPhone,
+      name, businessMode = 'RESTAURANT', adminPhone, email,
       whatsapp = {}, menuItems = [], services = [], payment = {},
       leadCapture = {}, faq = [], description = '',
     } = req.body;
@@ -179,10 +179,12 @@ export async function createTenant(req, res) {
     // [AUDIT-P2-A] Never store plaintext tokens in production.
     // [FIX-VT] verifyToken encrypted at rest — it is a Meta webhook secret that
     // must be treated with the same care as accessToken.
-    const rawAccessToken  = whatsapp.accessToken || null;
-    const rawVerifyToken  = whatsapp.verifyToken  || null;
-    const storedAccessToken = rawAccessToken ? encryptToken(rawAccessToken) : null;
-    const storedVerifyToken = rawVerifyToken ? encryptToken(rawVerifyToken) : null;
+    const rawAccessToken  = whatsapp.accessToken  || null;
+    const rawVerifyToken  = whatsapp.verifyToken   || null;
+    const rawWebhookSecret = whatsapp.webhookSecret || null;
+    const storedAccessToken  = rawAccessToken   ? encryptToken(rawAccessToken)   : null;
+    const storedVerifyToken  = rawVerifyToken   ? encryptToken(rawVerifyToken)   : null;
+    const storedWebhookSecret = rawWebhookSecret ? encryptToken(rawWebhookSecret) : null;
 
     // [FIX #6]  No status:'ACTIVE' — the Tenant schema default is 'PENDING'.
     // [FIX #8]  No manual apiKey generation — the Tenant pre-validate hook handles it.
@@ -193,14 +195,16 @@ export async function createTenant(req, res) {
     //                  dropped, forcing admins to update it immediately after creation.
     const tenant = await Tenant.create({
       name: name.trim(), adminPhone,
+      ...(email ? { email: email.trim() } : {}),
       onboardingStep: 1,
       whatsapp: {
         phoneNumberId: whatsapp.phoneNumberId || `SIM_${crypto.randomBytes(4).toString('hex').toUpperCase()}`,
         accessToken:   storedAccessToken,
         apiVersion:    whatsapp.apiVersion || 'v21.0',
-        ...(whatsapp.wabaId       ? { wabaId:       whatsapp.wabaId }       : {}),
-        ...(whatsapp.phone        ? { phone:        whatsapp.phone }        : {}),
-        ...(storedVerifyToken     ? { verifyToken:  storedVerifyToken }     : {}),
+        ...(whatsapp.wabaId         ? { wabaId:         whatsapp.wabaId }              : {}),
+        ...(whatsapp.phone          ? { phone:          whatsapp.phone }               : {}),
+        ...(storedVerifyToken       ? { verifyToken:    storedVerifyToken }            : {}),
+        ...(storedWebhookSecret     ? { webhookSecret:  storedWebhookSecret }         : {}),
       },
     });
 
@@ -242,9 +246,26 @@ export async function listTenants(req, res) {
     if (req.query.name)   filter.name   = { $regex: req.query.name, $options: 'i' };
     if (req.query.status) filter.status = req.query.status;
 
+    // [FIX-LIST-FIELDS] Also fetch email, whatsapp.phone, and businessMode.
+    // businessMode lives on BusinessConfig (not Tenant), so we do a lightweight
+    // lookup after the Tenant query rather than an expensive $lookup aggregation.
     const tenants = await Tenant.find(filter)
-      .select('name status createdAt whatsapp.phoneNumberId whatsapp.connected onboardingStep plan adminPhone')
+      .select('name status createdAt email adminPhone plan onboardingStep whatsapp.phoneNumberId whatsapp.connected whatsapp.phone')
       .lean();
+
+    // Enrich each tenant row with businessMode from BusinessConfig.
+    // Done in one batched query rather than N individual finds.
+    if (tenants.length > 0) {
+      const ids = tenants.map(t => String(t._id));
+      const configs = await BusinessConfig.find(
+        { tenantId: { $in: ids } },
+        { tenantId: 1, businessMode: 1 },
+      ).lean();
+      const modeMap = Object.fromEntries(configs.map(c => [String(c.tenantId), c.businessMode]));
+      for (const t of tenants) {
+        t.businessMode = modeMap[String(t._id)] || null;
+      }
+    }
     res.json({ tenants, count: tenants.length });
   } catch (err) {
     logger.error('[Tenant] listTenants failed', { err: err.message });
@@ -264,6 +285,7 @@ export async function getTenant(req, res) {
     if (tenant.whatsapp) {
       delete tenant.whatsapp.accessToken;
       delete tenant.whatsapp.verifyToken;
+      delete tenant.whatsapp.webhookSecret;
     }
     delete tenant.apiKey;
     delete tenant.apiKeyHash;
@@ -302,7 +324,7 @@ export async function updateTenant(req, res) {
     const ALLOWED = [
       'name', 'adminPhone', 'email', 'plan', 'notes',
       'whatsapp.phone', 'whatsapp.phoneNumberId', 'whatsapp.wabaId',
-      'whatsapp.accessToken', 'whatsapp.verifyToken', 'whatsapp.apiVersion',
+      'whatsapp.accessToken', 'whatsapp.verifyToken', 'whatsapp.webhookSecret', 'whatsapp.apiVersion',
       'limits.messagesPerMonth', 'limits.maxMenuItems', 'limits.maxAdmins',
     ];
 
@@ -333,6 +355,9 @@ export async function updateTenant(req, res) {
     }
     if (updates['whatsapp.verifyToken']) {
       updates['whatsapp.verifyToken'] = encryptToken(updates['whatsapp.verifyToken']);
+    }
+    if (updates['whatsapp.webhookSecret']) {
+      updates['whatsapp.webhookSecret'] = encryptToken(updates['whatsapp.webhookSecret']);
     }
 
     // [AUDIT-STEP] Auto-advance onboardingStep to 2 when WhatsApp credentials provided,
@@ -426,17 +451,25 @@ export async function updateTenantStatus(req, res) {
         });
       }
 
+      // [FIX-AUTH-2] Check for force:true override BEFORE the onboardingStep gate.
+      // The frontend sends force:true when the super-admin explicitly acknowledges
+      // that credentials haven't been verified yet and wants to activate anyway.
+      // Without this, the frontend's force flag was silently ignored — the backend
+      // always blocked activation at step < 3 regardless of what was sent.
+      const forceActivate = req.body.force === true;
+
       // [FIX-GATE] Block activation if WhatsApp credentials have not been verified
       // with Meta (onboardingStep < 3). Without this gate a super-admin can activate
       // a tenant that skipped verifyWhatsApp entirely — the bot would go live with
       // unverified (possibly wrong) credentials and silently drop every message.
       // Steps: 1=created, 2=credentials supplied, 3=Meta verified, 4=active.
       const currentStep = current?.onboardingStep ?? 0;
-      if (currentStep < 3) {
+      if (currentStep < 3 && !forceActivate) {
         return res.status(400).json({
           error:
             'Cannot activate: WhatsApp credentials must be verified before activation. ' +
-            'Complete onboarding via POST /admin/tenants/:id/verify-whatsapp first.',
+            'Complete onboarding via POST /admin/tenants/:id/verify-whatsapp first, ' +
+            'or send { force: true } to activate without verification.',
           onboardingStep: currentStep,
           required: 3,
         });
@@ -536,6 +569,20 @@ export async function verifyWhatsApp(req, res) {
       });
     }
 
+    // [FIX-VERIFY-2] Validate phoneNumberId looks like a real Meta Phone Number ID
+    // before making the outbound API call. Meta Phone Number IDs are purely numeric
+    // and typically 15+ digits. If the value contains non-numeric characters it is
+    // almost certainly a WABA ID, App ID, or copy-paste error — return a clear error
+    // instead of a cryptic Meta "does not exist" response.
+    if (!/^\d{10,}$/.test(phoneNumberId)) {
+      return res.status(400).json({
+        verified: false,
+        error: `phoneNumberId "${phoneNumberId}" does not look like a valid Meta Phone Number ID.`,
+        hint: 'A valid Phone Number ID is purely numeric (e.g. 123456789012345). Find it in Meta for Developers → WhatsApp → API Setup → "Phone number ID". Do NOT use the WABA ID, App ID, or phone number itself.',
+        phoneNumberId,
+      });
+    }
+
     const url  = `https://graph.facebook.com/${apiVersion}/${phoneNumberId}`;
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), 10000);
@@ -560,16 +607,31 @@ export async function verifyWhatsApp(req, res) {
 
     if (!metaResp.ok) {
       const errBody = await metaResp.json().catch(() => ({}));
+      const metaMsg = errBody?.error?.message || 'Meta API rejected the credentials';
+      const metaCode = errBody?.error?.code;
+
+      // [FIX-VERIFY-1] Translate common Meta Graph API errors into actionable guidance
+      // instead of forwarding the raw cryptic message to the frontend.
+      let hint = null;
+      if (metaMsg.toLowerCase().includes('does not exist') || metaMsg.toLowerCase().includes('unsupported get')) {
+        hint = 'The Phone Number ID appears to be wrong. In Meta for Developers → WhatsApp → API Setup, copy the numeric "Phone number ID" field. Do NOT use the WABA ID, App ID, or phone number itself.';
+      } else if (metaCode === 190 || metaMsg.toLowerCase().includes('access token')) {
+        hint = 'The Access Token is invalid or expired. Generate a new System User token in Meta Business Manager with whatsapp_business_messaging permission.';
+      } else if (metaCode === 10 || metaMsg.toLowerCase().includes('permission')) {
+        hint = 'The token is missing required permissions. Ensure the System User has whatsapp_business_messaging and whatsapp_business_management permissions.';
+      }
+
       logger.warn('[Tenant] WhatsApp verification failed', {
         tenantId: req.params.id,
         status: metaResp.status,
-        metaCode: errBody?.error?.code,
+        metaCode,
       });
       return res.status(400).json({
-        verified:  false,
-        error:     errBody?.error?.message || 'Meta API rejected the credentials',
-        metaCode:  errBody?.error?.code,
-        metaType:  errBody?.error?.type,
+        verified:   false,
+        error:      metaMsg,
+        hint,
+        metaCode,
+        metaType:   errBody?.error?.type,
         httpStatus: metaResp.status,
       });
     }

@@ -20,12 +20,19 @@ import {
 } from '../controllers/dashboardController.js';
 import { uploadSingle } from '../middleware/uploadMiddleware.js';
 import { uploadMenuItemImage, removeMenuItemImage } from '../controllers/menuImageController.js';
+import { overviewLimiter } from '../middleware/rateLimiter.js';
 
 const r = Router();
 
 function enforceTenantScope(req, res, next) {
   if (req.isSuperAdmin) return next();
   if (!req.tenantId) return res.status(401).json({ error: 'Unauthorized' });
+  // [FIX-SCOPE-1] Block SUSPENDED tenants from all data routes.
+  // Auth middleware now allows PENDING/INACTIVE through so they can configure their account,
+  // but SUSPENDED is an explicit admin disable — treat it like a hard block here.
+  if (req.tenant?.status === 'SUSPENDED') {
+    return res.status(403).json({ error: 'Account suspended. Contact support.' });
+  }
   if (req.params.tenantId && req.params.tenantId !== req.tenantId) {
     return res.status(403).json({ error: "Forbidden — cannot access another tenant's data" });
   }
@@ -33,7 +40,7 @@ function enforceTenantScope(req, res, next) {
 }
 
 // ── Overview ──────────────────────────────────────────────────────────────────
-r.get('/:tenantId/overview', enforceTenantScope, getDashboardOverview);
+r.get('/:tenantId/overview', overviewLimiter, enforceTenantScope, getDashboardOverview);
 
 // ── Orders ────────────────────────────────────────────────────────────────────
 r.get('/:tenantId/orders',                            enforceTenantScope, getOrders);

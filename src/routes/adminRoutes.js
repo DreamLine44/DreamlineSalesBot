@@ -23,7 +23,7 @@ import Session  from '../models/Session.js';
 import Tenant   from '../models/Tenant.js';
 import { updateSession } from '../core/sessions/sessionService.js';
 import { dispatchText }  from '../core/whatsapp/dispatcher.js';
-import { humanModeLimiter } from '../middleware/rateLimiter.js';
+import { humanModeLimiter, overviewLimiter } from '../middleware/rateLimiter.js';
 import logger from '../config/logger.js';
 
 const r = Router();
@@ -223,7 +223,7 @@ r.patch('/bookings/:id/status', async (req, res) => {
 
 // ── Active sessions list ──────────────────────────────────────────────────────
 // [FIX-ADMIN-4] Added ?limit and ?page query params for pagination
-r.get('/sessions/:tenantId', async (req, res) => {
+r.get('/sessions/:tenantId', overviewLimiter, async (req, res) => {
   const { tenantId } = req.params;
   if (!assertTenant(req, res, tenantId)) return;
   try {

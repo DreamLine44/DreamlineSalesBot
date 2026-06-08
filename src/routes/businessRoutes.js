@@ -24,6 +24,12 @@ const r = Router();
 function enforceTenantScope(req, res, next) {
   if (req.isSuperAdmin) return next();
   if (!req.tenantId) return res.status(401).json({ error: 'Unauthorized' });
+  // [FIX-SCOPE-1] Block SUSPENDED tenants from all data routes.
+  // Auth middleware now allows PENDING/INACTIVE through so they can configure their account,
+  // but SUSPENDED is an explicit admin disable — treat it like a hard block here.
+  if (req.tenant?.status === 'SUSPENDED') {
+    return res.status(403).json({ error: 'Account suspended. Contact support.' });
+  }
   if (req.params.tenantId && req.params.tenantId !== req.tenantId) {
     return res.status(403).json({ error: "Forbidden — cannot access another tenant's data" });
   }
