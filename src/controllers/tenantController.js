@@ -312,6 +312,15 @@ export async function getTenant(req, res) {
  * [AUDIT-P2-A]   whatsapp.accessToken is encrypted before storage.
  *
  * [AUDIT-STEP]   onboardingStep advances to 2 when WhatsApp credentials are provided.
+ *
+ * [ONE-SHOT]     When the request body includes `"activate": true`, and WhatsApp
+ *                credentials (phoneNumberId + accessToken) are present after this
+ *                update, the tenant is fully activated in a single call:
+ *                  - whatsapp.connected is set to true (Meta verification skipped)
+ *                  - status is set to ACTIVE
+ *                  - onboardingStep advances to 4
+ *                This is the recommended path for super-admins who trust their own
+ *                credentials and want to skip the separate verify + activate steps.
  */
 export async function updateTenant(req, res) {
   try {
@@ -321,6 +330,7 @@ export async function updateTenant(req, res) {
     // skip verification and activate without ever passing the Meta credential check.
     // whatsapp.connected also removed — it must only be set by verifyWhatsApp on
     // confirmed Meta API success, not asserted by the caller.
+    // Exception: the ONE-SHOT path (activate:true) sets both atomically below.
     const ALLOWED = [
       'name', 'adminPhone', 'email', 'plan', 'notes',
       'whatsapp.phone', 'whatsapp.phoneNumberId', 'whatsapp.wabaId',
@@ -362,12 +372,52 @@ export async function updateTenant(req, res) {
 
     // [AUDIT-STEP] Auto-advance onboardingStep to 2 when WhatsApp credentials provided,
     // but only if the tenant is still at step 1 (don't regress a verified tenant).
+    // [ONE-SHOT] When activate:true is requested, also set connected + ACTIVE + step 4.
     const hasCredentialUpdate = updates['whatsapp.accessToken'] || updates['whatsapp.phoneNumberId'];
+    const wantsActivate = req.body.activate === true;
+
+    // Load current tenant state once (needed for step gate and phoneNumberId check)
+    const current = await Tenant.findById(req.params.id)
+      .select('onboardingStep whatsapp.phoneNumberId whatsapp.accessToken')
+      .lean();
+    if (!current) return res.status(404).json({ error: 'Not found' });
+
     if (hasCredentialUpdate) {
-      const current = await Tenant.findById(req.params.id).select('onboardingStep').lean();
-      if (current && current.onboardingStep <= 1) {
+      if (current.onboardingStep <= 1) {
         updates['onboardingStep'] = 2;
       }
+    }
+
+    if (wantsActivate) {
+      // Resolve the phoneNumberId that will be in effect after this update
+      const effectivePhoneNumberId = updates['whatsapp.phoneNumberId'] || current.whatsapp?.phoneNumberId;
+
+      // Block if phoneNumberId is still a SIM_ placeholder
+      if (!effectivePhoneNumberId || effectivePhoneNumberId.startsWith('SIM_')) {
+        return res.status(400).json({
+          error:
+            'Cannot activate: phoneNumberId is still a simulation placeholder. ' +
+            'Include a real Meta phoneNumberId in this request body.',
+          phoneNumberId: effectivePhoneNumberId || null,
+        });
+      }
+
+      // Resolve the accessToken that will be in effect after this update
+      const effectiveAccessToken = updates['whatsapp.accessToken'] || current.whatsapp?.accessToken;
+      if (!effectiveAccessToken) {
+        return res.status(400).json({
+          error: 'Cannot activate: accessToken must be set before activation.',
+        });
+      }
+
+      // Mark connected, activate, and advance to step 4
+      updates['whatsapp.connected'] = true;
+      updates['status'] = 'ACTIVE';
+      if ((current.onboardingStep ?? 0) < 4) {
+        updates['onboardingStep'] = 4;
+      }
+
+      logger.info('[Tenant] ONE-SHOT activate requested', { tenantId: req.params.id });
     }
 
     const tenant = await Tenant.findByIdAndUpdate(
@@ -405,13 +455,13 @@ export async function updateTenant(req, res) {
       }
     }
 
-    logger.info('[Tenant] Updated', { tenantId: tenant._id, fields: Object.keys(updates) });
+    logger.info('[Tenant] Updated', { tenantId: tenant._id, fields: Object.keys(updates), activated: wantsActivate });
     // [AUDIT-FIX-2] tenant is a Mongoose document here so toJSON runs — but the transform
     // previously did not strip apiKeyHash. The transform is now fixed, and we also delete
     // it explicitly here as defence-in-depth before the document is serialised.
     const tenantOut = tenant.toJSON();
     delete tenantOut.apiKeyHash;
-    res.json({ ok: true, tenant: tenantOut });
+    res.json({ ok: true, tenant: tenantOut, ...(wantsActivate ? { activated: true, message: 'Tenant credentials set and activated. Bot is live.' } : {}) });
   } catch (err) {
     logger.error('[Tenant] updateTenant failed', { err: err.message });
     res.status(500).json({ error: err.message });
