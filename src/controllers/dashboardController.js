@@ -406,17 +406,17 @@ export async function updateBusinessSettings(req, res) {
     // tone sync when businessMode changes so tone fields stay consistent.
     if (updates.businessMode) {
       const toneMap = {
-        RESTAURANT:  { style: 'warm',         industry: 'restaurant'  },
-        BAKERY:      { style: 'warm',         industry: 'food'        },
-        RETAIL:      { style: 'professional', industry: 'retail'      },
-        FASHION:     { style: 'trendy',       industry: 'fashion'     },
-        ELECTRONICS: { style: 'technical',    industry: 'electronics' },
-        SALON:       { style: 'friendly',     industry: 'beauty'      },
-        BARBERSHOP:  { style: 'friendly',     industry: 'beauty'      },
-        COSMETICS:   { style: 'elegant',      industry: 'beauty'      },
-        DELIVERY:    { style: 'efficient',    industry: 'delivery'    },
-        SERVICES:    { style: 'professional', industry: 'services'    },
-        GENERAL:     { style: 'friendly',     industry: 'general'     },
+        RESTAURANT:  { style: 'FRIENDLY',     industry: 'RESTAURANT'  },
+        BAKERY:      { style: 'FRIENDLY',     industry: 'BAKERY'      },
+        RETAIL:      { style: 'PROFESSIONAL', industry: 'RETAIL'      },
+        FASHION:     { style: 'PREMIUM',      industry: 'FASHION'     },
+        ELECTRONICS: { style: 'PROFESSIONAL', industry: 'ELECTRONICS' },
+        SALON:       { style: 'PROFESSIONAL', industry: 'SALON'       },
+        BARBERSHOP:  { style: 'FRIENDLY',     industry: 'BARBERSHOP'  },
+        COSMETICS:   { style: 'PREMIUM',      industry: 'COSMETICS'   },
+        DELIVERY:    { style: 'FRIENDLY',     industry: 'DELIVERY'    },
+        SERVICES:    { style: 'PROFESSIONAL', industry: 'SERVICES'    },
+        GENERAL:     { style: 'FRIENDLY',     industry: 'GENERAL'     },
       };
       const t = toneMap[updates.businessMode.toUpperCase()];
       if (t) { updates['tone.style'] = t.style; updates['tone.industry'] = t.industry; }
