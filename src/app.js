@@ -50,7 +50,8 @@ import simulateRoutes    from './routes/simulateRoutes.js';
 import businessRoutes    from './routes/businessRoutes.js';
 import dashboardRoutes   from './routes/dashboardRoutes.js';
 import tenantRoutes      from './routes/tenantRoutes.js';
-import adminRoutes       from './routes/adminRoutes.js';
+import adminRoutes            from './routes/adminRoutes.js';
+import whatsappOnboardingRoutes from './routes/whatsappOnboardingRoutes.js';
 
 const app        = express();
 const isProduction = process.env.NODE_ENV === 'production';
@@ -152,6 +153,11 @@ app.post('/admin/rotate-super-key', adminLimiter, requireSuperAdminKey, (_req, r
   });
 });
 
+// WhatsApp onboarding — tenant-facing (/api/whatsapp/*) and admin-facing (/admin/whatsapp/*)
+// Must be mounted BEFORE the broad /admin mount to prevent /admin/whatsapp/* being caught
+// by /admin (which uses requireApiKey, not requireSuperAdminKey — the admin sub-routes
+// apply their own middleware internally via requireSuperAdminKey).
+app.use('/', createRateLimiter(60), whatsappOnboardingRoutes);
 app.use('/admin/tenants', adminLimiter, requireSuperAdminKey, tenantRoutes);
 app.use('/admin',         adminLimiter, requireApiKey,        adminRoutes);
 

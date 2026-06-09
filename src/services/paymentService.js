@@ -252,8 +252,29 @@ export function buildPaymentInstructionsUI(business, totalPrice, shortId, stored
   }
 
   // [UX-2] Return as 'buttons' so customers have a clear tap-to-confirm next step.
-  // Previously 'text' — left customers staring at instructions with no tappable action,
-  // causing drop-offs and repeat "I already sent" messages without the screenshot.
+  //
+  // [FIX-PAY-5] When requireProof=true the "✅ Sent Screenshot" (DONE) button was
+  // shown but served no purpose: tapping it sent the text "DONE" which was caught by
+  // step 10.5 (PAYMENT_PROOF strict text guard) and responded with "awaiting your
+  // payment screenshot" — contradicting the button label. The DONE button only has
+  // meaning when requireProof=false (cash/self-confirm flow, gated at step 10).
+  // When requireProof=true, remove it; only Support and Cancel are relevant.
+  const requireProof = payment?.requireProof !== false; // default true
+  const actionButtons = requireProof
+    ? [
+        { id: 'SUPPORT', title: '❓ Need Help'    },
+        { id: 'CANCEL',  title: '❌ Cancel Order' },
+      ]
+    : [
+        { id: 'DONE',    title: '✅ Sent Payment'  },
+        { id: 'SUPPORT', title: '❓ Need Help'      },
+        { id: 'CANCEL',  title: '❌ Cancel Order'   },
+      ];
+
+  const instructions = requireProof
+    ? `Send your payment *screenshot* (image) directly in this chat. We'll verify and confirm your order shortly ✅`
+    : `Tap *"✅ Sent Payment"* below once you've completed the payment. We'll process your order immediately ✅`;
+
   return {
     type: 'buttons',
     body:
@@ -264,11 +285,7 @@ export function buildPaymentInstructionsUI(business, totalPrice, shortId, stored
       `${channelBlock}\n` +
       (ref ? `\n⚠️ Use *${ref}* as your payment reference.\n` : '') +
       `─────────────────────\n\n` +
-      `Send your payment screenshot here, then tap *"✅ Sent Screenshot"* below. We'll verify and confirm your order shortly ✅`,
-    buttons: [
-      { id: 'DONE',    title: '✅ Sent Screenshot' },
-      { id: 'SUPPORT', title: '❓ Need Help'        },
-      { id: 'CANCEL',  title: '❌ Cancel Order'     },
-    ],
+      instructions,
+    buttons: actionButtons,
   };
 }

@@ -401,6 +401,27 @@ export async function updateBusinessSettings(req, res) {
       if (req.body[key] !== undefined) updates[key] = req.body[key];
     }
     if (!Object.keys(updates).length) return res.status(400).json({ error: 'No valid fields to update' });
+
+    // [FIX-TONE-3] findOneAndUpdate bypasses Mongoose pre('save') hooks — inline
+    // tone sync when businessMode changes so tone fields stay consistent.
+    if (updates.businessMode) {
+      const toneMap = {
+        RESTAURANT:  { style: 'warm',         industry: 'restaurant'  },
+        BAKERY:      { style: 'warm',         industry: 'food'        },
+        RETAIL:      { style: 'professional', industry: 'retail'      },
+        FASHION:     { style: 'trendy',       industry: 'fashion'     },
+        ELECTRONICS: { style: 'technical',    industry: 'electronics' },
+        SALON:       { style: 'friendly',     industry: 'beauty'      },
+        BARBERSHOP:  { style: 'friendly',     industry: 'beauty'      },
+        COSMETICS:   { style: 'elegant',      industry: 'beauty'      },
+        DELIVERY:    { style: 'efficient',    industry: 'delivery'    },
+        SERVICES:    { style: 'professional', industry: 'services'    },
+        GENERAL:     { style: 'friendly',     industry: 'general'     },
+      };
+      const t = toneMap[updates.businessMode.toUpperCase()];
+      if (t) { updates['tone.style'] = t.style; updates['tone.industry'] = t.industry; }
+    }
+
     const business = await BusinessConfig.findOneAndUpdate(
       { tenantId }, { $set: updates }, { new: true, runValidators: true }
     );

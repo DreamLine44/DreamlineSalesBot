@@ -562,6 +562,25 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
   ) {
     const upper = messageText.trim().toUpperCase();
 
+    // [FIX-PAY-5] DONE typed/tapped at PAYMENT_PROOF step when requireProof=true:
+    // The "Sent Screenshot" button was removed (paymentService FIX-PAY-5) but the
+    // customer could still type "DONE". Give a targeted response explaining that a
+    // screenshot image is required, not a text confirmation.
+    if (upper === 'DONE' && business?.payment?.requireProof !== false) {
+      await dispatchMessage(from, {
+        type:    'buttons',
+        body:    '📸 *Please send a screenshot image* of your payment confirmation — not a text message.
+
+' +
+                 'Open your Wave (or payment) app, take a screenshot of the successful transfer, and send the image here.',
+        buttons: [
+          { id: 'SUPPORT', title: '❓ Need Help'    },
+          { id: 'CANCEL',  title: '❌ Cancel Order' },
+        ],
+      }, tenantDoc);
+      return;
+    }
+
     // Allow explicit cancellation or order restart
     if (upper === 'CANCEL' || upper === 'CANCEL_ORDER' || upper === 'NEW_ORDER' || upper === 'ORDER') {
       const { default: Order } = await import('../models/Order.js');

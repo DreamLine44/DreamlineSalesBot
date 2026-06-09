@@ -69,11 +69,11 @@ export function validateEnv() {
   }
 
   if (isProduction) {
-    // [AUDIT-P2-A] ENCRYPTION_KEY is mandatory and must be exactly 32 bytes in production
+    // [AUDIT-P2-A] ENCRYPTION_KEY is mandatory in production.
+    // [FIX-ENC-1] Any non-empty value is valid — the key is SHA-256 hashed before use
+    // so raw byte length is irrelevant. Removed the misleading 32-byte minimum guard.
     if (!process.env.ENCRYPTION_KEY) {
-      errors.push('Missing required env var: ENCRYPTION_KEY (32 chars, used for WhatsApp access token encryption at rest)');
-    } else if (Buffer.byteLength(process.env.ENCRYPTION_KEY, 'utf8') < 32) {
-      errors.push('ENCRYPTION_KEY must be at least 32 bytes (use a 32-byte random string, e.g. from: openssl rand -hex 32)');
+      errors.push('Missing required env var: ENCRYPTION_KEY (any non-empty string; used for WhatsApp access token encryption at rest — generate with: openssl rand -hex 32)');
     }
 
     // In production, simulation mode must be OFF and Meta creds must be set
@@ -114,8 +114,6 @@ export function validateEnv() {
     // Development — ENCRYPTION_KEY optional but warn if missing (some flows need it)
     if (!process.env.ENCRYPTION_KEY) {
       console.warn('\n[Startup] Warning: ENCRYPTION_KEY not set — access tokens stored plaintext in dev.\n');
-    } else if (Buffer.byteLength(process.env.ENCRYPTION_KEY, 'utf8') < 32) {
-      console.warn('\n[Startup] Warning: ENCRYPTION_KEY must be at least 32 bytes. Token encryption disabled.\n');
     }
   }
 

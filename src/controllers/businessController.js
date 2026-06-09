@@ -50,6 +50,31 @@ export async function updateBusinessConfig(req, res) {
       return res.status(400).json({ error: 'Request body is empty — nothing to update' });
     }
 
+    // [FIX-TONE-3] findOneAndUpdate bypasses Mongoose pre('save') hooks, so the
+    // tone-sync logic in businessConfigSchema.pre('save') never runs on update paths.
+    // When businessMode is changing, compute and inline the tone fields here so they
+    // stay consistent without requiring a separate save() round-trip.
+    if (update.businessMode) {
+      const toneMap = {
+        RESTAURANT:  { style: 'warm',         industry: 'restaurant'  },
+        BAKERY:      { style: 'warm',         industry: 'food'        },
+        RETAIL:      { style: 'professional', industry: 'retail'      },
+        FASHION:     { style: 'trendy',       industry: 'fashion'     },
+        ELECTRONICS: { style: 'technical',    industry: 'electronics' },
+        SALON:       { style: 'friendly',     industry: 'beauty'      },
+        BARBERSHOP:  { style: 'friendly',     industry: 'beauty'      },
+        COSMETICS:   { style: 'elegant',      industry: 'beauty'      },
+        DELIVERY:    { style: 'efficient',    industry: 'delivery'    },
+        SERVICES:    { style: 'professional', industry: 'services'    },
+        GENERAL:     { style: 'friendly',     industry: 'general'     },
+      };
+      const t = toneMap[update.businessMode.toUpperCase()];
+      if (t) {
+        update['tone.style']    = t.style;
+        update['tone.industry'] = t.industry;
+      }
+    }
+
     const biz = await BusinessConfig.findOneAndUpdate(
       { tenantId },
       { $set: update },
