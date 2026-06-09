@@ -569,9 +569,7 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
     if (upper === 'DONE' && business?.payment?.requireProof !== false) {
       await dispatchMessage(from, {
         type:    'buttons',
-        body:    '📸 *Please send a screenshot image* of your payment confirmation — not a text message.
-
-' +
+        body:    '📸 *Please send a screenshot image* of your payment confirmation.\n\n' +
                  'Open your Wave (or payment) app, take a screenshot of the successful transfer, and send the image here.',
         buttons: [
           { id: 'SUPPORT', title: '❓ Need Help'    },
