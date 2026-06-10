@@ -18,51 +18,7 @@ import { GENERAL_CONFIG }    from '../modules/general/flows/index.js';
 import { RETAIL_CONFIG }     from '../modules/retail/flows/index.js';
 import { DELIVERY_CONFIG }   from '../modules/delivery/flows/index.js';
 
-// ── Pharmacy — still uses generic RETAIL base (no dedicated module yet) ───────
-const PHARMACY_CONFIG = {
-  businessMode: 'PHARMACY',
-  flows: ['ORDER'],
-  steps: { ORDER: ['SELECT_ITEM', 'QUANTITY', 'CONFIRM'] },
-  messages: {
-    welcome:   '💊 Welcome! How can we assist you today?',
-    fallback:  'Would you like to order medication or speak to a pharmacist?',
-    cancelMsg: '✅ No problem! Feel free to ask anytime.',
-  },
-  ui: {
-    welcomeButtons: [
-      { id: 'ORDER',     title: '💊 Order Medication' },
-      { id: 'SHOW_MENU', title: '📋 View Products'    },
-      { id: 'QUESTION',  title: '❓ Ask a Pharmacist' },
-    ],
-    fallbackButtons: [
-      { id: 'ORDER',    title: '💊 Order' },
-      { id: 'QUESTION', title: '❓ Ask'   },
-    ],
-  },
-};
 
-// ── Supermarket — still uses generic RETAIL base (no dedicated module yet) ────
-const SUPERMARKET_CONFIG = {
-  businessMode: 'SUPERMARKET',
-  flows: ['ORDER'],
-  steps: { ORDER: ['SELECT_ITEM', 'QUANTITY', 'CONFIRM'] },
-  messages: {
-    welcome:   '🛒 Welcome! What would you like today?',
-    fallback:  'Would you like to place an order or ask a question?',
-    cancelMsg: '✅ No problem! Come back anytime.',
-  },
-  ui: {
-    welcomeButtons: [
-      { id: 'ORDER',     title: '🛒 Order Now'      },
-      { id: 'SHOW_MENU', title: '📋 View Products'  },
-      { id: 'QUESTION',  title: '❓ Ask a Question' },
-    ],
-    fallbackButtons: [
-      { id: 'ORDER',     title: '🛒 Order Now'     },
-      { id: 'SHOW_MENU', title: '📋 View Products' },
-    ],
-  },
-};
 
 const MODE_MAP = {
   RESTAURANT:  RESTAURANT_CONFIG,
@@ -76,8 +32,6 @@ const MODE_MAP = {
   GENERAL:     GENERAL_CONFIG,
   RETAIL:      RETAIL_CONFIG,
   DELIVERY:    DELIVERY_CONFIG,
-  SUPERMARKET: SUPERMARKET_CONFIG,
-  PHARMACY:    PHARMACY_CONFIG,
   // Aliases
   FOOD:        RESTAURANT_CONFIG,
   CAFE:        RESTAURANT_CONFIG,

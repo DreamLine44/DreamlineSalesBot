@@ -76,12 +76,11 @@ const businessConfigSchema = new mongoose.Schema({
   // v15 canonical mode field
   businessMode: {
     type: String,
-    enum: ['RESTAURANT', 'SALON', 'BARBERSHOP', 'RETAIL', 'BAKERY', 'SUPERMARKET', 'FASHION', 'COSMETICS', 'ELECTRONICS', 'PHARMACY', 'DELIVERY',
-      // [FIX-MODE-ENUM] SERVICES and GENERAL are registered modules with full configs
-      // in modes.js and moduleRegistry.js but were missing from this enum. Any tenant
-      // saving businessMode='SERVICES' or 'GENERAL' would get a Mongoose validation
-      // error (or silently be rejected), making those modules unusable.
-      'SERVICES', 'GENERAL'],
+    // [FIX-MODE-ENUM] SERVICES and GENERAL are registered modules with full configs
+    // in modes.js and moduleRegistry.js but were missing from this enum. Any tenant
+    // saving businessMode='SERVICES' or 'GENERAL' would get a Mongoose validation
+    // error (or silently be rejected), making those modules unusable.
+    enum: ['RESTAURANT', 'SALON', 'BARBERSHOP', 'RETAIL', 'BAKERY', 'FASHION', 'COSMETICS', 'ELECTRONICS', 'DELIVERY', 'SERVICES', 'GENERAL'],
     default: 'RESTAURANT',
     index: true,
   },
@@ -176,7 +175,7 @@ const businessConfigSchema = new mongoose.Schema({
     // [FIX-TONE-1] SERVICES was present in businessMode enum but missing here.
     // Any tenant saving businessMode='SERVICES' and triggering a tone sync would
     // get a Mongoose validation error on the industry field, preventing the save.
-    industry: { type: String, enum: ['RESTAURANT', 'SALON', 'BARBERSHOP', 'RETAIL', 'BAKERY', 'SUPERMARKET', 'FASHION', 'COSMETICS', 'ELECTRONICS', 'PHARMACY', 'DELIVERY', 'SERVICES', 'GENERAL'], default: 'GENERAL' },
+    industry: { type: String, enum: ['RESTAURANT', 'SALON', 'BARBERSHOP', 'RETAIL', 'BAKERY', 'FASHION', 'COSMETICS', 'ELECTRONICS', 'DELIVERY', 'SERVICES', 'GENERAL'], default: 'GENERAL' },
   },
 
   // All user-facing strings — owner overrides these; getLabel() reads them first
@@ -243,11 +242,9 @@ businessConfigSchema.pre('save', function (next) {
       BARBERSHOP:  { style: 'FRIENDLY',     industry: 'BARBERSHOP'   },
       RETAIL:      { style: 'PROFESSIONAL', industry: 'RETAIL'       },
       BAKERY:      { style: 'FRIENDLY',     industry: 'BAKERY'       },
-      SUPERMARKET: { style: 'PROFESSIONAL', industry: 'SUPERMARKET'  },
       FASHION:     { style: 'PREMIUM',      industry: 'FASHION'      },
       COSMETICS:   { style: 'PREMIUM',      industry: 'COSMETICS'    },
       ELECTRONICS: { style: 'PROFESSIONAL', industry: 'ELECTRONICS'  },
-      PHARMACY:    { style: 'PROFESSIONAL', industry: 'PHARMACY'     },
       DELIVERY:    { style: 'FRIENDLY',     industry: 'DELIVERY'     },
       // [FIX-TONE-2] SERVICES and GENERAL were in businessMode enum but missing
       // from toneMap. When a SERVICES or GENERAL tenant saved, toneMap lookup

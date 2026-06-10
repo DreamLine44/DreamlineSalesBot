@@ -50,7 +50,7 @@ import simulateRoutes    from './routes/simulateRoutes.js';
 import businessRoutes    from './routes/businessRoutes.js';
 import dashboardRoutes   from './routes/dashboardRoutes.js';
 import tenantRoutes      from './routes/tenantRoutes.js';
-import adminRoutes            from './routes/adminRoutes.js';
+import adminRoutes                 from './routes/adminRoutes.js';
 import whatsappOnboardingRoutes from './routes/whatsappOnboardingRoutes.js';
 
 const app        = express();
@@ -157,7 +157,9 @@ app.post('/admin/rotate-super-key', adminLimiter, requireSuperAdminKey, (_req, r
 // Must be mounted BEFORE the broad /admin mount to prevent /admin/whatsapp/* being caught
 // by /admin (which uses requireApiKey, not requireSuperAdminKey — the admin sub-routes
 // apply their own middleware internally via requireSuperAdminKey).
-app.use('/', createRateLimiter(60), whatsappOnboardingRoutes);
+// [FIX-MOUNT-1] whatsappOnboardingRoutes — tenant-facing /api/whatsapp/* and
+// admin-facing /admin/whatsapp/* — must be mounted before the broad /admin catch-all.
+app.use('/', whatsappOnboardingRoutes);
 app.use('/admin/tenants', adminLimiter, requireSuperAdminKey, tenantRoutes);
 app.use('/admin',         adminLimiter, requireApiKey,        adminRoutes);
 
@@ -181,18 +183,10 @@ async function start() {
 
   const PORT = process.env.PORT || 5000;
   httpServer = app.listen(PORT, () => {
-    // [FIX-6] Mode list was hardcoded and listed PHARMACY/SUPERMARKET as if fully
-    // implemented. Now derived from getSupportedModes() so it auto-updates as modes
-    // are added. Stub modes (no dedicated module, fall back to RETAIL logic) are
-    // flagged with (*) so operators know they're not full implementations.
-    const STUB_MODES = new Set(['PHARMACY', 'SUPERMARKET']);
-    const modeList = getSupportedModes()
-      .map(m => STUB_MODES.has(m) ? `${m.toLowerCase()}*` : m.toLowerCase())
-      .join(' · ');
+    const modeList = getSupportedModes().map(m => m.toLowerCase()).join(' · ');
     logger.info(`\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
     logger.info(`  WhatSalesAgent2 v${version} — ${process.env.NODE_ENV} — port ${PORT}`);
     logger.info(`  Modes: ${modeList}`);
-    logger.info(`  (* = stub mode, uses generic RETAIL logic)`);
     logger.info(`  Simulation: ${process.env.SIMULATION_MODE === 'true' ? 'ON (dev)' : 'OFF (live Meta webhook)'}`);
     logger.info(`  Cloudinary: ${CLOUDINARY_ENABLED ? 'ON (image uploads enabled)' : 'OFF (set CLOUDINARY_* vars to enable)'}`);
     logger.info(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);

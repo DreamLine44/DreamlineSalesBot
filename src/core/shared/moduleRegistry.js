@@ -22,8 +22,6 @@ export async function registerAllModules() {
   // ── Restaurant ─────────────────────────────────────────────────────────────
   const { handleOrderFlow }        = await import('../../modules/restaurant/flows/orderFlow.js');
   registerFlow('RESTAURANT', 'ORDER', handleOrderFlow);
-  registerFlow('SUPERMARKET','ORDER', handleOrderFlow); // SUPERMARKET: still shares restaurant logic
-  registerFlow('PHARMACY',   'ORDER', handleOrderFlow); // PHARMACY: still shares restaurant logic
   registerGenericFlow('ORDER', handleOrderFlow);
 
   // ── Retail (dedicated) ─────────────────────────────────────────────────────

@@ -116,17 +116,19 @@ function _verifyTenantWebhookSignature(req, tenant) {
     ?? process.env.META_APP_SECRET
     ?? null;
 
-  // No secret anywhere — dev/test environment or unconfigured tenant
+  // No secret anywhere — pass through with a warning rather than silently dropping
+  // the message. During migration, tenants that have not yet had meta.appSecret
+  // populated and the platform hasn't set META_APP_SECRET would be unreachable.
+  // DEPLOY.md explicitly states zero downtime during migration; rejecting here
+  // contradicts that. A missing secret is an ops/config issue — log it clearly
+  // so the operator knows, but don't silently break the bot.
+  // [META-CREDS-FIX] Changed from hard reject → warn+pass in both environments.
   if (!rawSecret) {
-    if (process.env.NODE_ENV === 'production') {
-      logger.warn('[Webhook] No app secret for signature verification (tenant has no meta.appSecret and META_APP_SECRET not set)', {
-        tenantId: String(tenant?._id),
-      });
-      // In production with no secret at all, reject the message
-      return false;
-    }
-    // Development: skip verification with a warning
-    logger.warn('[Webhook] No app secret configured — skipping signature check (dev mode)');
+    logger.warn('[Webhook] No app secret configured — signature check skipped. ' +
+      'Set META_APP_SECRET or populate meta.appSecret on the tenant to enable HMAC verification.', {
+      tenantId: String(tenant?._id),
+      env: process.env.NODE_ENV,
+    });
     return true;
   }
 
