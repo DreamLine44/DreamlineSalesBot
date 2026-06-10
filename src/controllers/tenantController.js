@@ -4,87 +4,65 @@
  * ─── CHANGE LOG ───────────────────────────────────────────────────────────────
  *
  * [FIX-G]        updateTenantStatus accepts ACTIVE / SUSPENDED / INACTIVE / PENDING.
- *                PENDING lets admins revert a suspended tenant to onboarding state.
  *
- * [FIX-TENANT-1] deleteTenant purges ALL tenant-scoped data (Session, Order, Booking,
- *                UserProfile, Analytics, ProcessedMessage), not just BusinessConfig.
+ * [FIX-TENANT-1] deleteTenant purges ALL tenant-scoped data.
  *
- * [FIX-TENANT-2] createTenant validates required fields before Mongoose so the
- *                caller gets a clean 400, not a raw ValidationError 500.
+ * [FIX-TENANT-2] createTenant validates required fields before Mongoose.
  *
- * [FIX #6]       createTenant no longer sets status:'ACTIVE' — schema default
- *                ('PENDING') applies so new tenants await credential review.
+ * [FIX #6]       createTenant no longer sets status:'ACTIVE'.
  *
- * [FIX #7]       updateTenant PATCH /:id — allowlist prevents overwriting protected
- *                fields (_id, apiKey, apiKeyHash, status). Supports limits.* fields.
+ * [FIX #7]       updateTenant PATCH /:id — allowlist prevents overwriting protected fields.
  *
- * [FIX #8]       API key generation delegated to the Tenant pre-validate hook
- *                (randomBytes(32) / 64-char hex). Hook skips re-generation when
- *                apiKey is already set by the caller.
+ * [FIX #8]       API key generation delegated to the Tenant pre-validate hook.
  *
  * [FIX #12]      listTenants supports ?name= and ?status= query filters.
  *
- * [AUDIT-P1-A]   updateTenant auto-syncs whatsapp.phoneNumberId to BusinessConfig
- *                whenever it changes, preventing stale business-config lookups.
+ * [AUDIT-P1-A]   updateTenant auto-syncs whatsapp.phoneNumberId to BusinessConfig.
  *
- * [AUDIT-P2-A]   Access token encryption at rest using AES-256-GCM keyed on
- *                ENCRYPTION_KEY env var. Existing plaintext tokens are read
- *                transparently (enc: sentinel prefix). decryptToken() exported
- *                for use by dispatcher.js.
+ * [AUDIT-P2-A]   Access token encryption at rest using AES-256-GCM.
  *
- * [AUDIT-P2-C]   verifyWhatsApp — POST /:id/verify-whatsapp — validates credentials
- *                against the Meta Graph API phone number endpoint.
+ * [AUDIT-P2-C]   verifyWhatsApp — POST /:id/verify-whatsapp.
  *
- * [AUDIT-P2-D]   rotateApiKey — POST /:id/rotate-key — generates a new API key
- *                and hash atomically without touching tenant data.
+ * [AUDIT-P2-D]   rotateApiKey — POST /:id/rotate-key.
  *
- * [AUDIT-OB]     createTenant creates BusinessConfig.phoneNumberId in sync from
- *                the start, preventing the P1-A routing gap on fresh tenants.
+ * [AUDIT-OB]     createTenant creates BusinessConfig.phoneNumberId in sync.
  *
  * [AUDIT-STEP]   onboardingStep advances automatically:
  *                  0 → 1  createTenant
  *                  1 → 2  updateTenant when whatsapp credentials are set
- *                  2 → 3  verifyWhatsApp success (standalone endpoint)
+ *                  2 → 3  verifyWhatsApp success
  *                  3 → 4  updateTenantStatus(ACTIVE) or ONE-SHOT activation
  *
- * [AUDIT-FIX-1]  getTenant strips sensitive fields explicitly after .lean() so
- *                the toJSON transform (only runs on Mongoose docs) cannot be bypassed.
+ * [AUDIT-FIX-1]  getTenant strips sensitive fields explicitly after .lean().
  *
- * [AUDIT-FIX-2]  updateTenant response explicitly deletes apiKeyHash as
- *                defence-in-depth after toJSON().
+ * [AUDIT-FIX-2]  updateTenant response explicitly deletes apiKeyHash.
  *
  * [AUDIT-FIX-3]  verifyWhatsApp → step 3; updateTenantStatus(ACTIVE) → step 4.
- *                Previously both set step 3, making them indistinguishable.
  *
  * [AUDIT-FIX-4]  updateTenantStatus blocks ACTIVE if phoneNumberId is SIM_.
  *
- * [AUDIT-FIX-5]  getEncryptionKey SHA-256 hashes the raw env var before slicing
- *                to 32 bytes, eliminating multibyte-UTF-8 entropy loss.
+ * [AUDIT-FIX-5]  getEncryptionKey SHA-256 hashes the raw env var.
  *
- * [AUDIT-FIX-6]  Webhook routing queries Tenant.whatsapp.phoneNumberId directly,
- *                not BusinessConfig. BusinessConfig sync still maintained for
- *                business-config lookups.
+ * [AUDIT-FIX-6]  Webhook routing queries Tenant.whatsapp.phoneNumberId directly.
  *
- * [ONE-SHOT]     updateTenant accepts "activate": true to set credentials, attempt
- *                Meta verification, and activate the tenant in a single PATCH call.
- *                Meta verification result is included in the response (informational).
- *                Activation always proceeds regardless of Meta's response — the
- *                super-admin has authority to activate even if Meta rejects (e.g.
- *                rate-limited token, sandbox environment). whatsapp.connected is set
- *                to true only when Meta confirms; false otherwise — so the frontend
- *                can show the credential health status accurately.
+ * [ONE-SHOT]     updateTenant accepts "activate": true to set + verify + activate
+ *                in a single PATCH call. Activation always proceeds regardless of
+ *                Meta's response — super-admin has authority. whatsapp.connected is
+ *                set to true only when Meta confirms; false otherwise.
  *
- * [ONE-SHOT-FIX-1] The [ONE-SHOT] JSDoc comment previously said "Meta verification
- *                skipped" — corrected to "Meta verification attempted; always activates".
+ * [ONE-SHOT-FIX-1..3] Various ONE-SHOT edge-case fixes (see inline comments).
  *
- * [ONE-SHOT-FIX-2] activate:true with no credential fields (credentials already set
- *                in DB from a prior PATCH) now falls through to the ONE-SHOT block
- *                and runs verify+activate using the stored credentials. Previously
- *                returned 400 directing to /status force:true, which skips Meta
- *                verification entirely — defeating the purpose of ONE-SHOT.
+ * [FIX-PUT]      PUT /:id is now a valid alias for PATCH /:id (handled at route level).
+ *                No controller change needed — this comment documents the route fix.
  *
- * [ONE-SHOT-FIX-3] verifyWhatsApp (standalone) now delegates all Meta API logic to
- *                the shared verifyCredentialsWithMeta() helper — zero duplication.
+ * [FIX-VERIFY-PRE] verifyWhatsApp now returns separate, specific errors for SIM_
+ *                phoneNumberId vs missing accessToken instead of a single generic
+ *                combined message. Makes it immediately clear which credential to fix.
+ *
+ * [FIX-FORCE-CONNECTED] updateTenantStatus with force:true now sets
+ *                whatsapp.connected = true alongside the ACTIVE status update.
+ *                Previously a force-activated tenant was ACTIVE but connected=false
+ *                forever — the dashboard showed it as disconnected even when live.
  */
 
 import Tenant           from '../models/Tenant.js';
@@ -99,34 +77,19 @@ import crypto           from 'crypto';
 import logger           from '../config/logger.js';
 
 // ─── Token Encryption Utilities (AES-256-GCM) ────────────────────────────────
-// [AUDIT-P2-A] ENCRYPTION_KEY can be any non-empty string.
-// In development without ENCRYPTION_KEY, tokens are stored plaintext with a
-// warning. In production, env.js validateEnv() enforces ENCRYPTION_KEY is present,
-// so the graceful-degradation path only fires in dev/test.
-//
-// [FIX-ENC-1] The old guard required Buffer.byteLength(k,"utf8") >= 32, but since
-// [AUDIT-FIX-5] we SHA-256 hash the key before use, the raw byte length is
-// irrelevant — SHA-256 always produces exactly 32 bytes regardless of input length.
-// The 32-byte guard was silently rejecting valid short ENCRYPTION_KEY values in dev,
-// returning null and falling back to plaintext storage without warning.
-// Any non-empty key value is now accepted.
 
 const ALGORITHM = 'aes-256-gcm';
 
 function getEncryptionKey() {
   const k = process.env.ENCRYPTION_KEY;
   if (!k) return null;
-  // [AUDIT-FIX-5] SHA-256 hash folds the full entropy of any-length key into exactly
-  // 32 bytes. Slicing the first 32 UTF-8 bytes loses entropy for long keys and
-  // silently under-counts multibyte characters. Hashing is deterministic so existing
-  // encrypted tokens continue to decrypt as long as ENCRYPTION_KEY is unchanged.
+  // [AUDIT-FIX-5] SHA-256 hash folds any-length key into exactly 32 bytes.
   return crypto.createHash('sha256').update(k, 'utf8').digest();
 }
 
 /**
  * Encrypt a plaintext access token.
- * Returns a sentinel-prefixed string: "enc:<iv_hex>:<tag_hex>:<ciphertext_hex>"
- * Falls back to plaintext with a warning when ENCRYPTION_KEY is absent (dev only).
+ * Returns "enc:<iv_hex>:<tag_hex>:<ciphertext_hex>" or plaintext in dev.
  */
 export function encryptToken(plaintext) {
   if (!plaintext) return plaintext;
@@ -144,13 +107,10 @@ export function encryptToken(plaintext) {
 
 /**
  * Decrypt a token produced by encryptToken.
- * Passes through plaintext values (no enc: prefix) transparently so tokens stored
- * before encryption was deployed continue to work without migration.
- * On decryption failure returns the stored value and logs a warning to prevent
- * lock-out of existing tenants.
+ * Passes through plaintext values (no enc: prefix) transparently.
  */
 export function decryptToken(stored) {
-  if (!stored || !stored.startsWith('enc:')) return stored; // plaintext passthrough
+  if (!stored || !stored.startsWith('enc:')) return stored;
   const key = getEncryptionKey();
   if (!key) {
     logger.warn('[TenantCtrl] ENCRYPTION_KEY not set — cannot decrypt token, using stored value');
@@ -158,9 +118,6 @@ export function decryptToken(stored) {
   }
   try {
     const parts = stored.split(':');
-    // Format: enc:<iv>:<tag>:<ciphertext>  (all hex, no embedded colons today)
-    // Taking parts[1], parts[2], and joining parts[3..] future-proofs against a
-    // version prefix being added without silently destructuring wrong segments.
     if (parts.length < 4) throw new Error('Malformed encrypted token');
     const ivHex  = parts[1];
     const tagHex = parts[2];
@@ -179,20 +136,10 @@ export function decryptToken(stored) {
 // ─── Internal: verifyCredentialsWithMeta ──────────────────────────────────────
 /**
  * Calls the Meta Graph API to confirm a phoneNumberId + accessToken pair is valid.
- * Never throws — always returns a result object. Used by both the ONE-SHOT path in
- * updateTenant and the standalone verifyWhatsApp endpoint so logic is never duplicated.
- *
- * @param {string} phoneNumberId
- * @param {string} encryptedToken  Stored (possibly enc:-prefixed) token; decrypted internally.
- * @param {string} [apiVersion]
- * @param {string} [appId]         [META-CREDS] Optional Meta App ID for richer token validation.
- *                                  When provided, debug_token includes app_id → Meta returns
- *                                  which app issued the token, preventing cross-app token reuse.
- * @returns {{ verified: boolean, displayPhone?, verifiedName?, qualityRating?,
- *             error?, hint?, metaCode?, metaType? }}
+ * Never throws — always returns a result object.
  */
 async function verifyCredentialsWithMeta(phoneNumberId, encryptedToken, apiVersion = 'v21.0', appId = null) {
-  // ── Pre-flight checks — skip the network call for obviously invalid values ──
+  // Pre-flight: skip network call for obviously invalid values
   if (!phoneNumberId || phoneNumberId.startsWith('SIM_')) {
     return {
       verified: false,
@@ -200,8 +147,7 @@ async function verifyCredentialsWithMeta(phoneNumberId, encryptedToken, apiVersi
     };
   }
 
-  // Meta Phone Number IDs are purely numeric and ≥10 digits.
-  // Non-numeric values are almost always a WABA ID, App ID, or copy-paste mistake.
+  // Meta Phone Number IDs are purely numeric and ≥10 digits
   if (!/^\d{10,}$/.test(phoneNumberId)) {
     return {
       verified: false,
@@ -212,7 +158,6 @@ async function verifyCredentialsWithMeta(phoneNumberId, encryptedToken, apiVersi
     };
   }
 
-  // ── Network call ──────────────────────────────────────────────────────────
   const token = decryptToken(encryptedToken);
   const url   = `https://graph.facebook.com/${apiVersion}/${phoneNumberId}`;
   const ctrl  = new AbortController();
@@ -236,13 +181,11 @@ async function verifyCredentialsWithMeta(phoneNumberId, encryptedToken, apiVersi
     };
   }
 
-  // ── Error response from Meta ──────────────────────────────────────────────
   if (!metaResp.ok) {
     const errBody  = await metaResp.json().catch(() => ({}));
     const metaMsg  = errBody?.error?.message || 'Meta API rejected the credentials';
     const metaCode = errBody?.error?.code;
 
-    // Translate common Meta error codes into actionable guidance
     let hint = null;
     if (metaMsg.toLowerCase().includes('does not exist') || metaMsg.toLowerCase().includes('unsupported get')) {
       hint = 'The Phone Number ID appears wrong. Copy the numeric "Phone number ID" from '
@@ -268,7 +211,6 @@ async function verifyCredentialsWithMeta(phoneNumberId, encryptedToken, apiVersi
     };
   }
 
-  // ── Success ───────────────────────────────────────────────────────────────
   const data = await metaResp.json();
   return {
     verified:      true,
@@ -287,19 +229,14 @@ export async function createTenant(req, res) {
       leadCapture = {}, faq = [], description = '',
     } = req.body;
 
-    // [FIX-TENANT-2] Return a clean 400 before Mongoose throws a ValidationError.
     if (!name || typeof name !== 'string' || !name.trim()) {
       return res.status(400).json({ error: 'name is required' });
     }
 
-    // [AUDIT-P2-A] Encrypt sensitive whatsapp fields at creation time if supplied.
     const storedAccessToken   = whatsapp.accessToken   ? encryptToken(whatsapp.accessToken)   : null;
     const storedVerifyToken   = whatsapp.verifyToken   ? encryptToken(whatsapp.verifyToken)   : null;
     const storedWebhookSecret = whatsapp.webhookSecret ? encryptToken(whatsapp.webhookSecret) : null;
 
-    // [FIX #6]  No status:'ACTIVE' — schema default 'PENDING' applies.
-    // [FIX #8]  No manual apiKey generation — Tenant pre-validate hook handles it.
-    // [AUDIT-STEP]  onboardingStep starts at 1 (tenant created, awaiting credentials).
     const tenant = await Tenant.create({
       name: name.trim(),
       adminPhone,
@@ -316,8 +253,6 @@ export async function createTenant(req, res) {
       },
     });
 
-    // [AUDIT-OB] Create BusinessConfig with phoneNumberId in sync immediately so
-    // the P1-A routing gap never occurs for freshly created tenants.
     const business = await BusinessConfig.create({
       tenantId:      String(tenant._id),
       phoneNumberId: tenant.whatsapp.phoneNumberId,
@@ -328,8 +263,6 @@ export async function createTenant(req, res) {
       addOns: [],
     });
 
-    // [FIX-RAWKEY] _plaintextApiKey is a transient in-memory property set by the
-    // Tenant pre-validate hook. After this response it is gone — not in the DB, not in logs.
     const plaintextKey = tenant._plaintextApiKey;
     logger.info('[Tenant] Created', { tenantId: tenant._id, name: tenant.name });
     res.status(201).json({
@@ -350,7 +283,6 @@ export async function createTenant(req, res) {
 // ─── listTenants ──────────────────────────────────────────────────────────────
 export async function listTenants(req, res) {
   try {
-    // [FIX #12] Support ?name= and ?status= filters.
     const filter = {};
     if (req.query.name)   filter.name   = { $regex: req.query.name, $options: 'i' };
     if (req.query.status) filter.status = req.query.status;
@@ -359,7 +291,6 @@ export async function listTenants(req, res) {
       .select('name status createdAt email adminPhone plan onboardingStep whatsapp.phoneNumberId whatsapp.connected whatsapp.phone')
       .lean();
 
-    // Enrich each tenant row with businessMode from BusinessConfig in one batched query.
     if (tenants.length > 0) {
       const ids     = tenants.map(t => String(t._id));
       const configs = await BusinessConfig.find(
@@ -383,14 +314,12 @@ export async function getTenant(req, res) {
     const tenant = await Tenant.findById(req.params.id).lean();
     if (!tenant) return res.status(404).json({ error: 'Not found' });
 
-    // [AUDIT-FIX-1] .lean() returns a plain JS object — Mongoose toJSON transforms
-    // do NOT run. Strip all sensitive credential fields manually.
+    // [AUDIT-FIX-1] .lean() skips toJSON transforms — strip sensitive fields manually
     if (tenant.whatsapp) {
       delete tenant.whatsapp.accessToken;
       delete tenant.whatsapp.verifyToken;
       delete tenant.whatsapp.webhookSecret;
     }
-    // [META-CREDS] Strip appSecret — encrypted at rest but must never leave the server.
     if (tenant.meta) {
       delete tenant.meta.appSecret;
     }
@@ -405,21 +334,17 @@ export async function getTenant(req, res) {
   }
 }
 
-// ─── updateTenant — PATCH /admin/tenants/:id ─────────────────────────────────
+// ─── updateTenant — PATCH /admin/tenants/:id  (also PUT via route alias) ─────
 /**
  * Updates tenant credentials and metadata post-creation.
  *
- * Normal use: send any subset of the ALLOWED fields to update them.
+ * Normal use: send any subset of the ALLOWED fields.
  *
  * ONE-SHOT use: include "activate": true alongside WhatsApp credentials to:
  *   1. Save the credentials (encrypted at rest)
- *   2. Attempt Meta API verification — result is always included in the response
+ *   2. Attempt Meta API verification — result always included in response
  *   3. Set status = ACTIVE and onboardingStep = 4 regardless of Meta's response
  *   4. Set whatsapp.connected = true only if Meta confirmed; false otherwise
- *
- * The super-admin always has the authority to activate. Meta rejections (expired
- * token, rate limit, sandbox) are surfaced in whatsappVerification so the admin
- * knows the credential health without being blocked from going live.
  */
 export async function updateTenant(req, res) {
   try {
@@ -427,14 +352,11 @@ export async function updateTenant(req, res) {
       'name', 'adminPhone', 'email', 'plan', 'notes',
       'whatsapp.phone', 'whatsapp.phoneNumberId', 'whatsapp.wabaId',
       'whatsapp.accessToken', 'whatsapp.verifyToken', 'whatsapp.webhookSecret', 'whatsapp.apiVersion',
-      // [META-CREDS] Per-tenant Meta application credentials.
-      // appId is informational (not sensitive); appSecret is encrypted before storage.
       'meta.appId', 'meta.appSecret',
       'limits.messagesPerMonth', 'limits.maxMenuItems', 'limits.maxAdmins',
     ];
 
-    // Build the updates map from the allowlist only — both nested { whatsapp: { accessToken } }
-    // and flat dot-notation { 'whatsapp.accessToken': '...' } body shapes are accepted.
+    // Accept both nested { whatsapp: { accessToken } } and flat { 'whatsapp.accessToken': '...' }
     const updates = {};
     for (const field of ALLOWED) {
       const parts = field.split('.');
@@ -449,53 +371,40 @@ export async function updateTenant(req, res) {
 
     const wantsActivate = req.body.activate === true;
 
-    // [ONE-SHOT-FIX-2] When activate:true is sent with no other fields, the credentials
-    // are already set in the DB — run the full ONE-SHOT verify+activate path using the
-    // stored credentials. This is the correct use case: admin already ran a plain PATCH
-    // to set credentials, now wants to activate via a second call without re-supplying them.
-    // Previously this returned a 400 directing to /status force:true, which skips Meta
-    // verification entirely. Now it falls through to the ONE-SHOT block below where
-    // effectivePhoneNumberId and effectiveToken are resolved from `current`.
     if (!Object.keys(updates).length && !wantsActivate) {
       return res.status(400).json({ error: 'No valid fields to update', allowed: ALLOWED });
     }
 
-    // [AUDIT-P2-A] Encrypt sensitive tokens before they reach the DB.
+    // Encrypt sensitive tokens before they reach the DB
     if (updates['whatsapp.accessToken']) {
-      updates['whatsapp.accessToken']   = encryptToken(updates['whatsapp.accessToken']);
+      updates['whatsapp.accessToken']    = encryptToken(updates['whatsapp.accessToken']);
       updates['whatsapp.tokenUpdatedAt'] = new Date();
     }
     if (updates['whatsapp.verifyToken'])   updates['whatsapp.verifyToken']   = encryptToken(updates['whatsapp.verifyToken']);
     if (updates['whatsapp.webhookSecret']) updates['whatsapp.webhookSecret'] = encryptToken(updates['whatsapp.webhookSecret']);
-    // [META-CREDS] appSecret is sensitive — encrypt at rest using the same AES-256-GCM
-    // pattern as accessToken. appId is not sensitive; stored plaintext.
-    if (updates['meta.appSecret']) updates['meta.appSecret'] = encryptToken(updates['meta.appSecret']);
+    if (updates['meta.appSecret'])         updates['meta.appSecret']         = encryptToken(updates['meta.appSecret']);
 
-    // Load current tenant state — needed for the step gate and to resolve effective
-    // credential values for the ONE-SHOT verification call.
+    // Load current state — needed for step gate and ONE-SHOT effective-value resolution
     const current = await Tenant.findById(req.params.id)
       .select('onboardingStep whatsapp.phoneNumberId whatsapp.accessToken whatsapp.apiVersion meta.appId')
       .lean();
     if (!current) return res.status(404).json({ error: 'Tenant not found' });
 
-    // [AUDIT-STEP] Advance onboardingStep to 2 when credentials are supplied for the
-    // first time. Never regress a tenant that is already at step 2 or beyond.
+    // Advance onboardingStep to 2 when credentials are supplied for the first time
     const hasCredentialUpdate = updates['whatsapp.accessToken'] || updates['whatsapp.phoneNumberId'];
     if (hasCredentialUpdate && (current.onboardingStep ?? 0) <= 1) {
       updates['onboardingStep'] = 2;
     }
 
-    // [ONE-SHOT] When activate:true is requested ─────────────────────────────
+    // ONE-SHOT: verify + activate when activate:true is requested
     let metaVerification = null;
 
     if (wantsActivate) {
       const effectivePhoneNumberId = updates['whatsapp.phoneNumberId'] || current.whatsapp?.phoneNumberId;
       const effectiveToken         = updates['whatsapp.accessToken']   || current.whatsapp?.accessToken;
       const effectiveApiVersion    = updates['whatsapp.apiVersion']    || current.whatsapp?.apiVersion || 'v21.0';
-      // [META-CREDS] Pass appId when available for richer token validation.
       const effectiveAppId         = updates['meta.appId'] || current.meta?.appId || null;
 
-      // Hard-block on SIM_ placeholder — there is no way to send real messages with it.
       if (!effectivePhoneNumberId || effectivePhoneNumberId.startsWith('SIM_')) {
         return res.status(400).json({
           error: 'Cannot activate: phoneNumberId is still a simulation placeholder. '
@@ -504,21 +413,18 @@ export async function updateTenant(req, res) {
         });
       }
 
-      // Hard-block on missing token — the bot cannot authenticate to Meta without it.
       if (!effectiveToken) {
         return res.status(400).json({
           error: 'Cannot activate: accessToken must be provided before activation.',
         });
       }
 
-      // Attempt Meta verification. Result is informational — never blocks activation.
-      // The token is already encrypted at this point; verifyCredentialsWithMeta
-      // calls decryptToken() internally before making the outbound request.
+      // Token is already encrypted; verifyCredentialsWithMeta calls decryptToken() internally
       metaVerification = await verifyCredentialsWithMeta(
         effectivePhoneNumberId,
         effectiveToken,
         effectiveApiVersion,
-        effectiveAppId,   // [META-CREDS] optional — undefined-safe
+        effectiveAppId,
       );
 
       logger.info('[Tenant] ONE-SHOT Meta verification result', {
@@ -527,27 +433,20 @@ export async function updateTenant(req, res) {
         ...(metaVerification.error ? { metaError: metaVerification.error } : {}),
       });
 
-      // whatsapp.connected = true only when Meta confirmed the credentials.
-      // This is the accurate health flag — the frontend uses it to show a warning
-      // badge when the token is blocked so the admin can fix it without the bot
-      // being taken offline.
+      // whatsapp.connected = true only when Meta confirmed
       updates['whatsapp.connected'] = metaVerification.verified;
       updates['status']             = 'ACTIVE';
       if ((current.onboardingStep ?? 0) < 4) updates['onboardingStep'] = 4;
     }
-    // ─────────────────────────────────────────────────────────────────────────
 
     const tenant = await Tenant.findByIdAndUpdate(
       req.params.id,
       { $set: updates },
       { new: true, runValidators: true },
     );
-    // Extremely unlikely (deleted between findById and findByIdAndUpdate) but guard anyway.
     if (!tenant) return res.status(404).json({ error: 'Tenant not found' });
 
-    // [AUDIT-P1-A] Sync phoneNumberId to BusinessConfig when it changes on Tenant.
-    // webhook routing reads Tenant.whatsapp.phoneNumberId directly, but businessController
-    // and config lookups use BusinessConfig.phoneNumberId — keep them in sync.
+    // [AUDIT-P1-A] Sync phoneNumberId to BusinessConfig when it changes
     if (updates['whatsapp.phoneNumberId']) {
       try {
         await BusinessConfig.updateOne(
@@ -559,9 +458,7 @@ export async function updateTenant(req, res) {
           phoneNumberId: updates['whatsapp.phoneNumberId'],
         });
       } catch (syncErr) {
-        // Non-fatal: webhook routing still works (reads Tenant directly), but log
-        // visibly so the ops team can manually re-sync if needed.
-        logger.warn('[Tenant] BusinessConfig phoneNumberId sync failed — business-config lookups may be stale', {
+        logger.warn('[Tenant] BusinessConfig phoneNumberId sync failed (non-fatal)', {
           tenantId: req.params.id,
           err: syncErr.message,
         });
@@ -574,7 +471,7 @@ export async function updateTenant(req, res) {
       activated: wantsActivate,
     });
 
-    // [AUDIT-FIX-2] Delete apiKeyHash after toJSON() as defence-in-depth.
+    // [AUDIT-FIX-2] Delete apiKeyHash after toJSON() as defence-in-depth
     const tenantOut = tenant.toJSON();
     delete tenantOut.apiKeyHash;
 
@@ -598,7 +495,6 @@ export async function updateTenantStatus(req, res) {
   try {
     const { status } = req.body;
 
-    // [FIX-G] PENDING added so admins can revert a suspended tenant to onboarding state.
     if (!['ACTIVE', 'SUSPENDED', 'INACTIVE', 'PENDING'].includes(status)) {
       return res.status(400).json({
         error: 'Invalid status. Must be one of: ACTIVE, PENDING, SUSPENDED, INACTIVE',
@@ -612,7 +508,7 @@ export async function updateTenantStatus(req, res) {
         .lean();
       if (!current) return res.status(404).json({ error: 'Tenant not found' });
 
-      // [AUDIT-FIX-4] Block activation when phoneNumberId is still a SIM_ placeholder.
+      // [AUDIT-FIX-4] Block activation on SIM_ placeholder
       const phoneNumberId = current?.whatsapp?.phoneNumberId;
       if (!phoneNumberId || phoneNumberId.startsWith('SIM_')) {
         return res.status(400).json({
@@ -622,12 +518,9 @@ export async function updateTenantStatus(req, res) {
         });
       }
 
-      // [FIX-AUTH-2] Check force:true BEFORE the onboardingStep gate so the flag
-      // is not silently ignored.
+      // [FIX-AUTH-2] Check force:true BEFORE the onboardingStep gate
       const forceActivate = req.body.force === true;
 
-      // [FIX-GATE] Require credentials to have been verified (step ≥ 3) unless
-      // the super-admin explicitly sends force:true.
       const currentStep = current?.onboardingStep ?? 0;
       if (currentStep < 3 && !forceActivate) {
         return res.status(400).json({
@@ -639,8 +532,13 @@ export async function updateTenantStatus(req, res) {
         });
       }
 
-      // [AUDIT-FIX-3] Step 4 = activated (distinct from step 3 = verified).
+      // [AUDIT-FIX-3] Step 4 = activated (distinct from step 3 = verified)
       if (currentStep < 4) stepUpdate.onboardingStep = 4;
+
+      // [FIX-FORCE-CONNECTED] force:true sets connected=true — /status never did this,
+      // leaving the tenant ACTIVE but whatsapp.connected=false after force-activation.
+      // Without this the dashboard shows the tenant as disconnected even when live.
+      if (forceActivate) stepUpdate['whatsapp.connected'] = true;
     }
 
     const tenant = await Tenant.findByIdAndUpdate(
@@ -666,7 +564,6 @@ export async function deleteTenant(req, res) {
     const { id } = req.params;
     const tid = String(id);
 
-    // [FIX-TENANT-1] Delete ALL tenant-scoped data, not just BusinessConfig.
     const [tenantResult, ...collectionResults] = await Promise.allSettled([
       Tenant.findByIdAndDelete(id),
       BusinessConfig.deleteMany({ tenantId: tid }),
@@ -697,18 +594,9 @@ export async function deleteTenant(req, res) {
 
 // ─── verifyWhatsApp — POST /admin/tenants/:id/verify-whatsapp ─────────────────
 /**
- * [AUDIT-P2-C] Validates stored WhatsApp credentials against the Meta Graph API.
+ * Validates stored WhatsApp credentials against the Meta Graph API.
  * On success: sets whatsapp.connected = true and advances onboardingStep to 3.
  * On failure: returns the Meta error with translated hints — does NOT activate.
- *
- * Use this standalone endpoint when you want to verify without activating, or to
- * re-verify credentials on an already-active tenant after a token rotation.
- *
- * For a single-call set + verify + activate flow, use PATCH /admin/tenants/:id
- * with credentials and "activate": true instead.
- *
- * [ONE-SHOT-FIX-3] All Meta API logic is now in verifyCredentialsWithMeta() so
- * this function and the ONE-SHOT path share the exact same validation behaviour.
  */
 export async function verifyWhatsApp(req, res) {
   try {
@@ -717,14 +605,24 @@ export async function verifyWhatsApp(req, res) {
 
     const { accessToken, phoneNumberId, apiVersion = 'v21.0' } = tenant.whatsapp || {};
 
-    if (!accessToken || !phoneNumberId) {
+    // [FIX-VERIFY-PRE] Separate, specific errors for each missing/invalid credential
+    // rather than a generic combined message — makes it immediately clear what to fix.
+    if (!phoneNumberId || phoneNumberId.startsWith('SIM_')) {
       return res.status(400).json({
-        error: 'accessToken and phoneNumberId must both be set before verification. '
-             + 'Use PATCH /admin/tenants/:id to set them first.',
+        error: 'phoneNumberId is still a simulation placeholder — real Meta credentials have not been saved yet. '
+             + 'Use PATCH /admin/tenants/:id with { "whatsapp": { "phoneNumberId": "...", "accessToken": "..." } } first.',
+        field: 'phoneNumberId',
+        currentValue: phoneNumberId || null,
+      });
+    }
+    if (!accessToken) {
+      return res.status(400).json({
+        error: 'accessToken has not been set yet. '
+             + 'Use PATCH /admin/tenants/:id with { "whatsapp": { "accessToken": "..." } } first.',
+        field: 'accessToken',
       });
     }
 
-    // Delegate all Meta API interaction to the shared helper.
     const result = await verifyCredentialsWithMeta(phoneNumberId, accessToken, apiVersion);
 
     if (!result.verified) {
@@ -742,9 +640,7 @@ export async function verifyWhatsApp(req, res) {
       });
     }
 
-    // Advance onboardingStep to 3 (verified, not yet activated).
-    // Guard: a tenant already at step 4 (active) stays at 4 on re-verification
-    // so that re-checking a live tenant's token does not regress its state.
+    // Guard: a tenant at step 4 stays at 4 on re-verification — don't regress
     const currentStep = tenant.onboardingStep ?? 0;
     const newStep     = currentStep < 3 ? 3 : currentStep;
 
@@ -773,17 +669,11 @@ export async function verifyWhatsApp(req, res) {
 }
 
 // ─── rotateApiKey — POST /admin/tenants/:id/rotate-key ───────────────────────
-/**
- * [AUDIT-P2-D] Generates a new API key and hash atomically without touching any
- * tenant data. The new plaintext key is returned once and never stored.
- * The old key is immediately invalidated.
- */
 export async function rotateApiKey(req, res) {
   try {
     const newKey  = crypto.randomBytes(32).toString('hex');
     const newHash = crypto.createHash('sha256').update(newKey).digest('hex');
 
-    // $unset apiKey removes any legacy plaintext key that may exist on older documents.
     const tenant = await Tenant.findByIdAndUpdate(
       req.params.id,
       { $set: { apiKeyHash: newHash }, $unset: { apiKey: '' } },

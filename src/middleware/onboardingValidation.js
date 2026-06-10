@@ -1,19 +1,22 @@
 /**
  * middleware/onboardingValidation.js
  *
- * express-validator–free, dependency-free request validation helpers
- * for the WhatsApp onboarding module.
+ * Dependency-free request validation for the WhatsApp onboarding module.
  *
- * Each validator is a standard Express middleware that calls next() on
- * success or returns 400 with a structured error list on failure.
- *
- * Deliberately no external libraries — keeps the onboarding module
- * isolated and adds zero new dependencies to the project.
+ * [FIX-VAL-1] validateWhatsAppCredentials no longer requires wabaId and
+ *   verifyToken as hard required fields. In practice:
+ *   - wabaId: useful for record-keeping but not used in Meta API verification
+ *     (the phone number endpoint doesn't require it). Tenants may not have it
+ *     readily available. Now optional.
+ *   - verifyToken: only needed if the tenant runs their own webhook server.
+ *     For the WhatSales managed webhook setup this is not required upfront.
+ *     Now optional.
+ *   phoneNumberId and accessToken remain required — they are the only two
+ *   fields actually used for Meta API verification.
  */
 
-// ── Helpers ──────────────────────────────────────────────────────────────────
+// ── Helpers ───────────────────────────────────────────────────────────────────
 
-/** Collect field-level errors from a body object and a rule map. */
 function validate(body, rules) {
   const errors = [];
 
@@ -22,7 +25,7 @@ function validate(body, rules) {
 
     if (checks.required && (value === undefined || value === null || String(value).trim() === '')) {
       errors.push({ field, message: `${field} is required` });
-      continue; // skip further checks for this field if missing
+      continue;
     }
 
     if (value !== undefined && value !== null && String(value).trim() !== '') {
@@ -49,25 +52,25 @@ function validate(body, rules) {
   return errors;
 }
 
-// ── Exported validators ──────────────────────────────────────────────────────
+// ── Exported validators ───────────────────────────────────────────────────────
 
 /**
  * validateConnectionRequest
- * Used by: POST /api/whatsapp/request
+ * POST /api/whatsapp/request
  */
 export function validateConnectionRequest(req, res, next) {
   const errors = validate(req.body, {
     businessName:     { required: true, maxlength: 120 },
     businessCategory: { required: true, maxlength: 80 },
-    whatsappNumber:   {
+    whatsappNumber: {
       required: true,
       maxlength: 20,
       pattern: /^\+?[1-9]\d{6,18}$/,
       patternMessage: 'whatsappNumber must be a valid phone number (e.g. +220xxxxxxx)',
     },
-    contactPerson:    { required: true, maxlength: 100 },
-    contactEmail:     { required: true, maxlength: 200, email: true },
-    notes:            { maxlength: 1000 },
+    contactPerson:  { required: true, maxlength: 100 },
+    contactEmail:   { required: true, maxlength: 200, email: true },
+    notes:          { maxlength: 1000 },
   });
 
   if (errors.length) return res.status(400).json({ errors });
@@ -76,7 +79,7 @@ export function validateConnectionRequest(req, res, next) {
 
 /**
  * validateStatusUpdate
- * Used by: PATCH /admin/whatsapp/requests/:id/status
+ * PATCH /admin/whatsapp/requests/:id/status
  */
 export function validateStatusUpdate(req, res, next) {
   const VALID_STATUSES = ['pending', 'contacted', 'connecting', 'connected', 'rejected'];
@@ -92,14 +95,17 @@ export function validateStatusUpdate(req, res, next) {
 
 /**
  * validateWhatsAppCredentials
- * Used by: POST /admin/whatsapp/connect/:tenantId
+ * POST /admin/whatsapp/connect/:tenantId
+ *
+ * [FIX-VAL-1] wabaId and verifyToken are now optional.
+ *   Only phoneNumberId and accessToken are required for Meta verification.
  */
 export function validateWhatsAppCredentials(req, res, next) {
   const errors = validate(req.body, {
     phoneNumberId: { required: true, maxlength: 80 },
-    wabaId:        { required: true, maxlength: 80 },
+    wabaId:        { maxlength: 80 },        // optional — informational only
     accessToken:   { required: true, maxlength: 600 },
-    verifyToken:   { required: true, maxlength: 200 },
+    verifyToken:   { maxlength: 200 },       // optional — only needed for tenant-managed webhooks
     apiVersion:    { maxlength: 10 },
   });
 

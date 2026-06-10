@@ -7,15 +7,29 @@
  * Controller map:
  *
  * TENANT-FACING
- *   submitConnectionRequest()      POST /api/whatsapp/request
- *   getTenantRequestStatus()       GET  /api/whatsapp/request/status
+ *   submitConnectionRequest()        POST /api/whatsapp/request
+ *   getTenantRequestStatus()         GET  /api/whatsapp/request/status
  *
  * ADMIN-FACING (super-admin key required)
- *   getAllConnectionRequests()     GET  /admin/whatsapp/requests
- *   getConnectionRequestById()     GET  /admin/whatsapp/requests/:id
- *   updateConnectionRequestStatus() PATCH /admin/whatsapp/requests/:id/status
- *   saveTenantWhatsAppCredentials() POST /admin/whatsapp/connect/:tenantId
- *   testTenantWhatsAppConnection()  POST /admin/whatsapp/test/:tenantId
+ *   getAllConnectionRequests()        GET    /admin/whatsapp/requests
+ *   getConnectionRequestById()        GET    /admin/whatsapp/requests/:id
+ *   updateConnectionRequestStatus()  PATCH  /admin/whatsapp/requests/:id/status
+ *   saveTenantWhatsAppCredentials()  POST   /admin/whatsapp/connect/:tenantId
+ *   testTenantWhatsAppConnection()   POST   /admin/whatsapp/test/:tenantId
+ *
+ * [FIX-ONBOARD-CTL-1] saveTenantWhatsAppCredentials now also advances
+ *   onboardingStep to 2 (credentials saved) via Tenant.$set when credentials
+ *   are stored — consistent with what PATCH /admin/tenants/:id does.
+ *   Previously onboardingStep was never updated by the onboarding path.
+ *
+ * [FIX-ONBOARD-CTL-2] testTenantWhatsAppConnection now decrypts the stored
+ *   accessToken via decryptToken() before passing it to verifyCredentials().
+ *   Previously it passed the raw (possibly enc:-prefixed) stored value, which
+ *   caused Meta to reject it with a 190 "invalid token" error even when the
+ *   credentials were valid.
+ *
+ * [FIX-ONBOARD-CTL-3] testTenantWhatsAppConnection rejects SIM_ phoneNumberId
+ *   with a clear 422 error before making any Meta network call.
  *
  * ISOLATION: This controller does NOT import or reference any existing bot
  * controller, flow engine, session service, or webhook handler.
@@ -29,10 +43,11 @@ import {
   markConnected,
   updateStatus,
 } from '../services/whatsappOnboardingService.js';
+import { decryptToken } from '../controllers/tenantController.js';
 import { notifyAdminNewRequest } from '../services/whatsappNotificationService.js';
 import logger from '../config/logger.js';
 
-// ── Helpers ──────────────────────────────────────────────────────────────────
+// ── Helpers ───────────────────────────────────────────────────────────────────
 
 function isValidObjectId(id) {
   return mongoose.Types.ObjectId.isValid(id);
@@ -42,15 +57,7 @@ function isValidObjectId(id) {
 
 /**
  * submitConnectionRequest
- *
- * Tenant submits a new WhatsApp connection request.
- * Enforces: one active (non-rejected) request per tenant.
- *
  * POST /api/whatsapp/request
- * Auth: requireApiKey (tenant key)
- *
- * Body: { businessName, businessCategory, whatsappNumber,
- *         contactPerson, contactEmail, notes? }
  */
 export async function submitConnectionRequest(req, res, next) {
   try {
@@ -59,7 +66,6 @@ export async function submitConnectionRequest(req, res, next) {
       return res.status(401).json({ error: 'Tenant identity could not be resolved from API key' });
     }
 
-    // Enforce one active request per tenant
     const existing = await WhatsAppConnectionRequest.findOne({
       tenantId,
       status: { $nin: ['rejected'] },
@@ -67,8 +73,8 @@ export async function submitConnectionRequest(req, res, next) {
 
     if (existing) {
       return res.status(409).json({
-        error:   'A connection request already exists for this tenant',
-        status:  existing.status,
+        error:     'A connection request already exists for this tenant',
+        status:    existing.status,
         requestId: String(existing._id),
       });
     }
@@ -91,7 +97,6 @@ export async function submitConnectionRequest(req, res, next) {
       tenantId,
     });
 
-    // Notify admin (fire-and-forget)
     notifyAdminNewRequest(request).catch(() => {});
 
     return res.status(201).json({
@@ -107,11 +112,7 @@ export async function submitConnectionRequest(req, res, next) {
 
 /**
  * getTenantRequestStatus
- *
- * Tenant polls the status of their own connection request.
- *
  * GET /api/whatsapp/request/status
- * Auth: requireApiKey (tenant key)
  */
 export async function getTenantRequestStatus(req, res, next) {
   try {
@@ -123,28 +124,27 @@ export async function getTenantRequestStatus(req, res, next) {
     const request = await WhatsAppConnectionRequest
       .findOne({ tenantId })
       .sort({ createdAt: -1 })
-      .select('-adminNotes') // never expose admin notes to tenant
+      .select('-adminNotes')
       .lean();
 
     if (!request) {
       return res.status(404).json({ error: 'No connection request found for this tenant' });
     }
 
-    // Also surface the tenant's connection flag for convenience
     const tenant = await Tenant.findById(tenantId)
       .select('whatsapp.connected whatsapp.connectedAt status')
       .lean();
 
     return res.json({
       request: {
-        id:               String(request._id),
-        businessName:     request.businessName,
-        whatsappNumber:   request.whatsappNumber,
-        status:           request.status,
-        submittedAt:      request.createdAt,
-        lastUpdated:      request.updatedAt,
+        id:             String(request._id),
+        businessName:   request.businessName,
+        whatsappNumber: request.whatsappNumber,
+        status:         request.status,
+        submittedAt:    request.createdAt,
+        lastUpdated:    request.updatedAt,
       },
-      whatsappConnected: tenant?.whatsapp?.connected ?? false,
+      whatsappConnected: tenant?.whatsapp?.connected  ?? false,
       connectedAt:       tenant?.whatsapp?.connectedAt ?? null,
     });
 
@@ -157,12 +157,7 @@ export async function getTenantRequestStatus(req, res, next) {
 
 /**
  * getAllConnectionRequests
- *
- * Super-admin lists all connection requests with optional filters.
- *
  * GET /admin/whatsapp/requests
- * Query: ?status=pending&page=1&limit=20
- * Auth: requireSuperAdminKey
  */
 export async function getAllConnectionRequests(req, res, next) {
   try {
@@ -201,11 +196,7 @@ export async function getAllConnectionRequests(req, res, next) {
 
 /**
  * getConnectionRequestById
- *
- * Super-admin views a single connection request (full detail including adminNotes).
- *
  * GET /admin/whatsapp/requests/:id
- * Auth: requireSuperAdminKey
  */
 export async function getConnectionRequestById(req, res, next) {
   try {
@@ -230,12 +221,7 @@ export async function getConnectionRequestById(req, res, next) {
 
 /**
  * updateConnectionRequestStatus
- *
- * Super-admin updates status and optional admin notes on a request.
- *
  * PATCH /admin/whatsapp/requests/:id/status
- * Body: { status, adminNotes? }
- * Auth: requireSuperAdminKey
  */
 export async function updateConnectionRequestStatus(req, res, next) {
   try {
@@ -248,17 +234,14 @@ export async function updateConnectionRequestStatus(req, res, next) {
 
     const result = await updateStatus(id, status, {
       adminNotes: adminNotes || '',
-      reviewedBy: 'super-admin', // Can be extended to store admin email/user if needed
+      reviewedBy: 'super-admin',
     });
 
     if (!result.ok) {
       return res.status(404).json({ error: result.error });
     }
 
-    logger.info('[OnboardingCtrl] Request status updated', {
-      requestId: id,
-      status,
-    });
+    logger.info('[OnboardingCtrl] Request status updated', { requestId: id, status });
 
     return res.json({
       message: 'Status updated successfully',
@@ -272,14 +255,9 @@ export async function updateConnectionRequestStatus(req, res, next) {
 
 /**
  * saveTenantWhatsAppCredentials
- *
- * Super-admin saves WhatsApp credentials for a tenant.
- * Does NOT immediately mark the tenant as connected — use testTenantWhatsAppConnection
- * or call this endpoint with verifyFirst=true to auto-verify.
- *
  * POST /admin/whatsapp/connect/:tenantId
- * Body: { phoneNumberId, wabaId, accessToken, verifyToken, apiVersion?, verifyFirst? }
- * Auth: requireSuperAdminKey
+ *
+ * [FIX-ONBOARD-CTL-1] Also advances onboardingStep to 2 after saving credentials.
  */
 export async function saveTenantWhatsAppCredentials(req, res, next) {
   try {
@@ -303,10 +281,10 @@ export async function saveTenantWhatsAppCredentials(req, res, next) {
       verifyResult = await verifyCredentials({ phoneNumberId, wabaId, accessToken, apiVersion });
       if (verifyResult.status !== 'CONNECTED') {
         return res.status(422).json({
-          error:          'Credential verification failed — credentials not saved',
-          verifyStatus:   verifyResult.status,
-          verifyMessage:  verifyResult.message,
-          details:        verifyResult.details,
+          error:         'Credential verification failed — credentials not saved',
+          verifyStatus:  verifyResult.status,
+          verifyMessage: verifyResult.message,
+          details:       verifyResult.details,
         });
       }
     }
@@ -323,11 +301,17 @@ export async function saveTenantWhatsAppCredentials(req, res, next) {
       return res.status(404).json({ error: saveResult.error });
     }
 
-    // If credentials were verified, also mark tenant connected
+    // [FIX-ONBOARD-CTL-1] Advance onboardingStep to 2 (credentials saved, awaiting verification)
+    // when the tenant is still at step 0 or 1 — consistent with PATCH /admin/tenants/:id behaviour.
+    const currentTenant = await Tenant.findById(tenantId).select('onboardingStep').lean();
+    if (currentTenant && (currentTenant.onboardingStep ?? 0) <= 1) {
+      await Tenant.findByIdAndUpdate(tenantId, { $set: { onboardingStep: 2 } });
+      logger.info('[OnboardingCtrl] onboardingStep advanced to 2', { tenantId });
+    }
+
     if (verifyFirst && verifyResult?.status === 'CONNECTED') {
       await markConnected(tenantId);
 
-      // Update the most recent pending request to "connected" (best-effort)
       const latestRequest = await WhatsAppConnectionRequest.findOne({
         tenantId,
         status: { $nin: ['connected', 'rejected'] },
@@ -342,8 +326,8 @@ export async function saveTenantWhatsAppCredentials(req, res, next) {
     }
 
     return res.status(200).json({
-      message:       verifyFirst
-        ? 'Credentials saved and verified. Tenant is now CONNECTED.'
+      message: verifyFirst
+        ? 'Credentials saved and verified. Run PATCH /admin/tenants/:id/status with { "status": "ACTIVE" } to activate.'
         : 'Credentials saved. Run POST /admin/whatsapp/test/:tenantId to verify.',
       tenantId,
       phoneNumberId,
@@ -358,15 +342,10 @@ export async function saveTenantWhatsAppCredentials(req, res, next) {
 
 /**
  * testTenantWhatsAppConnection
- *
- * Verifies a tenant's stored credentials against the Meta Graph API.
- * On success, marks the tenant as CONNECTED and transitions the
- * latest non-rejected request to "connected".
- *
  * POST /admin/whatsapp/test/:tenantId
- * Auth: requireSuperAdminKey
  *
- * Returns: { verifyStatus: 'CONNECTED'|'INVALID_TOKEN'|'INVALID_PHONE_NUMBER'|'META_ERROR', ... }
+ * [FIX-ONBOARD-CTL-2] Decrypts stored accessToken before calling verifyCredentials().
+ * [FIX-ONBOARD-CTL-3] Rejects SIM_ phoneNumberId before any Meta network call.
  */
 export async function testTenantWhatsAppConnection(req, res, next) {
   try {
@@ -375,7 +354,6 @@ export async function testTenantWhatsAppConnection(req, res, next) {
       return res.status(400).json({ error: 'Invalid tenant ID' });
     }
 
-    // Load tenant credentials
     const tenant = await Tenant.findById(tenantId)
       .select('whatsapp name status')
       .lean();
@@ -384,17 +362,33 @@ export async function testTenantWhatsAppConnection(req, res, next) {
       return res.status(404).json({ error: 'Tenant not found' });
     }
 
-    const { phoneNumberId, wabaId, accessToken, apiVersion } = tenant.whatsapp || {};
+    const { phoneNumberId, wabaId, accessToken: storedToken, apiVersion } = tenant.whatsapp || {};
 
-    if (!phoneNumberId || !accessToken) {
+    // [FIX-ONBOARD-CTL-3] Reject SIM_ before network call
+    if (!phoneNumberId || phoneNumberId.startsWith('SIM_')) {
       return res.status(422).json({
-        error:        'No WhatsApp credentials found for this tenant. Save credentials first.',
-        verifyStatus: 'META_ERROR',
+        error:        'phoneNumberId is still a simulation placeholder. Save real credentials first via POST /admin/whatsapp/connect/:tenantId.',
+        verifyStatus: 'INVALID_PHONE_NUMBER',
+        phoneNumberId: phoneNumberId || null,
       });
     }
 
-    // Verify against Meta
-    const result = await verifyCredentials({ phoneNumberId, wabaId, accessToken, apiVersion });
+    if (!storedToken) {
+      return res.status(422).json({
+        error:        'No accessToken found for this tenant. Save credentials first via POST /admin/whatsapp/connect/:tenantId.',
+        verifyStatus: 'INVALID_TOKEN',
+      });
+    }
+
+    // [FIX-ONBOARD-CTL-2] Decrypt stored token before passing to verifyCredentials
+    const plaintextToken = decryptToken(storedToken);
+
+    const result = await verifyCredentials({
+      phoneNumberId,
+      wabaId,
+      accessToken: plaintextToken,
+      apiVersion,
+    });
 
     logger.info('[OnboardingCtrl] Credential test result', {
       tenantId,
@@ -402,13 +396,11 @@ export async function testTenantWhatsAppConnection(req, res, next) {
     });
 
     if (result.status === 'CONNECTED') {
-      // Mark tenant connected
       const connResult = await markConnected(tenantId);
       if (!connResult.ok) {
         logger.warn('[OnboardingCtrl] markConnected failed after successful verify', { tenantId });
       }
 
-      // Advance the latest request to "connected" (best-effort)
       const latestRequest = await WhatsAppConnectionRequest.findOne({
         tenantId,
         status: { $nin: ['connected', 'rejected'] },
@@ -423,11 +415,11 @@ export async function testTenantWhatsAppConnection(req, res, next) {
     }
 
     return res.json({
-      verifyStatus:  result.status,
-      message:       result.message,
-      details:       result.details || null,
+      verifyStatus: result.status,
+      message:      result.message,
+      details:      result.details || null,
       tenantId,
-      tenantName:    tenant.name,
+      tenantName:   tenant.name,
     });
 
   } catch (err) {

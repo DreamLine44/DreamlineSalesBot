@@ -2,46 +2,53 @@
  * services/whatsappOnboardingService.js
  *
  * Business-logic layer for the WhatsApp onboarding module.
- * Responsible for:
- *   - Saving tenant WhatsApp credentials
- *   - Verifying credentials against Meta Graph API
- *   - Marking a tenant as connected / disconnected
- *   - Updating connection request status
  *
  * ISOLATION CONTRACT:
- *   This service imports only:
- *     - Mongoose models (Tenant, WhatsAppConnectionRequest)
- *     - Node built-ins (https)
- *     - Internal logger
- *   It does NOT import or touch:
- *     - flowEngine, moduleRouter, intentEngine
- *     - sessionService, dispatcher, webhookController
- *     - Any existing bot service
- *   The existing bot therefore continues operating exactly as before.
+ *   Imports only: Mongoose models, Node built-ins, internal logger.
+ *   Does NOT import: flowEngine, moduleRouter, intentEngine, sessionService,
+ *   dispatcher, webhookController, or any existing bot service.
+ *
+ * [FIX-ONBOARD-1] saveCredentials now encrypts accessToken and verifyToken
+ *   via encryptToken() from tenantController before writing to DB.
+ *   Previously credentials were stored plaintext here, bypassing the
+ *   AES-256-GCM encryption applied by the tenantController PATCH path.
+ *   Any token saved via the onboarding service would fail decryptToken()
+ *   in the dispatcher (no enc: prefix → passthrough, but inconsistent with
+ *   encrypted tokens stored via PATCH).  Now both paths encrypt identically.
+ *
+ * [FIX-ONBOARD-2] verifyCredentials uses the same Authorization: Bearer
+ *   header pattern as verifyCredentialsWithMeta() in tenantController.
+ *   The old debug_token approach requires the token to be both input_token
+ *   AND access_token, which fails for System User tokens (they cannot
+ *   self-introspect without an App access token). Calling the phone number
+ *   endpoint directly with an Authorization header is the correct and
+ *   consistent approach used throughout the rest of the codebase.
+ *
+ * [FIX-ONBOARD-3] markConnected no longer force-sets status = 'ACTIVE'.
+ *   Marking connected and activating are separate admin decisions.
+ *   Only whatsapp.connected and whatsapp.lastVerifiedAt are set here.
+ *   Activation (status → ACTIVE) happens via PATCH /admin/tenants/:id/status
+ *   or the ONE-SHOT activate:true path.
  */
-import https from 'https';
 import Tenant from '../models/Tenant.js';
 import WhatsAppConnectionRequest from '../models/WhatsAppConnectionRequest.js';
+import { encryptToken, decryptToken } from '../controllers/tenantController.js';
 import { notifyStatusChange } from './whatsappNotificationService.js';
 import logger from '../config/logger.js';
 
 // ── Meta Graph API verification ──────────────────────────────────────────────
 
-const META_GRAPH_BASE = 'https://graph.facebook.com';
-
 /**
  * verifyCredentials
  *
- * Calls the Meta Graph API to confirm that:
- *   1. The access token is valid (token debug endpoint).
- *   2. The phone number ID is reachable with the given token.
- *
- * Returns a structured result object — never throws.
+ * Validates a phoneNumberId + accessToken pair against the Meta Graph API.
+ * Uses Authorization: Bearer header (matches tenantController pattern).
+ * Never throws — always returns a structured result.
  *
  * @param {object} params
  * @param {string} params.phoneNumberId
- * @param {string} params.wabaId
- * @param {string} params.accessToken
+ * @param {string} params.accessToken   plaintext token (not yet encrypted)
+ * @param {string} [params.wabaId]      informational only — not used in verification
  * @param {string} [params.apiVersion]  default "v21.0"
  *
  * @returns {Promise<{
@@ -51,81 +58,94 @@ const META_GRAPH_BASE = 'https://graph.facebook.com';
  * }>}
  */
 export async function verifyCredentials({ phoneNumberId, wabaId, accessToken, apiVersion = 'v21.0' }) {
-  // ── 1. Validate token via debug_token ─────────────────────────────────────
+  // Pre-flight: reject SIM_ placeholders immediately
+  if (!phoneNumberId || phoneNumberId.startsWith('SIM_')) {
+    return {
+      status:  'INVALID_PHONE_NUMBER',
+      message: 'phoneNumberId is a simulation placeholder — set a real Meta Phone Number ID first.',
+    };
+  }
+
+  if (!accessToken) {
+    return {
+      status:  'INVALID_TOKEN',
+      message: 'accessToken is required for verification.',
+    };
+  }
+
+  const url  = `https://graph.facebook.com/${apiVersion}/${encodeURIComponent(phoneNumberId)}`;
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 10_000);
+
+  let resp;
   try {
-    const tokenCheckUrl =
-      `${META_GRAPH_BASE}/${apiVersion}/debug_token` +
-      `?input_token=${encodeURIComponent(accessToken)}` +
-      `&access_token=${encodeURIComponent(accessToken)}`;
+    resp = await fetch(url, {
+      headers: { Authorization: `Bearer ${accessToken}` },
+      signal:  ctrl.signal,
+    });
+    clearTimeout(timer);
+  } catch (fetchErr) {
+    clearTimeout(timer);
+    const isTimeout = fetchErr.name === 'AbortError';
+    logger.warn('[OnboardingService] Meta API fetch failed', { err: fetchErr.message });
+    return {
+      status:  'META_ERROR',
+      message: isTimeout
+        ? 'Request to Meta API timed out (10 s).'
+        : `Network error reaching Meta API: ${fetchErr.message}`,
+    };
+  }
 
-    const tokenResult = await fetchJson(tokenCheckUrl);
+  if (!resp.ok) {
+    const errBody  = await resp.json().catch(() => ({}));
+    const metaMsg  = errBody?.error?.message || 'Meta API rejected the credentials';
+    const metaCode = errBody?.error?.code;
 
-    if (!tokenResult.data?.is_valid) {
+    if (metaCode === 190 || metaMsg.toLowerCase().includes('access token')) {
       return {
         status:  'INVALID_TOKEN',
-        message: 'Access token is invalid or expired',
-        details: tokenResult.data || tokenResult.error || {},
+        message: `Access token rejected by Meta: ${metaMsg}`,
+        details: errBody?.error || {},
       };
     }
-  } catch (err) {
-    logger.warn('[OnboardingService] Token debug call failed', { err: err.message });
-    return { status: 'META_ERROR', message: `Meta API unreachable: ${err.message}` };
-  }
-
-  // ── 2. Validate phoneNumberId ─────────────────────────────────────────────
-  try {
-    const phoneUrl =
-      `${META_GRAPH_BASE}/${apiVersion}/${encodeURIComponent(phoneNumberId)}` +
-      `?fields=id,display_phone_number,verified_name,status` +
-      `&access_token=${encodeURIComponent(accessToken)}`;
-
-    const phoneResult = await fetchJson(phoneUrl);
-
-    if (phoneResult.error) {
-      const code = phoneResult.error.code;
-      if (code === 190) {
-        return { status: 'INVALID_TOKEN', message: 'Access token rejected by Meta', details: phoneResult.error };
-      }
-      return {
-        status:  'INVALID_PHONE_NUMBER',
-        message: `Phone number ID not found or inaccessible: ${phoneResult.error.message}`,
-        details: phoneResult.error,
-      };
-    }
-
-    logger.info('[OnboardingService] Credential verification PASSED', {
-      phoneNumberId,
-      wabaId,
-      displayNumber: phoneResult.display_phone_number,
-      status:        phoneResult.status,
-    });
 
     return {
-      status:  'CONNECTED',
-      message: 'Credentials verified successfully',
-      details: {
-        displayPhoneNumber: phoneResult.display_phone_number,
-        verifiedName:       phoneResult.verified_name,
-        phoneStatus:        phoneResult.status,
-      },
+      status:  'INVALID_PHONE_NUMBER',
+      message: `Phone number ID not found or inaccessible: ${metaMsg}`,
+      details: errBody?.error || {},
     };
-
-  } catch (err) {
-    logger.warn('[OnboardingService] Phone number ID check failed', { err: err.message });
-    return { status: 'META_ERROR', message: `Meta API error: ${err.message}` };
   }
+
+  const data = await resp.json().catch(() => ({}));
+
+  logger.info('[OnboardingService] Credential verification PASSED', {
+    phoneNumberId,
+    wabaId,
+    displayNumber: data.display_phone_number,
+    status:        data.status,
+  });
+
+  return {
+    status:  'CONNECTED',
+    message: 'Credentials verified successfully',
+    details: {
+      displayPhoneNumber: data.display_phone_number ?? null,
+      verifiedName:       data.verified_name        ?? null,
+      phoneStatus:        data.status               ?? null,
+    },
+  };
 }
 
-// ── Credential persistence ─────────────────────────────────────────────────────
+// ── Credential persistence ────────────────────────────────────────────────────
 
 /**
  * saveCredentials
  *
  * Persists WhatsApp credentials onto the tenant document.
- * Uses $set targeting only whatsapp.* fields — all other tenant fields untouched.
+ * [FIX-ONBOARD-1] Encrypts accessToken and verifyToken before writing.
  *
  * @param {string} tenantId
- * @param {object} credentials
+ * @param {object} credentials  { phoneNumberId, wabaId, accessToken, verifyToken, apiVersion }
  * @returns {Promise<{ ok: boolean, tenant?: object, error?: string }>}
  */
 export async function saveCredentials(tenantId, credentials) {
@@ -134,9 +154,10 @@ export async function saveCredentials(tenantId, credentials) {
   try {
     const update = {
       'whatsapp.phoneNumberId':  phoneNumberId,
-      'whatsapp.wabaId':         wabaId,
-      'whatsapp.accessToken':    accessToken,
-      'whatsapp.verifyToken':    verifyToken,
+      'whatsapp.wabaId':         wabaId || null,
+      // [FIX-ONBOARD-1] Encrypt before storing — consistent with tenantController
+      'whatsapp.accessToken':    accessToken ? encryptToken(accessToken) : null,
+      'whatsapp.verifyToken':    verifyToken ? encryptToken(verifyToken) : null,
       'whatsapp.tokenUpdatedAt': new Date(),
     };
     if (apiVersion) update['whatsapp.apiVersion'] = apiVersion;
@@ -161,7 +182,9 @@ export async function saveCredentials(tenantId, credentials) {
 /**
  * markConnected
  *
- * Sets whatsapp.connected = true and activates the tenant.
+ * Sets whatsapp.connected = true and stamps lastVerifiedAt.
+ * [FIX-ONBOARD-3] Does NOT force status = 'ACTIVE' — activation is a
+ * separate admin decision handled by PATCH /admin/tenants/:id/status.
  *
  * @param {string} tenantId
  * @returns {Promise<{ ok: boolean, tenant?: object, error?: string }>}
@@ -176,7 +199,6 @@ export async function markConnected(tenantId) {
         $set: {
           'whatsapp.connected':      true,
           'whatsapp.lastVerifiedAt': now,
-          status:                    'ACTIVE',
         },
       },
       { new: true, runValidators: false },
@@ -201,7 +223,7 @@ export async function markConnected(tenantId) {
 /**
  * updateStatus
  *
- * Updates a WhatsAppConnectionRequest status, then fires a notification.
+ * Updates a WhatsAppConnectionRequest status and fires a notification.
  *
  * @param {string} requestId
  * @param {string} newStatus
@@ -233,23 +255,4 @@ export async function updateStatus(requestId, newStatus, meta = {}) {
     logger.error('[OnboardingService] updateStatus failed', { requestId, err: err.message });
     return { ok: false, error: err.message };
   }
-}
-
-// ── Internal helpers ──────────────────────────────────────────────────────────
-
-/**
- * fetchJson — lightweight HTTPS GET returning parsed JSON.
- * Uses Node's native https module — no external dependency.
- */
-function fetchJson(url) {
-  return new Promise((resolve, reject) => {
-    https.get(url, (res) => {
-      let data = '';
-      res.on('data', (chunk) => { data += chunk; });
-      res.on('end', () => {
-        try { resolve(JSON.parse(data)); }
-        catch (e) { reject(new Error(`Invalid JSON from Meta: ${data.slice(0, 200)}`)); }
-      });
-    }).on('error', reject);
-  });
 }
