@@ -83,8 +83,18 @@ export function validateEnv() {
     if (!process.env.META_WEBHOOK_VERIFY_TOKEN) {
       errors.push('Missing required env var: META_WEBHOOK_VERIFY_TOKEN');
     }
+    // [META-CREDS] META_APP_SECRET is now a platform-wide fallback only.
+    // Each tenant can (and should) store their own appSecret in the database via
+    // PATCH /api/admin/tenants/:id with { "meta.appSecret": "..." }.
+    // Once all tenants have per-tenant secrets, META_APP_SECRET can be removed.
+    // Until then, warn if absent so the operator knows signature verification may
+    // fall back to no-op for tenants without a stored secret.
     if (!process.env.META_APP_SECRET) {
-      errors.push('Missing required env var: META_APP_SECRET');
+      warnings.push(
+        'META_APP_SECRET is not set. Webhook signature verification will fail for tenants ' +
+        'that have no meta.appSecret stored in the database. ' +
+        'Set META_APP_SECRET as a platform-wide fallback, or populate meta.appSecret on each tenant.'
+      );
     }
 
     // [AUDIT-P1-B] Error (not warn) if scheduler is enabled but templates are not configured.

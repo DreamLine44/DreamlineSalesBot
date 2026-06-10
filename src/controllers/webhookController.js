@@ -91,10 +91,68 @@ import { advance }                                   from '../core/conversations
 import { route }                                     from '../core/conversations/moduleRouter.js';
 import { dispatchMessage }                           from '../core/whatsapp/dispatcher.js';
 import { getModeConfig }                             from '../config/modes.js';
+import { decryptToken }                              from './tenantController.js';
 import Tenant           from '../models/Tenant.js';
 import BusinessConfig   from '../models/BusinessConfig.js';
 import ProcessedMessage from '../models/ProcessedMessage.js';
 import logger           from '../config/logger.js';
+import crypto           from 'crypto';
+
+// ── [META-CREDS] Per-tenant webhook HMAC signature verification ───────────────
+// Verifies X-Hub-Signature-256 using the tenant's own Meta App Secret.
+// Falls back to the global META_APP_SECRET env var when a tenant has no
+// meta.appSecret — so existing tenants remain functional without migration.
+//
+// Returns true  → signature valid (or no secret configured in dev mode)
+// Returns false → signature invalid or missing (reject the message)
+//
+// IMPORTANT: req.rawBody (Buffer) must be set by app.js before this runs.
+// The existing express.raw() setup in app.js already handles this.
+function _verifyTenantWebhookSignature(req, tenant) {
+  // [META-CREDS] Resolve secret: per-tenant first, then global env fallback.
+  // decryptToken handles the enc: prefix transparently (imported above).
+  const encryptedSecret = tenant?.meta?.appSecret ?? null;
+  const rawSecret = (encryptedSecret ? decryptToken(encryptedSecret) : null)
+    ?? process.env.META_APP_SECRET
+    ?? null;
+
+  // No secret anywhere — dev/test environment or unconfigured tenant
+  if (!rawSecret) {
+    if (process.env.NODE_ENV === 'production') {
+      logger.warn('[Webhook] No app secret for signature verification (tenant has no meta.appSecret and META_APP_SECRET not set)', {
+        tenantId: String(tenant?._id),
+      });
+      // In production with no secret at all, reject the message
+      return false;
+    }
+    // Development: skip verification with a warning
+    logger.warn('[Webhook] No app secret configured — skipping signature check (dev mode)');
+    return true;
+  }
+
+  const sigHeader = req.headers['x-hub-signature-256'];
+  if (!sigHeader) {
+    // Meta always sends this header on real webhook events
+    logger.warn('[Webhook] Missing X-Hub-Signature-256 header', { ip: req.ip });
+    return false;
+  }
+
+  const rawBody = req.rawBody;
+  if (!rawBody) {
+    logger.error('[Webhook] rawBody missing — check app.js raw body parser setup');
+    return false;
+  }
+
+  const expected = 'sha256=' + crypto
+    .createHmac('sha256', rawSecret)
+    .update(rawBody)
+    .digest('hex');
+
+  const sigBuf = Buffer.from(sigHeader);
+  const expBuf = Buffer.from(expected);
+  return sigBuf.length === expBuf.length &&
+         crypto.timingSafeEqual(sigBuf, expBuf);
+}
 
 // ── [FIX-BUG9] Button IDs generated inside active flows — must bypass intent detection
 // [FIX-WH-4] SVC_ IDs were previously capped at SVC_0..SVC_9 (10 services). Businesses
@@ -839,6 +897,11 @@ export async function verifyWebhook(req, res) {
 }
 
 // ── Meta webhook event receiver ────────────────────────────────────────────────
+// [META-CREDS] Per-tenant HMAC signature verification added here.
+// Verification is done per-entry (after tenant resolution) rather than globally,
+// because each tenant may have a different Meta App Secret. The global
+// META_APP_SECRET env var is used as a platform fallback for tenants that have
+// not yet had meta.appSecret populated — ensuring zero downtime during migration.
 export async function receiveWebhook(req, res) {
   res.sendStatus(200);
   try {
@@ -854,6 +917,17 @@ export async function receiveWebhook(req, res) {
             const from   = msg.from;
             const tenant = await Tenant.findOne({ 'whatsapp.phoneNumberId': phoneNumberId, status: 'ACTIVE' }).lean();
             if (!tenant) continue;
+
+            // [META-CREDS] Per-tenant webhook HMAC verification.
+            // Resolve the app secret: tenant-specific takes priority over global env fallback.
+            // This runs after tenant resolution so we know which secret to use.
+            if (!_verifyTenantWebhookSignature(req, tenant)) {
+              logger.warn('[Webhook] Signature mismatch for tenant', {
+                tenantId: String(tenant._id), phoneNumberId, ip: req.ip,
+              });
+              continue; // Skip this message — possible spoofed request
+            }
+
             await handleIncomingMessage({
               tenantId: String(tenant._id), tenantDoc: tenant,
               from, msgObj: msg, phoneNumberId,

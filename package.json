@@ -9,7 +9,7 @@
   },
   "scripts": {
     "start": "node app.js",
-    "dev": "node --watch app.js",
+    "dev": "node --watch src/app.js",
     "seed": "node scripts/seed.js",
     "health": "node scripts/health.js",
     "genKey": "node scripts/genKey.js",

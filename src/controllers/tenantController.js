@@ -185,10 +185,13 @@ export function decryptToken(stored) {
  * @param {string} phoneNumberId
  * @param {string} encryptedToken  Stored (possibly enc:-prefixed) token; decrypted internally.
  * @param {string} [apiVersion]
+ * @param {string} [appId]         [META-CREDS] Optional Meta App ID for richer token validation.
+ *                                  When provided, debug_token includes app_id → Meta returns
+ *                                  which app issued the token, preventing cross-app token reuse.
  * @returns {{ verified: boolean, displayPhone?, verifiedName?, qualityRating?,
  *             error?, hint?, metaCode?, metaType? }}
  */
-async function verifyCredentialsWithMeta(phoneNumberId, encryptedToken, apiVersion = 'v21.0') {
+async function verifyCredentialsWithMeta(phoneNumberId, encryptedToken, apiVersion = 'v21.0', appId = null) {
   // ── Pre-flight checks — skip the network call for obviously invalid values ──
   if (!phoneNumberId || phoneNumberId.startsWith('SIM_')) {
     return {
@@ -387,6 +390,10 @@ export async function getTenant(req, res) {
       delete tenant.whatsapp.verifyToken;
       delete tenant.whatsapp.webhookSecret;
     }
+    // [META-CREDS] Strip appSecret — encrypted at rest but must never leave the server.
+    if (tenant.meta) {
+      delete tenant.meta.appSecret;
+    }
     delete tenant.apiKey;
     delete tenant.apiKeyHash;
 
@@ -420,6 +427,9 @@ export async function updateTenant(req, res) {
       'name', 'adminPhone', 'email', 'plan', 'notes',
       'whatsapp.phone', 'whatsapp.phoneNumberId', 'whatsapp.wabaId',
       'whatsapp.accessToken', 'whatsapp.verifyToken', 'whatsapp.webhookSecret', 'whatsapp.apiVersion',
+      // [META-CREDS] Per-tenant Meta application credentials.
+      // appId is informational (not sensitive); appSecret is encrypted before storage.
+      'meta.appId', 'meta.appSecret',
       'limits.messagesPerMonth', 'limits.maxMenuItems', 'limits.maxAdmins',
     ];
 
@@ -457,11 +467,14 @@ export async function updateTenant(req, res) {
     }
     if (updates['whatsapp.verifyToken'])   updates['whatsapp.verifyToken']   = encryptToken(updates['whatsapp.verifyToken']);
     if (updates['whatsapp.webhookSecret']) updates['whatsapp.webhookSecret'] = encryptToken(updates['whatsapp.webhookSecret']);
+    // [META-CREDS] appSecret is sensitive — encrypt at rest using the same AES-256-GCM
+    // pattern as accessToken. appId is not sensitive; stored plaintext.
+    if (updates['meta.appSecret']) updates['meta.appSecret'] = encryptToken(updates['meta.appSecret']);
 
     // Load current tenant state — needed for the step gate and to resolve effective
     // credential values for the ONE-SHOT verification call.
     const current = await Tenant.findById(req.params.id)
-      .select('onboardingStep whatsapp.phoneNumberId whatsapp.accessToken whatsapp.apiVersion')
+      .select('onboardingStep whatsapp.phoneNumberId whatsapp.accessToken whatsapp.apiVersion meta.appId')
       .lean();
     if (!current) return res.status(404).json({ error: 'Tenant not found' });
 
@@ -479,6 +492,8 @@ export async function updateTenant(req, res) {
       const effectivePhoneNumberId = updates['whatsapp.phoneNumberId'] || current.whatsapp?.phoneNumberId;
       const effectiveToken         = updates['whatsapp.accessToken']   || current.whatsapp?.accessToken;
       const effectiveApiVersion    = updates['whatsapp.apiVersion']    || current.whatsapp?.apiVersion || 'v21.0';
+      // [META-CREDS] Pass appId when available for richer token validation.
+      const effectiveAppId         = updates['meta.appId'] || current.meta?.appId || null;
 
       // Hard-block on SIM_ placeholder — there is no way to send real messages with it.
       if (!effectivePhoneNumberId || effectivePhoneNumberId.startsWith('SIM_')) {
@@ -503,6 +518,7 @@ export async function updateTenant(req, res) {
         effectivePhoneNumberId,
         effectiveToken,
         effectiveApiVersion,
+        effectiveAppId,   // [META-CREDS] optional — undefined-safe
       );
 
       logger.info('[Tenant] ONE-SHOT Meta verification result', {

@@ -142,7 +142,35 @@ const tenantSchema = new mongoose.Schema({
     trim:    true,
   },
 
-  // ================= META =================
+  // ================= META APP CREDENTIALS =================
+  // Per-tenant Meta (Facebook) application credentials.
+  // appId     — Meta App ID (not sensitive, but stored here for completeness)
+  // appSecret — Meta App Secret (AES-256-GCM encrypted, same pattern as accessToken)
+  //
+  // These are used for:
+  //   1. Webhook HMAC signature verification (appSecret replaces global META_APP_SECRET)
+  //   2. Token introspection via debug_token (appId provides richer validation data)
+  //
+  // When null, the system falls back to the global META_APP_SECRET / META_APP_ID env
+  // vars so existing tenants continue working without any data migration.
+  //
+  // [META-CREDS] Added in multi-tenant credential upgrade.
+  meta: {
+    appId: {
+      type: String,
+      trim: true,
+      default: null,
+    },
+    // Stored AES-256-GCM encrypted (enc:<iv>:<tag>:<ct> sentinel prefix).
+    // Never serialised — stripped by toJSON transform below.
+    appSecret: {
+      type: String,
+      trim: true,
+      default: null,
+    },
+  },
+
+  // ================= NOTES =================
   notes: { type: String, default: "" }
 
 }, { timestamps: true });
@@ -176,6 +204,12 @@ tenantSchema.set("toJSON", {
       delete ret.whatsapp.accessToken;
       delete ret.whatsapp.verifyToken;
       delete ret.whatsapp.webhookSecret;
+    }
+    // [META-CREDS] Strip appSecret — encrypted at rest but must never leave the server.
+    // appId is not sensitive and is retained for frontend display (e.g. showing which
+    // Meta App a tenant is connected to).
+    if (ret.meta) {
+      delete ret.meta.appSecret;
     }
     delete ret.apiKey;     // safety net for legacy documents
     delete ret.apiKeyHash;
