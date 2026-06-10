@@ -1,0 +1,222 @@
+/**
+ * core/intents/patterns.js
+ *
+ * Single source of truth for all intent keywords, button IDs and emoji shortcuts.
+ * Edit here to add new phrases — no other files need changing.
+ */
+
+// ── Button ID → Action map ────────────────────────────────────────────────────
+// Every interactive button sent to customers must have its ID registered here.
+// [FIX-BTN-1] ABOUT and QUOTE_FOLLOW were missing — see inline comment below.
+export const BUTTON_ID_MAP = {
+  // Primary actions
+  'ORDER':              'START_ORDER',
+  'BOOK':               'START_BOOKING',
+  'QUESTION':           'ENQUIRY',
+  'SUPPORT':            'SUPPORT',
+  'SHOW_MENU':          'SHOW_MENU',
+  'VIEW_MENU':          'SHOW_MENU',
+
+  // Flow control
+  'CONFIRM':            'CONFIRM',
+  'CANCEL':             'CANCEL',
+  'CANCEL_BOOKING':     'CANCEL',
+  'DATE_BACK':          'DATE_BACK',
+  'TIME_BACK':          'TIME_BACK',
+
+  // Upsell
+  'UPSELL_YES':         'UPSELL_YES',
+  'UPSELL_NO':          'UPSELL_NO',
+
+  // Switch flow
+  'SWITCH_YES':         'SWITCH_YES',
+  'SWITCH_NO':          'SWITCH_NO',
+
+  // Post-flow
+  'REPEAT_ORDER':       'REPEAT_ORDER',
+  'TRACK_ORDER':        'TRACK_ORDER',
+  'TRACK':              'TRACK_ORDER',
+  // [FIX-BTN-1] ABOUT and QUOTE_FOLLOW are sent as button IDs to customers
+  // (GENERAL module welcome screen; SERVICES module welcome screen). Without
+  // entries here, detectIntent() receives an unmapped interactive ID at step 1
+  // and returns CONTINUE_FLOW, which routes to the welcome menu — completely
+  // ignoring the customer's tap. Now correctly mapped to their action names.
+  'ABOUT':              'ABOUT',
+  'QUOTE_FOLLOW':       'QUOTE_FOLLOW',
+  'NEW_ORDER':          'START_ORDER',
+
+  // Payment
+  'PAYMENT':            'PAYMENT',
+  'DONE':               'DONE',
+
+  // Date/time confirmation
+  'CONFIRM_DATE':       'CONFIRM',
+  'CONFIRM_TIME':       'CONFIRM',
+
+  // Rejection handling
+  'REJECTION_RESEND':   'REJECTION_RESEND',
+  'REJECTION_SUPPORT':  'REJECTION_SUPPORT',
+  'REJECTION_CANCEL':   'REJECTION_CANCEL',
+
+  // Numeric shortcuts (welcome menu)
+  '1':                  'START_ORDER',
+  '2':                  'START_BOOKING',
+  '3':                  'ENQUIRY',
+  '0':                  'SHOW_MENU',
+
+  // Quantity quick-pick buttons — [UX-1] route as CONTINUE_FLOW so active order
+  // handlers receive the raw QTY_N value and resolve it via their shortcut map.
+  'QTY_1':              'CONTINUE_FLOW',
+  'QTY_2':              'CONTINUE_FLOW',
+  'QTY_3':              'CONTINUE_FLOW',
+
+  // Skincare advice skin-type buttons — [FIX-8] these were unmapped so tapping them
+  // sent the raw button ID string ('SKIN_DRY') to AI as if it were a customer message.
+  // Now correctly routed as CONTINUE_FLOW so the active SKINCARE_ADVICE handler receives them.
+  'SKIN_DRY':           'CONTINUE_FLOW',
+  'SKIN_OILY':          'CONTINUE_FLOW',
+  'SKIN_COMBO':         'CONTINUE_FLOW',
+  'SKIN_CUSTOM':        'CONTINUE_FLOW',
+
+  // Fashion colour selection — [UX-4] COLOR_ prefixed IDs must route as CONTINUE_FLOW
+  // so the active fashion ORDER handler's SELECT_COLOR case receives the raw value.
+  // COLOR_SKIP is the "no preference" option.
+  'COLOR_SKIP':         'CONTINUE_FLOW',
+
+  // Delivery scheduled time slots — [UX-7]
+  'SCHED_9AM':          'CONTINUE_FLOW',
+  'SCHED_10AM':         'CONTINUE_FLOW',
+  'SCHED_11AM':         'CONTINUE_FLOW',
+  'SCHED_12PM':         'CONTINUE_FLOW',
+  'SCHED_2PM':          'CONTINUE_FLOW',
+  'SCHED_4PM':          'CONTINUE_FLOW',
+  'SCHED_6PM':          'CONTINUE_FLOW',
+  'SCHED_CUSTOM':       'CONTINUE_FLOW',
+
+  // Booking party size buttons
+  'PARTY_2':            'CONTINUE_FLOW',
+  'PARTY_4':            'CONTINUE_FLOW',
+  'PARTY_6':            'CONTINUE_FLOW',
+};
+
+// ── Emoji → Intent map ────────────────────────────────────────────────────────
+export const EMOJI_MAP = {
+  '🍔': 'ORDER', '🛍': 'ORDER', '🛒': 'ORDER', '🍕': 'ORDER',
+  '🛍️': 'ORDER', '🧁': 'ORDER', '💄': 'ORDER', '📱': 'ORDER',
+  '📅': 'BOOKING', '📆': 'BOOKING', '🗓': 'BOOKING', '💇': 'BOOKING',
+  '❓': 'QUESTION', '🤔': 'QUESTION', '💬': 'QUESTION',
+  '💳': 'PAYMENT', '💰': 'PAYMENT',
+  '🏠': 'SHOW_MENU', '🔄': 'SHOW_MENU',
+};
+
+// ── Keyword → Intent map ──────────────────────────────────────────────────────
+// All values are normalised lowercase. Order within each array doesn't matter.
+export const INTENT_PATTERNS = {
+
+  GREETING: [
+    'hi', 'hello', 'hey', 'good morning', 'good afternoon', 'good evening',
+    'start', 'begin', 'hiya', 'howdy', 'greetings', 'salaam', 'salam',
+    'yo', 'sup', 'whatsup', 'what sup', 'assalamu alaikum',
+  ],
+
+  ORDER: [
+    'order', 'order now', 'buy', 'purchase', 'shop', 'shop now',
+    'i want to order', 'place order', 'i want to buy', 'i want food',
+    'get food', 'order food', 'i want to eat', 'add to cart', 'buy now',
+    'i want', 'i would like to order', 'can i order', 'let me order',
+    'i need food', 'food please', 'give me food', 'bring food', 'order pls',
+    'lemme order', 'i wan order', 'i wan buy', 'i wan food',
+    'abeg let me order', 'pls let me order', 'i dey hungry',
+    // Fashion
+    'i want clothes', 'browse collection', 'see collection', 'view collection',
+    'i want a dress', 'i want shoes', 'fashion', 'i want to shop fashion',
+    // Cosmetics
+    'i want beauty products', 'buy skincare', 'buy makeup', 'shop beauty',
+    'i want skincare', 'i need makeup', 'i want cosmetics',
+    // Bakery
+    'i want a cake', 'order cake', 'buy bread', 'i want pastries',
+    'pre-order', 'preorder', 'i want to pre-order',
+    // Electronics
+    'buy phone', 'buy laptop', 'buy electronics', 'i want a phone',
+    'browse products', 'view products',
+  ],
+
+  BOOKING: [
+    'book', 'book now', 'reserve', 'make a booking', 'book a table',
+    'i want to book', 'schedule', 'appointment', 'make appointment',
+    'book appointment', 'i need appointment', 'book a slot',
+    'book a service', 'i want appointment',
+    // Salon specific
+    'haircut', 'hair cut', 'cut my hair', 'beard trim', 'trim beard',
+    'i want a haircut', 'book haircut', 'i need a haircut',
+    // Bakery / collection
+    'schedule collection', 'collect my order', 'pickup',
+    // Cosmetics
+    'book consultation', 'beauty consultation',
+  ],
+
+  REPEAT_ORDER: [
+    'repeat order', 'order again', 'same as last time', 'reorder',
+    're-order', 'order the same', 'my usual', 'same order', 'my last order',
+  ],
+
+  TRACK_ORDER: [
+    'track order', 'track my order', 'where is my order', 'order status',
+    'when is my order', 'order update', 'my order', 'check order',
+    'delivery status', 'where is my food', 'how long', 'where my order',
+  ],
+
+  PAYMENT: [
+    'pay', 'payment', 'how to pay', 'wave', 'pay now', 'make payment',
+    'send payment', 'transfer', 'checkout', 'how do i pay',
+  ],
+
+  SUPPORT: [
+    'help', 'support', 'problem', 'issue', 'complaint', 'wrong order',
+    'speak to human', 'speak to agent', 'speak to someone', 'real person',
+    'live agent', 'manager', 'customer service', 'not happy', 'unhappy',
+    'refund', 'cancel order', 'i have a problem', 'i have an issue',
+  ],
+
+  SHOW_MENU: [
+    'menu', 'show menu', 'view menu', 'see menu', 'main menu', 'home',
+    'back to menu', 'back', 'restart', '0', 'start over',
+  ],
+
+  CAKE_CUSTOMIZATION: [
+    'custom cake', 'customise cake', 'customize cake', 'special cake',
+    'birthday cake', 'wedding cake', 'cake design', 'cake order',
+    'i want a custom cake', 'design a cake',
+  ],
+
+  SPEC_REQUEST: [
+    'specs', 'specifications', 'features', 'ram', 'storage', 'battery',
+    'camera', 'processor', 'display', 'screen size', 'what are the specs',
+    'tell me about', 'details about',
+  ],
+
+  WARRANTY_INFO: [
+    'warranty', 'guarantee', 'returns', 'return policy', 'exchange',
+    'how long warranty', 'what is warranty',
+  ],
+
+  AVAILABILITY_CHECK: [
+    'available', 'in stock', 'do you have', 'is it available',
+    'any available slots', 'when are you free', 'open today',
+    'available tomorrow', 'can i come',
+  ],
+
+  SKINCARE_ADVICE: [
+    'skin advice', 'skincare routine', 'what is good for', 'recommend skincare',
+    'dry skin', 'oily skin', 'acne', 'dark spots', 'moisturiser recommendation',
+    'best product for',
+  ],
+
+  QUESTION: [
+    'question', 'ask', 'enquiry', 'inquiry', 'info', 'information',
+    'tell me', 'what is', 'what are', 'how much', 'do you', 'can you',
+    'when', 'where', 'opening hours', 'hours', 'location', 'address',
+    'price', 'prices', 'cost', 'how much does', 'what time', 'contact',
+    'faq',
+  ],
+};
