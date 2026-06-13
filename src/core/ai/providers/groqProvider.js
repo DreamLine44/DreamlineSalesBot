@@ -58,7 +58,10 @@ function buildSystemPrompt({ business, intent, faqContext }) {
     `- NEVER make up prices, hours, or menu items not listed above.`,
     `- If unsure, say "Let me check that for you" and offer to escalate.`,
     `- Use WhatsApp formatting: *bold* for emphasis. No markdown headers.`,
-    intent === 'SUPPORT' ? `- The customer needs human assistance. Acknowledge and reassure.` : '',
+    intent === 'SUPPORT'    ? `- The customer needs human assistance. Acknowledge and reassure.` : '',
+    intent === 'COMPLAINT'  ? `- The customer is unhappy. Be sincerely apologetic, empathetic, and solution-focused. Don't be defensive. Offer to escalate if needed. Keep it short and genuine.` : '',
+    intent === 'COMPLIMENT' ? `- The customer is happy and giving a compliment. Respond warmly and personally, express genuine gratitude, and invite them to come back.` : '',
+    intent === 'POST_ORDER' ? `- The customer just had their order confirmed. Be warm, reassuring, and briefly confirm the order is being prepared.` : '',
   ].filter(Boolean).join('\n');
 }
 

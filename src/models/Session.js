@@ -102,6 +102,7 @@ const sessionSchema = new mongoose.Schema({
   // instead of immediately re-showing the full welcome menu.
   // Cleared by the webhook ack handler or after any non-ack message.
   postFlowAck:  { type: String, default: null },
+  postFlowData: { type: Object, default: null }, // context stored after flow completion (item, shortId, etc.)
 
   // [v11] Payment retry tracking — max 2 proof reminders before suggesting human support
   paymentRetryCount: { type: Number, default: 0 },

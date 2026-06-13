@@ -46,6 +46,21 @@ export async function updateBusinessConfig(req, res) {
     // business-config lookups return stale data after the next credential update.
     delete update.phoneNumberId;
 
+    // [FIX-MENU-ALIAS] Accept "menu" as an alias for "menuItems".
+    // The API doc and Bruno collection use "menuItems", but a natural body key is "menu".
+    // Mongoose strict mode silently drops "menu" since the schema field is "menuItems" —
+    // the PUT appears to succeed (200 OK) but menuItems stays empty in the DB.
+    if (update.menu !== undefined && update.menuItems === undefined) {
+      update.menuItems = update.menu;
+    }
+    delete update.menu;
+
+    // Same alias for services/faq common alternate key names
+    if (update.servicesList !== undefined && update.services === undefined) {
+      update.services = update.servicesList;
+      delete update.servicesList;
+    }
+
     if (!update || Object.keys(update).length === 0) {
       return res.status(400).json({ error: 'Request body is empty — nothing to update' });
     }
@@ -103,9 +118,10 @@ export async function getMenu(req, res) {
 export async function updateMenu(req, res) {
   try {
     const { tenantId } = req.params;
-    const { menuItems } = req.body;
+    // [FIX-MENU-ALIAS] Accept "menu" as alias for "menuItems"
+    const menuItems = req.body.menuItems ?? req.body.menu;
     if (!Array.isArray(menuItems)) {
-      return res.status(400).json({ error: 'menuItems must be an array' });
+      return res.status(400).json({ error: 'menuItems (or menu) must be an array' });
     }
     const biz = await BusinessConfig.findOneAndUpdate(
       { tenantId },

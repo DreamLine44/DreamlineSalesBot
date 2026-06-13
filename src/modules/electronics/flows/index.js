@@ -45,8 +45,16 @@ export async function handleElectronicsOrder({ session, message, business, tenan
   const menu  = (business?.menuItems || []).filter(i => i.available !== false);
 
   if (message === null) {
+    // [FIX-FLOW-STUCK] Clear flow if catalogue is empty so session is not permanently stuck.
+    const catalog = buildProductCatalog(business);
+    if (!(business?.menuItems || []).filter(i => i.available !== false).length) {
+      await updateSession(session.customerPhone, session.tenantId, {
+        currentFlow: null, step: null, data: {},
+      });
+      return catalog;
+    }
     await updateSession(session.customerPhone, session.tenantId, { step: 'SELECT_ITEM', data: {}, menuViewed: false });
-    return buildProductCatalog(business);
+    return catalog;
   }
 
   switch (step) {

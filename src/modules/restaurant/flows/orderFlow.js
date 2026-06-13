@@ -56,11 +56,22 @@ export async function handleOrderFlow({ session, message, business, tenant, isIn
   const data  = session.data || {};
 
   // ── No menu configured ────────────────────────────────────────────────────
+  // [FIX-FLOW-STUCK] Clear currentFlow BEFORE returning so the session is not
+  // permanently stuck in ORDER state. Without this, every subsequent message from
+  // the customer re-enters handleOrderFlow (currentFlow='ORDER'), hits this guard
+  // again, and returns the same error indefinitely — the bot becomes unresponsive.
   if (!menu.length) {
+    await updateSession(session.customerPhone, session.tenantId, {
+      currentFlow: null, step: null, data: {},
+    });
+    const cfg = (await import('../../../config/modes.js')).getModeConfig(business);
     return {
       type:    'buttons',
       body:    '⚠️ Our menu is being updated. Please contact us directly.',
-      buttons: [{ id: 'SUPPORT', title: '💬 Contact Us' }],
+      buttons: [
+        { id: 'SUPPORT',   title: '💬 Contact Us'  },
+        { id: 'SHOW_MENU', title: '🔄 Start Over'  },
+      ],
     };
   }
 
@@ -106,14 +117,25 @@ export async function handleOrderFlow({ session, message, business, tenant, isIn
         };
       }
 
-      // Casual chat / greetings — customer is in ordering mode, redirect politely
-      const CASUAL_RE = /^(hello|hi+|hey|helo|howdy|yo|sup|good morning|good afternoon|good evening|gm|ok|okay|k+|yes|no|nope|yep|yeah|sure|thanks|thank you|thx|ty|tq|lol|haha|why|what|how|who|huh|hmm|test|ping)$/i;
-      if (CASUAL_RE.test(clean)) {
+      // ── Casual / gibberish / off-topic detection ─────────────────────────────
+      // Catches greetings, random characters, keyboard spam, short nonsense strings,
+      // and anything that clearly isn't a food item name.
+      const CASUAL_RE = /^(hello+|hi+h*|h+i+|hey+|helo|howdy|yo+|sup|good\s*(morning|afternoon|evening|night)|gm|ok+a?y?|k+|yes+|no+pe?|yep|yeah|yh|sure|thanks?|thank\s*u|thx|ty|tq|lol+|haha+|why|what|how|who|huh+|hmm+|test|ping|help|bye|good\s*bye|later)$/i;
+
+      // Gibberish: repetitive character runs like "hihihih", "hehehehe", "aaaa", "lololol"
+      const GIBBERISH_RE = /^([a-z]{1,3})\1{2,}$/i;
+
+      // Too many consonants in a row with no vowel = likely keyboard spam
+      const SPAM_RE = /^[^aeiou\s]{5,}$/i;
+
+      const isOffTopic = CASUAL_RE.test(clean) || GIBBERISH_RE.test(clean) || SPAM_RE.test(clean);
+
+      if (isOffTopic) {
         return {
           type:    'buttons',
-          body:    `Hi there! 😊 You're currently in the middle of placing an order.\n\nPlease type the name of what you'd like to order, or browse our menu:`,
+          body:    `Hi there! 😊 You're in the ordering flow for *${business.name || 'our restaurant'}*.\n\nPlease type the *name of a dish* you'd like to order, or tap below to browse the full menu:`,
           buttons: [
-            { id: 'SHOW_MENU', title: '🔄 View Menu' },
+            { id: 'SHOW_MENU', title: '📋 View Menu' },
             { id: 'CANCEL',    title: '❌ Cancel'    },
           ],
         };
@@ -160,36 +182,26 @@ export async function handleOrderFlow({ session, message, business, tenant, isIn
 
     // ────────────────────────────────────────────────────────────────────────
     case 'QUANTITY': {
-      // [UX-1] QTY_1/2/3 quick-pick buttons — resolve before parseQuantity
-      const QTY_SHORTCUTS = { 'QTY_1': 1, 'QTY_2': 2, 'QTY_3': 3 };
-      const qty = QTY_SHORTCUTS[raw.toUpperCase()] ?? parseQuantity(raw);
+      // Customers type any number (digit or word) — parseQuantity handles both.
+      // No button shortcuts here; WhatsApp button labels are capped at 20 chars
+      // and numbered buttons "1 / 2 / 3" are visually unprofessional and limiting.
+      const qty = parseQuantity(raw);
       // MAX_QTY is per-business configurable; default 20 for restaurants.
       // Read from business.settings.maxOrderQuantity if set, otherwise 20.
       const MAX_QTY = business?.settings?.maxOrderQuantity || 20;
 
-      // Can't parse at all (e.g. "any", "yes", blank)
+      // Can't parse at all (e.g. "any", "yes", blank, or unrecognised words)
       if (!qty || qty < 1) {
         return {
-          type:    'buttons',
-          body:    `How many *${data.item?.name}* would you like?\n\n_(Maximum: ${MAX_QTY} per order)_`,
-          buttons: [
-            { id: 'QTY_1', title: '1️⃣  1' },
-            { id: 'QTY_2', title: '2️⃣  2' },
-            { id: 'QTY_3', title: '3️⃣  3' },
-          ],
-          footer: 'Or type any number',
+          type: 'text',
+          body: `Please type the quantity you'd like for *${data.item?.name}*.\n\nYou can write a number (e.g. *5*) or a word (e.g. *three*). Maximum: *${MAX_QTY}*.`,
         };
       }
       // Parsed fine but exceeds the business max
       if (qty > MAX_QTY) {
         return {
-          type:    'buttons',
-          body:    `⚠️ Maximum order quantity is *${MAX_QTY}*. Please enter a number between *1* and *${MAX_QTY}*.`,
-          buttons: [
-            { id: 'QTY_1', title: '1️⃣  1' },
-            { id: 'QTY_2', title: '2️⃣  2' },
-            { id: 'CANCEL', title: '❌ Cancel' },
-          ],
+          type: 'text',
+          body: `⚠️ Maximum order quantity is *${MAX_QTY}*. Please type a number between *1* and *${MAX_QTY}*.`,
         };
       }
       const item   = data.item;
@@ -331,32 +343,66 @@ export async function handleOrderFlow({ session, message, business, tenant, isIn
         return buildPaymentInstructionsUI(business, data.totalPrice, shortId, ref);
       }
 
-      // [FIX-3] No payment — notify admin with interactive buttons
-      try {
-        const adminPhone = business?.adminPhone || tenant?.adminPhone;
-        if (adminPhone && tenant && savedOrder) {
-          const { buildAdminOrderAlertBody } = await import('../handlers/uiBuilders.js');
-          const { dispatchMessage } = await import('../../../core/whatsapp/dispatcher.js');
-          const alertBody = buildAdminOrderAlertBody({
-            customerPhone: session.customerPhone,
-            item:          data.item?.name,
-            quantity:      data.quantity,
-            totalPrice:    data.totalPrice,
-            addOns:        data.addOns,
-            shortId:       savedOrder.shortId,
-            business,
-          });
-          await dispatchMessage(adminPhone, {
-            type:    'buttons',
-            body:    alertBody,
-            buttons: [
-              { id: `APPROVE_${savedOrder.shortId}`, title: '✅ Confirm Received' },
-              { id: `REJECT_${savedOrder.shortId}`,  title: '❌ Cancel Order'     },
-            ],
-          }, tenant).catch(() => {});
+      // [FIX-3] Payment not enabled by tenant — show default cash/delivery instructions,
+      // then notify admin. We NEVER silently skip the payment step; the customer must
+      // always see how to pay (even if the answer is "cash on delivery").
+      if (!payment?.enabled || !data.totalPrice) {
+        const currency   = payment?.currency || 'D';
+        const hasChannels = Array.isArray(payment?.channels) && payment.channels.length > 0;
+        const cashBody =
+          `💳 *Payment*\n\n` +
+          `🛒 Total: *${currency}${data.totalPrice || 0}*\n\n` +
+          (hasChannels
+            ? (() => {
+                const lines = payment.channels.map((ch, i) =>
+                  `${i + 1}. *${ch.provider}* → \`${ch.accountNo}\`${ch.label ? ` (${ch.label})` : ''}${ch.isDefault ? ' ⭐' : ''}`
+                ).join('\n');
+                return `📲 Please complete payment to any of the following:\n\n${lines}\n\nThen send your payment screenshot in this chat.`;
+              })()
+            : `💵 *Payment mode:* Cash on delivery\n\nPlease have *${currency}${data.totalPrice || 0}* ready when your order arrives.`
+          );
+
+        // [FIX-3] No payment — notify admin with interactive buttons
+        try {
+          const adminPhone = business?.adminPhone || tenant?.adminPhone;
+          if (adminPhone && tenant && savedOrder) {
+            const { buildAdminOrderAlertBody } = await import('../handlers/uiBuilders.js');
+            const { dispatchMessage } = await import('../../../core/whatsapp/dispatcher.js');
+            const alertBody = buildAdminOrderAlertBody({
+              customerPhone: session.customerPhone,
+              item:          data.item?.name,
+              quantity:      data.quantity,
+              totalPrice:    data.totalPrice,
+              addOns:        data.addOns,
+              shortId:       savedOrder.shortId,
+              business,
+            });
+            await dispatchMessage(adminPhone, {
+              type:    'buttons',
+              body:    alertBody,
+              buttons: [
+                { id: `APPROVE_${savedOrder.shortId}`, title: '✅ Confirm Received' },
+                { id: `REJECT_${savedOrder.shortId}`,  title: '❌ Cancel Order'     },
+              ],
+            }, tenant).catch(() => {});
+          }
+        } catch (err) {
+          logger.warn('[OrderFlow] Admin notification failed (non-fatal)', { err: err.message });
         }
-      } catch (err) {
-        logger.warn('[OrderFlow] Admin notification failed (non-fatal)', { err: err.message });
+
+        // [FIX-AWAIT] Keep the session alive in AWAIT_ADMIN_CONFIRM so stale buttons
+        // from earlier steps cannot restart the flow and the customer knows to wait.
+        // Do NOT call completeFlow() here — that clears the session and makes the
+        // "Place New Order / Start Over" buttons actionable before admin confirms.
+        await updateSession(session.customerPhone, session.tenantId, {
+          step: 'AWAIT_ADMIN_CONFIRM', currentFlow: 'ORDER',
+          data: { ...data },
+        });
+        return {
+          type: 'text',
+          body: cashBody + '\n\n' +
+                '⏳ Your order has been received. Please wait for our team to confirm it before placing a new one.',
+        };
       }
 
       const _lcR = await completeFlow(session, 'ORDER', business, tenant);
@@ -386,18 +432,10 @@ async function _selectItem(item, session, business, data) {
   const imageUrl = item?.image?.url;
   const showImage = item?.showImageOnSelect !== false; // default true
 
+  const MAX_QTY_DISPLAY = business?.settings?.maxOrderQuantity || 20;
   const quantityPrompt = {
-    type: 'buttons',
-    body: `You've chosen *${item.name}* 👌${addOnText}\n\nHow many would you like?`,
-    // [UX-1] Quick-pick quantity buttons so customers don't have to type a number.
-    // Cancel sits in the third slot (WhatsApp max = 3 interactive buttons).
-    // Customers who need more than 3 can still type a number.
-    buttons: [
-      { id: 'QTY_1', title: '1️⃣  1' },
-      { id: 'QTY_2', title: '2️⃣  2' },
-      { id: 'QTY_3', title: '3️⃣  3' },
-    ],
-    footer: 'Or type any number e.g. 4, 5, 10',
+    type: 'text',
+    body: `You've chosen *${item.name}* 👌${addOnText}\n\nHow many would you like? Please type a number (e.g. *2*) or a word (e.g. *five*). Maximum: *${MAX_QTY_DISPLAY}*.`,
   };
 
   if (imageUrl && showImage) {

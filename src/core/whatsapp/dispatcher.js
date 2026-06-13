@@ -193,14 +193,21 @@ export async function dispatchMessage(to, ui, tenant) {
   const version  = tenant?.whatsapp?.apiVersion || process.env.META_API_VERSION || 'v21.0';
 
   if (!token || !phoneId) {
-    logger.warn('[Dispatch] Missing WhatsApp credentials', { tenantId: tenant?._id });
+    logger.warn('[Dispatch] ✗ Cannot send — missing WhatsApp credentials on tenant', {
+      tenantId: tenant?._id,
+      hasToken: !!rawToken,
+      hasPhoneId: !!phoneId,
+      tip: 'Set whatsapp.accessToken and whatsapp.phoneNumberId on the tenant document',
+    });
     return;
   }
 
   // Guard: don't dispatch to simulation placeholder phone IDs in production
   if (phoneId.startsWith('SIM_')) {
-    logger.warn('[Dispatch] Refusing to call Meta with placeholder phoneNumberId', {
-      tenantId: tenant?._id, phoneId,
+    logger.warn('[Dispatch] ✗ Refusing to call Meta — phoneNumberId is a placeholder (SIM_*)', {
+      tenantId: tenant?._id,
+      phoneId,
+      tip: 'Replace SIM_* phoneNumberId with a real Meta phoneNumberId for this tenant',
     });
     return;
   }
@@ -217,11 +224,27 @@ export async function dispatchMessage(to, ui, tenant) {
     clearTimeout(timer);
     if (!resp.ok) {
       const err = await resp.text().catch(() => '');
-      logger.error('[Dispatch] Meta error', { status: resp.status, err: err.slice(0, 200) });
+      logger.error('[Dispatch] ✗ Meta API returned error', {
+        status: resp.status,
+        to,
+        msgType: ui.type,
+        err: err.slice(0, 300),
+        tenantId: tenant?._id,
+      });
+    } else {
+      logger.debug('[Dispatch] ✓ Message sent via Meta API', {
+        to,
+        type: ui.type,
+        status: resp.status,
+      });
     }
     return resp;
   } catch (err) {
-    logger.error('[Dispatch] Network error', { err: err.message, to });
+    logger.error('[Dispatch] ✗ Network error sending to Meta API', {
+      err: err.message,
+      to,
+      tenantId: tenant?._id,
+    });
   }
 }
 

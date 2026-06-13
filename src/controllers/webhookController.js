@@ -361,30 +361,57 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
   const { text: messageText, imageUrl, isInteractive, isListReply } = extractMessage(msgObj);
   const wamid = msgObj?.id;
 
+  logger.debug('[Webhook] handleIncomingMessage', {
+    tenantId,
+    from,
+    type: msgObj?.type,
+    wamid,
+    textPreview: messageText ? messageText.slice(0, 60) : null,
+    hasImage: !!imageUrl,
+  });
+
   // ── 1. De-duplicate ───────────────────────────────────────────────────────
   if (wamid) {
     try {
       await ProcessedMessage.create({ wamid, tenantId });
     } catch (err) {
-      if (err.code === 11000) { logger.debug('[Webhook] Duplicate wamid', { wamid }); return; }
+      if (err.code === 11000) {
+        logger.debug('[Webhook] Duplicate wamid — already processed, skipping', { wamid, from, tenantId });
+        return;
+      }
       // [FIX-WH-7] Any non-duplicate DB error (connection lost, schema violation, etc.)
       // is re-thrown so the message is NOT processed. Previously the catch block only
       // handled 11000 and silently fell through for all other errors — message processing
       // continued without a dedup record, so a webhook retry would process the message
       // twice with no record to deduplicate against.
       logger.error('[Webhook] ProcessedMessage write failed — dropping message to preserve dedup guarantee', {
-        wamid, tenantId, err: err.message,
+        wamid, tenantId, from, err: err.message,
       });
       return;
     }
   }
 
   // ── 2. Empty guard ────────────────────────────────────────────────────────
-  if (!messageText && !imageUrl) return;
+  if (!messageText && !imageUrl) {
+    logger.debug('[Webhook] Message has no text and no image — skipping', {
+      from, tenantId, msgType: msgObj?.type,
+    });
+    return;
+  }
 
   // ── 3. Load business ──────────────────────────────────────────────────────
-  const business = await BusinessConfig.findOne({ tenantId }).lean().catch(() => null);
-  if (!business) { logger.warn('[Webhook] No business config', { tenantId }); return; }
+  const business = await BusinessConfig.findOne({ tenantId }).lean().catch((err) => {
+    logger.error('[Webhook] BusinessConfig query failed', { tenantId, from, err: err.message });
+    return null;
+  });
+  if (!business) {
+    logger.warn('[Webhook] ✗ No BusinessConfig found for tenant — message dropped', {
+      tenantId,
+      from,
+      tip: 'Run the seed script or create a BusinessConfig for this tenant',
+    });
+    return;
+  }
 
   // ── 4. Session ────────────────────────────────────────────────────────────
   let session = await getSession(from, tenantId);
@@ -453,6 +480,10 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
     if (!session.closedMsgSent) {
       await updateSession(from, tenantId, { closedMsgSent: true });
       await dispatchMessage(from, { type: 'text', body: closedMsg }, tenantDoc);
+    } else {
+      logger.debug('[Webhook] Outside business hours — closed message already sent, suppressing reply', {
+        from, tenantId,
+      });
     }
     return;
   }
@@ -542,7 +573,11 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
   // Non-admin messages are silently dropped here when humanMode=true.
   // The admin can still reach step 6 above regardless of their own session state.
   if (session.humanMode) {
-    logger.info('[Webhook] Human mode — bot silent', { from });
+    logger.info('[Webhook] Human mode active — bot is silent for this customer. Admin must type RESUME BOT to re-enable.', {
+      from,
+      tenantId,
+      messagePreview: messageText?.slice(0, 60) || '(no text)',
+    });
     return;
   }
 
@@ -671,6 +706,38 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
 
   // ── 11. [Admin button replies moved to step 6 — before humanMode guard] ────
 
+  // ── 11.5. AWAIT_ADMIN_CONFIRM guard ──────────────────────────────────────
+  // After a cash/delivery order is placed the session stays in currentFlow=ORDER,
+  // step=AWAIT_ADMIN_CONFIRM. Nothing should happen until the admin confirms or
+  // rejects via their APPROVE_/REJECT_ button. All customer input at this stage
+  // — including tapping stale buttons like "Place New Order" — is intercepted here.
+  if (session.currentFlow === 'ORDER' && session.step === 'AWAIT_ADMIN_CONFIRM') {
+    const upper = messageText.trim().toUpperCase();
+    // Allow explicit cancel only
+    if (upper === 'CANCEL' || upper === 'CANCEL_ORDER') {
+      const { default: Order } = await import('../models/Order.js');
+      await Order.findOneAndUpdate(
+        { customerPhone: from, tenantId, status: 'pending' },
+        { $set: { status: 'cancelled' } },
+        { sort: { createdAt: -1 } }
+      ).catch(() => {});
+      await updateSession(from, tenantId, { currentFlow: null, step: null, data: {} });
+      const cfg = getModeConfig(business);
+      await dispatchMessage(from, {
+        type:    'buttons',
+        body:    '❌ Your order has been cancelled.\n\nWhat would you like to do?',
+        buttons: cfg.ui?.welcomeButtons || [{ id: 'ORDER', title: '🛒 Place New Order' }],
+      }, tenantDoc);
+      return;
+    }
+    // Everything else — politely hold the customer
+    await dispatchMessage(from, {
+      type: 'text',
+      body: '⏳ Your order is currently being reviewed by our team.\n\nYou\'ll receive a confirmation message shortly. Please hold on! 🙏',
+    }, tenantDoc);
+    return;
+  }
+
   // ── 12. LEAD_CAPTURE active flow ──────────────────────────────────────────
   if (session.currentFlow === 'LEAD_CAPTURE') {
     const { handleLeadCapture } = await import('../services/leadCaptureService.js');
@@ -706,38 +773,226 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
     await updateSession(from, tenantId, { currentFlow: null, step: null });
   }
 
-  // ── 14. Post-flow acknowledgement ────────────────────────────────────────
+  // ── 14. Post-flow acknowledgement — context-aware ─────────────────────────
+  // Handles any message sent AFTER a completed/confirmed/rejected flow.
+  // Distinguishes: simple acks, compliments, complaints, follow-up questions.
+  // Each context (ORDER_CONFIRMED, ORDER_REJECTED, BOOKING_CONFIRMED, etc.)
+  // gets its own tailored response rather than a one-size-fits-all reply.
   if (session.postFlowAck && messageText) {
-    const ACK_RE = /^(ok|okay|k|kk|thanks|thank you|thank u|thx|ty|tq|great|perfect|got it|noted|alright|cool|nice|sounds good|good|👍|🙏|😊|yep|yh|yah|understood|cheers|appreciate it|brilliant|wonderful|awesome|lovely)$/i;
-    if (ACK_RE.test(messageText.trim())) {
-      const completed = session.postFlowAck;
-      const custName  = session.customerName ? `, ${session.customerName}` : '';
-      const cfg       = getModeConfig(business);
-      const canOrder  = cfg.flows?.includes('ORDER');
-      const canBook   = cfg.flows?.includes('BOOKING');
+    const ackCtx      = session.postFlowAck;    // e.g. 'ORDER_CONFIRMED'
+    const flowData    = session.postFlowData || {};
+    const cfg         = getModeConfig(business);
+    const custName    = session.customerName ? `, ${session.customerName}` : '';
+    const bizName     = business?.name || 'us';
+    const welcomeBtns = (cfg.ui?.welcomeButtons || [
+      { id: 'ORDER',    title: '🛒 Order Food'      },
+      { id: 'BOOK',     title: '📅 Book a Table'    },
+      { id: 'QUESTION', title: '❓ Ask a Question'  },
+    ]).slice(0, 3);
 
-      const body = completed === 'BOOKING'
-        ? `You're welcome${custName}! 😊 Your booking is confirmed. Anything else we can help with?`
-        : completed === 'ORDER'
-          ? `You're welcome${custName}! 😊 We're preparing your order. Anything else we can help with at *${business.name || 'us'}*?`
-          // [FIX-11] Any other completedFlow (e.g. LEAD_CAPTURE) gets a neutral ack
-          // instead of the misleading "preparing your order" message.
-          : `You're welcome${custName}! 😊 Anything else we can help with?`;
+    // Clear postFlowAck first — whatever path we take below, the ack is consumed
+    await updateSession(from, tenantId, { postFlowAck: null, postFlowData: null });
 
-      // [FIX-WH-2] Use mode welcomeButtons as source of truth so button labels
-      // ("Order Food" / "Book a Table") match the welcome screen exactly.
-      // Previously hardcoded labels were shown even on modes that use different wording.
-      const buttons = (cfg.ui?.welcomeButtons || [
-        canOrder ? { id: 'ORDER',    title: '🛒 Place New Order' } : null,
-        canBook  ? { id: 'BOOK',     title: '📅 Make a Booking'  } : null,
-        { id: 'QUESTION', title: '❓ Ask a Question' },
-      ].filter(Boolean)).slice(0, 3);
+    const msg   = messageText.trim();
+    const upper = msg.toUpperCase();
 
-      await updateSession(from, tenantId, { postFlowAck: null });
-      await dispatchMessage(from, { type: 'buttons', body, buttons }, tenantDoc);
+    // ── Sentiment classification ────────────────────────────────────────────
+    const ACK_RE       = /^(ok|okay|k|kk|thanks?|thank\s*you|thank\s*u|thx|ty|tq|great|perfect|got\s*it|noted|alright|cool|nice|sounds\s*good|good|👍|🙏|😊|yep|yh|yah|understood|cheers|appreciate\s*it|brilliant|wonderful|awesome|lovely|received|noted|sure|fine|no\s*problem|np)$/i;
+    const COMPLIMENT_RE = /\b(amazing|excellent|fantastic|love|best|delicious|enjoyed|happy|pleased|satisfied|impressed|recommend|5\s*star|five\s*star|well\s*done|great\s*job|keep\s*it\s*up|good\s*job|wonderful|superb|outstanding|top\s*notch|quality)\b/i;
+    const COMPLAINT_RE  = /\b(bad|terrible|awful|horrible|disappoint|not\s*good|wrong|cold|late|missing|never|complain|refund|cheat|fraud|angry|upset|poor|issue|problem|unsatisfied|unhappy|rubbish|disgusting|unacceptable|worst)\b/i;
+    const QUESTION_RE   = /[?]|^(how|when|where|what|why|can\s*you|do\s*you|is\s*there|will\s*you|could\s*you)\b/i;
+
+    const isAck        = ACK_RE.test(msg);
+    const isCompliment = !isAck && COMPLIMENT_RE.test(msg);
+    const isComplaint  = COMPLAINT_RE.test(msg);
+    const isQuestion   = !isComplaint && !isCompliment && !isAck && QUESTION_RE.test(msg);
+
+    // ── ORDER_CONFIRMED path ────────────────────────────────────────────────
+    if (ackCtx === 'ORDER_CONFIRMED') {
+      const itemStr = flowData.item ? ` for your *${flowData.item}*` : '';
+
+      if (isComplaint) {
+        // Complaint after order confirmed — escalate empathetically
+        const { getAIReply } = await import('../core/ai/providers/aiRouter.js');
+        const aiReply = await getAIReply({
+          customerMessage: msg,
+          business,
+          session,
+          intent: 'COMPLAINT',
+        });
+        await dispatchMessage(from, {
+          type:    'buttons',
+          body:    aiReply || `We're really sorry to hear that${custName}. 😔 Your experience matters to us and we want to make it right.\n\nA member of our team will look into this immediately. You can also reach us directly for urgent assistance.`,
+          buttons: [
+            { id: 'SUPPORT',   title: '💬 Speak to Team'   },
+            { id: 'QUESTION',  title: '❓ Ask a Question'  },
+          ],
+        }, tenantDoc);
+        return;
+      }
+
+      if (isCompliment) {
+        // Compliment after confirmed order — warm, personal response
+        const { getAIReply } = await import('../core/ai/providers/aiRouter.js');
+        const aiReply = await getAIReply({
+          customerMessage: msg,
+          business,
+          session,
+          intent: 'COMPLIMENT',
+        });
+        await dispatchMessage(from, {
+          type:    'buttons',
+          body:    aiReply || `That means the world to us${custName}! 😊🙏 We're so glad you're happy${itemStr}. We'd love to serve you again soon!`,
+          buttons: welcomeBtns,
+        }, tenantDoc);
+        return;
+      }
+
+      if (isQuestion) {
+        // Question after confirmed order — route to AI/FAQ
+        const { getAIReply } = await import('../core/ai/providers/aiRouter.js');
+        const aiReply = await getAIReply({
+          customerMessage: msg,
+          business,
+          session,
+          intent: 'QUESTION',
+        });
+        await dispatchMessage(from, {
+          type:    'buttons',
+          body:    aiReply || `Happy to help${custName}! 😊`,
+          buttons: welcomeBtns,
+        }, tenantDoc);
+        return;
+      }
+
+      // Simple ack (thanks, ok, 👍 etc.)
+      await dispatchMessage(from, {
+        type:    'buttons',
+        body:    `You're welcome${custName}! 😊 We're preparing your order${itemStr} — it'll be ready shortly.\n\nIs there anything else we can help you with at *${bizName}*?`,
+        buttons: welcomeBtns,
+      }, tenantDoc);
       return;
     }
-    await updateSession(from, tenantId, { postFlowAck: null });
+
+    // ── ORDER_REJECTED path ─────────────────────────────────────────────────
+    if (ackCtx === 'ORDER_REJECTED') {
+      const itemStr = flowData.item ? ` for *${flowData.item}*` : '';
+
+      if (isComplaint) {
+        const { getAIReply } = await import('../core/ai/providers/aiRouter.js');
+        const aiReply = await getAIReply({ customerMessage: msg, business, session, intent: 'COMPLAINT' });
+        await dispatchMessage(from, {
+          type:    'buttons',
+          body:    aiReply || `We sincerely apologise for the inconvenience${custName}. 😔 We understand how frustrating this must be.\n\nPlease contact our team and we'll resolve this for you as a priority.`,
+          buttons: [
+            { id: 'SUPPORT', title: '💬 Speak to Team'  },
+            { id: 'ORDER',   title: '🛒 Try Again'      },
+          ],
+        }, tenantDoc);
+        return;
+      }
+
+      if (isAck) {
+        await dispatchMessage(from, {
+          type:    'buttons',
+          body:    `We're sorry your order${itemStr} didn't go through${custName}. 🙏 We'd love to make it up to you — tap below to try again or ask us anything.`,
+          buttons: welcomeBtns,
+        }, tenantDoc);
+        return;
+      }
+
+      // Any other message — treat as potential question/follow-up
+      const { getAIReply } = await import('../core/ai/providers/aiRouter.js');
+      const aiReply = await getAIReply({ customerMessage: msg, business, session, intent: 'SUPPORT' });
+      await dispatchMessage(from, {
+        type:    'buttons',
+        body:    aiReply || `We're here to help${custName}. 😊 What can we do for you?`,
+        buttons: welcomeBtns,
+      }, tenantDoc);
+      return;
+    }
+
+    // ── BOOKING_CONFIRMED path ──────────────────────────────────────────────
+    if (ackCtx === 'BOOKING_CONFIRMED') {
+      const whenStr = flowData.date ? ` on *${flowData.date}${flowData.time ? ` at ${flowData.time}` : ''}*` : '';
+
+      if (isCompliment || isAck) {
+        await dispatchMessage(from, {
+          type:    'buttons',
+          body:    `You're welcome${custName}! 😊 We're looking forward to seeing you${whenStr}. If anything changes, just let us know!`,
+          buttons: welcomeBtns,
+        }, tenantDoc);
+        return;
+      }
+
+      if (isComplaint) {
+        const { getAIReply } = await import('../core/ai/providers/aiRouter.js');
+        const aiReply = await getAIReply({ customerMessage: msg, business, session, intent: 'COMPLAINT' });
+        await dispatchMessage(from, {
+          type:    'buttons',
+          body:    aiReply || `We're very sorry to hear that${custName}. 😔 Please let us know how we can make things right.`,
+          buttons: [{ id: 'SUPPORT', title: '💬 Speak to Team' }],
+        }, tenantDoc);
+        return;
+      }
+
+      const { getAIReply } = await import('../core/ai/providers/aiRouter.js');
+      const aiReply = await getAIReply({ customerMessage: msg, business, session, intent: 'QUESTION' });
+      await dispatchMessage(from, {
+        type:    'buttons',
+        body:    aiReply || `Happy to help${custName}! 😊`,
+        buttons: welcomeBtns,
+      }, tenantDoc);
+      return;
+    }
+
+    // ── BOOKING_DECLINED path ───────────────────────────────────────────────
+    if (ackCtx === 'BOOKING_DECLINED') {
+      if (isComplaint) {
+        const { getAIReply } = await import('../core/ai/providers/aiRouter.js');
+        const aiReply = await getAIReply({ customerMessage: msg, business, session, intent: 'COMPLAINT' });
+        await dispatchMessage(from, {
+          type:    'buttons',
+          body:    aiReply || `We're truly sorry${custName}. 😔 We understand how disappointing this is and we want to find a solution that works for you.`,
+          buttons: [
+            { id: 'SUPPORT', title: '💬 Speak to Team' },
+            { id: 'BOOK',    title: '📅 Book Another Time' },
+          ],
+        }, tenantDoc);
+        return;
+      }
+
+      if (isAck) {
+        await dispatchMessage(from, {
+          type:    'buttons',
+          body:    `We're sorry we couldn't accommodate you this time${custName}. 🙏 We'd love to find another time that works — tap below to try again!`,
+          buttons: welcomeBtns,
+        }, tenantDoc);
+        return;
+      }
+
+      const { getAIReply } = await import('../core/ai/providers/aiRouter.js');
+      const aiReply = await getAIReply({ customerMessage: msg, business, session, intent: 'SUPPORT' });
+      await dispatchMessage(from, {
+        type:    'buttons',
+        body:    aiReply || `We're here to help${custName}. 😊`,
+        buttons: welcomeBtns,
+      }, tenantDoc);
+      return;
+    }
+
+    // ── Legacy/generic postFlowAck (ORDER, BOOKING) — kept for backwards compat ──
+    if (isAck) {
+      const body = ackCtx === 'BOOKING'
+        ? `You're welcome${custName}! 😊 Your booking is confirmed. Anything else we can help with?`
+        : ackCtx === 'ORDER'
+          ? `You're welcome${custName}! 😊 We're preparing your order. Anything else we can help with at *${bizName}*?`
+          : `You're welcome${custName}! 😊 Anything else we can help with?`;
+      await dispatchMessage(from, { type: 'buttons', body, buttons: welcomeBtns }, tenantDoc);
+      return;
+    }
+
+    // Any other message after a generic ack context — fall through to intent detection
   }
 
   // ── 15. Active flow ───────────────────────────────────────────────────────
@@ -747,8 +1002,94 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
       session = { ...session, menuViewed: true };
     }
 
-    // [FIX-BUG9] Flow-internal button IDs — bypass intent detection entirely
+    // [FIX-REPEAT-v2] In-flow repeated message handling — context-aware.
+    // Only fires when the EXACT same text is sent 3 times in a row at the SAME step.
+    // First two occurrences fall through silently to the flow handler (which has its
+    // own gibberish/casual detection). Third occurrence shows a step-aware helpful hint.
+    // Different messages always pass through — this is NOT a general gibberish filter.
+    if (messageText && !isInteractive) {
+      const last      = session.lastLoopMessage;
+      const loopCount = session.loopCount || 0;
+      const sameMsg   = last === messageText && session.lastLoopStep === session.step;
+
+      if (sameMsg) {
+        const newCount = loopCount + 1;
+
+        if (newCount >= 2) {
+          // Third identical send — reset and show context-aware help
+          await updateSession(from, tenantId, { loopCount: 0, lastLoopMessage: null, lastLoopStep: null });
+
+          const flowStep = session.step || 'SELECT_ITEM';
+          const itemName = session.data?.item?.name;
+          const bizName  = business?.name || 'our restaurant';
+
+          const STEP_HINTS = {
+            SELECT_ITEM: {
+              body:    `To order from *${bizName}*, just type the *name of a dish* — for example: *Yassa Chicken* or *Domoda*.\n\nOr tap below to browse our full menu:`,
+              buttons: [{ id: 'SHOW_MENU', title: '📋 View Full Menu' }, { id: 'CANCEL', title: '❌ Cancel' }],
+            },
+            QUANTITY: {
+              body:    `How many *${itemName || 'portions'}* would you like?\n\nJust type a number — for example: *2*, *five*, or *ten*.`,
+              buttons: [{ id: 'CANCEL', title: '❌ Cancel Order' }],
+            },
+            CONFIRM: {
+              body:    `Please tap a button to confirm or cancel your order:`,
+              buttons: [{ id: 'CONFIRM', title: '✅ Confirm Order' }, { id: 'CANCEL', title: '❌ Cancel' }],
+            },
+            AWAIT_ADMIN_CONFIRM: {
+              body:    `Your order is with our team — we'll confirm it shortly. 🙏\n\nTo cancel, tap below:`,
+              buttons: [{ id: 'CANCEL', title: '❌ Cancel Order' }],
+            },
+          };
+
+          const hint = STEP_HINTS[flowStep] || {
+            body:    `Not sure what to do? Browse the menu or cancel your current order:`,
+            buttons: [{ id: 'SHOW_MENU', title: '🔄 Main Menu' }, { id: 'CANCEL', title: '❌ Cancel' }],
+          };
+
+          await dispatchMessage(from, { type: 'buttons', ...hint }, tenantDoc);
+          return;
+        }
+
+        // First or second repeat — just track, let the flow handler respond naturally
+        await updateSession(from, tenantId, { loopCount: newCount });
+      } else {
+        // Different message — reset counter and let flow handle it normally
+        await updateSession(from, tenantId, {
+          loopCount: 0, lastLoopMessage: messageText, lastLoopStep: session.step,
+        });
+      }
+    }
+
+    // [FIX-STALE-BTN] Reject button taps that belong to a previous step.
+    // WhatsApp never disables old buttons, so a customer can tap "✅ Confirm Order"
+    // from a step-3 message while the session is already at step AWAIT_ADMIN_CONFIRM,
+    // or tap "QTY_1" while at the CONFIRM step. Map each step to its valid button IDs;
+    // anything outside that set gets a "that option has passed" reply.
+    const STEP_VALID_BUTTONS = {
+      SELECT_ITEM:          new Set(['SHOW_MENU', 'CANCEL', 'CONFIRM']),
+      SUGGESTION_CONFIRM:   new Set(['CONFIRM', 'SHOW_MENU', 'CANCEL']),
+      QUANTITY:             new Set([]), // expects free text — no valid buttons
+      UPSELL:               new Set(['UPSELL_YES', 'UPSELL_NO']),
+      CONFIRM:              new Set(['CONFIRM', 'CANCEL']),
+      PAYMENT_PROOF:        new Set(['DONE', 'SUPPORT', 'CANCEL', 'CANCEL_ORDER']),
+      AWAIT_ADMIN_CONFIRM:  new Set(['CANCEL', 'CANCEL_ORDER']),
+    };
     const upperMsg = messageText.trim().toUpperCase();
+    const currentStep = session.step;
+    if (isInteractive && currentStep && STEP_VALID_BUTTONS[currentStep] !== undefined) {
+      const validSet = STEP_VALID_BUTTONS[currentStep];
+      // Only enforce when the set is non-empty (empty means free-text step, no valid buttons)
+      if (validSet.size > 0 && !validSet.has(upperMsg) && !isFlowPassthroughId(upperMsg)) {
+        await dispatchMessage(from, {
+          type: 'text',
+          body: "⚠️ That option is no longer available at this stage of your order.\n\nPlease follow the current prompt, or type *CANCEL* if you'd like to start over.",
+        }, tenantDoc);
+        return;
+      }
+    }
+
+    // [FIX-BUG9] Flow-internal button IDs — bypass intent detection entirely
     if (isInteractive && isFlowPassthroughId(upperMsg)) {
       const freshSession = await getSession(from, tenantId) || session;
       const reply = await advance({ session: freshSession, message: messageText, business, tenant: tenantDoc, isInteractive });
@@ -826,7 +1167,14 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
     message: messageText, isInteractive, session, business,
   });
 
-  logger.debug('[Webhook] Intent', { action, intent, confidence, from });
+  logger.info('[Webhook] Intent detected', {
+    from,
+    tenantId,
+    action,
+    intent,
+    confidence,
+    messagePreview: messageText?.slice(0, 60),
+  });
 
   if (action === 'ENQUIRY') {
     await updateSession(from, tenantId, { currentFlow: 'ENQUIRY', step: 'AWAITING_QUESTION' });
@@ -904,27 +1252,73 @@ export async function verifyWebhook(req, res) {
 // because each tenant may have a different Meta App Secret. The global
 // META_APP_SECRET env var is used as a platform fallback for tenants that have
 // not yet had meta.appSecret populated — ensuring zero downtime during migration.
+//
+// [LOG-1] All previously silent drops now emit a logger line so the terminal
+// always shows WHY the webhook was ignored rather than appearing dead.
 export async function receiveWebhook(req, res) {
   res.sendStatus(200);
   try {
     const body = req.body;
-    if (body.object !== 'whatsapp_business_account') return;
+
+    // [LOG-1a] Non-WhatsApp object — log at debug so polling health-checks don't
+    // spam the terminal, but the operator can see it when diagnosing silence.
+    if (body.object !== 'whatsapp_business_account') {
+      logger.debug('[Webhook] Ignored — object is not whatsapp_business_account', {
+        object: body.object ?? '(missing)',
+      });
+      return;
+    }
+
     for (const entry of body.entry || []) {
       for (const change of entry.changes || []) {
-        if (change.field !== 'messages') continue;
+        // [LOG-1b] Non-messages field (e.g. account_update, phone_number_update) — debug only
+        if (change.field !== 'messages') {
+          logger.debug('[Webhook] Skipping non-messages change', { field: change.field });
+          continue;
+        }
         const value         = change.value;
         const phoneNumberId = value.metadata?.phone_number_id;
+
+        // [LOG-1c] Status updates (delivered/read receipts) — expected and frequent,
+        // log at debug so they're visible when tracing but don't clutter info output.
+        if (value.statuses?.length && !value.messages?.length) {
+          logger.debug('[Webhook] Status update received (no messages)', {
+            phoneNumberId,
+            statusCount: value.statuses.length,
+          });
+          continue;
+        }
+
         for (const msg of value.messages || []) {
           try {
             const from   = msg.from;
+            const msgType = msg.type || 'unknown';
+
+            logger.info('[Webhook] ► Incoming message', {
+              from,
+              type: msgType,
+              phoneNumberId,
+              wamid: msg.id,
+            });
+
             const tenant = await Tenant.findOne({ 'whatsapp.phoneNumberId': phoneNumberId, status: 'ACTIVE' }).lean();
-            if (!tenant) continue;
+
+            // [LOG-1d] No ACTIVE tenant for this phoneNumberId — the most common
+            // cause of total silence. Warn so the operator knows immediately.
+            if (!tenant) {
+              logger.warn('[Webhook] ✗ No ACTIVE tenant found for phoneNumberId — message dropped', {
+                phoneNumberId,
+                from,
+                tip: 'Check that the tenant exists, has status=ACTIVE, and whatsapp.phoneNumberId matches',
+              });
+              continue;
+            }
 
             // [META-CREDS] Per-tenant webhook HMAC verification.
             // Resolve the app secret: tenant-specific takes priority over global env fallback.
             // This runs after tenant resolution so we know which secret to use.
             if (!_verifyTenantWebhookSignature(req, tenant)) {
-              logger.warn('[Webhook] Signature mismatch for tenant', {
+              logger.warn('[Webhook] ✗ Signature mismatch for tenant — message dropped', {
                 tenantId: String(tenant._id), phoneNumberId, ip: req.ip,
               });
               continue; // Skip this message — possible spoofed request
@@ -935,12 +1329,17 @@ export async function receiveWebhook(req, res) {
               from, msgObj: msg, phoneNumberId,
             });
           } catch (err) {
-            logger.error('[Webhook] Message failed', { err: err.message, from: msg?.from });
+            logger.error('[Webhook] ✗ Message processing threw an error', {
+              err: err.message,
+              stack: err.stack?.slice(0, 300),
+              from: msg?.from,
+              phoneNumberId,
+            });
           }
         }
       }
     }
   } catch (err) {
-    logger.error('[Webhook] receiveWebhook error', { err: err.message });
+    logger.error('[Webhook] receiveWebhook outer error', { err: err.message, stack: err.stack?.slice(0, 300) });
   }
 }

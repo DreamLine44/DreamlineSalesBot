@@ -258,6 +258,12 @@ async function confirmPayment(shortId, tenantId, adminPhone, tenantDoc, business
   if (!order) return `⚠️ No order found: ${shortId}`;
   if (order.paymentStatus === 'confirmed') return `ℹ️ Order #${shortId} already confirmed.`;
 
+  // [FIX-AWAIT] Check if this is a cash order (AWAIT_ADMIN_CONFIRM) so we can
+  // send the right confirmation message — "order confirmed" instead of "payment verified".
+  const { getSession: _getSession } = await import('../core/sessions/sessionService.js');
+  const custSession2 = await _getSession(order.customerPhone, tenantId).catch(() => null);
+  const isCashConfirm = custSession2?.step === 'AWAIT_ADMIN_CONFIRM';
+
   await Order.updateOne({ _id: order._id }, { $set: {
     paymentStatus:     'confirmed',
     status:            'confirmed',
@@ -282,8 +288,8 @@ async function confirmPayment(shortId, tenantId, adminPhone, tenantDoc, business
   await dispatchMessage(order.customerPhone, {
     type:    'buttons',
     body:
-      `✅ *Payment Confirmed!*\n\n` +
-      `Your order of *${order.item}* × ${order.quantity} has been verified and is now being prepared.\n\n` +
+      `✅ *${isCashConfirm ? 'Order Confirmed!' : 'Payment Confirmed!'}*\n\n` +
+      `Your order of *${order.item}* × ${order.quantity} has been ${isCashConfirm ? 'accepted' : 'verified'} and is now being prepared.\n\n` +
       `🍽 Thank you for your order! We'll have it ready shortly. 🙏\n\n` +
       `_(Ref: #${order.shortId || shortId})_`,
     buttons: custBtns,
@@ -294,8 +300,12 @@ async function confirmPayment(shortId, tenantId, adminPhone, tenantDoc, business
     customerPhone: order.customerPhone, err: err.message,
   }));
 
+  // [FIX-POST] Set postFlowAck=ORDER_CONFIRMED so subsequent customer messages
+  // (thanks, complaint, question) are handled with the right order context.
   await updateSession(order.customerPhone, tenantId, {
-    currentFlow: null, step: null, postFlowAck: null,
+    currentFlow: null, step: null,
+    postFlowAck:  'ORDER_CONFIRMED',
+    postFlowData: { item: order.item, quantity: order.quantity, shortId: order.shortId || shortId },
   }).catch(() => {});
 
   logger.info('[AdminCmd] Payment confirmed', { shortId, adminPhone });
@@ -323,12 +333,53 @@ async function rejectPayment(shortId, tenantId, adminPhone, tenantDoc, business)
     paymentReviewedAt: new Date(),
   }});
 
+  // [FIX-AWAIT] Distinguish cash orders (AWAIT_ADMIN_CONFIRM) from payment-proof orders.
+  // Cash orders have no screenshot to retry — rejection means the order is cancelled
+  // and the session should be fully cleared. Payment-proof orders get a retry window.
+  const { getSession } = await import('../core/sessions/sessionService.js');
+  const custSession = await getSession(order.customerPhone, tenantId).catch(() => null);
+  const isCashOrder = custSession?.step === 'AWAIT_ADMIN_CONFIRM';
+
+  if (isCashOrder) {
+    // Cash/delivery rejection — mark cancelled, clear session, let customer restart
+    await Order.updateOne({ _id: order._id }, { $set: {
+      status:            'cancelled',
+      paymentStatus:     'cancelled',
+      paymentReviewedBy: adminPhone,
+      paymentReviewedAt: new Date(),
+    }});
+    await updateSession(order.customerPhone, tenantId, {
+      currentFlow: null, step: null, data: {},
+      postFlowAck:  'ORDER_REJECTED',
+      postFlowData: { item: order.item, shortId: order.shortId || shortId },
+    });
+    const modeCfg = getModeConfig(business);
+    const custBtns = (modeCfg.ui?.welcomeButtons || [
+      { id: 'ORDER',    title: '🛒 Place New Order' },
+      { id: 'QUESTION', title: '❓ Ask a Question'  },
+    ]).slice(0, 3);
+    await dispatchMessage(order.customerPhone, {
+      type:    'buttons',
+      body:
+        `❌ *Order Cancelled*\n\n` +
+        `Unfortunately your order *#${order.shortId || shortId}* has been cancelled by our team.\n\n` +
+        `If you have any questions, please contact us directly. We're sorry for the inconvenience.`,
+      buttons: custBtns,
+    }, tenantDoc).catch(err => logger.warn('[AdminCmd] rejectPayment(cash): customer dispatch failed', {
+      customerPhone: order.customerPhone, err: err.message,
+    }));
+    logger.info('[AdminCmd] Cash order rejected/cancelled', { shortId, adminPhone });
+    return `❌ *Order cancelled*\n\nOrder #${shortId} — ${order.item}\nCustomer ${order.customerPhone} notified.`;
+  }
+
   // [FIX-CMD-8] Await the session update — if this fails the customer's session won't
   // point to PAYMENT_PROOF and they won't be able to send a retry screenshot.
   // Previously fire-and-forget, meaning a transient DB error silently broke retries.
   await updateSession(order.customerPhone, tenantId, {
-    currentFlow: 'ORDER',
-    step:        'PAYMENT_PROOF',
+    currentFlow:  'ORDER',
+    step:         'PAYMENT_PROOF',
+    postFlowAck:  'ORDER_REJECTED',
+    postFlowData: { item: order.item, shortId: order.shortId || shortId },
   });
 
   await dispatchMessage(order.customerPhone, {
@@ -377,6 +428,11 @@ async function confirmBooking(shortId, tenantId, adminPhone, tenantDoc) {
     customerPhone: booking.customerPhone, err: err.message,
   }));
 
+  await updateSession(booking.customerPhone, tenantId, {
+    postFlowAck:  'BOOKING_CONFIRMED',
+    postFlowData: { service: booking.service, date: booking.date, time: booking.time },
+  }).catch(() => {});
+
   logger.info('[AdminCmd] Booking confirmed', { shortId, adminPhone });
   return `✅ *Booking confirmed*\n\nBooking #${shortId} — ${when}${serviceStr}\nCustomer ${booking.customerPhone} notified.`;
 }
@@ -406,6 +462,11 @@ async function declineBooking(shortId, reason, tenantId, adminPhone, tenantDoc) 
   tenantDoc).catch(err => logger.warn('[AdminCmd] declineBooking: customer dispatch failed', {
     customerPhone: booking.customerPhone, err: err.message,
   }));
+
+  await updateSession(booking.customerPhone, tenantId, {
+    postFlowAck:  'BOOKING_DECLINED',
+    postFlowData: { service: booking.service, date: booking.date },
+  }).catch(() => {});
 
   logger.info('[AdminCmd] Booking declined', { shortId, adminPhone, reason });
   return `❌ *Booking declined*\n\nBooking #${shortId} — ${when}${serviceStr}${reason ? `\nReason: ${reason}` : ''}\nCustomer ${booking.customerPhone} notified.`;

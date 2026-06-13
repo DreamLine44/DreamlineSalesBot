@@ -68,6 +68,14 @@ export async function handleDeliveryOrder({ session, message, business, tenant, 
 
   // ── INIT ──────────────────────────────────────────────────────────────────
   if (message === null) {
+    // [FIX-FLOW-STUCK] If menu is empty, clear the flow immediately so the
+    // session is not stuck in ORDER state on every subsequent message.
+    if (!menu.length) {
+      await updateSession(session.customerPhone, session.tenantId, {
+        currentFlow: null, step: null, data: {},
+      });
+      return _buildMenuUI(menu, business);
+    }
     await updateSession(session.customerPhone, session.tenantId, {
       step: 'SELECT_ITEM',
       data: {},

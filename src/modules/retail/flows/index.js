@@ -67,6 +67,13 @@ export async function handleRetailOrder({ session, message, business, tenant, is
 
   // ── INIT ──────────────────────────────────────────────────────────────────
   if (message === null) {
+    // [FIX-FLOW-STUCK] Clear flow if no products are available so session is not permanently stuck.
+    if (!menu.length) {
+      await updateSession(session.customerPhone, session.tenantId, {
+        currentFlow: null, step: null, data: {},
+      });
+      return _buildProductList(menu, business); // returns empty-catalogue UI
+    }
     await updateSession(session.customerPhone, session.tenantId, {
       step: 'BROWSE_CATEGORY',
       data: {},
