@@ -481,8 +481,10 @@ async function resumeBot(customerPhone, tenantId, tenantDoc) {
   // makes it easier to diagnose cases where an admin resumes a phone that never had
   // a human-mode session.
   const updated = await updateSession(customerPhone, tenantId, {
-    humanMode: false,
+    humanMode:         false,
     humanModeNotified: false,
+    postFlowAck:       null,
+    postFlowData:      null,
   });
 
   if (!updated) {

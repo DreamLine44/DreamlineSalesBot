@@ -17,6 +17,8 @@
  *   10. DONE payment (requireProof=false gate)
  *   10.5 PAYMENT_PROOF strict text guard
  *   11. [Admin button reply moved to step 6]
+ *   11.5 AWAIT_ADMIN_CONFIRM guard
+ *   11.7 PENDING ORDER LOCK — blocks new flows while order awaits admin action
  *   12. LEAD_CAPTURE active flow routing
  *   13. ENQUIRY active flow routing
  *   14. Post-flow acknowledgement
@@ -736,6 +738,82 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
       body: '⏳ Your order is currently being reviewed by our team.\n\nYou\'ll receive a confirmation message shortly. Please hold on! 🙏',
     }, tenantDoc);
     return;
+  }
+
+  // ── 11.7. PENDING ORDER LOCK ─────────────────────────────────────────────
+  // Fires ONLY when there is no active session flow (currentFlow===null).
+  // When a customer submits a payment screenshot (step 9) the controller clears
+  // currentFlow/step but sets no postFlowAck, so the very next message ("hi",
+  // button tap, anything) fell straight through to step 16 intent detection,
+  // hit GREET, called startFlow() which reset the session, and showed the welcome
+  // menu — letting the customer place a brand new order while the first one was
+  // still pending admin approval.
+  //
+  // This guard queries for any Order in a pre-approval state and locks the
+  // conversation until the admin acts.  Covered states:
+  //   • proof_received  — screenshot submitted, admin hasn't acted yet
+  //   • unpaid          — payment instructions shown, no screenshot yet
+  //   • self_confirmed  — requireProof=false path, admin prep pending
+  //
+  // Escape hatches:
+  //   • CANCEL / CANCEL_ORDER  → cancels the pending order and releases lock
+  //   • SUPPORT                → falls through to SUPPORT intent (human handoff)
+  //   • Everything else        → strict "you have a pending order" reminder
+  if (!session.currentFlow) {
+    const upperPOL  = messageText.trim().toUpperCase();
+    const isEscPOL  = upperPOL === 'CANCEL' || upperPOL === 'CANCEL_ORDER';
+    const isSuppPOL = upperPOL === 'SUPPORT';
+
+    const { default: Order } = await import('../models/Order.js');
+    const pendingOrder = await Order.findOne({
+      customerPhone: from,
+      tenantId,
+      paymentStatus: { $in: ['proof_received', 'unpaid', 'self_confirmed'] },
+      status:        { $nin: ['cancelled', 'confirmed', 'completed'] },
+    }).select('_id item quantity shortId paymentStatus').sort({ createdAt: -1 }).lean().catch(() => null);
+
+    if (pendingOrder) {
+      // ── Cancel escape ────────────────────────────────────────────────────
+      if (isEscPOL) {
+        await Order.findOneAndUpdate(
+          { _id: pendingOrder._id },
+          { $set: { status: 'cancelled', paymentStatus: 'cancelled' } }
+        ).catch(() => {});
+        await updateSession(from, tenantId, { currentFlow: null, step: null, data: {} });
+        const cfgPOL = getModeConfig(business);
+        await dispatchMessage(from, {
+          type:    'buttons',
+          body:    `❌ Your order *#${pendingOrder.shortId}* has been cancelled.\n\nWhat would you like to do next?`,
+          buttons: cfgPOL.ui?.welcomeButtons || [{ id: 'ORDER', title: '🛒 Place New Order' }],
+        }, tenantDoc);
+        return;
+      }
+
+      // ── Support escape — fall through to intent detection ────────────────
+      if (!isSuppPOL) {
+        // All other messages: strict status reminder, no new flow allowed
+        const statusMsgPOL = {
+          proof_received: `⏳ *Awaiting verification* — your payment screenshot has been received and our team is reviewing it.`,
+          unpaid:         `⏳ *Awaiting payment* — please send your payment screenshot to complete the order.`,
+          self_confirmed: `⏳ *Order received* — our team is preparing your order.`,
+        }[pendingOrder.paymentStatus] || `⏳ Your order is being processed by our team.`;
+
+        await dispatchMessage(from, {
+          type: 'buttons',
+          body:
+            `🔒 *You have a pending order*\n\n` +
+            `🛒 *${pendingOrder.item}* × ${pendingOrder.quantity}\n` +
+            `🔖 Ref: \`#${pendingOrder.shortId}\`\n\n` +
+            `${statusMsgPOL}\n\n` +
+            `_Please wait for confirmation before placing a new order._`,
+          buttons: [
+            { id: 'CANCEL',  title: '❌ Cancel Order'     },
+            { id: 'SUPPORT', title: '💬 Contact Support'  },
+          ],
+        }, tenantDoc);
+        return;
+      }
+    }
   }
 
   // ── 12. LEAD_CAPTURE active flow ──────────────────────────────────────────
