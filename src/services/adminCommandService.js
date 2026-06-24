@@ -389,7 +389,13 @@ async function confirmPayment(shortId, tenantId, adminPhone, tenantDoc, business
       .catch(() => {});
 
     logger.info('[AdminCmd] Payment confirmed', { shortId, adminPhone });
-    return `✅ *Payment confirmed*\n\nOrder #${shortId} — ${order.item}\nCustomer ${order.customerPhone} notified.`;
+    // [FIX-READY-1] Return interactive message with READY_ button so admin can notify
+    // customer with one tap when order is prepared — no typing 'MARK READY <shortId>' required.
+    return {
+      type:    'buttons',
+      body:    `✅ *Payment confirmed*\n\nOrder #${shortId} — ${order.item}\nCustomer ${order.customerPhone} notified.\n\n🍳 Tap below when the order is ready for collection:`,
+      buttons: [{ id: `READY_${shortId}`, title: '🍽️ Mark Ready' }],
+    };
   } catch (err) {
     // [FIX-CMD-15] Previously any thrown error here (DB hiccup etc.) propagated up to
     // webhookController's `.catch(() => null)`, producing ZERO response to the admin —

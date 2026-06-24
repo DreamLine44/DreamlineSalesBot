@@ -177,7 +177,7 @@ export async function handleDonePayment(customerPhone, tenantId, tenantDoc) {
             `🛒 Item: *${order.item}* × ${order.quantity}\n` +
             `💰 Total: *${currency}${order.totalPrice || '—'}*\n` +
             `🔖 Ref: \`${order.shortId}\`\n\n` +
-            `Customer has confirmed payment (cash/self-confirm). Please prepare.`,
+            `Customer confirmed (cash/no-proof). Tap ✅ to confirm, then 🍽️ Mark Ready when done.`,
           buttons: [
             { id: `APPROVE_${order.shortId}`, title: '✅ Mark Done' },
             { id: `REJECT_${order.shortId}`,  title: '❌ Cancel'    },

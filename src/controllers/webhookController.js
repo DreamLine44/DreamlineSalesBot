@@ -672,7 +672,8 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
       upper.startsWith('REJECT ')       ||
       upper.startsWith('CONFIRM BOOK ') ||
       upper.startsWith('DECLINE BOOK ') ||
-      upper === 'RESUME BOT' || upper.startsWith('RESUME BOT ')
+      upper === 'RESUME BOT' || upper.startsWith('RESUME BOT ') ||
+      upper.startsWith('MARK READY ') // [FIX-READY-3] 'MARK READY <shortId>' admin text command
     ) {
       const { handleAdminTextCommand, isAdminPhone } = await import('../services/adminCommandService.js');
       // [FIX-X2] Pass pre-fetched business and tenantDoc so isAdminPhone skips both DB queries.
@@ -680,7 +681,13 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
       if (isAdmin) {
         const adminReply = await handleAdminTextCommand(messageText, tenantId, from, tenantDoc, business).catch(() => null);
         if (adminReply) {
-          await dispatchMessage(from, { type: 'text', body: adminReply }, tenantDoc);
+          // [FIX-ADMIN-DISPATCH] adminReply can be a string (most commands) OR a dispatch
+          // payload object (e.g. confirmPayment now returns {type:'buttons',...} with READY_ button).
+          // Previously always wrapped in { type:'text', body } — that broke object replies.
+          const adminPayload = typeof adminReply === 'string'
+            ? { type: 'text', body: adminReply }
+            : adminReply;
+          await dispatchMessage(from, adminPayload, tenantDoc);
         }
         return; // admin text commands never fall through — not even to humanMode guard
       }
@@ -689,14 +696,19 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
     // Admin BUTTON replies: APPROVE_xxx / REJECT_xxx / CONFIRM_BOOK_xxx / DECLINE_BOOK_xxx
     if (isInteractive && (
       upper.startsWith('APPROVE_') || upper.startsWith('REJECT_') ||
-      upper.startsWith('CONFIRM_BOOK_') || upper.startsWith('DECLINE_BOOK_')
+      upper.startsWith('CONFIRM_BOOK_') || upper.startsWith('DECLINE_BOOK_') ||
+      upper.startsWith('READY_')   // [FIX-READY-2] 'Mark Ready' button sent back to admin after payment confirm
     )) {
       const { handleAdminButtonReply, isAdminPhone } = await import('../services/adminCommandService.js');
       // [FIX-X2] Pass pre-fetched business and tenantDoc so isAdminPhone skips both DB queries.
       const isAdmin = await isAdminPhone(from, tenantId, business, tenantDoc).catch(() => false);
       if (isAdmin) {
         const reply = await handleAdminButtonReply(messageText, tenantId, from, tenantDoc, business).catch(() => null);
-        if (reply) await dispatchMessage(from, { type: 'text', body: reply }, tenantDoc);
+        if (reply) {
+          // [FIX-ADMIN-DISPATCH] reply can be string OR payload object (e.g. READY_ button after confirm)
+          const replyPayload = typeof reply === 'string' ? { type: 'text', body: reply } : reply;
+          await dispatchMessage(from, replyPayload, tenantDoc);
+        }
         return; // admin button replies never fall through
       }
       // [FIX-2.2] Non-admin tapping a stale admin button (e.g. a forwarded approval

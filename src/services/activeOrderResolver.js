@@ -201,10 +201,13 @@ function _resolveState(order, business, session) {
           `✅ *Your order is ready${custName}!*\n\n` +
           `Order *#${shortId}* — ${itemSummary}` +
           (priceStr ? `\n💰 Amount: *${priceStr}*` : '') +
-          `\n\nPlease collect your order or await delivery. 🎉`,
+          `\n\nPlease come collect at the counter! 😊`,
+        // [FIX-READY-CARD] Add COLLECTED_ button so customer can confirm pickup in one tap.
+        // Previously only 'Contact Business' and 'Order Again' were shown — customer had
+        // no way to acknowledge collection, so the order stayed in 'ready' state forever.
         buttons: [
-          { id: 'SUPPORT',     title: '💬 Contact Business' },
-          { id: 'ORDER',       title: '🛒 Order Again'      },
+          { id: shortId ? `COLLECTED_${shortId}` : 'SUPPORT', title: '✅ Collected — Thanks!' },
+          { id: 'SUPPORT', title: '💬 Contact Business' },
         ],
       },
     };

@@ -270,21 +270,37 @@ export async function handleFashionOrder({ session, message, business, tenant, i
         return buildPaymentInstructionsUI(business, data.totalPrice, savedOrder?.shortId || null, null);
       }
 
-      // No payment — notify admin
+      // No payment — notify admin with interactive APPROVE/REJECT buttons
+      // [FIX-FASHION-ADMIN] Upgraded from dispatchText (no buttons) to dispatchMessage
+      // with APPROVE_/REJECT_ buttons — admin can confirm or cancel with one tap.
+      // Also parks session at AWAIT_ADMIN_CONFIRM so the customer waits for confirmation.
       try {
         const adminPhone = business?.adminPhone || tenant?.adminPhone;
         if (adminPhone && tenant && savedOrder) {
-          const { buildAdminOrderAlert } = await import('../../restaurant/handlers/uiBuilders.js');
-          const alert = buildAdminOrderAlert({
+          const { buildAdminOrderAlertBody } = await import('../../restaurant/handlers/uiBuilders.js');
+          const alertBody = buildAdminOrderAlertBody({
             customerPhone: session.customerPhone,
             item: `${data.item?.name}${data.size ? ` (${data.size})` : ''}`,
             quantity: data.quantity, totalPrice: data.totalPrice,
             shortId: savedOrder.shortId, business,
           });
-          const { dispatchText } = await import('../../../core/whatsapp/dispatcher.js');
-          dispatchText(adminPhone, alert, tenant).catch(() => {});
+          const { dispatchMessage } = await import('../../../core/whatsapp/dispatcher.js');
+          await dispatchMessage(adminPhone, {
+            type:    'buttons',
+            body:    alertBody,
+            buttons: [
+              { id: `APPROVE_${savedOrder.shortId}`, title: '✅ Confirm Order' },
+              { id: `REJECT_${savedOrder.shortId}`,  title: '❌ Cancel Order'  },
+            ],
+          }, tenant).catch(() => {});
         }
       } catch {}
+
+      // Park session at AWAIT_ADMIN_CONFIRM so stale buttons don't restart the flow
+      await updateSession(session.customerPhone, session.tenantId, {
+        step: 'AWAIT_ADMIN_CONFIRM', currentFlow: 'ORDER',
+        data: { ...data },
+      });
 
       // Track analytics + revenue BEFORE completeFlow — completeFlow may trigger lead
       // capture and return early, so anything after it may never execute.
@@ -300,16 +316,12 @@ export async function handleFashionOrder({ session, message, business, tenant, i
         }).catch(() => {});
       }
 
-      const _lcRf = await completeFlow(session, 'ORDER', business, tenant);
-      if (_lcRf) return _lcRf;
+      // [FIX-FASHION-WAIT] Do NOT call completeFlow here — that clears currentFlow/step
+      // and contradicts the AWAIT_ADMIN_CONFIRM park above. The session stays parked until
+      // the admin confirms/rejects via APPROVE_/REJECT_ buttons. Customer gets a waiting message.
       return {
-        type: 'buttons',
-        body: `✅ *Order confirmed!*\n\n👗 *${data.quantity}× ${data.item?.name}*\n\nWe'll reach out with delivery details. Thank you! ✨`,
-        buttons: [
-          { id: 'ORDER',     title: '👗 Shop More'      },
-          { id: 'QUESTION',  title: '❓ Style Help'      },
-          { id: 'SHOW_MENU', title: '🔄 Start Over'      },
-        ],
+        type: 'text',
+        body: `✅ *Order received!*\n\n👗 *${data.quantity}× ${data.item?.name}${data.size ? ` (${data.size})` : ''}*\n\n⏳ Our team will confirm your order shortly. We'll send you a message when it's ready! 🙏`,
       };
     }
 
