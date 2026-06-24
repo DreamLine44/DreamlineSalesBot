@@ -39,7 +39,7 @@ import BusinessConfig from '../models/BusinessConfig.js';
 import Tenant         from '../models/Tenant.js';
 import { getAnalyticsSummary } from '../core/analytics/analyticsService.js';
 import { updateSession }       from '../core/sessions/sessionService.js';
-import { dispatchText }        from '../core/whatsapp/dispatcher.js';
+import { dispatchText, dispatchMessage } from '../core/whatsapp/dispatcher.js';
 import logger from '../config/logger.js';
 import { uploadMenuImage, deleteMenuImage, CLOUDINARY_ENABLED } from '../config/cloudinary.js';
 
@@ -102,11 +102,14 @@ export async function updateOrderStatus(req, res) {
     const { status, notes } = req.body;
 
     // [FIX-9] Validate status before hitting Mongoose
-    // [FIX-DASH-7] payment_pending_verification is a valid Order.status enum value
-    // (in Order model schema) but was absent from this local allowlist — any dashboard
-    // PATCH to set an order to that intermediate status got a 400 "Invalid status" error.
-    // Mirrors the same fix applied to adminRoutes in v6.
-    const VALID_ORDER_STATUSES = ['pending', 'payment_pending_verification', 'confirmed', 'completed', 'cancelled', 'payment_failed', 'rejected'];
+    // [FIX-DASH-STATUS-MISSING] 'preparing', 'ready', 'out_for_delivery', and 'delivered'
+    // were missing from this allowlist even though they are valid Order.status enum values.
+    // Any dashboard PATCH to set an order to those statuses returned 400 "Invalid status".
+    const VALID_ORDER_STATUSES = [
+      'pending', 'payment_pending_verification', 'confirmed',
+      'preparing', 'ready', 'out_for_delivery', 'delivered',
+      'completed', 'cancelled', 'payment_failed', 'rejected',
+    ];
     if (!VALID_ORDER_STATUSES.includes(status)) {
       return res.status(400).json({ error: `Invalid status. Must be one of: ${VALID_ORDER_STATUSES.join(', ')}` });
     }
@@ -121,17 +124,76 @@ export async function updateOrderStatus(req, res) {
           // is generated when the customer is shown payment instructions again. Without this
           // the scheduler / payment instructions UI would continue to display the old ref.
           ...(status === 'pending' ? { paymentReference: null } : {}),
+          // Track lifecycle timestamps
+          ...(status === 'preparing'        ? { preparingAt:      new Date() } : {}),
+          ...(status === 'ready'            ? { readyAt:          new Date() } : {}),
+          ...(status === 'out_for_delivery' ? { outForDeliveryAt: new Date() } : {}),
+          ...(status === 'delivered'        ? { deliveredAt:      new Date() } : {}),
+          ...(status === 'completed'        ? { completedAt:      new Date() } : {}),
         },
       },
       { new: true },
     );
     if (!order) return res.status(404).json({ error: 'Order not found' });
 
-    // [FIX-6a] Notify customer
+    // [FIX-6a] Notify customer — all significant status transitions
     try {
       const tenant = await loadTenant(tenantId);
       if (tenant && order.customerPhone) {
-        if (status === 'confirmed') {
+        const bizName = order.businessName || tenant.businessName || 'us';
+
+        if (status === 'preparing') {
+          // [FIX-NOTIFY-PREPARING] New notification for the PREPARING state.
+          // Dashboard admins who set status → preparing were silently updating the DB
+          // with no WhatsApp message to the customer. Customer would wonder what's happening.
+          await dispatchText(order.customerPhone,
+            `🍳 *Your order is being prepared!*\n\n` +
+            `📦  *${order.item}* × ${order.quantity}\n` +
+            `🔖  Reference: *#${order.shortId}*\n\n` +
+            `Our kitchen is working on it — we'll message you the moment it's ready. 😊`,
+            tenant);
+
+        } else if (status === 'ready') {
+          // [FIX-NOTIFY-READY] New notification for the READY state, with collection buttons.
+          // Mirrors adminCommandService.markOrderReady() so dashboard and WhatsApp-command
+          // paths produce identical customer experience.
+          await dispatchMessage(order.customerPhone, {
+            type: 'buttons',
+            body:
+              `🍽️ *Your Order is Ready!*\n\n` +
+              `📦  *${order.item}* × ${order.quantity}\n` +
+              `🔖  Reference: *#${order.shortId}*\n\n` +
+              `Please collect your order at the counter 😊\n\n` +
+              `Thank you for choosing *${bizName}*!`,
+            buttons: [
+              { id: `COLLECTED_${order.shortId}`, title: '✅ Collected — Thanks!' },
+              { id: 'SUPPORT',                     title: '❓ Need Help'           },
+            ],
+          }, tenant);
+
+          // [FIX-READY-SESSION] Set session to ORDER_READY so postFlowHandler handles
+          // follow-up messages correctly (collected button, questions, etc.).
+          await updateSession(order.customerPhone, String(tenantId), {
+            currentFlow:  null, step: null,
+            postFlowAck:  'ORDER_READY',
+            postFlowData: { item: order.item, quantity: order.quantity, shortId: order.shortId },
+          }).catch(() => {});
+
+        } else if (status === 'out_for_delivery') {
+          // [FIX-NOTIFY-OUT_FOR_DELIVERY] Delivery dispatch notification.
+          await dispatchMessage(order.customerPhone, {
+            type: 'buttons',
+            body:
+              `🚗 *Your order is on its way!*\n\n` +
+              `📦  *${order.item}* × ${order.quantity}\n` +
+              `🔖  Reference: *#${order.shortId}*\n\n` +
+              `Sit tight — your delivery is en route! 🙏`,
+            buttons: [
+              { id: 'SUPPORT', title: '💬 Contact Us' },
+            ],
+          }, tenant);
+
+        } else if (status === 'confirmed') {
           await dispatchText(order.customerPhone,
             `✅ *Your order is confirmed!*\n\n🍽 *${order.item}* × ${order.quantity}\n\nThank you for your patience! 😊`,
             tenant);
@@ -166,6 +228,88 @@ export async function getCustomerOrderHistory(req, res) {
     res.json({ orders, count: orders.length, customerPhone });
   } catch (err) {
     logger.error('[Dashboard] getCustomerOrderHistory failed', { err: err.message });
+    res.status(500).json({ error: err.message });
+  }
+}
+
+/**
+ * notifyOrderReady — POST /:tenantId/orders/:orderId/notify-ready
+ *
+ * [FIX-NOTIFY-READY-ENDPOINT] Dedicated endpoint for the dashboard "Notify Ready" button.
+ *
+ * The dashboard needs a clear, explicit action button: admin clicks "Order Ready — Notify
+ * Customer" and the customer gets the WhatsApp collection message with Collected + Help buttons.
+ *
+ * This is separate from updateOrderStatus so:
+ *  1. The admin can re-send the ready notification without changing status (e.g. customer
+ *     missed the first message).
+ *  2. The frontend can show a clearly labelled button ("📲 Notify Customer — Ready")
+ *     instead of relying on a hidden side-effect of the status dropdown.
+ *  3. Mirrors adminCommandService.markOrderReady() so dashboard and WhatsApp-command
+ *     paths produce an identical customer experience.
+ *
+ * Behaviour:
+ *  - Sets status → 'ready' and readyAt if not already ready.
+ *  - Dispatches the collection WhatsApp message with Collected + Need Help buttons.
+ *  - Sets session postFlowAck=ORDER_READY so postFlowHandler handles follow-ups correctly.
+ *  - Returns { ok: true, order } on success.
+ *  - Returns 404 if order not found for this tenant.
+ *  - Returns 400 if order is already completed/cancelled/rejected.
+ */
+export async function notifyOrderReady(req, res) {
+  try {
+    const { tenantId, orderId } = req.params;
+
+    // Allow re-notification if order is 'confirmed', 'preparing', or already 'ready'
+    const order = await Order.findOneAndUpdate(
+      {
+        _id: orderId,
+        tenantId,
+        status: { $nin: ['completed', 'cancelled', 'rejected', 'payment_failed'] },
+      },
+      { $set: { status: 'ready', readyAt: new Date() } },
+      { new: true },
+    ).lean();
+
+    if (!order) {
+      const existing = await Order.findOne({ _id: orderId, tenantId }).select('status').lean();
+      if (!existing) return res.status(404).json({ error: 'Order not found' });
+      return res.status(400).json({ error: `Cannot notify ready — order is already ${existing.status}.` });
+    }
+
+    const tenant = await loadTenant(tenantId);
+    if (!tenant) {
+      logger.warn('[Dashboard] notifyOrderReady: tenant not found (non-fatal)', { tenantId });
+    } else {
+      const biz = await BusinessConfig.findOne({ tenantId }).select('name').lean();
+      const bizName = biz?.name || 'us';
+
+      await dispatchMessage(order.customerPhone, {
+        type: 'buttons',
+        body:
+          `🍽️ *Your Order is Ready!*\n\n` +
+          `📦  *${order.item}* × ${order.quantity}\n` +
+          `🔖  Reference: *#${order.shortId}*\n\n` +
+          `Please collect your order at the counter 😊\n\n` +
+          `Thank you for choosing *${bizName}*!`,
+        buttons: [
+          { id: `COLLECTED_${order.shortId}`, title: '✅ Collected — Thanks!' },
+          { id: 'SUPPORT',                     title: '❓ Need Help'           },
+        ],
+      }, tenant);
+
+      // Set session so postFlowHandler handles follow-up messages correctly
+      await updateSession(order.customerPhone, String(tenantId), {
+        currentFlow:  null, step: null,
+        postFlowAck:  'ORDER_READY',
+        postFlowData: { item: order.item, quantity: order.quantity, shortId: order.shortId },
+      }).catch(err => logger.warn('[Dashboard] notifyOrderReady: session update failed (non-fatal)', { err: err.message }));
+    }
+
+    logger.info('[Dashboard] Order ready notification sent', { orderId, customerPhone: order.customerPhone });
+    res.json({ ok: true, order });
+  } catch (err) {
+    logger.error('[Dashboard] notifyOrderReady failed', { err: err.message });
     res.status(500).json({ error: err.message });
   }
 }

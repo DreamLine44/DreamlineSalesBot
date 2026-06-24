@@ -21,8 +21,8 @@ import Order    from '../models/Order.js';
 import Booking  from '../models/Booking.js';
 import Session  from '../models/Session.js';
 import Tenant   from '../models/Tenant.js';
-import { updateSession } from '../core/sessions/sessionService.js';
-import { dispatchText }  from '../core/whatsapp/dispatcher.js';
+import { updateSession }              from '../core/sessions/sessionService.js';
+import { dispatchText, dispatchMessage } from '../core/whatsapp/dispatcher.js';
 import { humanModeLimiter, overviewLimiter } from '../middleware/rateLimiter.js';
 import logger from '../config/logger.js';
 
@@ -30,7 +30,13 @@ const r = Router();
 
 // [FIX-ADMIN-7] payment_pending_verification is a valid Order.status value (in schema enum)
 // but was absent here — any admin PATCH to set that status got a 400 "Invalid status" error.
-const VALID_ORDER_STATUSES   = ['pending', 'payment_pending_verification', 'confirmed', 'completed', 'cancelled', 'payment_failed', 'rejected'];
+// [FIX-ADMIN-STATUS] 'preparing', 'ready', 'out_for_delivery', 'delivered' were also missing —
+// all are valid Order.status enum values and were similarly blocked with 400.
+const VALID_ORDER_STATUSES   = [
+  'pending', 'payment_pending_verification', 'confirmed',
+  'preparing', 'ready', 'out_for_delivery', 'delivered',
+  'completed', 'cancelled', 'payment_failed', 'rejected',
+];
 const VALID_BOOKING_STATUSES = ['pending', 'confirmed', 'completed', 'cancelled'];
 
 /** Reject non-superadmins accessing another tenant's data */
@@ -115,7 +121,18 @@ r.patch('/orders/:id/status', async (req, res) => {
 
     const order = await Order.findOneAndUpdate(
       filter,
-      { $set: { status, ...(notes ? { notes } : {}) } },
+      {
+        $set: {
+          status,
+          ...(notes ? { notes } : {}),
+          // Lifecycle timestamps — mirrors dashboardController behaviour
+          ...(status === 'preparing'        ? { preparingAt:       new Date() } : {}),
+          ...(status === 'ready'            ? { readyAt:           new Date() } : {}),
+          ...(status === 'out_for_delivery' ? { outForDeliveryAt:  new Date() } : {}),
+          ...(status === 'delivered'        ? { deliveredAt:       new Date() } : {}),
+          ...(status === 'completed'        ? { completedAt:       new Date() } : {}),
+        },
+      },
       { new: true },
     );
     if (!order) return res.status(404).json({ error: 'Order not found' });
@@ -124,7 +141,35 @@ r.patch('/orders/:id/status', async (req, res) => {
     try {
       const tenant = await loadTenant(String(order.tenantId));
       if (tenant && order.customerPhone) {
-        if (status === 'confirmed') {
+        if (status === 'preparing') {
+          await dispatchText(
+            order.customerPhone,
+            `🍳 *Your order is being prepared!*\n\n📦  *${order.item}* × ${order.quantity}\n🔖  Reference: *#${order.shortId}*\n\nOur kitchen is working on it — we'll message you the moment it's ready. 😊`,
+            tenant,
+          );
+        } else if (status === 'ready') {
+          await dispatchMessage(order.customerPhone, {
+            type: 'buttons',
+            body:
+              `🍽️ *Your Order is Ready!*\n\n📦  *${order.item}* × ${order.quantity}\n🔖  Reference: *#${order.shortId}*\n\nPlease collect your order at the counter 😊`,
+            buttons: [
+              { id: `COLLECTED_${order.shortId}`, title: '✅ Collected — Thanks!' },
+              { id: 'SUPPORT',                     title: '❓ Need Help'           },
+            ],
+          }, tenant);
+          await updateSession(order.customerPhone, String(order.tenantId), {
+            currentFlow: null, step: null,
+            postFlowAck:  'ORDER_READY',
+            postFlowData: { item: order.item, quantity: order.quantity, shortId: order.shortId },
+          }).catch(() => {});
+        } else if (status === 'out_for_delivery') {
+          await dispatchMessage(order.customerPhone, {
+            type: 'buttons',
+            body:
+              `🚗 *Your order is on its way!*\n\n📦  *${order.item}* × ${order.quantity}\n🔖  Reference: *#${order.shortId}*\n\nSit tight — your delivery is en route! 🙏`,
+            buttons: [{ id: 'SUPPORT', title: '💬 Contact Us' }],
+          }, tenant);
+        } else if (status === 'confirmed') {
           await dispatchText(
             order.customerPhone,
             `✅ *Your order is confirmed!*\n\n🍽 *${order.item}* × ${order.quantity}\n\nThank you for your patience! 😊`,

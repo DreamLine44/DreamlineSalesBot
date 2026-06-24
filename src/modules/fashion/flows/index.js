@@ -3,7 +3,6 @@
  * Fashion module — product catalog + variants + recommendations
  */
 import { updateSession }  from '../../../core/sessions/sessionService.js';
-import { completeFlow }   from '../../../core/conversations/flowEngine.js';
 import { getAIReply }     from '../../../core/ai/providers/aiRouter.js';
 import { findBestMatch }  from '../../../utils/matchEngine.js';
 import { saveOrder }      from '../../../services/orderService.js';
@@ -296,14 +295,7 @@ export async function handleFashionOrder({ session, message, business, tenant, i
         }
       } catch {}
 
-      // Park session at AWAIT_ADMIN_CONFIRM so stale buttons don't restart the flow
-      await updateSession(session.customerPhone, session.tenantId, {
-        step: 'AWAIT_ADMIN_CONFIRM', currentFlow: 'ORDER',
-        data: { ...data },
-      });
-
-      // Track analytics + revenue BEFORE completeFlow — completeFlow may trigger lead
-      // capture and return early, so anything after it may never execute.
+      // Track analytics + revenue BEFORE parking session
       trackOrderAnalytics(
         `${data.item?.name}${data.size ? ` (${data.size})` : ''}`,
         null, data.quantity, data.totalPrice || 0, session.tenantId
@@ -315,6 +307,12 @@ export async function handleFashionOrder({ session, message, business, tenant, i
           customerPhone: session.customerPhone,
         }).catch(() => {});
       }
+
+      // Park session at AWAIT_ADMIN_CONFIRM so stale buttons don't restart the flow
+      await updateSession(session.customerPhone, session.tenantId, {
+        step: 'AWAIT_ADMIN_CONFIRM', currentFlow: 'ORDER',
+        data: { ...data },
+      });
 
       // [FIX-FASHION-WAIT] Do NOT call completeFlow here — that clears currentFlow/step
       // and contradicts the AWAIT_ADMIN_CONFIRM park above. The session stays parked until

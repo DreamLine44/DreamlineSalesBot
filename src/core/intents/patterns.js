@@ -30,6 +30,10 @@ export const BUTTON_ID_MAP = {
   // welcome menu instead of the cancel handler. Same target as CANCEL_BOOKING.
   'CANCEL_ORDER':       'CANCEL',
   'CANCEL_BOOKING':     'CANCEL',
+  // [FIX-CANCEL-ALL] CANCEL_ALL button ID for bulk-cancellation of multiple orders.
+  // Shown in the MULTIPLE_ACTIVE_ORDERS context; routes to the CANCEL_ALL handler
+  // in webhookController which cancels all pending/confirmed orders for the customer.
+  'CANCEL_ALL':         'CANCEL_ALL',
   'DATE_BACK':          'DATE_BACK',
   'TIME_BACK':          'TIME_BACK',
 
@@ -159,6 +163,15 @@ export const EMOJI_MAP = {
 // ── Keyword → Intent map ──────────────────────────────────────────────────────
 // All values are normalised lowercase. Order within each array doesn't matter.
 export const INTENT_PATTERNS = {
+
+  // ── CANCEL_ALL — bulk cancellation of all active orders ──────────────────
+  // Triggered when a customer wants to cancel every pending/confirmed order at once.
+  // Handled by webhookController before the normal CANCEL flow.
+  CANCEL_ALL: [
+    'cancel all', 'cancel all orders', 'cancel all of them',
+    'cancel everything', 'cancel all my orders', 'cancel them all',
+    'cancel all order', 'cancel all of the orders',
+  ],
 
   // ── [SPEC-PART7] ACKNOWLEDGEMENT classifier ──────────────────────────────
   // These words/phrases must NEVER trigger a greeting, menu reset, or FALLBACK.

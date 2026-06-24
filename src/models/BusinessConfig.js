@@ -206,6 +206,11 @@ const businessConfigSchema = new mongoose.Schema({
     paymentInstructions: { type: String, default: '', trim: true, maxlength: 1000 },
     // Business-hours closed message
     closed:              { type: String, default: '', trim: true, maxlength: 500 },
+    // [FIX-SCHEMA-REOPENED] Message sent when a customer messages again after the business
+    // re-opens following a closed period. webhookController reads customMessages.reopened
+    // but this field was absent from the schema — Mongoose strict mode silently dropped
+    // any write to it, meaning a tenant's custom reopen message was never persisted.
+    reopened:            { type: String, default: '', trim: true, maxlength: 500 },
     // Flow prompt overrides (leave blank for smart defaults)
     orderPrompt:         { type: String, default: '', trim: true, maxlength: 300 },
     bookPrompt:          { type: String, default: '', trim: true, maxlength: 300 },

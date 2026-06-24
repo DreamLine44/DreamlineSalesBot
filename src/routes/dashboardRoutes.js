@@ -8,7 +8,7 @@
 import { Router } from 'express';
 import {
   getDashboardOverview,
-  getOrders, updateOrderStatus, getCustomerOrderHistory,
+  getOrders, updateOrderStatus, getCustomerOrderHistory, notifyOrderReady,
   getBookings, updateBookingStatus,
   getAnalytics,
   getConversations, setHumanMode,
@@ -47,6 +47,11 @@ r.get('/:tenantId/orders',                            enforceTenantScope, getOrd
 // [FIX-BUG13] Literal "customer" segment MUST be registered before /:orderId param
 r.get('/:tenantId/orders/customer/:customerPhone',    enforceTenantScope, getCustomerOrderHistory);
 r.patch('/:tenantId/orders/:orderId/status',          enforceTenantScope, updateOrderStatus);
+// [FIX-NOTIFY-READY-ENDPOINT] Dedicated endpoint for the dashboard "Notify Customer — Ready"
+// button. Sets status=ready (if not already terminal) and sends the WhatsApp collection
+// message with Collected + Need Help buttons. Can also be used to re-send the notification
+// if the customer missed the first message.
+r.post('/:tenantId/orders/:orderId/notify-ready',     enforceTenantScope, notifyOrderReady);
 
 // ── Bookings ──────────────────────────────────────────────────────────────────
 r.get('/:tenantId/bookings',                          enforceTenantScope, getBookings);

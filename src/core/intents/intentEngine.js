@@ -276,6 +276,7 @@ function intentToAction(intent, business) {
   const mode = (business?.businessMode || 'RETAIL').toUpperCase();
   const map = {
     ACKNOWLEDGEMENT:    'ACKNOWLEDGE',
+    CANCEL_ALL:         'CANCEL_ALL',  // [FIX-CANCEL-ALL] bulk cancel all active orders
     ORDER:              'START_ORDER',
     BOOKING:            'START_BOOKING',
     SALON_BOOKING:      'START_BOOKING',

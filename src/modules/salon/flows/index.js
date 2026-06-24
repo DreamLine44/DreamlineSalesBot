@@ -533,18 +533,27 @@ export async function handleSalonProductOrder({ session, message, business, tena
         return buildPaymentInstructionsUI(business, data.totalPrice, savedOrder?.shortId || null, null);
       }
 
-      // Admin notify
+      // Admin notify with APPROVE_/REJECT_ buttons — mirrors restaurant/bakery/fashion pattern
       try {
         const adminPhone = business?.adminPhone || tenant?.adminPhone;
         if (adminPhone && tenant && savedOrder) {
-          const { dispatchText } = await import('../../../core/whatsapp/dispatcher.js');
-          await dispatchText(
+          const { dispatchMessage } = await import('../../../core/whatsapp/dispatcher.js');
+          const currency = business?.payment?.currency || 'D';
+          await dispatchMessage(
             adminPhone,
-            `🔔 *New Product Order — ${business?.name || (isBarbershop ? 'Barbershop' : 'Salon')}*\n\n` +
-            `📞 Customer: ${session.customerPhone}\n` +
-            `🛍 *${data.quantity}× ${data.item?.name}*\n` +
-            (data.totalPrice ? `💰 Total: ${data.item?.currency || 'D'}${data.totalPrice}\n` : '') +
-            `🔖 Ref: \`${savedOrder?.shortId || 'N/A'}\``,
+            {
+              type: 'buttons',
+              body:
+                `🔔 *New Product Order — ${business?.name || (isBarbershop ? 'Barbershop' : 'Salon')}*\n\n` +
+                `📞 Customer: ${session.customerPhone}\n` +
+                `🛍 *${data.quantity}× ${data.item?.name}*\n` +
+                (data.totalPrice ? `💰 Total: ${currency}${data.totalPrice}\n` : '') +
+                `🔖 Ref: \`${savedOrder?.shortId || 'N/A'}\``,
+              buttons: [
+                { id: `APPROVE_${savedOrder.shortId}`, title: '✅ Confirm Order' },
+                { id: `REJECT_${savedOrder.shortId}`,  title: '❌ Cancel Order'  },
+              ],
+            },
             tenant,
           ).catch(e => logger.warn('[SalonProduct] admin notify failed', { err: e.message }));
         }
@@ -559,20 +568,18 @@ export async function handleSalonProductOrder({ session, message, business, tena
         }).catch(() => {});
       }
 
-      const lc = await completeFlow(session, 'ORDER', business, tenant);
-      if (lc) return lc;
+      // Park session at AWAIT_ADMIN_CONFIRM — mirrors restaurant/bakery/fashion/retail pattern
+      await updateSession(session.customerPhone, session.tenantId, {
+        step: 'AWAIT_ADMIN_CONFIRM', currentFlow: 'ORDER',
+        data: { ...data },
+      });
 
       return {
-        type: 'buttons',
+        type: 'text',
         body:
-          `✅ *Order Confirmed!* ${emoji}\n\n` +
+          `✅ *Order received!* ${emoji}\n\n` +
           `🛍 *${data.quantity}× ${data.item?.name}*\n` +
-          `\nWe'll have it ready for you. Thank you! 🙏`,
-        buttons: [
-          { id: 'BOOK',     title: '📅 Book Appointment' },
-          { id: 'ORDER',    title: '🛍 Shop More'         },
-          { id: 'SHOW_MENU', title: '🔄 Start Over'       },
-        ],
+          `\n⏳ Our team will confirm your order shortly. We'll send you a message when it's ready! 🙏`,
       };
     }
 

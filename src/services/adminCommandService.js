@@ -375,10 +375,13 @@ async function confirmPayment(shortId, tenantId, adminPhone, tenantDoc, business
 
     // [FIX-POST] Set postFlowAck=ORDER_CONFIRMED so subsequent customer messages
     // (thanks, complaint, question) are handled with the right order context.
+    // [FIX-AOR-5] Also clear lastAorInterceptAt so the resolver can fire correctly
+    // on the FIRST message after postFlowAck is consumed.
     await updateSession(order.customerPhone, tenantId, {
       currentFlow: null, step: null,
       postFlowAck:  'ORDER_CONFIRMED',
       postFlowData: { item: order.item, quantity: order.quantity, shortId: order.shortId || shortId },
+      lastAorInterceptAt: null,
     }).catch(() => {});
 
     // [PFH-5 / MEM-FIX-1] Record confirmed order in customer memory — only fires on
@@ -389,13 +392,21 @@ async function confirmPayment(shortId, tenantId, adminPhone, tenantDoc, business
       .catch(() => {});
 
     logger.info('[AdminCmd] Payment confirmed', { shortId, adminPhone });
-    // [FIX-READY-1] Return interactive message with READY_ button so admin can notify
-    // customer with one tap when order is prepared — no typing 'MARK READY <shortId>' required.
-    return {
+    // [FIX-READY-BTN] Return a button message to the admin instead of plain text.
+    // Previously the admin got "✅ Payment confirmed" as plain text with no next action.
+    // They had to remember to type "MARK READY <shortId>" later — a step many admins
+    // missed or forgot. Now they get a READY_ button immediately so marking the order
+    // ready for collection is a single tap, consistent with the APPROVE_/REJECT_ UX.
+    await dispatchMessage(adminPhone, {
       type:    'buttons',
-      body:    `✅ *Payment confirmed*\n\nOrder #${shortId} — ${order.item}\nCustomer ${order.customerPhone} notified.\n\n🍳 Tap below when the order is ready for collection:`,
-      buttons: [{ id: `READY_${shortId}`, title: '🍽️ Mark Ready' }],
-    };
+      body:    `✅ *Payment confirmed*\n\nOrder #${shortId} — ${order.item}\nCustomer ${order.customerPhone} has been notified.\n\nTap below when the order is ready for collection:`,
+      buttons: [
+        { id: `READY_${order.shortId || shortId}`, title: '🍽️ Mark Order Ready' },
+      ],
+    }, tenantDoc).catch(err => logger.warn('[AdminCmd] confirmPayment: admin READY button dispatch failed', {
+      adminPhone, err: err.message,
+    }));
+    return null; // already dispatched via dispatchMessage — webhookController checks for null
   } catch (err) {
     // [FIX-CMD-15] Previously any thrown error here (DB hiccup etc.) propagated up to
     // webhookController's `.catch(() => null)`, producing ZERO response to the admin —
@@ -652,8 +663,19 @@ async function declineBooking(shortId, reason, tenantId, adminPhone, tenantDoc) 
 // Updates order status to 'ready', dispatches the spec §5A message to the customer.
 async function markOrderReady(shortId, tenantId, adminPhone, tenantDoc, business) {
   try {
+    // [FIX-MARK-READY-GUARD] Previously required status='confirmed' AND paymentStatus='confirmed'.
+    // This blocked orders that were:
+    //   - Confirmed via dashboard PATCH (paymentStatus stays 'unpaid' unless admin also changed it)
+    //   - Cash orders accepted via AWAIT_ADMIN_CONFIRM (paymentStatus never set to 'confirmed')
+    //   - Orders in 'preparing' status (already past confirmed but not yet ready)
+    // Fix: accept any order that is in a non-terminal, non-already-ready state:
+    //   - status: confirmed OR preparing (both mean "order accepted, not yet ready")
+    //   - Not: completed, cancelled, rejected, ready, payment_failed
     const order = await Order.findOneAndUpdate(
-      { shortId, tenantId, status: 'confirmed', paymentStatus: 'confirmed' },
+      {
+        shortId, tenantId,
+        status: { $in: ['confirmed', 'preparing'] },
+      },
       { $set: { status: 'ready', readyAt: new Date() } },
       { new: false }
     ).select('_id customerPhone item quantity shortId').lean();

@@ -202,9 +202,9 @@ function _resolveState(order, business, session) {
           `Order *#${shortId}* — ${itemSummary}` +
           (priceStr ? `\n💰 Amount: *${priceStr}*` : '') +
           `\n\nPlease come collect at the counter! 😊`,
-        // [FIX-READY-CARD] Add COLLECTED_ button so customer can confirm pickup in one tap.
-        // Previously only 'Contact Business' and 'Order Again' were shown — customer had
-        // no way to acknowledge collection, so the order stayed in 'ready' state forever.
+        // [FIX-READY-CARD] COLLECTED_ button lets customer confirm pickup in one tap.
+        // Previously only 'Contact Business' and 'Order Again' were shown — no way to
+        // acknowledge collection, so orders stayed in 'ready' state forever in the DB.
         buttons: [
           { id: shortId ? `COLLECTED_${shortId}` : 'SUPPORT', title: '✅ Collected — Thanks!' },
           { id: 'SUPPORT', title: '💬 Contact Business' },
@@ -309,10 +309,20 @@ function _multipleOrders(orders, business) {
       type: 'list',
       body: `📦 You have *${orders.length} active orders*.\n\nWhich one would you like to check?`,
       buttonText: 'View My Orders',
-      sections: [{
-        title: 'Active Orders',
-        rows,
-      }],
+      sections: [
+        {
+          title: 'Active Orders',
+          rows,
+        },
+        {
+          title: 'Actions',
+          rows: [{
+            id:          'CANCEL_ALL',
+            title:       '❌ Cancel All Orders',
+            description: 'Cancel all your pending and confirmed orders',
+          }],
+        },
+      ],
     },
   };
 }

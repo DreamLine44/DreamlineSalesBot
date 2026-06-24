@@ -83,6 +83,13 @@ const sessionSchema = new mongoose.Schema({
   lastLoopMessage:  { type: String, default: null },
   lastLoopStep:     { type: String, default: null },
 
+  // [FIX-ACK-THROTTLE] Tracks the last time we sent an order-status acknowledgement
+  // reply so we don't repeat the same status text on every reaction emoji or filler word.
+  lastOrderStatusAckAt: { type: Date, default: null },
+  // [FIX-AOR-5] Throttle timestamp for activeOrderResolver intercepts.
+  // Prevents the same preparing-card from being sent on every filler message.
+  lastAorInterceptAt:   { type: Date, default: null },
+
   // Conversation mode
   mode: { type: String, default: null },
 

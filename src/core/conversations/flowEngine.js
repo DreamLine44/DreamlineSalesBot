@@ -106,6 +106,7 @@ export async function startFlow({ flowName, session, business, tenant }) {
     data:        {},
     upsellSent:  false,
     menuViewed:  false,
+    lastAorInterceptAt: null,  // [FIX-AOR-5] Reset throttle so next order confirms show fresh card
   });
 
   const handler = FLOW_REGISTRY.get(key) || GENERIC_REGISTRY.get(flowName.toUpperCase());

@@ -168,9 +168,11 @@ const orderSchema = new mongoose.Schema({
   // [FIX-5] Lifecycle timestamps written by adminCommandService and webhookController.
   // Previously absent from schema — Mongoose strict mode silently dropped every write,
   // so readyAt and completedAt were always null in the DB even when set by admin commands.
-  readyAt:     { type: Date, default: null }, // set by markOrderReady()
-  completedAt: { type: Date, default: null }, // set by COLLECTED_* handler / admin
-  deliveredAt: { type: Date, default: null }, // set when out_for_delivery → delivered
+  preparingAt:    { type: Date, default: null }, // set when status → preparing
+  readyAt:        { type: Date, default: null }, // set by markOrderReady()
+  outForDeliveryAt: { type: Date, default: null }, // set when status → out_for_delivery
+  completedAt:    { type: Date, default: null }, // set by COLLECTED_* handler / admin
+  deliveredAt:    { type: Date, default: null }, // set when out_for_delivery → delivered
 
   // Last 6 hex chars of _id, stored at creation time for O(1) admin lookups.
   // Admin commands like "APPROVE ABC123" resolve against this field via an index

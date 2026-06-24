@@ -10,4 +10,5 @@ export { default as Booking }        from './Booking.js';
 export { default as UserProfile }    from './UserProfile.js';
 export { default as Analytics }      from './Analytics.js';
 export { default as ProcessedMessage } from './ProcessedMessage.js';
-export { default as AuditLog }        from './AuditLog.js';    // [FIX-MODEL-1] Was missing from re-export — auditService imports this directly, but any consumer that uses models/index.js would get a missing export.
+export { default as WhatsAppConnectionRequest } from './WhatsAppConnectionRequest.js';
+export { default as AuditLog }        from './AuditLog.js';

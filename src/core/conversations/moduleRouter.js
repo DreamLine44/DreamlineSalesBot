@@ -58,8 +58,11 @@ export async function route({ action, intent, session, message, business, tenant
 
     case 'ACKNOWLEDGE': {
       // [SPEC-PART7] Filler/reaction message with no active flow and no postFlowAck context.
-      // Check for an active order first — if one exists, remind them of the status.
-      // Otherwise show the welcome menu quietly (no full branded greeting).
+      // Check for an active order first — if one exists, show order context.
+      // [FIX-ACK-THROTTLE] If we already sent an order-status acknowledgement recently
+      // (within 5 minutes), do NOT repeat the same text — it creates a loop where every
+      // reaction emoji or acknowledgement word (Ahh, Ok) spams the same status message.
+      // Instead show a soft "what would you like to do?" with contextual buttons.
       try {
         const { default: _AckOrder } = await import('../../models/Order.js');
         const ackOrder = await _AckOrder.findOne({
@@ -70,15 +73,46 @@ export async function route({ action, intent, session, message, business, tenant
         }).select('item quantity shortId status').sort({ createdAt: -1 }).lean().catch(() => null);
 
         if (ackOrder) {
-          const statusLine = {
-            confirmed: `🍳 Being prepared`,
-            pending:   `⏳ Awaiting confirmation`,
-            ready:     `🍽️ Ready for collection!`,
-          }[ackOrder.status] || `⏳ Being processed`;
-          return {
-            type: 'text',
-            body: `😊 ${statusLine} — we'll let you know when there's an update on *#${ackOrder.shortId}*!`,
-          };
+          // Throttle: only send the status text once per 5-minute window.
+          // After the first status reply, subsequent acknowledgements show buttons instead.
+          const lastAckSent = session.lastOrderStatusAckAt ? new Date(session.lastOrderStatusAckAt) : null;
+          const throttleMs  = 5 * 60 * 1000; // 5 minutes
+          const throttled   = lastAckSent && (Date.now() - lastAckSent.getTime()) < throttleMs;
+
+          if (!throttled) {
+            // First time (or throttle window expired) — send status text and record timestamp
+            const { updateSession: _ackUs } = await import('../sessions/sessionService.js');
+            await _ackUs(session.customerPhone, session.tenantId, {
+              lastOrderStatusAckAt: new Date().toISOString(),
+            }).catch(() => {});
+
+            const statusLine = {
+              confirmed: `🍳 Being prepared`,
+              pending:   `⏳ Awaiting confirmation`,
+              ready:     `🍽️ Ready for collection!`,
+            }[ackOrder.status] || `⏳ Being processed`;
+            return {
+              type: 'text',
+              body: `😊 ${statusLine} — we'll let you know when there's an update on *#${ackOrder.shortId}*!`,
+            };
+          } else {
+            // Throttled — show a quiet contextual menu with order actions
+            // [FIX-ACK-THROTTLE-2] Use mode-appropriate welcome buttons so the throttled
+            // menu matches the business mode (e.g. Book a Table for restaurants, Browse
+            // Products for retail) rather than hardcoded QUESTION/CANCEL which may not
+            // be relevant. Always append CANCEL as a contextual action since the customer
+            // has an active order.
+            const cfgAck = getModeConfig(business);
+            const throttledBtns = [
+              { id: 'QUESTION', title: '❓ Ask a Question' },
+              { id: 'CANCEL',   title: '❌ Cancel Order'   },
+            ];
+            return {
+              type:    'buttons',
+              body:    `😊 Your order *#${ackOrder.shortId}* is still being processed. What would you like to do?`,
+              buttons: throttledBtns,
+            };
+          }
         }
       } catch { /* non-fatal */ }
 
@@ -299,6 +333,51 @@ Your favourite is *${topItem}* — want to order it again? 😊`
 
     case 'CANCEL': {
       return cancelFlow(session, business);
+    }
+
+    case 'CANCEL_ALL': {
+      // [FIX-CANCEL-ALL] Bulk-cancel all pending/confirmed orders for this customer.
+      // Triggered when the customer types "cancel all", "cancel all of them", etc.
+      // while in the MULTIPLE_ACTIVE_ORDERS context (or any time they want a clean slate).
+      try {
+        const { default: _CancelAllOrder } = await import('../../models/Order.js');
+        const cancelResult = await _CancelAllOrder.updateMany(
+          {
+            customerPhone: session.customerPhone,
+            tenantId:      session.tenantId,
+            status:        { $in: ['pending', 'confirmed', 'preparing'] },
+            paymentStatus: { $nin: ['cancelled', 'rejected', 'refunded'] },
+          },
+          {
+            $set: {
+              status:        'cancelled',
+              paymentStatus: 'cancelled',
+              cancelledAt:   new Date(),
+              cancelledBy:   'customer',
+            },
+          }
+        );
+        const count = cancelResult.modifiedCount || 0;
+        await updateSession(session.customerPhone, session.tenantId, {
+          currentFlow: null, step: null, data: {}, postFlowAck: null,
+        });
+        const cfgCancelAll = getModeConfig(business);
+        return {
+          type:    'buttons',
+          body:    count > 0
+            ? `✅ Done — *${count} order${count !== 1 ? 's' : ''}* ${count !== 1 ? 'have' : 'has'} been cancelled. Sorry to see you go! 🙏`
+            : `ℹ️ No active orders found to cancel.`,
+          buttons: cfgCancelAll.ui?.welcomeButtons || [{ id: 'SHOW_MENU', title: '🔄 Start Over' }],
+        };
+      } catch (err) {
+        logger.error('[Router] CANCEL_ALL failed', { err: err.message });
+        const cfgCancelAllErr = getModeConfig(business);
+        return {
+          type:    'buttons',
+          body:    '⚠️ Something went wrong cancelling your orders. Please contact support.',
+          buttons: [{ id: 'SUPPORT', title: '💬 Contact Support' }],
+        };
+      }
     }
 
     case 'SUPPORT': {
