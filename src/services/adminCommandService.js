@@ -63,6 +63,36 @@
  *               getModeConfig moved to a static top-level import — previously it was
  *               dynamically imported inside confirmPayment() on every payment confirmation,
  *               adding a dynamic-import resolution cost to an already hot path.
+ * [FIX-CMD-14]  confirmPayment / rejectPayment / confirmBooking / declineBooking now use a
+ *               single atomic findOneAndUpdate (guard condition baked into the filter)
+ *               instead of a separate findOne-then-updateOne pair. This closes:
+ *                 - a TOCTOU race where a double-tapped admin button (slow network,
+ *                   impatience) could fire two concurrent calls that both pass the old
+ *                   in-memory guard check before either write landed, sending the
+ *                   customer duplicate notifications and double-running session/analytics
+ *                   updates.
+ *                 - a state-machine gap where confirmPayment only checked paymentStatus
+ *                   (not status), so an already-cancelled/rejected order could be
+ *                   resurrected by APPROVE; and rejectPayment only checked status (not
+ *                   paymentStatus), so an already-confirmed order could be reverted by
+ *                   REJECT. Both guards now check both fields.
+ *               rejectPayment's cash-order branch no longer writes status='pending' and
+ *               then immediately overwrites it to 'cancelled' — the AWAIT_ADMIN_CONFIRM
+ *               session check now runs before any write, so the correct final state is
+ *               written exactly once.
+ * [FIX-CMD-15]  confirmPayment / rejectPayment / confirmBooking / declineBooking are now
+ *               wrapped in try/catch. Previously an unguarded Order/Booking/updateSession
+ *               call that threw (e.g. a transient DB error) propagated up through
+ *               webhookController's `.catch(() => null)`, so the admin's button tap
+ *               produced ZERO response — no success message, no error, nothing. Now every
+ *               failure path returns an explicit "something went wrong" message so the
+ *               admin always knows the outcome, consistent with [FIX-CMD-4]'s original
+ *               "never silently drop an admin message" intent.
+ * [FIX-CMD-16]  Removed buildAdminBookingAlert() — dead code. It was exported but never
+ *               called; the real caller (bookingFlow.js) uses buildAdminBookingAlertBody()
+ *               directly and builds its own interactive-buttons array, which is correct
+ *               since admin booking alerts are sent as WhatsApp button messages, not plain
+ *               text with typed commands in the footer.
  */
 
 import Order          from '../models/Order.js';
@@ -123,6 +153,7 @@ export async function handleAdminButtonReply(buttonId, tenantId, adminPhone, ten
   if (upper.startsWith('APPROVE_'))      return confirmPayment(upper.replace('APPROVE_', ''),      tenantId, adminPhone, tenantDoc, business);
   if (upper.startsWith('REJECT_'))       return rejectPayment(upper.replace('REJECT_', ''),        tenantId, adminPhone, tenantDoc, business);
   if (upper.startsWith('CONFIRM_BOOK_')) return confirmBooking(upper.replace('CONFIRM_BOOK_', ''), tenantId, adminPhone, tenantDoc);
+  if (upper.startsWith('READY_'))        return markOrderReady(upper.replace('READY_', ''),        tenantId, adminPhone, tenantDoc, business);
   if (upper.startsWith('DECLINE_BOOK_')) {
     // [FIX-CMD-9] Button payloads may encode a reason after the shortId using an
     // underscore delimiter: DECLINE_BOOK_A1B2_unavailable. Extract it if present
@@ -164,6 +195,10 @@ export async function handleAdminTextCommand(text, tenantId, adminPhone, tenantD
   // and with declineBooking's own .toUpperCase() call). Avoids a silent mismatch if
   // declineBooking is ever refactored to remove its internal normalisation.
   if (declineBookMatch) return declineBooking(declineBookMatch[1].toUpperCase(), declineBookMatch[2] || null, tenantId, adminPhone, tenantDoc);
+
+  // [SPEC-5A] MARK READY <shortId> — notify customer their order is ready for collection
+  const markReadyMatch = upper.match(/^MARK\s+READY\s+([A-Z0-9]{4,24})$/);
+  if (markReadyMatch) return markOrderReady(markReadyMatch[1], tenantId, adminPhone, tenantDoc, business);
 
   // [FIX-CMD-12] Widened phone pattern from [\d+\s]+ to [\d+\s()./-]+ so common
   // international formats like +220-353-2423 or (220) 353-2423 are accepted.
@@ -226,10 +261,10 @@ export async function handleAdminTextCommand(text, tenantId, adminPhone, tenantD
 Use \`RESUME BOT <phone>\` to resume a specific customer.`;
   }
 
-  // [FIX-CMD-4] If it looks like an admin command attempt (APPROVE/REJECT/CONFIRM/DECLINE/RESUME)
+  // [FIX-CMD-4] If it looks like an admin command attempt (APPROVE/REJECT/CONFIRM/DECLINE/RESUME/MARK)
   // but didn't match a valid pattern, return a helpful error rather than null (which falls
   // through to intent detection and produces a confusing AI response).
-  const looksLikeCommand = /^(APPROVE|REJECT|CONFIRM|DECLINE|RESUME)\b/i.test(text.trim());
+  const looksLikeCommand = /^(APPROVE|REJECT|CONFIRM|DECLINE|RESUME|MARK)\b/i.test(text.trim());
   if (looksLikeCommand) {
     return (
       `⚠️ *Unrecognised command format.*\n\n` +
@@ -238,6 +273,7 @@ Use \`RESUME BOT <phone>\` to resume a specific customer.`;
       `❌ \`REJECT <shortId>\`\n` +
       `📅 \`CONFIRM BOOK <shortId>\`\n` +
       `🚫 \`DECLINE BOOK <shortId> [reason]\`\n` +
+      `🍽️ \`MARK READY <shortId>\` _(notify customer to collect)_\n` +
       `🤖 \`RESUME BOT <phone>\`\n` +
       `🤖 \`RESUME BOT\` _(resumes most recent human-mode session)_`
     );
@@ -248,233 +284,417 @@ Use \`RESUME BOT <phone>\` to resume a specific customer.`;
 
 // ── Confirm payment ───────────────────────────────────────────────────────────
 async function confirmPayment(shortId, tenantId, adminPhone, tenantDoc, business) {
-  // [FIX-CMD-11] shortId-only query. shortId is always 6 chars (pre-save hook sets it to the
-  // last 6 hex chars of the ObjectId). The previous length===24 branch (treating shortId as
-  // a full ObjectId) was dead code that could never match in practice. Removed.
-  const orderQuery = { shortId, tenantId };
-  const order = await Order.findOne(orderQuery)
-    .select('_id customerPhone status paymentStatus item quantity totalPrice shortId').lean();
+  try {
+    // [FIX-CMD-11] shortId-only query. shortId is always 6 chars (pre-save hook sets it to the
+    // last 6 hex chars of the ObjectId). The previous length===24 branch (treating shortId as
+    // a full ObjectId) was dead code that could never match in practice. Removed.
+    //
+    // [FIX-CMD-14] Read-then-write replaced with a single atomic findOneAndUpdate whose
+    // filter bakes in the state guard (paymentStatus/status not already terminal). This
+    // closes two bugs at once:
+    //   - TOCTOU race: two near-simultaneous APPROVE taps (double-tap, slow network retry)
+    //     could previously both pass the separate `findOne` guard check before either
+    //     `updateOne` landed, sending the customer two "Payment Confirmed!" messages and
+    //     running the session/analytics update twice. The DB-level filter now means only
+    //     one concurrent call can match and write; the loser sees order=null after the
+    //     fact and returns the "already confirmed" message instead.
+    //   - State-machine gap: previously only `paymentStatus === 'confirmed'` blocked a
+    //     re-confirm. An order already `status: 'cancelled'` or `'rejected'` (e.g. the
+    //     admin rejected it, or the customer cancelled) could still be APPROVEd, silently
+    //     resurrecting a dead order and telling the customer their cancelled order is
+    //     "now being prepared". The filter now also excludes cancelled/rejected orders.
+    const order = await Order.findOneAndUpdate(
+      {
+        shortId, tenantId,
+        paymentStatus: { $ne: 'confirmed' },
+        status:        { $nin: ['cancelled', 'rejected'] },
+      },
+      { $set: {
+        paymentStatus:     'confirmed',
+        status:            'confirmed',
+        paymentReviewedBy: adminPhone,
+        paymentReviewedAt: new Date(),
+      }},
+      { new: false } // need the pre-update doc for item/quantity/customerPhone
+    ).select('_id customerPhone status paymentStatus item quantity totalPrice shortId').lean();
 
-  if (!order) return `⚠️ No order found: ${shortId}`;
-  if (order.paymentStatus === 'confirmed') return `ℹ️ Order #${shortId} already confirmed.`;
+    if (!order) {
+      // Either no such order, or it failed the state guard. Disambiguate for the admin.
+      const existing = await Order.findOne({ shortId, tenantId })
+        .select('status paymentStatus').lean().catch(() => null);
+      if (!existing) return `⚠️ No order found: ${shortId}`;
+      if (existing.paymentStatus === 'confirmed') return `ℹ️ Order #${shortId} already confirmed.`;
+      return `⚠️ Order #${shortId} can't be confirmed — current status is *${existing.status}*.`;
+    }
 
-  // [FIX-AWAIT] Check if this is a cash order (AWAIT_ADMIN_CONFIRM) so we can
-  // send the right confirmation message — "order confirmed" instead of "payment verified".
-  const { getSession: _getSession } = await import('../core/sessions/sessionService.js');
-  const custSession2 = await _getSession(order.customerPhone, tenantId).catch(() => null);
-  const isCashConfirm = custSession2?.step === 'AWAIT_ADMIN_CONFIRM';
+    // [FIX-AWAIT] Check if this is a cash order (AWAIT_ADMIN_CONFIRM) so we can
+    // send the right confirmation message — "order confirmed" instead of "payment verified".
+    const { getSession: _getSession } = await import('../core/sessions/sessionService.js');
+    const custSession2 = await _getSession(order.customerPhone, tenantId).catch(() => null);
+    const isCashConfirm = custSession2?.step === 'AWAIT_ADMIN_CONFIRM';
 
-  await Order.updateOne({ _id: order._id }, { $set: {
-    paymentStatus:     'confirmed',
-    status:            'confirmed',
-    paymentReviewedBy: adminPhone,
-    paymentReviewedAt: new Date(),
-  }});
+    // [FIX-CONFIRM-BTN] Plain text only on the initial confirmation — no welcome buttons.
+    // Showing "Order Food / Book a Table" immediately after "your order is being prepared"
+    // is premature and confusing. The customer hasn't received their current order yet.
+    // postFlowAck='ORDER_CONFIRMED' (set below) ensures any follow-up message they send
+    // (thanks, question, complaint) gets contextual buttons at that point instead.
+    //
+    // [SPEC-3A] Message format aligned to communication design spec:
+    //   - Title: Payment Confirmed / Order Confirmed
+    //   - Payment verified line
+    //   - Order item + reference on separate lines
+    //   - Kitchen preparing + estimated time
+    //   - Will message when ready
+    //   - Thank-you sign-off
+    //   - NO buttons (state → PREPARING, customer should wait)
+    const bizName = business?.name || 'us';
+    const confirmBody = isCashConfirm
+      ? `✅ *Order Confirmed!*\n\n` +
+        `Your order has been accepted.\n\n` +
+        `📦  Order: *${order.item}* × ${order.quantity}\n` +
+        `🔖  Reference: #${order.shortId || shortId}\n\n` +
+        `🍳 Our kitchen is now preparing your order.\n` +
+        `⏱️  Estimated time: 20–30 minutes.\n\n` +
+        `We'll message you the moment it's ready.\n\n` +
+        `Thank you for choosing *${bizName}* 😊`
+      : `✅ *Payment Confirmed!*\n\n` +
+        `Your payment has been verified.\n\n` +
+        `📦  Order: *${order.item}* × ${order.quantity}\n` +
+        `🔖  Reference: #${order.shortId || shortId}\n\n` +
+        `🍳 Our kitchen is now preparing your order.\n` +
+        `⏱️  Estimated time: 20–30 minutes.\n\n` +
+        `We'll message you the moment it's ready.\n\n` +
+        `Thank you for choosing *${bizName}* 😊`;
+    await dispatchMessage(order.customerPhone, {
+      type: 'text',
+      body: confirmBody,
+    // [FIX-CMD-2] Log dispatch failures rather than swallowing them.
+    }, tenantDoc).catch(err => logger.warn('[AdminCmd] confirmPayment: customer dispatch failed', {
+      customerPhone: order.customerPhone, err: err.message,
+    }));
 
-  // [FIX-X2] `business` is already passed in by the caller (webhookController fetched
-  // BusinessConfig at step 3). Reuse it directly — no extra DB round-trip needed.
-  // [FIX-CMD-5] Use the mode config's welcomeButtons as the source of truth for
-  // post-confirmation buttons so labels ("Order Food" vs "Place New Order") and
-  // the presence of the booking button are always consistent with the business mode.
-  // Previously the buttons were hardcoded, so restaurants were missing "Book a Table"
-  // and showing the generic "Place New Order" label instead of "Order Food".
-  // getModeConfig is a static top-level import — no dynamic import cost on this path.
-  const modeCfg = getModeConfig(business);
-  const custBtns = (modeCfg.ui?.welcomeButtons || [
-    { id: 'ORDER',    title: '🛒 Place New Order'  },
-    { id: 'QUESTION', title: '❓ Ask a Question'   },
-  ]).slice(0, 3);
+    // [FIX-POST] Set postFlowAck=ORDER_CONFIRMED so subsequent customer messages
+    // (thanks, complaint, question) are handled with the right order context.
+    await updateSession(order.customerPhone, tenantId, {
+      currentFlow: null, step: null,
+      postFlowAck:  'ORDER_CONFIRMED',
+      postFlowData: { item: order.item, quantity: order.quantity, shortId: order.shortId || shortId },
+    }).catch(() => {});
 
-  await dispatchMessage(order.customerPhone, {
-    type:    'buttons',
-    body:
-      `✅ *${isCashConfirm ? 'Order Confirmed!' : 'Payment Confirmed!'}*\n\n` +
-      `Your order of *${order.item}* × ${order.quantity} has been ${isCashConfirm ? 'accepted' : 'verified'} and is now being prepared.\n\n` +
-      `🍽 Thank you for your order! We'll have it ready shortly. 🙏\n\n` +
-      `_(Ref: #${order.shortId || shortId})_`,
-    buttons: custBtns,
-  // [FIX-CMD-2] Log dispatch failures rather than swallowing them. When tenantDoc is
-  // null the customer is never notified of the confirmation — a silent failure that is
-  // very hard to diagnose without a log entry.
-  }, tenantDoc).catch(err => logger.warn('[AdminCmd] confirmPayment: customer dispatch failed', {
-    customerPhone: order.customerPhone, err: err.message,
-  }));
+    // [PFH-5 / MEM-FIX-1] Record confirmed order in customer memory — only fires on
+    // actual admin confirmation, not on saveOrder(), so memory reflects real completed
+    // orders rather than all abandoned attempts.
+    import('../core/memory/customerMemory.js')
+      .then(m => m.recordConfirmedOrder(order.customerPhone, String(tenantId), order.item))
+      .catch(() => {});
 
-  // [FIX-POST] Set postFlowAck=ORDER_CONFIRMED so subsequent customer messages
-  // (thanks, complaint, question) are handled with the right order context.
-  await updateSession(order.customerPhone, tenantId, {
-    currentFlow: null, step: null,
-    postFlowAck:  'ORDER_CONFIRMED',
-    postFlowData: { item: order.item, quantity: order.quantity, shortId: order.shortId || shortId },
-  }).catch(() => {});
-
-  logger.info('[AdminCmd] Payment confirmed', { shortId, adminPhone });
-  return `✅ *Payment confirmed*\n\nOrder #${shortId} — ${order.item}\nCustomer ${order.customerPhone} notified.`;
+    logger.info('[AdminCmd] Payment confirmed', { shortId, adminPhone });
+    return `✅ *Payment confirmed*\n\nOrder #${shortId} — ${order.item}\nCustomer ${order.customerPhone} notified.`;
+  } catch (err) {
+    // [FIX-CMD-15] Previously any thrown error here (DB hiccup etc.) propagated up to
+    // webhookController's `.catch(() => null)`, producing ZERO response to the admin —
+    // they tap APPROVE and nothing happens, with no way to tell if it worked. Catching
+    // here and returning an explicit error message guarantees the admin always gets a
+    // reply, consistent with [FIX-CMD-4]'s "never silently drop an admin message" goal.
+    logger.error('[AdminCmd] confirmPayment failed', { shortId, adminPhone, err: err.message });
+    return `⚠️ Something went wrong confirming order #${shortId}. Please try again.`;
+  }
 }
 
 // ── Reject payment ────────────────────────────────────────────────────────────
-async function rejectPayment(shortId, tenantId, adminPhone, tenantDoc, business) {
-  // [FIX-CMD-11] shortId-only query (see confirmPayment for full explanation)
-  const orderQuery = { shortId, tenantId };
-  const order = await Order.findOne(orderQuery)
-    .select('_id customerPhone status paymentStatus item shortId').lean();
+async function rejectPayment(shortId, tenantId, adminPhone, tenantDoc, business, rejectReason = null) {
+  try {
+    // [FIX-CMD-11] shortId-only query (see confirmPayment for full explanation)
+    //
+    // [FIX-CMD-14] State-machine guard: previously only `status === 'cancelled'` blocked
+    // a re-reject, meaning an admin could REJECT an order that was already `paymentStatus:
+    // 'confirmed'` (and presumably already being prepared), flipping a confirmed order
+    // back to pending/unpaid with no protection. Now also excludes confirmed orders.
+    const order = await Order.findOne({
+      shortId, tenantId,
+      status:        { $ne: 'cancelled' },
+      paymentStatus: { $ne: 'confirmed' },
+    }).select('_id customerPhone status paymentStatus item shortId').lean();
 
-  if (!order) return `⚠️ No order found: ${shortId}`;
-  if (order.status === 'cancelled') return `ℹ️ Order #${shortId} already cancelled.`;
+    if (!order) {
+      const existing = await Order.findOne({ shortId, tenantId })
+        .select('status paymentStatus').lean().catch(() => null);
+      if (!existing) return `⚠️ No order found: ${shortId}`;
+      if (existing.status === 'cancelled') return `ℹ️ Order #${shortId} already cancelled.`;
+      return `⚠️ Order #${shortId} can't be rejected — payment is already confirmed.`;
+    }
 
-  // [FIX-CMD-2] Reset BOTH paymentStatus AND status consistently:
-  // paymentStatus='unpaid'  → receiveProof() will accept a new screenshot
-  // status='pending'        → order is alive and awaiting retry (was 'payment_failed',
-  //                           which is semantically wrong when the retry window is open)
-  await Order.updateOne({ _id: order._id }, { $set: {
-    paymentStatus:     'unpaid',
-    status:            'pending',
-    paymentReviewedBy: adminPhone,
-    paymentReviewedAt: new Date(),
-  }});
+    // [FIX-AWAIT] Distinguish cash orders (AWAIT_ADMIN_CONFIRM) from payment-proof orders.
+    // Cash orders have no screenshot to retry — rejection means the order is cancelled
+    // and the session should be fully cleared. Payment-proof orders get a retry window.
+    //
+    // [FIX-CMD-14] This check now runs BEFORE any write (previously the function wrote
+    // status='pending'/paymentStatus='unpaid' unconditionally first, then immediately
+    // overwrote those same fields to 'cancelled' in the cash branch — a wasted write
+    // that also left the order briefly in the wrong state). We now write the correct
+    // final state exactly once, via an atomic findOneAndUpdate keyed off the same
+    // guard filter as the read above to close the double-tap TOCTOU race.
+    const { getSession } = await import('../core/sessions/sessionService.js');
+    const custSession = await getSession(order.customerPhone, tenantId).catch(() => null);
+    const isCashOrder = custSession?.step === 'AWAIT_ADMIN_CONFIRM';
 
-  // [FIX-AWAIT] Distinguish cash orders (AWAIT_ADMIN_CONFIRM) from payment-proof orders.
-  // Cash orders have no screenshot to retry — rejection means the order is cancelled
-  // and the session should be fully cleared. Payment-proof orders get a retry window.
-  const { getSession } = await import('../core/sessions/sessionService.js');
-  const custSession = await getSession(order.customerPhone, tenantId).catch(() => null);
-  const isCashOrder = custSession?.step === 'AWAIT_ADMIN_CONFIRM';
+    const guardFilter = {
+      _id: order._id,
+      status:        { $ne: 'cancelled' },
+      paymentStatus: { $ne: 'confirmed' },
+    };
 
-  if (isCashOrder) {
-    // Cash/delivery rejection — mark cancelled, clear session, let customer restart
-    await Order.updateOne({ _id: order._id }, { $set: {
-      status:            'cancelled',
-      paymentStatus:     'cancelled',
+    if (isCashOrder) {
+      // Cash/delivery rejection — mark cancelled, clear session, let customer restart
+      const updated = await Order.findOneAndUpdate(guardFilter, { $set: {
+        status:            'cancelled',
+        paymentStatus:     'cancelled',
+        paymentReviewedBy: adminPhone,
+        paymentReviewedAt: new Date(),
+      }}, { new: true }).lean();
+
+      if (!updated) return `ℹ️ Order #${shortId} was already handled.`;
+
+      await updateSession(order.customerPhone, tenantId, {
+        currentFlow: null, step: null, data: {},
+        postFlowAck:  'ORDER_REJECTED',
+        postFlowData: { item: order.item, shortId: order.shortId || shortId, rejectReason },
+      });
+      const modeCfg = getModeConfig(business);
+      const custBtns = (modeCfg.ui?.welcomeButtons || [
+        { id: 'ORDER',    title: '🛒 Place New Order' },
+        { id: 'QUESTION', title: '❓ Ask a Question'  },
+      ]).slice(0, 3);
+      await dispatchMessage(order.customerPhone, {
+        type:    'buttons',
+        body:
+          `❌ *Order Cancelled*\n\n` +
+          `Unfortunately your order *#${order.shortId || shortId}* has been cancelled by our team.\n\n` +
+          `If you have any questions, please contact us directly. We're sorry for the inconvenience.`,
+        buttons: custBtns,
+      }, tenantDoc).catch(err => logger.warn('[AdminCmd] rejectPayment(cash): customer dispatch failed', {
+        customerPhone: order.customerPhone, err: err.message,
+      }));
+      logger.info('[AdminCmd] Cash order rejected/cancelled', { shortId, adminPhone });
+      return `❌ *Order cancelled*\n\nOrder #${shortId} — ${order.item}\nCustomer ${order.customerPhone} notified.`;
+    }
+
+    // [FIX-CMD-2] Reset BOTH paymentStatus AND status consistently:
+    // paymentStatus='unpaid'  → receiveProof() will accept a new screenshot
+    // status='pending'        → order is alive and awaiting retry (was 'payment_failed',
+    //                           which is semantically wrong when the retry window is open)
+    const updated = await Order.findOneAndUpdate(guardFilter, { $set: {
+      paymentStatus:     'unpaid',
+      status:            'pending',
       paymentReviewedBy: adminPhone,
       paymentReviewedAt: new Date(),
-    }});
+      // [FIX-REJECT-NOTE] Store the rejection reason on the Order so activeOrderResolver
+      // can surface it to the customer. Previously only postFlowData carried the reason —
+      // if the session expired between rejection and the customer's next message, the
+      // reason was permanently lost and the customer saw no explanation.
+      rejectedNote:      rejectReason || null,
+    }}, { new: true }).lean();
+
+    if (!updated) return `ℹ️ Order #${shortId} was already handled.`;
+
+    // [FIX-CMD-8] Await the session update — if this fails the customer's session won't
+    // point to PAYMENT_PROOF and they won't be able to send a retry screenshot.
+    // Previously fire-and-forget, meaning a transient DB error silently broke retries.
     await updateSession(order.customerPhone, tenantId, {
-      currentFlow: null, step: null, data: {},
+      currentFlow:  'ORDER',
+      step:         'PAYMENT_PROOF',
       postFlowAck:  'ORDER_REJECTED',
       postFlowData: { item: order.item, shortId: order.shortId || shortId },
     });
-    const modeCfg = getModeConfig(business);
-    const custBtns = (modeCfg.ui?.welcomeButtons || [
-      { id: 'ORDER',    title: '🛒 Place New Order' },
-      { id: 'QUESTION', title: '❓ Ask a Question'  },
-    ]).slice(0, 3);
+
     await dispatchMessage(order.customerPhone, {
       type:    'buttons',
       body:
-        `❌ *Order Cancelled*\n\n` +
-        `Unfortunately your order *#${order.shortId || shortId}* has been cancelled by our team.\n\n` +
-        `If you have any questions, please contact us directly. We're sorry for the inconvenience.`,
-      buttons: custBtns,
-    }, tenantDoc).catch(err => logger.warn('[AdminCmd] rejectPayment(cash): customer dispatch failed', {
+        `❌ *Payment Verification Failed*\n\n` +
+        `We could not verify your payment for order *#${order.shortId || shortId}*.\n\n` +
+        `*Possible reasons:*\n` +
+        `• Incorrect amount sent\n` +
+        `• Payment sent to the wrong account\n` +
+        `• Screenshot was unclear or incomplete\n\n` +
+        `Please send a *new, clear screenshot* of your payment confirmation, or cancel the order below.`,
+      buttons: [
+        { id: 'CANCEL', title: '❌ Cancel Order' },
+      ],
+    // [FIX-CMD-2] Log dispatch failures — customer won't know to retry if this silently fails.
+    }, tenantDoc).catch(err => logger.warn('[AdminCmd] rejectPayment: customer dispatch failed', {
       customerPhone: order.customerPhone, err: err.message,
     }));
-    logger.info('[AdminCmd] Cash order rejected/cancelled', { shortId, adminPhone });
-    return `❌ *Order cancelled*\n\nOrder #${shortId} — ${order.item}\nCustomer ${order.customerPhone} notified.`;
+
+    logger.info('[AdminCmd] Payment rejected', { shortId, adminPhone });
+    return `❌ *Payment rejected*\n\nOrder #${shortId} — ${order.item}\nCustomer ${order.customerPhone} notified. Retry window open.`;
+  } catch (err) {
+    // [FIX-CMD-15] See confirmPayment — guarantees the admin always gets a reply
+    // instead of silent failure when a DB call throws mid-function.
+    logger.error('[AdminCmd] rejectPayment failed', { shortId, adminPhone, err: err.message });
+    return `⚠️ Something went wrong rejecting order #${shortId}. Please try again.`;
   }
-
-  // [FIX-CMD-8] Await the session update — if this fails the customer's session won't
-  // point to PAYMENT_PROOF and they won't be able to send a retry screenshot.
-  // Previously fire-and-forget, meaning a transient DB error silently broke retries.
-  await updateSession(order.customerPhone, tenantId, {
-    currentFlow:  'ORDER',
-    step:         'PAYMENT_PROOF',
-    postFlowAck:  'ORDER_REJECTED',
-    postFlowData: { item: order.item, shortId: order.shortId || shortId },
-  });
-
-  await dispatchMessage(order.customerPhone, {
-    type:    'buttons',
-    body:
-      `❌ *Payment Verification Failed*\n\n` +
-      `We could not verify your payment for order *#${order.shortId || shortId}*.\n\n` +
-      `*Possible reasons:*\n` +
-      `• Incorrect amount sent\n` +
-      `• Payment sent to the wrong account\n` +
-      `• Screenshot was unclear or incomplete\n\n` +
-      `Please send a *new, clear screenshot* of your payment confirmation, or cancel the order below.`,
-    buttons: [
-      { id: 'CANCEL', title: '❌ Cancel Order' },
-    ],
-  // [FIX-CMD-2] Log dispatch failures — customer won't know to retry if this silently fails.
-  }, tenantDoc).catch(err => logger.warn('[AdminCmd] rejectPayment: customer dispatch failed', {
-    customerPhone: order.customerPhone, err: err.message,
-  }));
-
-  logger.info('[AdminCmd] Payment rejected', { shortId, adminPhone });
-  return `❌ *Payment rejected*\n\nOrder #${shortId} — ${order.item}\nCustomer ${order.customerPhone} notified. Retry window open.`;
 }
 
 // ── Confirm booking ───────────────────────────────────────────────────────────
 async function confirmBooking(shortId, tenantId, adminPhone, tenantDoc) {
-  const booking = await Booking.findOne({ shortId: shortId.toUpperCase(), tenantId })
-    .select('_id customerPhone date time service status customerName').lean();
+  try {
+    // [FIX-CMD-14] Atomic findOneAndUpdate closes the same double-tap TOCTOU race as
+    // confirmPayment — two near-simultaneous CONFIRM BOOK taps could previously both
+    // pass the separate `findOne` guard before either `updateOne` landed, sending the
+    // customer two "Booking Confirmed!" messages.
+    const booking = await Booking.findOneAndUpdate(
+      { shortId: shortId.toUpperCase(), tenantId, status: { $ne: 'confirmed' } },
+      { $set: {
+        status:            'confirmed',
+        adminConfirmedAt:  new Date(),
+        adminConfirmedBy:  adminPhone,
+      }},
+      { new: false }
+    ).select('_id customerPhone date time service status customerName').lean();
 
-  if (!booking) return `⚠️ No booking found: ${shortId}`;
-  if (booking.status === 'confirmed') return `ℹ️ Booking #${shortId} already confirmed.`;
+    if (!booking) {
+      const existing = await Booking.findOne({ shortId: shortId.toUpperCase(), tenantId })
+        .select('status').lean().catch(() => null);
+      if (!existing) return `⚠️ No booking found: ${shortId}`;
+      return `ℹ️ Booking #${shortId} already confirmed.`;
+    }
 
-  await Booking.updateOne({ _id: booking._id }, { $set: {
-    status:            'confirmed',
-    adminConfirmedAt:  new Date(),
-    adminConfirmedBy:  adminPhone,
-  }});
+    const when       = booking.time ? `${booking.date} at ${booking.time}` : booking.date;
+    const serviceStr = booking.service ? ` (${booking.service})` : '';
 
-  const when       = booking.time ? `${booking.date} at ${booking.time}` : booking.date;
-  const serviceStr = booking.service ? ` (${booking.service})` : '';
+    // [SPEC-6C] Booking confirmed message — structured format with reference,
+    // date/time clearly on own lines, warm sign-off, no buttons, no upsell.
+    const bookingBody =
+      `✅ *Booking Confirmed!*\n\n` +
+      (booking.date ? `📅  Date: *${booking.date}*\n` : '') +
+      (booking.time ? `⏰  Time: *${booking.time}*\n` : '') +
+      (booking.partySize ? `👥  Party size: *${booking.partySize}*\n` : '') +
+      (booking.service ? `💇  Service: *${booking.service}*\n` : '') +
+      `🔖  Reference: *${shortId}*\n\n` +
+      `We look forward to seeing you 😊\n\n` +
+      `If anything changes, just message us here.`;
 
-  await dispatchText(booking.customerPhone,
-    `✅ *Booking Confirmed!*\n\nYour booking${serviceStr} for *${when}* is confirmed.\n\nWe look forward to seeing you! 😊`,
-  // [FIX-CMD-2] Log dispatch failures — customer won't know their booking is confirmed.
-  tenantDoc).catch(err => logger.warn('[AdminCmd] confirmBooking: customer dispatch failed', {
-    customerPhone: booking.customerPhone, err: err.message,
-  }));
+    await dispatchText(booking.customerPhone, bookingBody,
+    // [FIX-CMD-2] Log dispatch failures — customer won't know their booking is confirmed.
+    tenantDoc).catch(err => logger.warn('[AdminCmd] confirmBooking: customer dispatch failed', {
+      customerPhone: booking.customerPhone, err: err.message,
+    }));
 
-  await updateSession(booking.customerPhone, tenantId, {
-    postFlowAck:  'BOOKING_CONFIRMED',
-    postFlowData: { service: booking.service, date: booking.date, time: booking.time },
-  }).catch(() => {});
+    await updateSession(booking.customerPhone, tenantId, {
+      postFlowAck:  'BOOKING_CONFIRMED',
+      postFlowData: { service: booking.service, date: booking.date, time: booking.time },
+    }).catch(() => {});
 
-  logger.info('[AdminCmd] Booking confirmed', { shortId, adminPhone });
-  return `✅ *Booking confirmed*\n\nBooking #${shortId} — ${when}${serviceStr}\nCustomer ${booking.customerPhone} notified.`;
+    logger.info('[AdminCmd] Booking confirmed', { shortId, adminPhone });
+    return `✅ *Booking confirmed*\n\nBooking #${shortId} — ${when}${serviceStr}\nCustomer ${booking.customerPhone} notified.`;
+  } catch (err) {
+    // [FIX-CMD-15] Guarantee the admin always gets a reply instead of silent failure.
+    logger.error('[AdminCmd] confirmBooking failed', { shortId, adminPhone, err: err.message });
+    return `⚠️ Something went wrong confirming booking #${shortId}. Please try again.`;
+  }
 }
 
 // ── Decline booking ───────────────────────────────────────────────────────────
 async function declineBooking(shortId, reason, tenantId, adminPhone, tenantDoc) {
-  const booking = await Booking.findOne({ shortId: shortId.toUpperCase(), tenantId })
-    .select('_id customerPhone date time service status customerName').lean();
+  try {
+    // [FIX-CMD-14] Atomic findOneAndUpdate — same TOCTOU rationale as confirmBooking.
+    const booking = await Booking.findOneAndUpdate(
+      { shortId: shortId.toUpperCase(), tenantId, status: { $ne: 'cancelled' } },
+      { $set: {
+        status:           'cancelled',
+        adminDeclinedAt:  new Date(),
+        adminDeclinedBy:  adminPhone,
+        adminNote:        reason || null,
+      }},
+      { new: false }
+    ).select('_id customerPhone date time service status customerName').lean();
 
-  if (!booking) return `⚠️ No booking found: ${shortId}`;
-  if (booking.status === 'cancelled') return `ℹ️ Booking #${shortId} already cancelled.`;
+    if (!booking) {
+      const existing = await Booking.findOne({ shortId: shortId.toUpperCase(), tenantId })
+        .select('status').lean().catch(() => null);
+      if (!existing) return `⚠️ No booking found: ${shortId}`;
+      return `ℹ️ Booking #${shortId} already cancelled.`;
+    }
 
-  await Booking.updateOne({ _id: booking._id }, { $set: {
-    status:           'cancelled',
-    adminDeclinedAt:  new Date(),
-    adminDeclinedBy:  adminPhone,
-    adminNote:        reason || null,
-  }});
+    const when       = booking.time ? `${booking.date} at ${booking.time}` : booking.date;
+    const serviceStr = booking.service ? ` (${booking.service})` : '';
+    const reasonStr  = reason ? `\n\n*Reason:* ${reason}` : '';
 
-  const when       = booking.time ? `${booking.date} at ${booking.time}` : booking.date;
-  const serviceStr = booking.service ? ` (${booking.service})` : '';
-  const reasonStr  = reason ? `\n\n*Reason:* ${reason}` : '';
+    await dispatchText(booking.customerPhone,
+      `❌ *Booking Unavailable*\n\nUnfortunately we can't confirm your booking${serviceStr} for *${when}*.${reasonStr}\n\nPlease contact us to arrange an alternative time.`,
+    // [FIX-CMD-2] Log dispatch failures — customer won't know their booking was declined.
+    tenantDoc).catch(err => logger.warn('[AdminCmd] declineBooking: customer dispatch failed', {
+      customerPhone: booking.customerPhone, err: err.message,
+    }));
 
-  await dispatchText(booking.customerPhone,
-    `❌ *Booking Unavailable*\n\nUnfortunately we can't confirm your booking${serviceStr} for *${when}*.${reasonStr}\n\nPlease contact us to arrange an alternative time.`,
-  // [FIX-CMD-2] Log dispatch failures — customer won't know their booking was declined.
-  tenantDoc).catch(err => logger.warn('[AdminCmd] declineBooking: customer dispatch failed', {
-    customerPhone: booking.customerPhone, err: err.message,
-  }));
+    await updateSession(booking.customerPhone, tenantId, {
+      postFlowAck:  'BOOKING_DECLINED',
+      postFlowData: { service: booking.service, date: booking.date },
+    }).catch(() => {});
 
-  await updateSession(booking.customerPhone, tenantId, {
-    postFlowAck:  'BOOKING_DECLINED',
-    postFlowData: { service: booking.service, date: booking.date },
-  }).catch(() => {});
+    logger.info('[AdminCmd] Booking declined', { shortId, adminPhone, reason });
+    return `❌ *Booking declined*\n\nBooking #${shortId} — ${when}${serviceStr}${reason ? `\nReason: ${reason}` : ''}\nCustomer ${booking.customerPhone} notified.`;
+  } catch (err) {
+    // [FIX-CMD-15] Guarantee the admin always gets a reply instead of silent failure.
+    logger.error('[AdminCmd] declineBooking failed', { shortId, adminPhone, err: err.message });
+    return `⚠️ Something went wrong declining booking #${shortId}. Please try again.`;
+  }
+}
 
-  logger.info('[AdminCmd] Booking declined', { shortId, adminPhone, reason });
-  return `❌ *Booking declined*\n\nBooking #${shortId} — ${when}${serviceStr}${reason ? `\nReason: ${reason}` : ''}\nCustomer ${booking.customerPhone} notified.`;
+// ── Mark order ready ──────────────────────────────────────────────────────────
+// [SPEC-5A] Admin types "MARK READY <shortId>" or taps READY_<shortId> button.
+// Updates order status to 'ready', dispatches the spec §5A message to the customer.
+async function markOrderReady(shortId, tenantId, adminPhone, tenantDoc, business) {
+  try {
+    const order = await Order.findOneAndUpdate(
+      { shortId, tenantId, status: 'confirmed', paymentStatus: 'confirmed' },
+      { $set: { status: 'ready', readyAt: new Date() } },
+      { new: false }
+    ).select('_id customerPhone item quantity shortId').lean();
+
+    if (!order) {
+      const existing = await Order.findOne({ shortId, tenantId }).select('status paymentStatus').lean().catch(() => null);
+      if (!existing)                      return `⚠️ No order found: ${shortId}`;
+      if (existing.status === 'ready')     return `ℹ️ Order #${shortId} is already marked ready.`;
+      if (existing.status === 'completed') return `ℹ️ Order #${shortId} is already completed.`;
+      return `⚠️ Order #${shortId} can't be marked ready — status is *${existing.status}*.`;
+    }
+
+    const bizName = business?.name || 'us';
+
+    // [SPEC-5A] Order ready notification with Collected + Need Help buttons
+    await dispatchMessage(order.customerPhone, {
+      type:    'buttons',
+      body:
+        `🍽️ *Your Order is Ready!*\n\n` +
+        `📦  *${order.item}* × ${order.quantity}\n` +
+        `🔖  Reference: *#${order.shortId || shortId}*\n\n` +
+        `Please collect your order at the counter 😊\n\n` +
+        `Thank you for choosing *${bizName}*!`,
+      buttons: [
+        { id: `COLLECTED_${order.shortId || shortId}`, title: '✅ Collected — Thanks!' },
+        { id: 'SUPPORT', title: '❓ Need Help' },
+      ],
+    }, tenantDoc).catch(err => logger.warn('[AdminCmd] markOrderReady: customer dispatch failed', {
+      customerPhone: order.customerPhone, err: err.message,
+    }));
+
+    await updateSession(order.customerPhone, tenantId, {
+      currentFlow:  null, step: null,
+      postFlowAck:  'ORDER_READY',
+      postFlowData: { item: order.item, quantity: order.quantity, shortId: order.shortId || shortId },
+    }).catch(() => {});
+
+    logger.info('[AdminCmd] Order marked ready', { shortId, adminPhone });
+    return `✅ *Order ready notification sent*\n\nOrder #${shortId} — ${order.item}\nCustomer ${order.customerPhone} notified to collect.`;
+  } catch (err) {
+    logger.error('[AdminCmd] markOrderReady failed', { shortId, adminPhone, err: err.message });
+    return `⚠️ Something went wrong marking order #${shortId} ready. Please try again.`;
+  }
 }
 
 // ── Resume bot ────────────────────────────────────────────────────────────────
 async function resumeBot(customerPhone, tenantId, tenantDoc) {
-  // [FIX-CMD-1] Check the return value of updateSession. findOneAndUpdate without
   // upsert returns null when no document matches — meaning there is no active
   // session for this customer (TTL-expired). The admin gets a success message either
   // way (the bot IS effectively not running for that customer), but logging the miss
@@ -510,6 +730,13 @@ async function resumeBot(customerPhone, tenantId, tenantDoc) {
 }
 
 // ── Admin alert builders ──────────────────────────────────────────────────────
+// [FIX-CMD-16] buildAdminBookingAlert() (the version with a CONFIRM BOOK/DECLINE BOOK
+// text-command footer baked into the body) was removed as dead code — it was exported
+// but never called anywhere. The only real caller, bookingFlow.js, uses
+// buildAdminBookingAlertBody() directly and constructs an interactive buttons array
+// itself (CONFIRM_BOOK_<shortId> / DECLINE_BOOK_<shortId>), which is the correct path
+// since admin alerts are sent as WhatsApp interactive button messages, not plain text
+// with typed commands in the footer.
 export function buildAdminBookingAlertBody({ customerPhone, date, time, service, partySize, business, shortId }) {
   const bizName    = business?.name || 'Business';
   const serviceStr = service   ? `\n🗓 Service: *${service}*`      : '';
@@ -523,21 +750,4 @@ export function buildAdminBookingAlertBody({ customerPhone, date, time, service,
     `📅 Date: *${date}*${timeStr}${serviceStr}${partyStr}${idStr}\n\n` +
     `Status: *Pending* — please confirm.`
   );
-}
-
-/**
- * buildAdminBookingAlert — full booking notification with reply commands in footer.
- * [FIX-CMD-6] Footer previously showed APPROVE/REJECT (order-payment commands) mixed in
- *             with the booking commands — confusing for admins.
- *             Now shows only the two booking-specific commands.
- * [FIX-CMD-7] shortId was shown as literal '?' when args.shortId was falsy.
- *             Now omits the command line entirely when shortId is not available.
- */
-export function buildAdminBookingAlert(args) {
-  const body = buildAdminBookingAlertBody(args);
-  const sid  = args.shortId;
-  const commandFooter = sid
-    ? `\n\nReply to action:\n✅ \`CONFIRM BOOK ${sid}\`\n🚫 \`DECLINE BOOK ${sid} <reason>\``
-    : `\n\n_Reply once a shortId is available._`;
-  return body + commandFooter;
 }

@@ -340,61 +340,131 @@ export async function handleRetailOrder({ session, message, business, tenant, is
       const qty        = data.quantity || 1;
       const variant    = data.variant  || null;
       const fulfilment = data.fulfilment || 'In-Store Pick-Up';
+      const totalPrice = item?.price ? item.price * qty : null;
+      const itemLabel  = variant ? `${item?.name} (${variant})` : item?.name;
 
+      // [FIX-BUG4-RETAIL] saveOrder previously hardcoded status:'confirmed', bypassing
+      // admin review entirely. Now saved as 'pending' so APPROVE_/REJECT_ buttons work.
+      let savedOrder = null;
       try {
-        const saved = await saveOrder({
+        savedOrder = await saveOrder({
           tenantId:      session.tenantId,
           customerPhone: session.customerPhone,
           customerName:  session.customerName,
-          item:          variant ? `${item?.name} (${variant})` : item?.name,
+          item:          itemLabel,
           quantity:      qty,
           notes:         `Fulfilment: ${fulfilment}`,
-          status:        'confirmed',
-          totalAmount:   item?.price ? item.price * qty : undefined,
+          status:        'pending',
+          // [FIX-RETAIL-1] totalAmount renamed to totalPrice — orderService.saveOrder
+          // destructures { totalPrice } not { totalAmount }. Passing totalAmount meant
+          // every retail order had totalPrice=undefined in the DB, breaking payment
+          // amount display in admin alerts and the receiveProof order lookup.
+          totalPrice:    totalPrice || undefined,
         });
 
-        if (item?.price) {
-          await recordRevenue(session.tenantId, item.price * qty).catch(() => {});
+        if (totalPrice) {
+          // [FIX-RETAIL-2] recordRevenue was called as recordRevenue(tenantId, amount)
+          // but the function signature is recordRevenue({ item, quantity, revenue, tenantId,
+          // customerPhone, phoneNumberId }). The positional call silently discarded all
+          // data — no revenue analytics were ever written for retail orders.
+          recordRevenue({
+            item:          itemLabel,
+            quantity:      qty,
+            revenue:       totalPrice,
+            tenantId:      session.tenantId,
+            customerPhone: session.customerPhone,
+          }).catch(() => {});
         }
-        await trackOrderAnalytics(session.tenantId, 'retail_order').catch(() => {});
-
-        // Admin alert
-        const adminPhone = business?.adminPhone;
-        if (adminPhone && tenant) {
-          try {
-            const { dispatchText } = await import('../../../core/whatsapp/dispatcher.js');
-            await dispatchText(
-              adminPhone,
-              `🔔 *New Retail Order*\n\n` +
-              `📞 Customer: ${session.customerPhone}\n` +
-              `🛍 Item: ${item?.name}${variant ? ` (${variant})` : ''}\n` +
-              `🔢 Qty: ${qty}\n` +
-              `📦 Fulfilment: ${fulfilment}\n` +
-              `🆔 Order: #${saved?._id?.toString().slice(-6).toUpperCase() || 'N/A'}`,
-              tenant,
-            );
-          } catch (err) {
-            logger.warn('[Retail] admin notify failed:', err.message);
-          }
-        }
+        // [FIX-RETAIL-3] trackOrderAnalytics called as (tenantId, 'retail_order') but
+        // correct signature is (item, phoneNumberId, quantity, revenue, tenantId).
+        // Positional mismatch meant item=tenantId and all other fields were undefined.
+        trackOrderAnalytics(itemLabel, null, qty, totalPrice || 0, session.tenantId).catch(() => {});
       } catch (err) {
         logger.error('[Retail] saveOrder error:', err.message);
       }
 
-      // [FIX-1] Correct completeFlow signature: (session, completedFlow, business, tenant)
-      // [FIX-2] Capture return value — completeFlow may return a lead-capture UIResponse
-      const _lcRr = await completeFlow(session, 'ORDER', business, tenant);
-      if (_lcRr) return _lcRr;
+      // [FIX-BUG4-RETAIL] Payment flow — was completely absent. If tenant has
+      // payment enabled and item has a price, show payment instructions and wait
+      // for screenshot, same as restaurant/electronics/bakery.
+      const payment = business?.payment;
+      if (payment?.enabled && totalPrice) {
+        const shortId = savedOrder?.shortId || '';
+        const now  = new Date();
+        const mm   = String(now.getMonth() + 1).padStart(2, '0');
+        const dd   = String(now.getDate()).padStart(2, '0');
+        const ref  = `RTL-${mm}${dd}-${shortId}`;
+
+        if (savedOrder?._id) {
+          const { default: Order } = await import('../../../models/Order.js');
+          Order.updateOne({ _id: savedOrder._id }, { $set: { paymentReference: ref } }).catch(() => {});
+        }
+
+        await updateSession(session.customerPhone, session.tenantId, {
+          step: 'PAYMENT_PROOF', currentFlow: 'ORDER',
+        });
+
+        try {
+          const adminPhone = business?.adminPhone;
+          if (adminPhone && tenant && savedOrder) {
+            const { dispatchMessage } = await import('../../../core/whatsapp/dispatcher.js');
+            const currency = payment.currency || 'D';
+            await dispatchMessage(adminPhone, {
+              type: 'text',
+              body:
+                `🔔 *New Retail Order — ${business?.name || 'Store'}*\n\n` +
+                `📞 Customer: *${session.customerPhone}*\n` +
+                `🛍 *${qty}× ${itemLabel}*\n` +
+                `📦 Fulfilment: *${fulfilment}*\n` +
+                `💰 Total: *${currency}${totalPrice}*\n` +
+                `📝 Ref: *${ref}*\n\n` +
+                `⏳ Status: *Pending* — awaiting payment screenshot.`,
+            }, tenant).catch(() => {});
+          }
+        } catch { /* non-fatal */ }
+
+        const { buildPaymentInstructionsUI } = await import('../../../services/paymentService.js');
+        return buildPaymentInstructionsUI(business, totalPrice, shortId, ref);
+      }
+
+      // [FIX-BUG3-RETAIL] Admin alert: upgraded from dispatchText (no buttons) to
+      // dispatchMessage with APPROVE_/REJECT_ buttons. Session parked at
+      // AWAIT_ADMIN_CONFIRM so customer cannot place duplicate orders before admin acts.
+      try {
+        const adminPhone = business?.adminPhone;
+        if (adminPhone && tenant && savedOrder) {
+          const { dispatchMessage } = await import('../../../core/whatsapp/dispatcher.js');
+          const currency = payment?.currency || 'D';
+          await dispatchMessage(adminPhone, {
+            type: 'buttons',
+            body:
+              `🔔 *New Retail Order — ${business?.name || 'Store'}*\n\n` +
+              `📞 Customer: *${session.customerPhone}*\n` +
+              `🛍 *${qty}× ${itemLabel}*\n` +
+              `📦 Fulfilment: *${fulfilment}*\n` +
+              (totalPrice ? `💰 Total: *${currency}${totalPrice}*\n` : '') +
+              `🔖 Ref: \`${savedOrder?.shortId || 'N/A'}\``,
+            buttons: [
+              { id: `APPROVE_${savedOrder.shortId}`, title: '✅ Confirm Order' },
+              { id: `REJECT_${savedOrder.shortId}`,  title: '❌ Cancel Order'  },
+            ],
+          }, tenant);
+        }
+      } catch (err) {
+        logger.warn('[Retail] admin notify failed:', err.message);
+      }
+
+      await updateSession(session.customerPhone, session.tenantId, {
+        step: 'AWAIT_ADMIN_CONFIRM', currentFlow: 'ORDER',
+        data: { ...data, totalPrice },
+      });
 
       return {
-        type: 'buttons',
-        body: `✅ *Order Confirmed!* 🛍\n\n` +
-          `*${item?.name}${variant ? ` (${variant})` : ''}* × ${qty}\n` +
-          `📦 *${fulfilment}*\n\nThank you for shopping with us! We'll be in touch shortly.`,
-        buttons: [
-          { id: 'ORDER',     title: '🛍 Shop Again'  },
-          { id: 'SHOW_MENU', title: '🔄 Start Over'  },
-        ],
+        type: 'text',
+        body:
+          `✅ *Order Received!* 🛍\n\n` +
+          `*${itemLabel}* × ${qty}\n` +
+          `📦 *${fulfilment}*\n\n` +
+          `⏳ Our team will confirm your order shortly. Please wait for confirmation before placing a new one. 🙏`,
       };
     }
 
@@ -438,7 +508,7 @@ function _getCategories(menu) {
 function _buildCategoryUI(categories, business) {
   return {
     type: 'list',
-    body: `🛍 *${business?.businessName || 'Our Store'}*\n\nWhat are you shopping for today?`,
+    body: `🛍 *${business?.name || 'Our Store'}*\n\nWhat are you shopping for today?`,
     sections: [{
       title: 'Categories',
       rows: categories.map(c => ({
@@ -456,7 +526,7 @@ function _buildProductList(items, business, category = null) {
   // customers to type a number. Now they tap directly.
   const header = category
     ? `🛍 *${category}*`
-    : `🛍 *${business?.businessName || 'Our Products'}*`;
+    : `🛍 *${business?.name || 'Our Products'}*`;
 
   if (!items.length) {
     return {

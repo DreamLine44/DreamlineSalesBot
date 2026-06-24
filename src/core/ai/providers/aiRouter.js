@@ -16,6 +16,11 @@
  * AI ROLE — strictly enforced here and in providers:
  *   ✅ Unclear messages, FAQ, recommendations, greetings, upsell text
  *   ❌ Flow state, cart totals, booking logic, scheduling, prices
+ *
+ * [AI-OPT-1] getAIReply: accepts optional orderContext param and passes it through
+ *            to groqProvider.getReply. When called from ORDER_CONFIRMED postFlowAck,
+ *            the AI system prompt now includes the active order details so responses
+ *            are grounded in context (e.g. "your Jollof Rice is being prepared").
  */
 
 import * as groqProvider from './groqProvider.js';
@@ -33,16 +38,16 @@ function getProvider() {
 // ── Public API ─────────────────────────────────────────────────────────────────
 
 /**
- * getAIReply({ customerMessage, business, session, intent, history })
+ * getAIReply({ customerMessage, business, session, intent, history, orderContext })
  * Returns string | null
  *
- * This is the CORRECT named-object signature used everywhere.
- * Fixes the critical positional-args bug from v28.
+ * [AI-OPT-1] orderContext is optional. When provided, it's passed to the provider's
+ * getReply() so the system prompt includes active order details.
  */
-export async function getAIReply({ customerMessage, business, session, intent = 'FALLBACK', history = [] }) {
+export async function getAIReply({ customerMessage, business, session, intent = 'FALLBACK', history = [], orderContext = null }) {
   try {
     const provider = getProvider();
-    const result   = await provider.getReply({ customerMessage, business, intent, history });
+    const result   = await provider.getReply({ customerMessage, business, intent, history, orderContext });
     if (!result?.text) return null;
     logger.debug('[AI] Reply', { source: result.source, intent });
     return result.text;

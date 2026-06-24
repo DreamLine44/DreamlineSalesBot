@@ -32,6 +32,12 @@ const orderSchema = new mongoose.Schema({
   customerPhone: { type: String, required: true, index: true },
   phone:         { type: String, index: true }, // legacy alias
 
+  // [FIX-SAVE-1] customerName — supplied by all module saveOrder() callers but
+  // previously absent from this schema. Mongoose strict mode silently dropped the
+  // field on every Order.create(), so customer names were never persisted.
+  // Used for admin alerts ("New order from Fatou") and dashboard order lists.
+  customerName: { type: String, default: null, trim: true, maxlength: 80 },
+
   // Auto-generated UUID per order — ensures the unique (tenantId, customerPhone, idempotencyKey)
   // index is always satisfied. Prevents duplicate orders from button double-taps.
   idempotencyKey: {
@@ -51,7 +57,27 @@ const orderSchema = new mongoose.Schema({
 
   status: {
     type: String,
-    enum: ["pending", "payment_pending_verification", "confirmed", "completed", "cancelled", "rejected", "payment_failed"],
+    // [FIX-4] Added 'ready', 'preparing', 'out_for_delivery', 'delivered' — all four were
+    // used in activeOrderResolver queries and/or written by adminCommandService.markOrderReady
+    // but absent from the enum. Mongoose strict mode silently drops $set operations that use
+    // a value not in the enum — so markOrderReady()'s `status: 'ready'` write was a no-op,
+    // leaving every "marked ready" order permanently stuck at 'confirmed' in the DB.
+    // 'preparing', 'out_for_delivery', 'delivered' are queried by activeOrderResolver and
+    // planned admin command paths — including them now prevents the same silent-drop bug
+    // when those paths are implemented.
+    enum: [
+      "pending",
+      "payment_pending_verification",
+      "confirmed",
+      "preparing",          // [FIX-4] order in kitchen
+      "ready",              // [FIX-4] ready for collection (written by markOrderReady)
+      "out_for_delivery",   // [FIX-4] dispatched for delivery
+      "delivered",          // [FIX-4] delivered to customer
+      "completed",
+      "cancelled",
+      "rejected",
+      "payment_failed",
+    ],
     default: "pending",
     index: true,
   },
@@ -138,6 +164,13 @@ const orderSchema = new mongoose.Schema({
   // mode drops the $set, causing the scheduler to re-message the same customer
   // on every run.
   abandonedCartAt: { type: Date, default: null },
+
+  // [FIX-5] Lifecycle timestamps written by adminCommandService and webhookController.
+  // Previously absent from schema — Mongoose strict mode silently dropped every write,
+  // so readyAt and completedAt were always null in the DB even when set by admin commands.
+  readyAt:     { type: Date, default: null }, // set by markOrderReady()
+  completedAt: { type: Date, default: null }, // set by COLLECTED_* handler / admin
+  deliveredAt: { type: Date, default: null }, // set when out_for_delivery → delivered
 
   // Last 6 hex chars of _id, stored at creation time for O(1) admin lookups.
   // Admin commands like "APPROVE ABC123" resolve against this field via an index

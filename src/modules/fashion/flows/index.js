@@ -256,6 +256,7 @@ export async function handleFashionOrder({ session, message, business, tenant, i
       try {
         savedOrder = await saveOrder({ item: `${data.item?.name}${data.size ? ` (${data.size})` : ''}${data.color ? ` — ${data.color}` : ''}`,
           quantity: data.quantity, totalPrice: data.totalPrice,
+          customerName: session.customerName || null, // [FIX-SAVE-2]
           customerPhone: session.customerPhone, tenantId: session.tenantId, businessId: business._id });
       } catch (err) { logger.error('[FashionModule] saveOrder failed', { err: err.message }); }
 

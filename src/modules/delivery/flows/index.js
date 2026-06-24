@@ -15,7 +15,10 @@
  */
 
 import { updateSession }  from '../../../core/sessions/sessionService.js';
-import { completeFlow }   from '../../../core/conversations/flowEngine.js';
+// [FIX-DELIVERY-IMPORT] completeFlow was imported but never called in this module.
+// Delivery flow completion (postFlowAck + lead capture) is triggered by adminCommandService
+// after admin APPROVE/REJECT — not inline here. Removed the dead import to prevent
+// confusion during future audits about where flow completion happens.
 import { getAIReply }     from '../../../core/ai/providers/aiRouter.js';
 import { findBestMatch }  from '../../../utils/matchEngine.js';
 import { saveOrder }      from '../../../services/orderService.js';
@@ -33,11 +36,13 @@ export const DELIVERY_CONFIG = {
     ORDER: ['SELECT_ITEM', 'QUANTITY', 'DELIVERY_ADDRESS', 'DELIVERY_SLOT', 'CONFIRM'],
   },
   ui: {
+    // [FIX-4BTN-DEL] Meta button cap is 3 — the 4th button (QUESTION) was silently
+    // dropped by the dispatcher's .slice(0,3). Customers ordering delivery care most
+    // about placing an order, viewing the menu, and tracking. SUPPORT handles questions.
     welcomeButtons: [
       { id: 'ORDER',       title: '🚚 Order Now'      },
       { id: 'SHOW_MENU',   title: '📋 View Menu'       },
       { id: 'TRACK_ORDER', title: '📍 Track My Order'  },
-      { id: 'QUESTION',    title: '❓ Ask a Question'  },
     ],
     fallbackButtons: [
       { id: 'ORDER',       title: '🚚 Order Now'     },
@@ -360,7 +365,9 @@ export async function handleDeliveryOrder({ session, message, business, tenant, 
       // always future by definition.
       if (data.awaitingSlotText && SLOT_MAP[raw.toUpperCase()] === undefined) {
         const { tryParseDate } = await import('../../../core/conversations/bookingFlow.js');
-        const tz = business?.timezone || 'UTC';
+        // [FIX-TZ-DELIVERY] business?.timezone was reading a non-existent top-level field.
+        // timezone lives at business.hours.timezone (BusinessConfig schema).
+        const tz = business?.hours?.timezone || 'UTC';
         // Try to extract a date component — if none found, treat as today
         const lowerSlot = raw.toLowerCase();
         const datePart = lowerSlot.includes('tomorrow') ? 'tomorrow' : 'today';
@@ -443,68 +450,127 @@ export async function handleDeliveryOrder({ session, message, business, tenant, 
         };
       }
 
-      const item    = data.item;
-      const qty     = data.quantity || 1;
-      const address = data.deliveryAddress;
-      const slot    = data.deliverySlot || 'ASAP';
+      const item       = data.item;
+      const qty        = data.quantity || 1;
+      const address    = data.deliveryAddress;
+      const slot       = data.deliverySlot || 'ASAP';
+      const totalPrice = item?.price ? item.price * qty : null;
 
+      // [FIX-BUG4-DELIVERY] saveOrder previously hardcoded status:'confirmed', bypassing
+      // admin review. Now saved as 'pending' so APPROVE_/REJECT_ flow works correctly.
+      let savedOrder = null;
       try {
-        const saved = await saveOrder({
+        savedOrder = await saveOrder({
           tenantId:      session.tenantId,
           customerPhone: session.customerPhone,
           customerName:  session.customerName,
           item:          item?.name,
           quantity:      qty,
           notes:         `Delivery to: ${address} | Slot: ${slot}`,
-          status:        'confirmed',
-          totalAmount:   item?.price ? item.price * qty : undefined,
+          status:        'pending',
+          // [FIX-DELIVERY-1] totalAmount → totalPrice (same bug as retail — see retail fix)
+          totalPrice:    totalPrice || undefined,
         });
 
-        if (item?.price) {
-          await recordRevenue(session.tenantId, item.price * qty).catch(() => {});
+        if (totalPrice) {
+          // [FIX-DELIVERY-2] recordRevenue wrong positional call — same bug as retail
+          recordRevenue({
+            item:          item?.name,
+            quantity:      qty,
+            revenue:       totalPrice,
+            tenantId:      session.tenantId,
+            customerPhone: session.customerPhone,
+          }).catch(() => {});
         }
-        await trackOrderAnalytics(session.tenantId, 'delivery_order').catch(() => {});
-
-        // Dispatch rider alert to admin
-        const adminPhone = business?.adminPhone;
-        if (adminPhone && tenant) {
-          try {
-            const { dispatchText } = await import('../../../core/whatsapp/dispatcher.js');
-            await dispatchText(
-              adminPhone,
-              `🔔 *New Delivery Order* 🚚\n\n` +
-              `📞 Customer: ${session.customerPhone}\n` +
-              `📦 Item: ${item?.name} × ${qty}\n` +
-              `📍 Address: ${address}\n` +
-              `⏱ Slot: ${slot}\n` +
-              `🆔 Order: #${saved?._id?.toString().slice(-6).toUpperCase() || 'N/A'}`,
-              tenant,
-            );
-          } catch (err) {
-            logger.warn('[Delivery] admin notify failed:', err.message);
-          }
-        }
+        // [FIX-DELIVERY-3] trackOrderAnalytics wrong positional call — same bug as retail
+        trackOrderAnalytics(item?.name, null, qty, totalPrice || 0, session.tenantId).catch(() => {});
       } catch (err) {
         logger.error('[Delivery] saveOrder error:', err.message);
       }
 
-      // [FIX-1] Correct completeFlow signature: (session, completedFlow, business, tenant)
-      // [FIX-2] Capture return value — completeFlow may return a lead-capture UIResponse
-      const _lcRd = await completeFlow(session, 'ORDER', business, tenant);
-      if (_lcRd) return _lcRd;
+      // [FIX-BUG4-DELIVERY] Payment flow — was completely absent. If tenant has
+      // payment enabled and item has a price, show payment instructions.
+      const payment = business?.payment;
+      if (payment?.enabled && totalPrice) {
+        const shortId = savedOrder?.shortId || '';
+        const now  = new Date();
+        const mm   = String(now.getMonth() + 1).padStart(2, '0');
+        const dd   = String(now.getDate()).padStart(2, '0');
+        const ref  = `DLV-${mm}${dd}-${shortId}`;
+
+        if (savedOrder?._id) {
+          const { default: Order } = await import('../../../models/Order.js');
+          Order.updateOne({ _id: savedOrder._id }, { $set: { paymentReference: ref } }).catch(() => {});
+        }
+
+        await updateSession(session.customerPhone, session.tenantId, {
+          step: 'PAYMENT_PROOF', currentFlow: 'ORDER',
+        });
+
+        try {
+          const adminPhone = business?.adminPhone;
+          if (adminPhone && tenant && savedOrder) {
+            const { dispatchMessage } = await import('../../../core/whatsapp/dispatcher.js');
+            const currency = payment.currency || 'D';
+            await dispatchMessage(adminPhone, {
+              type: 'text',
+              body:
+                `🔔 *New Delivery Order — ${business?.name || 'Delivery'}*\n\n` +
+                `📞 Customer: *${session.customerPhone}*\n` +
+                `📦 *${qty}× ${item?.name}*\n` +
+                `📍 Address: *${address}*\n` +
+                `⏱ Slot: *${slot}*\n` +
+                `💰 Total: *${currency}${totalPrice}*\n` +
+                `📝 Ref: *${ref}*\n\n` +
+                `⏳ Status: *Pending* — awaiting payment screenshot.`,
+            }, tenant).catch(() => {});
+          }
+        } catch { /* non-fatal */ }
+
+        const { buildPaymentInstructionsUI } = await import('../../../services/paymentService.js');
+        return buildPaymentInstructionsUI(business, totalPrice, shortId, ref);
+      }
+
+      // [FIX-BUG3-DELIVERY] Admin alert: upgraded from dispatchText (no buttons) to
+      // dispatchMessage with APPROVE_/REJECT_ buttons. Session parked at AWAIT_ADMIN_CONFIRM.
+      try {
+        const adminPhone = business?.adminPhone;
+        if (adminPhone && tenant && savedOrder) {
+          const { dispatchMessage } = await import('../../../core/whatsapp/dispatcher.js');
+          const currency = payment?.currency || 'D';
+          await dispatchMessage(adminPhone, {
+            type: 'buttons',
+            body:
+              `🔔 *New Delivery Order — ${business?.name || 'Delivery'}*\n\n` +
+              `📞 Customer: *${session.customerPhone}*\n` +
+              `📦 *${qty}× ${item?.name}*\n` +
+              `📍 Address: *${address}*\n` +
+              `⏱ Slot: *${slot}*\n` +
+              (totalPrice ? `💰 Total: *${currency}${totalPrice}*\n` : '') +
+              `🔖 Ref: \`${savedOrder?.shortId || 'N/A'}\``,
+            buttons: [
+              { id: `APPROVE_${savedOrder.shortId}`, title: '✅ Confirm Order' },
+              { id: `REJECT_${savedOrder.shortId}`,  title: '❌ Cancel Order'  },
+            ],
+          }, tenant);
+        }
+      } catch (err) {
+        logger.warn('[Delivery] admin notify failed:', err.message);
+      }
+
+      await updateSession(session.customerPhone, session.tenantId, {
+        step: 'AWAIT_ADMIN_CONFIRM', currentFlow: 'ORDER',
+        data: { ...data, totalPrice },
+      });
 
       return {
-        type: 'buttons',
-        body: `✅ *Order Confirmed!* 🚚\n\n` +
+        type: 'text',
+        body:
+          `✅ *Order Received!* 🚚\n\n` +
           `*${item?.name}* × ${qty}\n` +
-          `📍 Delivering to: ${address}\n` +
-          `⏱ Expected: *${slot}*\n\n` +
-          `Your rider will be on the way shortly. Thank you! 🙏`,
-        buttons: [
-          { id: 'TRACK_ORDER', title: '📍 Track Order'   },
-          { id: 'ORDER',       title: '🚚 Order Again'   },
-          { id: 'SHOW_MENU',   title: '🔄 Start Over'    },
-        ],
+          `📍 Delivering to: *${address}*\n` +
+          `⏱ Requested slot: *${slot}*\n\n` +
+          `⏳ Our team will confirm your order and assign a rider shortly. Please wait for confirmation before placing a new one. 🙏`,
       };
     }
 
@@ -524,7 +590,7 @@ function _buildMenuUI(menu, business) {
   if (!menu.length) {
     return {
       type: 'buttons',
-      body: `🚚 *${business?.businessName || 'Delivery'}*\n\nWhat would you like to order today?\n\n_Type what you'd like and we'll check if we can deliver it._`,
+      body: `🚚 *${business?.name || 'Delivery'}*\n\nWhat would you like to order today?\n\n_Type what you'd like and we'll check if we can deliver it._`,
       buttons: [
         { id: 'QUESTION', title: '❓ Ask a Question' },
         { id: 'CANCEL',   title: '❌ Cancel'          },
@@ -540,7 +606,7 @@ function _buildMenuUI(menu, business) {
 
   return {
     type: 'buttons',
-    body: `🚚 *${business?.businessName || 'Delivery Menu'}*\n\n${lines.join('\n\n')}\n\n_Type a number or name to order_`,
+    body: `🚚 *${business?.name || 'Delivery Menu'}*\n\n${lines.join('\n\n')}\n\n_Type a number or name to order_`,
     buttons: [
       { id: 'TRACK_ORDER', title: '📍 Track Order'    },
       { id: 'QUESTION',    title: '❓ Ask a Question'  },

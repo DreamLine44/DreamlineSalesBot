@@ -94,6 +94,18 @@ const tenantSchema = new mongoose.Schema({
     tokenUpdatedAt: {
       type: Date,
       default: null
+    },
+
+    // Stamped by whatsappOnboardingService on first successful verification
+    connectedAt: {
+      type: Date,
+      default: null
+    },
+
+    // Updated on every successful Meta credential verification
+    lastVerifiedAt: {
+      type: Date,
+      default: null
     }
   },
 

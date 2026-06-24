@@ -21,6 +21,35 @@ function toOid(id) {
   try { return new mongoose.Types.ObjectId(String(id)); } catch { return id; }
 }
 
+// [FIX-NAME-7] Shared name validation — same rules as extractCustomerName in intentEngine.
+// Keeps name-quality logic in one conceptual place.
+// Returns the trimmed name if valid, null otherwise.
+const NAME_NOISE = new Set([
+  'hi','hey','hello','hiya','yo','ok','okay','sure','yes','no','nope',
+  'thanks','thank','fine','done','good','great','nice','ready','here',
+  'home','work','busy','free','waiting','coming','hungry','back','soon',
+  'now','out','away','test','hhhh','lol','haha','hihi','hehe','aaaa',
+]);
+function validateCapturedName(raw) {
+  if (!raw) return null;
+  const cleaned = raw.trim();
+  if (!/^[a-zA-Z\s]+$/.test(cleaned)) return null;        // letters only
+  if (NAME_NOISE.has(cleaned.toLowerCase())) return null;  // whole-name blocklist
+  const words = cleaned.split(/\s+/);
+  const valid  = words.every(w => {
+    if (w.length < 3) return false;                        // min 3 chars per word
+    if (!/[aeiou]/i.test(w)) return false;                 // must have a vowel
+    if (NAME_NOISE.has(w.toLowerCase())) return false;     // per-word blocklist
+    const freq = {};
+    for (const c of w.toLowerCase()) freq[c] = (freq[c] || 0) + 1;
+    if (Object.values(freq).some(v => v / w.length > 0.5)) return false; // repeated chars
+    return true;
+  });
+  if (!valid) return null;
+  if (cleaned.length < 3 || cleaned.length > 40) return null;
+  return cleaned;
+}
+
 export async function shouldCaptureLead(business, session, trigger) {
   const cfg = business?.leadCapture;
   if (!cfg?.enabled) return false;
@@ -62,10 +91,26 @@ export async function handleLeadCapture(session, message, business, tenantDoc) {
   const lead   = data.leadData   || {};
 
   if (step === 'CAPTURE_NAME') {
-    const name = skip ? null : raw.slice(0, 60);
+    // [FIX-NAME-7] Validate the name before storing it.
+    // Previously raw.slice(0, 60) was stored unconditionally — so a customer typing
+    // "hi", "ok", "yes", or any short reply at the name prompt would be persisted
+    // as their name and later appear in "You're welcome, Hi!" responses.
+    // Now the name is validated with the same rules as extractCustomerName:
+    // alphabetic only, min 3 chars per word, must have a vowel, not a noise word.
+    const rawName = skip ? null : raw.trim().slice(0, 60);
+    const name    = rawName ? validateCapturedName(rawName) : null;
+
+    // If they sent something but it failed validation, ask again politely
+    if (rawName && !name && !skip) {
+      return {
+        type:    'buttons',
+        body:    `Sorry, I didn't catch a name there. Could you tell me your name? (e.g. "Lamin" or "Fatou")`,
+        buttons: [{ id: 'LEAD_SKIP', title: '⏭ Skip' }],
+      };
+    }
+
     if (name) {
       await updateSession(session.customerPhone, session.tenantId, { customerName: name });
-      // [FIX-BUG5] Update persistent memory
       updateName(session.customerPhone, session.tenantId, name).catch(() => {});
     }
 
@@ -143,7 +188,7 @@ async function finaliseLead({ session, lead, business, tenantDoc }) {
   }
 
   await updateSession(session.customerPhone, session.tenantId, {
-    currentFlow: null, step: null, data: { leadCaptured: true },
+    currentFlow: null, step: null, data: { leadCaptured: true }, postFlowAck: null, postFlowData: null,
   });
 
   const { getModeConfig } = await import('../config/modes.js');

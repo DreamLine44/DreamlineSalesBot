@@ -219,7 +219,12 @@ async function runBookingReminderJob() {
       // [FIX-SCHED-1] Skip non-ACTIVE tenants
       if (tenant.status !== 'ACTIVE') continue;
 
-      const shouldSend = decideShouldSendReminder(booking, now, business?.timezone);
+      // [FIX-TZ-SCHED] business?.timezone was reading a non-existent top-level field.
+      // timezone lives at business.hours.timezone (BusinessConfig schema). The silent
+      // undefined caused decideShouldSendReminder to use UTC for all tenants, so
+      // reminders sent at e.g. 08:00 UTC would fire at wrong local times for businesses
+      // in non-UTC timezones (e.g. West Africa Time = UTC+0 but DST-aware regions vary).
+      const shouldSend = decideShouldSendReminder(booking, now, business?.hours?.timezone);
       if (!shouldSend) continue;
 
       const when       = booking.time ? `${booking.date} at ${booking.time}` : booking.date;

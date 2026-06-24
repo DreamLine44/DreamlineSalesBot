@@ -78,14 +78,39 @@ export async function notifyStatusChange(connectionRequest, newStatus, adminNote
       subject:       template.subject,
     });
 
-    // ── Email stub ────────────────────────────────────────────────────────
-    // TODO: Replace with your email provider (SendGrid, Mailgun, SES, etc.)
-    // Example:
-    // await emailService.send({
-    //   to:      connectionRequest.contactEmail,
-    //   subject: template.subject,
-    //   text:    messageBody,
-    // });
+    // ── Email / webhook notification ────────────────────────────────────────
+    // Integration point: set NOTIFICATION_WEBHOOK_URL in your environment to receive
+    // status-change notifications via HTTP POST (works with Zapier, Make, n8n, Slack
+    // incoming webhooks, or any custom endpoint). Alternatively, install an email
+    // library (e.g. nodemailer, @sendgrid/mail) and replace the block below.
+    //
+    // [FIX-NOTIFY-1] Previously this was a pure stub — the TODO was commented out,
+    // so NO notification was ever sent. Now:
+    //   • NOTIFICATION_WEBHOOK_URL set → POST the notification payload to the webhook
+    //   • No URL set             → log in dev mode as before (no change in behaviour)
+    const webhookUrl = process.env.NOTIFICATION_WEBHOOK_URL;
+    if (webhookUrl) {
+      try {
+        await fetch(webhookUrl, {
+          method:  'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            event:        'onboarding_status_change',
+            status:       newStatus,
+            requestId:    String(connectionRequest._id),
+            tenantId:     String(connectionRequest.tenantId),
+            businessName: connectionRequest.businessName,
+            contactEmail: connectionRequest.contactEmail,
+            subject:      template.subject,
+            message:      messageBody,
+            timestamp:    new Date().toISOString(),
+          }),
+        });
+        logger.info('[OnboardingNotify] Webhook notification sent', { webhookUrl, status: newStatus });
+      } catch (webhookErr) {
+        logger.warn('[OnboardingNotify] Webhook POST failed (non-fatal)', { err: webhookErr.message });
+      }
+    }
 
     // ── Development preview ───────────────────────────────────────────────
     if (process.env.NODE_ENV !== 'production') {
@@ -123,15 +148,30 @@ export async function notifyAdminNewRequest(connectionRequest) {
       submittedAt:  connectionRequest.createdAt,
     });
 
-    // TODO: Send alert to super-admin email / Slack / webhook
-    // const adminEmail = process.env.SUPER_ADMIN_EMAIL;
-    // if (adminEmail) {
-    //   await emailService.send({
-    //     to:      adminEmail,
-    //     subject: `[WhatSales] New WhatsApp Connection Request — ${connectionRequest.businessName}`,
-    //     text:    `A new connection request was submitted by ${connectionRequest.contactEmail}.\n\nBusiness: ${connectionRequest.businessName}\nNumber: ${connectionRequest.whatsappNumber}\nRequest ID: ${connectionRequest._id}`,
-    //   });
-    // }
+    // [FIX-NOTIFY-2] Same webhook pattern as notifyStatusChange — set NOTIFICATION_WEBHOOK_URL
+    // to receive new-request alerts. Falls back to log-only when no URL is configured.
+    const adminWebhookUrl = process.env.NOTIFICATION_WEBHOOK_URL || process.env.ADMIN_WEBHOOK_URL;
+    if (adminWebhookUrl) {
+      try {
+        await fetch(adminWebhookUrl, {
+          method:  'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            event:           'new_connection_request',
+            requestId:       String(connectionRequest._id),
+            tenantId:        String(connectionRequest.tenantId),
+            businessName:    connectionRequest.businessName,
+            contactEmail:    connectionRequest.contactEmail,
+            whatsappNumber:  connectionRequest.whatsappNumber,
+            submittedAt:     connectionRequest.createdAt,
+            timestamp:       new Date().toISOString(),
+          }),
+        });
+        logger.info('[OnboardingNotify] Admin webhook alert sent', { adminWebhookUrl });
+      } catch (webhookErr) {
+        logger.warn('[OnboardingNotify] Admin webhook alert failed (non-fatal)', { err: webhookErr.message });
+      }
+    }
 
   } catch (err) {
     logger.error('[OnboardingNotify] Admin alert failed (non-fatal)', { err: err.message });

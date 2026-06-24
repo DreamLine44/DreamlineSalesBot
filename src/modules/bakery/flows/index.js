@@ -104,9 +104,14 @@ export async function handleCakeCustomization({ session, message, business, tena
       // could type "yesterday" and the order would confirm with a past date.
       // Import shared helpers to enforce the same rules as the booking flow.
       const { tryParseDate } = await import('../../../core/conversations/bookingFlow.js');
-      const cakeParsed = tryParseDate(raw, business?.timezone);
+      // [FIX-TZ-BAKERY] business?.timezone was reading a non-existent top-level field.
+      // timezone lives at business.hours.timezone (BusinessConfig schema). The silent
+      // undefined caused tryParseDate and all local-midnight calculations to fall back
+      // to UTC, so "tomorrow" in West Africa Time was one hour ahead of UTC midnight —
+      // meaning an evening order for "tomorrow" would sometimes be rejected as "past".
+      const cakeParsed = tryParseDate(raw, business?.hours?.timezone);
       if (cakeParsed) {
-        const tz = business?.timezone || 'UTC';
+        const tz = business?.hours?.timezone || 'UTC';
         // Midnight in the business's local clock
         const localNow = (() => {
           const safeZone = (() => { try { Intl.DateTimeFormat(undefined, { timeZone: tz }); return tz; } catch { return 'UTC'; } })();
@@ -159,6 +164,7 @@ export async function handleCakeCustomization({ session, message, business, tena
           item:         `Custom Cake — ${data.flavor} (${data.size})`,
           quantity:     1,
           totalPrice:   0,
+          customerName:  session.customerName || null, // [FIX-SAVE-2]
           customerPhone: session.customerPhone,
           tenantId:     session.tenantId,
           businessId:   business._id,
@@ -206,11 +212,8 @@ export async function handleCakeCustomization({ session, message, business, tena
   }
 }
 
-// ── Standard order flow (delegates to shared order logic) ─────────────────────
-export async function handleBakeryOrder({ session, message, business, tenant, isInteractive }) {
-  const { handleOrderFlow } = await import('../../restaurant/flows/orderFlow.js');
-  return handleOrderFlow({ session, message, business, tenant, isInteractive });
-}
+// ── Standard order flow — dedicated bakery flow (NOT the restaurant proxy) ───
+export { handleBakeryOrderFlow as handleBakeryOrder } from './orderFlow.js';
 
 // ── Booking/collection flow ───────────────────────────────────────────────────
 export async function handleBakeryBooking({ session, message, business, tenant, isInteractive }) {

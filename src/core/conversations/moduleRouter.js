@@ -56,6 +56,41 @@ export async function route({ action, intent, session, message, business, tenant
 
   switch (upper) {
 
+    case 'ACKNOWLEDGE': {
+      // [SPEC-PART7] Filler/reaction message with no active flow and no postFlowAck context.
+      // Check for an active order first — if one exists, remind them of the status.
+      // Otherwise show the welcome menu quietly (no full branded greeting).
+      try {
+        const { default: _AckOrder } = await import('../../models/Order.js');
+        const ackOrder = await _AckOrder.findOne({
+          customerPhone: session.customerPhone,
+          tenantId:      session.tenantId,
+          status:        { $in: ['confirmed', 'pending', 'ready'] },
+          paymentStatus: { $nin: ['cancelled', 'rejected'] },
+        }).select('item quantity shortId status').sort({ createdAt: -1 }).lean().catch(() => null);
+
+        if (ackOrder) {
+          const statusLine = {
+            confirmed: `🍳 Being prepared`,
+            pending:   `⏳ Awaiting confirmation`,
+            ready:     `🍽️ Ready for collection!`,
+          }[ackOrder.status] || `⏳ Being processed`;
+          return {
+            type: 'text',
+            body: `😊 ${statusLine} — we'll let you know when there's an update on *#${ackOrder.shortId}*!`,
+          };
+        }
+      } catch { /* non-fatal */ }
+
+      // No active order — soft welcome menu, no branded greeting
+      const cfg = getModeConfig(business);
+      return {
+        type:    'buttons',
+        body:    '😊 What would you like to do?',
+        buttons: cfg.ui?.welcomeButtons || [],
+      };
+    }
+
     case 'CONTINUE_FLOW': {
       // CONTINUE_FLOW arrives when the customer sends a numeric, single-char, or unmapped
       // interactive message while there is NO active flow (the flow engine handles it when
@@ -71,32 +106,176 @@ export async function route({ action, intent, session, message, business, tenant
     }
 
     case 'GREET': {
-      const existingName = session?.customerName || null;
-      const lastOrder    = session?.data?.lastItem || null;
+      // ── [SPEC-RULE-1] GREETING GATE — runs on EVERY message, not just first ──────
+      // Before sending any greeting, check for active order or booking context.
+      // An active order → show order status, skip all greetings entirely.
+      // An active booking → show booking status, skip greeting.
+      // Neither → proceed to normal welcome.
+      //
+      // This is the fix for the production bug where "Ahhh" from a paying customer
+      // triggered "Hello! Welcome to DreamLine Restaurant" — because GREET ran with
+      // no awareness that the customer had just paid for an order.
+      try {
+        const { default: _Order }   = await import('../../models/Order.js');
+        const { default: _Booking } = await import('../../models/Booking.js');
 
-      let greetMsg = null;
-      if (existingName) {
-        try {
-          const g = await generateGreeting({ business, customerName: existingName, lastOrder });
-          greetMsg = g;
-        } catch { /* non-fatal */ }
+        const activeOrder = await _Order.findOne({
+          customerPhone: session.customerPhone,
+          tenantId:      session.tenantId,
+          status:        { $in: ['confirmed', 'pending'] },
+          paymentStatus: { $nin: ['cancelled', 'rejected'] },
+        }).select('item quantity shortId paymentStatus status').sort({ createdAt: -1 }).lean().catch(() => null);
+
+        if (activeOrder) {
+          const statusLine = {
+            confirmed:      `🍳 Being prepared`,
+            pending:        `⏳ Awaiting confirmation`,
+          }[activeOrder.status] || `⏳ Being processed`;
+          return {
+            type:    'buttons',
+            body:
+              `Hi there 😊\n\n` +
+              `Your order *#${activeOrder.shortId}* — *${activeOrder.item}* × ${activeOrder.quantity} — is still being processed.\n\n` +
+              `${statusLine}. We'll message you the moment it's ready!`,
+            buttons: [
+              { id: 'QUESTION', title: '❓ Ask a Question' },
+              { id: 'CANCEL',   title: '❌ Cancel Order'   },
+            ],
+          };
+        }
+
+        const activeBooking = await _Booking.findOne({
+          customerPhone: session.customerPhone,
+          tenantId:      session.tenantId,
+          status:        { $in: ['pending', 'confirmed'] },
+        }).select('shortId date time partySize status').sort({ createdAt: -1 }).lean().catch(() => null);
+
+        if (activeBooking) {
+          const whenStr = activeBooking.date ? ` on *${activeBooking.date}${activeBooking.time ? ` at ${activeBooking.time}` : ''}*` : '';
+          const statusLine = activeBooking.status === 'confirmed'
+            ? `✅ Confirmed`
+            : `⏳ Awaiting confirmation`;
+          return {
+            type:    'buttons',
+            body:
+              `Hi there 😊\n\n` +
+              `You have a table booking${whenStr} for *${activeBooking.partySize || '?'} guests*.\n\n` +
+              `Status: ${statusLine}. If anything changes, just let us know!`,
+            buttons: [
+              { id: 'QUESTION', title: '❓ Ask a Question' },
+              { id: 'CANCEL_BOOKING', title: '❌ Cancel Booking' },
+            ],
+          };
+        }
+      } catch (_gateErr) {
+        // Non-fatal — greeting gate failure falls through to normal welcome
+        logger.debug('[Router] Greeting gate check failed (non-fatal)', { err: _gateErr.message });
       }
+      // ── No active order/booking — proceed to normal welcome ──────────────
+      // [FIX-GREET-1] Pull persistent customer context from UserProfile (customerMemory)
+      // rather than relying on session.data.lastItem which is cleared on every new flow.
+      // This gives new vs returning awareness, real last-order data, and order count —
+      // all of which survive session TTL expiry between visits.
+      const { getCustomerContext } = await import('../../core/memory/customerMemory.js');
+      const custCtx    = await getCustomerContext(session.customerPhone, session.tenantId).catch(() => ({
+        name: null, topItem: null, lastItem: null, orderCount: 0, isReturning: false,
+      }));
+
+      // [FIX-NAME-8] Expanded validation — matches webhookController and leadCaptureService.
+      // Min 3 chars per word, per-word vowel check, per-word repeated-char check,
+      // expanded NOISE set covering everything intentEngine's BAD_NAME_WORDS covers.
+      const _rawNameG = session?.customerName || custCtx.name || null;
+      const _isValidNameG = (n) => {
+        if (!n || n.length < 3 || n.length > 40) return false;
+        if (!/^[a-zA-Z\s]+$/.test(n)) return false;
+        if (!/[aeiou]/i.test(n)) return false;
+        const lower = n.toLowerCase();
+        const NOISE = new Set([
+          'hi','hey','hello','hiya','yo','ok','okay','sure','yes','no','nope',
+          'thanks','thank','fine','done','good','great','nice','ready','here',
+          'home','work','busy','free','waiting','coming','hungry','back','soon',
+          'now','out','away','test','hhhh','lol','haha','hihi','hehe',
+        ]);
+        if (NOISE.has(lower)) return false;
+        const words = lower.split(/\s+/);
+        return words.every(w => {
+          if (w.length < 3) return false;
+          if (!/[aeiou]/i.test(w)) return false;
+          if (NOISE.has(w)) return false;
+          const freq = {};
+          for (const c of w) freq[c] = (freq[c] || 0) + 1;
+          if (Object.values(freq).some(v => v / w.length > 0.5)) return false;
+          return true;
+        });
+      };
+      const existingName = _isValidNameG(_rawNameG) ? _rawNameG : null;
+      // Use real last order from DB, not stale session.data
+      const lastOrder    = custCtx.lastItem || null;
+      const isReturning  = custCtx.isReturning || custCtx.orderCount > 0;
+      const orderCount   = custCtx.orderCount || 0;
 
       const cfg = getModeConfig(business);
+      const customWelcome = business?.customMessages?.welcomeMessage;
 
       await updateSession(session.customerPhone, session.tenantId, {
-        currentFlow: null, step: null, data: {},
-        postFlowAck: null, menuViewed: false, upsellSent: false,
-        customerName: existingName,
+        currentFlow:  null, step: null, data: {},
+        postFlowAck:  null, menuViewed: false, upsellSent: false,
+        // [FIX-NAME-5] If the stored name failed validation, clear it from the
+        // session now so it never surfaces again. Valid name is preserved as-is.
+        customerName: existingName || null,
       });
 
-      // [FIX-BUG1] cfg.messages not cfg.labels — module configs use .messages
-      // Also honour customMessages.welcomeMessage when set by the operator
-      const customWelcome = business?.customMessages?.welcomeMessage;
-      const body = greetMsg
-        || customWelcome
-        || cfg.messages?.welcome
-        || '👋 Welcome! How can I help?';
+      let body = null;
+
+      // [FIX-GREET-2] Returning customer — personalised AI greeting using real history.
+      // Previously only fired when existingName was set; now fires for ANY returning
+      // customer even if they haven't shared their name, using order history as context.
+      // [GREET-COOLDOWN] Only call Groq for customers not seen in the last 4 hours.
+      // For recent returners a warm static message is faster and equally effective.
+      // This eliminates the majority of greeting API calls and avoids Groq latency
+      // on the most frequent customer action.
+      const hoursSinceLastOrder = custCtx.lastOrderAt
+        ? (Date.now() - new Date(custCtx.lastOrderAt)) / (1000 * 60 * 60)
+        : Infinity;
+
+      if (isReturning && hoursSinceLastOrder > 4) {
+        // Genuine returning customer (not seen in 4+ hours) — use Groq for personalised greeting
+        try {
+          const g = await generateGreeting({ business, customerName: existingName, lastOrder });
+          body = g;
+        } catch { /* non-fatal — fall through to static welcome */ }
+      } else if (isReturning && existingName) {
+        // Recent returner with known name — fast static greeting, skip API call entirely
+        body = `👋 Good to have you back, *${existingName}*! 😊`;
+      }
+
+      // [FIX-GREET-3] If AI greeting failed or customer is new, use a context-aware static.
+      // New customer gets a warm branded welcome; returning customer gets a loyalty nudge
+      // even if AI is unavailable.
+      if (!body) {
+        if (isReturning && existingName) {
+          const topItem = custCtx.topItem || lastOrder;
+          body = topItem
+            ? `👋 Welcome back, *${existingName}*! Great to see you again.
+
+Your favourite is *${topItem}* — want to order it again? 😊`
+            : `👋 Welcome back, *${existingName}*! Great to have you with us again. 🙏`;
+        } else if (isReturning) {
+          body = lastOrder
+            ? `👋 Welcome back! Last time you ordered *${lastOrder}* — shall we do that again? 😊`
+            : `👋 Welcome back! Great to have you with us again. 🙏`;
+        } else {
+          // First-time customer
+          body = customWelcome || cfg.messages?.welcome || '👋 Welcome! How can I help you today?';
+        }
+      }
+
+      // [FIX-GREET-4] VIP tag for high-frequency customers (5+ orders)
+      // Appended to any greeting so the customer feels genuinely recognised.
+      const vipThreshold = business?.settings?.vipThreshold || 5;
+      if (orderCount >= vipThreshold && !body.includes('VIP') && !body.includes('loyal')) {
+        body += `\n\n⭐ _You're one of our valued regulars — thank you for your continued support!_`;
+      }
 
       return { type: 'buttons', body, buttons: cfg.ui?.welcomeButtons || [] };
     }
@@ -113,7 +292,7 @@ export async function route({ action, intent, session, message, business, tenant
       // GREET (first message / fresh start) shows the full branded welcome.
       return {
         type:    'buttons',
-        body:    '👇 What would you like to do?',
+        body:    cfg.messages?.showMenuPrompt || '👇 What would you like to do?',
         buttons: cfg.ui?.welcomeButtons || [],
       };
     }
@@ -271,6 +450,92 @@ export async function route({ action, intent, session, message, business, tenant
         type:    'buttons',
         body:    '✅ Thank you! Is there anything else we can help with?',
         buttons: cfg.ui?.welcomeButtons || [{ id: 'SHOW_MENU', title: '🔄 Start Over' }],
+      };
+    }
+
+    case 'PAYMENT': {
+      // [FIX-RTR-PAY] PAYMENT intent (e.g. customer types "I paid", "payment sent",
+      // "I've made the transfer") with no active flow — they may have sent payment
+      // outside the normal flow, or the session expired after they paid.
+      // Check for an order awaiting proof first; if found, restore the PAYMENT_PROOF step.
+      // Otherwise show a gentle prompt to start a new order.
+      try {
+        const { default: _PayOrder } = await import('../../models/Order.js');
+        const pendingPay = await _PayOrder.findOne({
+          customerPhone: session.customerPhone,
+          tenantId:      session.tenantId,
+          paymentStatus: { $in: ['unpaid'] },
+          status:        { $nin: ['cancelled', 'completed'] },
+        }).select('_id item quantity totalPrice shortId').sort({ createdAt: -1 }).lean().catch(() => null);
+
+        if (pendingPay) {
+          // Restore the payment proof step so the customer can send their screenshot
+          const { updateSession: _us } = await import('../sessions/sessionService.js');
+          await _us(session.customerPhone, session.tenantId, {
+            currentFlow: 'ORDER', step: 'PAYMENT_PROOF',
+          });
+          const cfg = getModeConfig(business);
+          const currency = business?.payment?.currency || 'D';
+          return {
+            type:    'buttons',
+            body:
+              `📸 *Please send your payment screenshot*\n\n` +
+              `Order *#${pendingPay.shortId}* — *${pendingPay.item}* × ${pendingPay.quantity}\n` +
+              `💰 Amount: *${currency}${pendingPay.totalPrice || '—'}*\n\n` +
+              `Send a clear screenshot of your successful payment transfer here.`,
+            buttons: [
+              { id: 'SUPPORT', title: '❓ Need Help'    },
+              { id: 'CANCEL',  title: '❌ Cancel Order' },
+            ],
+          };
+        }
+      } catch { /* non-fatal — fall through to welcome */ }
+
+      // No pending payment found — show welcome menu
+      const cfgPay = getModeConfig(business);
+      return {
+        type:    'buttons',
+        body:    `😊 We couldn't find a pending order for your payment. Would you like to place a new order?`,
+        buttons: cfgPay.ui?.welcomeButtons || [{ id: 'ORDER', title: '🛒 Place an Order' }],
+      };
+    }
+
+    case 'ENQUIRY': {
+      // [FIX-ENQ-ROUTE] Generic ENQUIRY fallback for modes without a dedicated ENQUIRY flow
+      // registered in ACTION_REGISTRY (e.g. RESTAURANT, BAKERY, SALON, RETAIL, etc.).
+      // SERVICES and GENERAL have dedicated flows registered via moduleRegistry which are
+      // reached through ACTION_REGISTRY BEFORE this switch case runs — so this fallback
+      // only fires for modes that have no registered ENQUIRY handler.
+      //
+      // Previously this was handled by an inline handler in webhookController before
+      // route() was ever called, which blocked SERVICES/GENERAL from reaching their flows.
+      const enquiryHandler = ACTION_REGISTRY.get('ENQUIRY');
+      if (enquiryHandler) return enquiryHandler({ session, message, business, tenant, intent, isInteractive, suggestion });
+      // Generic fallback: set the ENQUIRY flow state and prompt
+      await updateSession(session.customerPhone, session.tenantId, {
+        currentFlow: 'ENQUIRY', step: 'AWAITING_QUESTION',
+      });
+      return {
+        type:    'buttons',
+        body:    '❓ What would you like to know? Type your question below.',
+        buttons: [{ id: 'SHOW_MENU', title: '🔄 Start Over' }],
+      };
+    }
+
+    case 'QUESTION': {
+      // [FIX-BTN-Q] Generic QUESTION fallback for modes without a dedicated QUESTION flow.
+      // SERVICES → handleServicesQuestion, GENERAL → handleGeneralQuestion are reached via
+      // ACTION_REGISTRY before this case runs. All other modes fall through here.
+      const questionHandler = ACTION_REGISTRY.get('QUESTION');
+      if (questionHandler) return questionHandler({ session, message, business, tenant, intent, isInteractive, suggestion });
+      // Generic fallback: same as ENQUIRY — start the generic question-capture flow
+      await updateSession(session.customerPhone, session.tenantId, {
+        currentFlow: 'ENQUIRY', step: 'AWAITING_QUESTION',
+      });
+      return {
+        type:    'buttons',
+        body:    '❓ What would you like to know? Type your question below.',
+        buttons: [{ id: 'SHOW_MENU', title: '🔄 Start Over' }],
       };
     }
   }

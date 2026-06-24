@@ -38,6 +38,9 @@ const sessionSchema = new mongoose.Schema({
       'CAKE_CUSTOMIZATION', // bakery module — handleCakeCustomization
       'SKINCARE_ADVICE',    // cosmetics module — handleSkincareAdvice
       'SPEC_REQUEST',       // electronics module — handleSpecRequest
+      'COMPARE',            // electronics module — handleCompare
+      'WARRANTY',           // electronics module — handleWarranty
+      'WALKIN',             // salon/barbershop module — handleWalkInFlow
       'PRODUCT_QUERY',      // retail module — handleProductQuery
       'QUOTE_FOLLOW',       // services module — handleQuoteFollowUp
       'ABOUT',              // general module — handleAbout (GENERAL mode only)

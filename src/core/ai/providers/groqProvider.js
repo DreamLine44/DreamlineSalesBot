@@ -4,7 +4,7 @@
  * Groq LLM provider — llama-3.1-8b-instant (free, fast, capable).
  * Used when GROQ_API_KEY is set.
  *
- * AI role in WhatSalesAgent2:
+ * AI role in WhatSalesAgent:
  *   ✅ Handle unclear/ambiguous messages
  *   ✅ Answer FAQ-style questions naturally
  *   ✅ Generate smart upsell suggestions
@@ -13,6 +13,20 @@
  *   ❌ Never controls flow state
  *   ❌ Never makes booking/order decisions
  *   ❌ Never replaces structured business logic
+ *
+ * [GROQ-OPT-1]  buildSystemPrompt: added business hours context so AI can correctly
+ *               answer "are you open on Sunday?" questions. Previously hours were
+ *               omitted and AI either made up answers or said it didn't know.
+ * [GROQ-OPT-2]  buildSystemPrompt: accepts optional orderContext param. When the
+ *               caller is inside the ORDER_CONFIRMED postFlowAck state, the AI now
+ *               knows the customer has an active confirmed order being prepared.
+ *               Without this, AI answers were context-free.
+ * [GROQ-OPT-3]  FAQ short-circuit: replaced String.includes() with whole-word regex.
+ *               "price" previously matched "surprised", "priceless", "apprise" etc.
+ *               causing FAQ responses to fire on unrelated messages.
+ * [GROQ-OPT-4]  generateGreeting: returns the greeting string directly (not an object
+ *               with .text). callers in moduleRouter already do `body = g` — kept
+ *               compatible. Added cooldown awareness — caller passes hoursSinceLastOrder.
  */
 
 import logger from '../../../config/logger.js';
@@ -33,7 +47,7 @@ function sanitise(str = '', maxLen = 600) {
 }
 
 // ── Build the system prompt ────────────────────────────────────────────────────
-function buildSystemPrompt({ business, intent, faqContext }) {
+function buildSystemPrompt({ business, intent, faqContext, orderContext }) {
   const mode    = (business?.businessMode || 'RETAIL').toUpperCase();
   const name    = sanitise(business?.name || 'our business');
   const desc    = sanitise(business?.description || '');
@@ -45,10 +59,28 @@ function buildSystemPrompt({ business, intent, faqContext }) {
     .map(i => `• ${i.name}${i.price ? ` — D${i.price}` : ''}${i.description ? ` (${sanitise(i.description, 80)})` : ''}`)
     .join('\n');
 
+  // [GROQ-OPT-1] Business hours in system prompt
+  const hoursLines = (() => {
+    const hours = business?.hours;
+    if (!hours?.enabled) return '';
+    const days = hours.days || {};
+    const lines = Object.entries(days)
+      .map(([day, cfg]) => cfg?.open ? `${day}: ${cfg.openTime}–${cfg.closeTime}` : `${day}: Closed`)
+      .join(', ');
+    return lines ? `\nBusiness hours: ${lines}` : '';
+  })();
+
+  // [GROQ-OPT-2] Active order context so AI doesn't answer in a vacuum
+  const orderLine = orderContext?.item
+    ? `\nACTIVE ORDER: Customer has a confirmed order for *${sanitise(orderContext.item, 60)}* (ref #${orderContext.shortId || '?'}) currently being prepared. Any answers about timing, status, or next steps should acknowledge this.`
+    : '';
+
   return [
     `You are a ${persona} for *${name}*.`,
     desc ? `About: ${desc}` : '',
     menuLines ? `\nOfferings:\n${menuLines}` : '',
+    hoursLines,
+    orderLine,
     faqContext || '',
     `\nCRITICAL RULES:`,
     `- Reply in 1-2 short sentences maximum. Never write essays.`,
@@ -75,6 +107,9 @@ function getPersona(mode) {
     COSMETICS:   'knowledgeable beauty advisor',
     ELECTRONICS: 'knowledgeable electronics expert',
     RETAIL:      'helpful retail assistant',
+    DELIVERY:    'efficient delivery coordinator',
+    SERVICES:    'professional service consultant',
+    GENERAL:     'helpful business assistant',
   };
   return map[mode] || 'helpful business assistant';
 }
@@ -121,24 +156,28 @@ async function callGroq(messages, retryCount = 0) {
 // ── Public API ─────────────────────────────────────────────────────────────────
 
 /**
- * getReply({ customerMessage, business, intent, history })
- * Returns { text, source: 'groq' }
+ * getReply({ customerMessage, business, intent, history, orderContext })
+ * Returns { text, source: 'groq'|'faq' }
  */
-export async function getReply({ customerMessage, business, intent = 'FALLBACK', history = [] }) {
-  // ── FAQ short-circuit (free, instant, correct) ─────────────────────────────
+export async function getReply({ customerMessage, business, intent = 'FALLBACK', history = [], orderContext = null }) {
+  // [GROQ-OPT-3] FAQ short-circuit — whole-word regex, not substring includes()
   const faqs = business?.faq || [];
   if (faqs.length && customerMessage) {
     const lower = customerMessage.toLowerCase();
     for (const faq of faqs) {
       const triggers = String(faq.trigger || '').split(',').map(t => t.trim().toLowerCase());
-      if (triggers.some(t => t && lower.includes(t))) {
-        return { text: faq.reply, source: 'faq' };
-      }
+      const matched = triggers.some(t => {
+        if (!t) return false;
+        // Whole-word match — prevents "price" matching "surprised" or "apprise"
+        const re = new RegExp(`\\b${t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i');
+        return re.test(lower);
+      });
+      if (matched) return { text: faq.reply, source: 'faq' };
     }
   }
 
   const faqContext = buildFaqContext(business);
-  const systemPrompt = buildSystemPrompt({ business, intent, faqContext });
+  const systemPrompt = buildSystemPrompt({ business, intent, faqContext, orderContext });
 
   const messages = [
     { role: 'system', content: systemPrompt },
@@ -150,6 +189,13 @@ export async function getReply({ customerMessage, business, intent = 'FALLBACK',
   return { text: text || null, source: 'groq' };
 }
 
+/**
+ * generateGreeting({ business, customerName, lastOrder })
+ *
+ * [GROQ-OPT-4] Returns greeting string directly (not wrapped in object).
+ * Caller in moduleRouter does: body = await generateGreeting(...)
+ * Static fallback is returned on error.
+ */
 export async function generateGreeting({ business, customerName, lastOrder }) {
   const name     = sanitise(business?.name || 'us');
   const custName = customerName ? `, ${customerName}` : '';

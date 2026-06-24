@@ -39,10 +39,8 @@ export const COSMETICS_CONFIG = {
   },
 };
 
-export async function handleCosmeticsOrder({ session, message, business, tenant, isInteractive }) {
-  const { handleOrderFlow } = await import('../../restaurant/flows/orderFlow.js');
-  return handleOrderFlow({ session, message, business, tenant, isInteractive });
-}
+// ── Dedicated cosmetics order flow ───────────────────────────────────────────
+export { handleCosmeticsOrderFlow as handleCosmeticsOrder } from './orderFlow.js';
 
 export async function handleCosmeticsBooking({ session, message, business, tenant, isInteractive }) {
   return handleBookingFlow({ session, message, business, tenant, isInteractive });
@@ -129,6 +127,17 @@ async function _buildSkincareAdvice(question, skinType, business, session) {
   const prompt = `${skinContext}The customer asks: "${question}"\n\nAs a beauty advisor, recommend 1-2 specific products (from our range if mentioned) and briefly explain why. Keep it friendly and under 3 sentences.`;
 
   const aiReply = await getAIReply({ customerMessage: prompt, business, session, intent: 'SKINCARE_ADVICE' });
+
+  // [FIX-COSM-CF] completeFlow was imported but never called — the SKINCARE_ADVICE
+  // flow stayed active in session after advice was delivered. On the customer's next
+  // tap ('💄 Shop Now', '❓ Another Question', '🔄 Start Over') the session still had
+  // currentFlow='SKINCARE_ADVICE', so advance() re-entered handleSkincareAdvice with
+  // the button ID as the "question", producing a nonsensical AI beauty-advice response
+  // instead of routing to ORDER/QUESTION/SHOW_MENU as intended. Calling completeFlow
+  // here clears currentFlow/step/data and sets postFlowAck='SKINCARE_ADVICE' so the
+  // customer's next message gets an appropriate warm reply.
+  await completeFlow(session, 'SKINCARE_ADVICE', business, null);
+
   return {
     type: 'buttons',
     body: aiReply || 'Great question! Let me suggest some products for you. 💄',

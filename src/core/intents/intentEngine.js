@@ -29,33 +29,95 @@ export const normalise = (text = '') =>
   text.toLowerCase().replace(/[^\w\s]/g, ' ').replace(/\s+/g, ' ').trim();
 
 // ── Name extraction ───────────────────────────────────────────────────────────
+// [FIX-NAME-6] Explicit-declaration-only approach.
+//
+// ROOT CAUSE of "You're welcome, Hi!" bug:
+//   "i am hi" matched the old pattern /(?:i am|i'm)\s+.../i → candidate "hi"
+//   "hi" was NOT in BAD_NAME_WORDS → stored as customerName in DB/session
+//   On next message the DISPLAY guard (NOISE set) filtered it out inconsistently.
+//
+// THE FIX — three changes:
+//   1. Remove "i am" and "i'm" entirely from NAME_PATTERNS.
+//      In English these express STATE ("i am here", "i am hungry", "i am hi"),
+//      NOT identity. They are not reliable name signals under any circumstances.
+//   2. Remove the implicit bare-capitalised-word pattern entirely.
+//      A bare "Hi", "Ok", "Sure" would match it and greetings are capitalised
+//      in WhatsApp. Far too many false positives.
+//   3. Only "my name is X", "call me X", "name's X" remain — these unambiguously
+//      express identity. Every extracted candidate still goes through per-word
+//      quality guards (min 3 chars, must have vowel, no repeated chars, not in
+//      the expanded blocklist).
+//
+// The bot now ONLY learns a customer's name when they explicitly say
+// "my name is Lamin" / "call me Fatou" / "name's Binta".
+// It never guesses from greetings, status messages, or short replies.
 const NAME_PATTERNS = [
-  /(?:my name is|i am|i'm|call me|name's)\s+([a-z][a-z\s]{1,30})/i,
-  // [FIX-NAME-2] Second pattern tightened: only matches a SINGLE capitalised word
-  // (e.g. "Fatima") or a two-word proper name where BOTH words start with a capital
-  // (e.g. "Fatima Jallow"). The old pattern matched any title-case phrase including
-  // "Hello There", "Start Over", "First Time", "New Here" — storing them as the
-  // customer's name permanently. The new pattern requires both words to be
-  // capitalised to avoid false positives on common sentence-start capitalisation.
-  /^([A-Z][a-z]{1,19}(?:\s+[A-Z][a-z]{1,19})?)$/,
+  /(?:my name is|call me|name[''']?s)\s+([a-zA-Z][a-zA-Z\s]{2,29})/i,
 ];
-// [FIX-NAME-2] Expanded blocklist covers the most common false-positive phrases
-// that pass the pattern check. This is a defence-in-depth layer; the tightened
-// pattern above is the primary guard.
-const BAD_NAME_WORDS = [
-  'want', 'like', 'need', 'have', 'know', 'going', 'looking', 'order', 'book',
-  'hello', 'there', 'start', 'over', 'first', 'time', 'help', 'menu', 'cancel',
-  'thanks', 'thank', 'done', 'okay', 'good', 'great', 'sure', 'yes', 'please',
-  'show', 'more', 'back', 'next', 'send', 'check', 'new', 'buy', 'get',
-];
+
+// Expanded blocklist — covers every word that "i am X" used to extract as a name.
+// Also covers bare-caps false positives and common WhatsApp filler.
+const BAD_NAME_WORDS = new Set([
+  // Greetings (were stored via "i am hi", bare-caps "Hi", etc.)
+  'hi','hey','hello','hiya','howdy','yo','sup','greetings','salaam','salam',
+  // State / status ("i am here", "i am ready", etc.)
+  'here','home','work','ready','waiting','coming','hungry','busy','free',
+  'available','late','early','soon','now','out','away','back','around',
+  'outside','inside','upstairs','downstairs','online','offline','present',
+  // Common acknowledgements and filler
+  'fine','done','okay','ok','sure','alright','well','good','great','nice',
+  'yes','no','yep','yah','nope','thanks','thank','please','sorry','noted',
+  'received','understood','cheers','cool','brilliant','wonderful','awesome',
+  // Commerce / order words
+  'want','like','need','have','know','going','looking','order','book',
+  'start','over','first','time','help','menu','cancel','show','more',
+  'next','send','check','new','buy','get','food','table','question',
+  'support','delivery','pickup','price','today','tomorrow','morning',
+  'evening','night','this','that','just','also','still','again',
+  'already','always','never','maybe','really','very','much','little','only',
+  // Keyboard noise
+  'hhhh','hihi','hehe','lol','haha','aaaa','oooo','test',
+]);
+
+// Repeated-character guard: rejects "Hhhh", "Aaaa", "Hiiii".
+// A real name must not have a single character dominating more than 50% of its letters.
+function hasRepeatedChars(word) {
+  const lower = word.toLowerCase();
+  const freq  = {};
+  for (const c of lower) freq[c] = (freq[c] || 0) + 1;
+  return Object.values(freq).some(n => n / lower.length > 0.5);
+}
+
+// Vowel guard: every word in a real name must contain at least one vowel.
+// Rejects keyboard spam like "Hdkl", "Zxcv", "Brtns".
+function hasVowel(word) {
+  return /[aeiou]/i.test(word);
+}
 
 export function extractCustomerName(raw = '') {
   for (const pattern of NAME_PATTERNS) {
     const m = raw.match(pattern);
     if (!m) continue;
     const candidate = m[1].trim();
-    if (BAD_NAME_WORDS.some(w => candidate.toLowerCase().includes(w))) continue;
-    if (candidate.length >= 2 && candidate.length <= 40) return candidate;
+
+    // Must be letters and spaces only — no digits, punctuation, or emoji
+    if (!/^[a-zA-Z\s]+$/.test(candidate)) continue;
+
+    // Whole-candidate blocklist check (case-insensitive)
+    if (BAD_NAME_WORDS.has(candidate.toLowerCase())) continue;
+
+    // Per-word quality guards — applied to BOTH tiers now
+    const words = candidate.split(/\s+/);
+    const allWordsValid = words.every(w =>
+      w.length >= 3 &&        // min 3 chars per word — blocks "hi", "ok", "yo"
+      hasVowel(w) &&          // must have a vowel — blocks "Hdkl", "Zxcv"
+      !hasRepeatedChars(w) && // no char dominance — blocks "Hhhh", "Aaaa"
+      !BAD_NAME_WORDS.has(w.toLowerCase()) // each individual word also checked
+    );
+    if (!allWordsValid) continue;
+
+    // Final length guard: 3–40 chars total
+    if (candidate.length >= 3 && candidate.length <= 40) return candidate;
   }
   return null;
 }
@@ -193,10 +255,14 @@ async function classifyWithAI({ message, business }) {
 }
 
 function getValidIntents(mode) {
-  const base = ['ORDER', 'BOOKING', 'QUESTION', 'SUPPORT', 'GREETING', 'PAYMENT', 'TRACK_ORDER', 'UNKNOWN'];
+  const base = ['ORDER', 'BOOKING', 'WALKIN', 'QUESTION', 'SUPPORT', 'GREETING', 'PAYMENT', 'TRACK_ORDER', 'UNKNOWN'];
   const extra = {
     RESTAURANT:  ['ADD_TO_CART', 'REMOVE_FROM_CART', 'CHECKOUT', 'RECOMMENDATION'],
     SALON:       ['AVAILABILITY_CHECK'],
+    // [FIX-BB-1] BARBERSHOP was absent from the extra intents map — the same
+    // AVAILABILITY_CHECK intent that salon uses (to ask if a barber is free) was
+    // completely unavailable to AI classification for barbershop tenants.
+    BARBERSHOP:  ['AVAILABILITY_CHECK'],
     BAKERY:      ['CAKE_CUSTOMIZATION', 'COLLECTION_SCHEDULE'],
     FASHION:     ['SIZE_GUIDE', 'PRODUCT_INQUIRY'],
     COSMETICS:   ['SKINCARE_ADVICE', 'RECOMMENDATION'],
@@ -209,11 +275,20 @@ function getValidIntents(mode) {
 function intentToAction(intent, business) {
   const mode = (business?.businessMode || 'RETAIL').toUpperCase();
   const map = {
+    ACKNOWLEDGEMENT:    'ACKNOWLEDGE',
     ORDER:              'START_ORDER',
     BOOKING:            'START_BOOKING',
     SALON_BOOKING:      'START_BOOKING',
     CAKE_CUSTOMIZATION: 'CAKE_CUSTOMIZATION', // [FIX] was 'START_BOOKING' — launches booking, not cake builder
-    QUESTION:           'ENQUIRY',
+    // [FIX-INTENT-Q] QUESTION intent must map to 'QUESTION' action, not 'ENQUIRY'.
+    // When a customer types "I have a question" or "opening hours", intent detection
+    // fires QUESTION → intentToAction → ENQUIRY → startFlow('ENQUIRY') which for
+    // SERVICES mode launches the quote-capture flow, and for GENERAL launches the
+    // structured enquiry form — NOT the AI question handler the customer wanted.
+    // Changing to 'QUESTION' ensures the typed path matches the button-tap path
+    // (BUTTON_ID_MAP 'QUESTION' → 'QUESTION') and reaches the mode-specific
+    // QUESTION flow handler via ACTION_REGISTRY in all modes.
+    QUESTION:           'QUESTION',
     SUPPORT:            'SUPPORT',
     GREETING:           'GREET',
     PAYMENT:            'PAYMENT',
@@ -228,7 +303,7 @@ function intentToAction(intent, business) {
     // That bypassed their dedicated flow handlers entirely — AI got the raw question
     // with zero product/skin context. Now they route to their registered actions.
     SPEC_REQUEST:       'SPEC_REQUEST',
-    WARRANTY_INFO:      'ENQUIRY',
+    WARRANTY_INFO:      'WARRANTY',
     AVAILABILITY_CHECK: 'ENQUIRY',
     SKINCARE_ADVICE:    'SKINCARE_ADVICE',
     SIZE_GUIDE:         'ENQUIRY',
@@ -237,6 +312,7 @@ function intentToAction(intent, business) {
     PRODUCT_INQUIRY:    'ENQUIRY',           // FASHION: question about a specific product
     COMPATIBILITY_CHECK:'ENQUIRY',           // ELECTRONICS: "does X work with Y"
     COLLECTION_SCHEDULE:'START_BOOKING',     // BAKERY: schedule a collection/pickup
+    WALKIN:             'WALKIN',            // SALON/BARBERSHOP: walk-in queue entry
   };
   return map[intent] || 'FALLBACK';
 }

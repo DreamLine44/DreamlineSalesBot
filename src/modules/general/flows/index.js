@@ -31,11 +31,14 @@ export const GENERAL_CONFIG = {
     BOOKING: ['SELECT_SERVICE', 'DATE', 'DATE_CONFIRM', 'TIME', 'TIME_CONFIRM', 'CONFIRM'],
   },
   ui: {
+    // [FIX-4BTN-GEN] Meta button cap is 3 — ABOUT (4th button) was silently dropped by
+    // the dispatcher's .slice(0,3). Customers reach About Us via text ("about you", "who are you")
+    // which is caught by intent detection, or via the ENQUIRY flow. The 3 most-used CTAs
+    // (QUESTION, ENQUIRY, BOOK) are retained.
     welcomeButtons: [
       { id: 'QUESTION',   title: '❓ Ask a Question'    },
       { id: 'ENQUIRY',    title: '📬 Send an Enquiry'   },
       { id: 'BOOK',       title: '📅 Book Appointment'  },
-      { id: 'ABOUT',      title: 'ℹ️ About Us'          },
     ],
     fallbackButtons: [
       { id: 'QUESTION', title: '❓ Ask'         },
@@ -91,7 +94,7 @@ export async function handleGeneralQuestion({ session, message, business, tenant
 // ── About Handler ─────────────────────────────────────────────────────────────
 
 export async function handleAbout({ session, message, business, tenant }) {
-  const name    = business?.businessName || 'us';
+  const name    = business?.name || business?.businessName || 'us';
   const desc    = business?.description  || null;
   const phone   = business?.adminPhone   || null;
   const address = business?.address      || null;

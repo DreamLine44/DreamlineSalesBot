@@ -9,10 +9,15 @@ import Order  from '../models/Order.js';
 import { recordOrderItem } from '../core/memory/customerMemory.js';
 import logger from '../config/logger.js';
 
-export async function saveOrder({ item, quantity, totalPrice, addOns, customerPhone, tenantId, businessId, status }) {
+// [FIX-SAVE-1] Added `notes` and `customerName` to destructure — previously both were
+// silently dropped because they weren't listed, even though notes IS in the Order schema
+// and all module callers pass it. customerName is also now in the Order schema.
+export async function saveOrder({ item, quantity, totalPrice, addOns, notes, customerName, customerPhone, tenantId, businessId, status }) {
   const order = await Order.create({
     item, quantity, totalPrice,
-    addOns:        addOns || [],
+    addOns:        addOns        || [],
+    notes:         notes         || null,
+    customerName:  customerName  || null,
     customerPhone, tenantId, businessId,
     status:        status || 'pending',
     paymentStatus: 'unpaid',

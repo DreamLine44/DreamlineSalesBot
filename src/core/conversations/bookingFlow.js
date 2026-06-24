@@ -674,22 +674,20 @@ export async function handleBookingFlow({ session, message, business, tenant, is
       if (_lcRb) return _lcRb;
 
       const confirmBody =
-        `✅ *Booking confirmed!*\n\n` +
-        (service ? `🗓 *${service}*\n` : '') +
-        `📅 *${date}*\n⏰ *${time}*\n` +
-        (partySize ? `👥 *${partySize} guest${partySize > 1 ? 's' : ''}*\n` : '') +
-        `\nWe look forward to seeing you! 😊`;
+        `📅 *Booking Request Received!*\n\n` +
+        (service ? `💇  Service: *${service}*\n` : '') +
+        (date    ? `📅  Date: *${date}*\n`        : '') +
+        (time    ? `⏰  Time: *${time}*\n`        : '') +
+        (partySize ? `👥  Party size: *${partySize} guest${partySize > 1 ? 's' : ''}*\n` : '') +
+        `\nWe're reviewing your booking and will confirm shortly 🙏\n\n` +
+        `If anything changes, just message us here.`;
 
-      // [FIX-BOOK-MODE] Use the mode's welcomeButtons instead of hardcoded ORDER/BOOK buttons.
-      // SALON and BARBERSHOP have no ORDER flow — showing "🛒 Place New Order" would launch
-      // an order flow with no menu, confusing the customer. getModeConfig returns each mode's
-      // own welcome buttons so the post-booking screen always matches what the mode supports.
-      const { getModeConfig: _getBookingModeCfg } = await import('../../config/modes.js');
-      const _bookingModeCfg = _getBookingModeCfg(business);
+      // [SPEC-6C] No welcome/sales buttons on booking receipt — customer is waiting
+      // for admin confirmation. Just a cancel escape.
       return {
         type:    'buttons',
         body:    confirmBody,
-        buttons: (_bookingModeCfg.ui?.welcomeButtons || [{ id: 'SHOW_MENU', title: '🔄 Start Over' }]).slice(0, 3),
+        buttons: [{ id: 'CANCEL_BOOKING', title: '❌ Cancel Booking' }],
       };
     }
 

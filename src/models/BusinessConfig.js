@@ -65,6 +65,7 @@ const businessConfigSchema = new mongoose.Schema({
 
   name:        { type: String, default: 'Our Business', trim: true, maxlength: 100 },
   description: { type: String, default: '', trim: true, maxlength: 500 },
+  address:     { type: String, default: null, trim: true, maxlength: 300 },  // [FIX-ADDR] Used by moduleRouter ABOUT and general/flows handleAbout — was absent from schema; Mongoose strict mode silently dropped every write.
 
   phoneNumberId: {
     // NOT required at model level: onboarding step 2 (POST /register/business) runs
@@ -162,6 +163,21 @@ const businessConfigSchema = new mongoose.Schema({
   menuItems: [menuItemSchema],
   services:  [serviceSchema],
 
+  // ── Staff (salon / barbershop) ────────────────────────────────────────────
+  // Used by salon/flows/index.js _getStaff() for stylist selection.
+  // Each entry is either a plain string (stylist name) or an object with
+  // at least a `name` field. When absent the stylist-selection step is skipped.
+  // Previously absent from schema — Mongoose strict mode silently dropped every
+  // write, so any staff list saved via dashboard or seed never persisted.
+  staff: {
+    type: [{
+      name:        { type: String, required: true, trim: true, maxlength: 60 },
+      displayName: { type: String, default: null, trim: true, maxlength: 60 },
+      available:   { type: Boolean, default: true },
+    }],
+    default: [],
+  },
+
   nlp: {
     synonyms: { type: Map, of: [String], default: {} },
     keywords: {
@@ -224,6 +240,8 @@ const businessConfigSchema = new mongoose.Schema({
     sessionTimeout:        { type: Number,  default: 30, min: 1 },
     allowAfterHoursOrders: { type: Boolean, default: true },
     maxOrderQuantity:      { type: Number,  default: 20, min: 1, max: 500 },
+    estimatedDeliveryMinutes: { type: Number,  default: null, min: 1, max: 1440 }, // null = no fixed ETA shown
+    vipThreshold:          { type: Number,  default: 5,  min: 1, max: 1000 },  // orders needed for VIP status
     closedMessage: {
       type: String,
       default: "We're currently closed. Please contact us during business hours.",

@@ -270,6 +270,12 @@ export async function handleOrderFlow({ session, message, business, tenant, isIn
           quantity:      data.quantity,
           totalPrice:    data.totalPrice,
           addOns:        data.addOns,
+          // [FIX-SAVE-2] customerName was not passed — silently dropped by Mongoose
+          // strict mode because it was present in the schema (added in FIX-SAVE-1)
+          // but missing from every saveOrder() call in this module. The Order document
+          // was saved with customerName=null even when the customer had introduced
+          // themselves, making the dashboard order list show no customer names.
+          customerName:  session.customerName || null,
           customerPhone: session.customerPhone,
           tenantId:      session.tenantId,
           businessId:    business._id,
@@ -456,4 +462,45 @@ async function _selectItem(item, session, business, data) {
   }
 
   return quantityPrompt;
+}
+
+// ── Restaurant Question Handler ───────────────────────────────────────────────
+/**
+ * handleRestaurantQuestion
+ * Handles the QUESTION button and keyword-triggered FAQ intent for restaurant mode.
+ * Uses AI to answer menu, hours, allergen, or general queries.
+ */
+export async function handleRestaurantQuestion({ session, message, business, tenant }) {
+  const raw = String(message || '').trim();
+
+  if (!raw || raw.length < 2) {
+    return {
+      type: 'buttons',
+      body: '❓ What would you like to know? Ask about our menu, hours, allergens, or anything else!',
+      buttons: [
+        { id: 'ORDER',     title: '🍔 Order Food'  },
+        { id: 'SHOW_MENU', title: '📋 View Menu'   },
+      ],
+    };
+  }
+
+  const aiReply = await getAIReply({
+    customerMessage: raw,
+    business,
+    session,
+    intent: 'FAQ',
+  });
+
+  const _lcRrq = await completeFlow(session, 'QUESTION', business, tenant);
+  if (_lcRrq) return _lcRrq;
+
+  return {
+    type: 'buttons',
+    body: aiReply || "Great question! Please contact us directly and we'll be happy to help.",
+    buttons: [
+      { id: 'ORDER',    title: '🍔 Order Food'   },
+      { id: 'BOOK',     title: '📅 Book a Table' },
+      { id: 'QUESTION', title: '❓ Ask Another'  },
+    ],
+  };
 }

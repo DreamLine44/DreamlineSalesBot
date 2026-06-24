@@ -12,7 +12,12 @@ export const BUTTON_ID_MAP = {
   // Primary actions
   'ORDER':              'START_ORDER',
   'BOOK':               'START_BOOKING',
-  'QUESTION':           'ENQUIRY',
+  // [FIX-BTN-Q] QUESTION must map to 'QUESTION' not 'ENQUIRY'. Previously this
+  // caused the QUESTION button tap to become action='ENQUIRY' which was intercepted
+  // by the webhookController inline handler before route() was ever called —
+  // SERVICES and GENERAL mode's dedicated QUESTION flows (registered via ACTION_REGISTRY)
+  // were therefore unreachable from any top-level QUESTION button tap.
+  'QUESTION':           'QUESTION',
   'SUPPORT':            'SUPPORT',
   'SHOW_MENU':          'SHOW_MENU',
   'VIEW_MENU':          'SHOW_MENU',
@@ -20,6 +25,10 @@ export const BUTTON_ID_MAP = {
   // Flow control
   'CONFIRM':            'CONFIRM',
   'CANCEL':             'CANCEL',
+  // [FIX-1] CANCEL_ORDER was missing from this map. Without it, detectIntent() received
+  // an unmapped interactive ID at step 1 and returned CONTINUE_FLOW — routing to the
+  // welcome menu instead of the cancel handler. Same target as CANCEL_BOOKING.
+  'CANCEL_ORDER':       'CANCEL',
   'CANCEL_BOOKING':     'CANCEL',
   'DATE_BACK':          'DATE_BACK',
   'TIME_BACK':          'TIME_BACK',
@@ -45,6 +54,29 @@ export const BUTTON_ID_MAP = {
   'QUOTE_FOLLOW':       'QUOTE_FOLLOW',
   'NEW_ORDER':          'START_ORDER',
 
+  // Enquiry (Send an Enquiry button on GENERAL/SERVICES welcome screens)
+  // [FIX-BTN-E] 'ENQUIRY' was missing — without it, detectIntent() returned CONTINUE_FLOW
+  // for any tap on "📬 Send an Enquiry" / "📋 Get a Quote" buttons, routing the customer
+  // to the welcome menu instead of the enquiry/quote flow. Now maps to 'ENQUIRY' so
+  // moduleRouter's ENQUIRY case (which delegates to ACTION_REGISTRY → handleEnquiryFlow
+  // for SERVICES/GENERAL modes) is reached correctly.
+  'ENQUIRY':            'ENQUIRY',
+
+  // Electronics top-level action buttons (on welcome / product-list screens, no active flow)
+  // [FIX-BTN-ELEC] COMPARE/SPEC_REQUEST/WARRANTY appeared in BUTTON_ID_MAP but were
+  // missing — tapping them outside an active flow returned CONTINUE_FLOW and showed the
+  // welcome menu instead of starting the requested flow.
+  // • COMPARE: "⚖️ Compare Products" on the ELECTRONICS welcome screen.
+  // • SPEC_REQUEST: "❓ Ask a Question" in post-list / fallback contexts (no active flow).
+  // • WARRANTY: "🛡 Warranty" in post-order / fallback contexts (no active flow).
+  'COMPARE':            'COMPARE',
+  'SPEC_REQUEST':       'SPEC_REQUEST',
+  'WARRANTY':           'WARRANTY',
+
+  // Salon/Barbershop walk-in queue
+  'WALKIN':             'WALKIN',
+  'JOIN_QUEUE':         'WALKIN',
+
   // Payment
   'PAYMENT':            'PAYMENT',
   'DONE':               'DONE',
@@ -55,13 +87,21 @@ export const BUTTON_ID_MAP = {
 
   // Rejection handling
   'REJECTION_RESEND':   'REJECTION_RESEND',
-  'REJECTION_SUPPORT':  'REJECTION_SUPPORT',
+  // [FIX-BTN-RS] REJECTION_SUPPORT was mapping to 'REJECTION_SUPPORT' which has no
+  // handler in moduleRouter — it fell through to the unknown-action fallback showing
+  // a generic error menu. This button is shown on the payment rejection card and
+  // should escalate to the human support flow, same as tapping the SUPPORT button.
+  'REJECTION_SUPPORT':  'SUPPORT',
   'REJECTION_CANCEL':   'REJECTION_CANCEL',
 
-  // Numeric shortcuts (welcome menu)
+  // Numeric shortcuts (welcome menu quick-tap)
+  // Position 1 = Order/primary CTA, 2 = Book/secondary CTA, 3 = Question/tertiary CTA
+  // [FIX-NUM-3] '3' was mapped to 'ENQUIRY' — but BUTTON_ID_MAP['QUESTION'] has been
+  // fixed to map to 'QUESTION', and the 3rd button on most welcome menus (RESTAURANT,
+  // RETAIL, SERVICES) is QUESTION. Changed to 'QUESTION' for consistency.
   '1':                  'START_ORDER',
   '2':                  'START_BOOKING',
-  '3':                  'ENQUIRY',
+  '3':                  'QUESTION',
   '0':                  'SHOW_MENU',
 
   // Quantity quick-pick buttons — [UX-1] route as CONTINUE_FLOW so active order
@@ -105,13 +145,35 @@ export const EMOJI_MAP = {
   '🛍️': 'ORDER', '🧁': 'ORDER', '💄': 'ORDER', '📱': 'ORDER',
   '📅': 'BOOKING', '📆': 'BOOKING', '🗓': 'BOOKING', '💇': 'BOOKING',
   '❓': 'QUESTION', '🤔': 'QUESTION', '💬': 'QUESTION',
+  '🚶': 'WALKIN', '🚶‍♂️': 'WALKIN', '💈': 'START_BOOKING',
   '💳': 'PAYMENT', '💰': 'PAYMENT',
   '🏠': 'SHOW_MENU', '🔄': 'SHOW_MENU',
+  // [FIX-ACK-EMOJI] Acknowledgement emoji — normalise() strips these to '' so
+  // they never reach the keyword matcher. Mapping them here in EMOJI_MAP
+  // (step 2, before normalise runs) ensures 👍/🙏/😊/❤️ route to ACKNOWLEDGE
+  // rather than falling through to AI classify or FALLBACK.
+  '👍': 'ACKNOWLEDGEMENT', '🙏': 'ACKNOWLEDGEMENT', '😊': 'ACKNOWLEDGEMENT',
+  '❤️': 'ACKNOWLEDGEMENT', '🥰': 'ACKNOWLEDGEMENT', '😍': 'ACKNOWLEDGEMENT',
 };
 
 // ── Keyword → Intent map ──────────────────────────────────────────────────────
 // All values are normalised lowercase. Order within each array doesn't matter.
 export const INTENT_PATTERNS = {
+
+  // ── [SPEC-PART7] ACKNOWLEDGEMENT classifier ──────────────────────────────
+  // These words/phrases must NEVER trigger a greeting, menu reset, or FALLBACK.
+  // They are reactions / filler sent mid-conversation (especially while an order
+  // is being prepared). The intentEngine maps this to action 'ACKNOWLEDGE' which
+  // moduleRouter handles with a context-aware micro-reply, not a welcome screen.
+  ACKNOWLEDGEMENT: [
+    'ok', 'okay', 'k', 'kk', 'alright', 'aight', 'sure',
+    'got it', 'noted', 'understood', 'received',
+    'cool', 'nice', 'great', 'perfect', 'awesome', 'brilliant', 'wonderful', 'lovely',
+    'fine', 'good', 'sounds good',
+    'ahhh', 'ahh', 'ah', 'ohh', 'oh', 'hmm', 'hmmm', 'wow', 'phew', 'yay',
+    'np', 'no problem',
+    '👍', '🙏', '😊', '❤️',
+  ],
 
   GREETING: [
     'hi', 'hello', 'hey', 'good morning', 'good afternoon', 'good evening',
@@ -171,8 +233,14 @@ export const INTENT_PATTERNS = {
     'send payment', 'transfer', 'checkout', 'how do i pay',
   ],
 
-  SUPPORT: [
-    'help', 'support', 'problem', 'issue', 'complaint', 'wrong order',
+  WALKIN: [
+    'walk in', 'walk-in', 'walkin', 'walk in now', 'i want to walk in',
+    'join queue', 'join the queue', 'add me to queue', 'queue',
+    "i'm here", 'i am here', 'coming in now', 'be there now',
+    'walk in today', 'no appointment', 'without appointment',
+  ],
+
+  SUPPORT: [ 'issue', 'complaint', 'wrong order',
     'speak to human', 'speak to agent', 'speak to someone', 'real person',
     'live agent', 'manager', 'customer service', 'not happy', 'unhappy',
     'refund', 'cancel order', 'i have a problem', 'i have an issue',

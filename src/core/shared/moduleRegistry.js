@@ -20,8 +20,9 @@ export async function registerAllModules() {
   registerGenericFlow('BOOKING', handleBookingFlow);
 
   // ── Restaurant ─────────────────────────────────────────────────────────────
-  const { handleOrderFlow }        = await import('../../modules/restaurant/flows/orderFlow.js');
-  registerFlow('RESTAURANT', 'ORDER', handleOrderFlow);
+  const { handleOrderFlow, handleRestaurantQuestion } = await import('../../modules/restaurant/flows/orderFlow.js');
+  registerFlow('RESTAURANT', 'ORDER',     handleOrderFlow);
+  registerFlow('RESTAURANT', 'QUESTION',  handleRestaurantQuestion);
   registerGenericFlow('ORDER', handleOrderFlow);
 
   // ── Retail (dedicated) ─────────────────────────────────────────────────────
@@ -39,10 +40,29 @@ export async function registerAllModules() {
   registerFlow('BAKERY', 'BOOKING',             handleBakeryBooking);
   registerFlow('BAKERY', 'CAKE_CUSTOMIZATION',  handleCakeCustomization);
 
-  // ── Salon / Barbershop ─────────────────────────────────────────────────────
-  const { handleSalonBooking } = await import('../../modules/salon/flows/index.js');
+  // ── Salon / Barbershop (dedicated flows — not generic wrappers) ───────────
+  const {
+    handleSalonBooking,
+    handleSalonWalkIn,
+    handleSalonProductOrder,
+    handleSalonQuestion,
+  } = await import('../../modules/salon/flows/index.js');
+
+  // Appointment booking (with stylist selection pre-step)
   registerFlow('SALON',      'BOOKING', handleSalonBooking);
   registerFlow('BARBERSHOP', 'BOOKING', handleSalonBooking);
+
+  // Walk-in queue (salon/barbershop only — no date/time needed)
+  registerFlow('SALON',      'WALKIN', handleSalonWalkIn);
+  registerFlow('BARBERSHOP', 'WALKIN', handleSalonWalkIn);
+
+  // Retail product sales
+  registerFlow('SALON',      'ORDER', handleSalonProductOrder);
+  registerFlow('BARBERSHOP', 'ORDER', handleSalonProductOrder);
+
+  // AI question handler (aftercare, pricing, product advice)
+  registerFlow('SALON',      'QUESTION', handleSalonQuestion);
+  registerFlow('BARBERSHOP', 'QUESTION', handleSalonQuestion);
 
   // ── Fashion ────────────────────────────────────────────────────────────────
   const { handleFashionOrder } = await import('../../modules/fashion/flows/index.js');
@@ -55,9 +75,22 @@ export async function registerAllModules() {
   registerFlow('COSMETICS', 'SKINCARE_ADVICE', handleSkincareAdvice);
 
   // ── Electronics ────────────────────────────────────────────────────────────
-  const { handleElectronicsOrder, handleSpecRequest } = await import('../../modules/electronics/flows/index.js');
+  const {
+    handleElectronicsOrder,
+    handleSpecRequest,
+    handleCompare,
+    handleWarranty,
+  } = await import('../../modules/electronics/flows/index.js');
+
   registerFlow('ELECTRONICS', 'ORDER',        handleElectronicsOrder);
   registerFlow('ELECTRONICS', 'SPEC_REQUEST', handleSpecRequest);
+  registerFlow('ELECTRONICS', 'COMPARE',      handleCompare);
+  registerFlow('ELECTRONICS', 'WARRANTY',     handleWarranty);
+  // [FIX-3] QUESTION taps in ELECTRONICS mode must reach handleSpecRequest.
+  // Without this, the generic QUESTION action handler calls startFlow('QUESTION'),
+  // finds no ELECTRONICS:QUESTION registration, and returns an error UI.
+  // Electronics customers asking "❓ Ask a Question" should land in tech Q&A.
+  registerFlow('ELECTRONICS', 'QUESTION',     handleSpecRequest);
 
   // ── Services (dedicated) ───────────────────────────────────────────────────
   const { handleEnquiryFlow, handleServicesBooking, handleQuoteFollowUp, handleServicesQuestion } = await import('../../modules/services/flows/index.js');
@@ -84,6 +117,12 @@ export async function registerAllModules() {
     return startFlow({ flowName: 'BOOKING', session, business, tenant });
   });
 
+  // WALKIN action — salon/barbershop walk-in queue (no date/time needed)
+  registerAction('WALKIN', async ({ session, message, business, tenant }) => {
+    const { startFlow } = await import('../conversations/flowEngine.js');
+    return startFlow({ flowName: 'WALKIN', session, business, tenant });
+  });
+
   registerAction('CAKE_CUSTOMIZATION', async ({ session, message, business, tenant }) => {
     const { startFlow } = await import('../conversations/flowEngine.js');
     return startFlow({ flowName: 'CAKE_CUSTOMIZATION', session, business, tenant });
@@ -102,21 +141,60 @@ export async function registerAllModules() {
     return startFlow({ flowName: 'SPEC_REQUEST', session, business, tenant });
   });
 
+  // COMPARE — side-by-side product comparison (Electronics only).
+  // Button id: 'COMPARE' on welcome screen and fallback buttons.
+  registerAction('COMPARE', async ({ session, message, business, tenant }) => {
+    const { startFlow } = await import('../conversations/flowEngine.js');
+    return startFlow({ flowName: 'COMPARE', session, business, tenant });
+  });
+
+  // WARRANTY — warranty + after-sales enquiry (Electronics only).
+  // Can be triggered by typing "warranty", "repair", "return" etc., or future button.
+  registerAction('WARRANTY', async ({ session, message, business, tenant }) => {
+    const { startFlow } = await import('../conversations/flowEngine.js');
+    return startFlow({ flowName: 'WARRANTY', session, business, tenant });
+  });
+
   registerAction('ENQUIRY', async ({ session, message, business, tenant }) => {
     const { startFlow } = await import('../conversations/flowEngine.js');
     return startFlow({ flowName: 'ENQUIRY', session, business, tenant });
   });
 
   // [FIX-3] QUESTION action — routes the QUESTION button tap to the mode-specific
-  // QUESTION flow (SERVICES: handleServicesQuestion, GENERAL: handleGeneralQuestion).
+  // QUESTION flow (SERVICES: handleServicesQuestion, GENERAL: handleGeneralQuestion,
+  // RESTAURANT: handleRestaurantQuestion, SALON/BARBERSHOP: handleSalonQuestion,
+  // ELECTRONICS: handleSpecRequest).
   // Previously QUESTION intent mapped to ENQUIRY action which was intercepted by the
   // webhookController inline shortcut, bypassing ACTION_REGISTRY entirely. QUESTION
   // is now in FLOW_PASSTHROUGH_IDS so it reaches route() → ACTION_REGISTRY → here.
-  // For modes without a QUESTION flow registered, startFlow falls back gracefully
-  // (flowEngine logs a warning and returns a "not available" prompt with menu buttons).
+  // [FIX-QUESTION-FALLBACK] For modes without a dedicated QUESTION flow registered
+  // (BAKERY, COSMETICS, RETAIL, DELIVERY, FASHION), startFlow('QUESTION') previously
+  // returned "⚠️ This option is not available right now." — a broken UX for any
+  // customer tapping "❓ Ask a Question" in those modes. The fix: check whether a
+  // mode-specific QUESTION flow exists FIRST; if not, fall back to the generic ENQUIRY
+  // flow (sets currentFlow=ENQUIRY / step=AWAITING_QUESTION → AI answers the question).
   registerAction('QUESTION', async ({ session, message, business, tenant }) => {
-    const { startFlow } = await import('../conversations/flowEngine.js');
-    return startFlow({ flowName: 'QUESTION', session, business, tenant });
+    const { startFlow }  = await import('../conversations/flowEngine.js');
+    const { updateSession } = await import('../sessions/sessionService.js');
+    const { getModeConfig } = await import('../../config/modes.js');
+    const mode = (business?.businessMode || 'RETAIL').toUpperCase();
+    // Modes with dedicated QUESTION flows registered in this registry
+    const QUESTION_FLOW_MODES = new Set([
+      'RESTAURANT', 'SALON', 'BARBERSHOP', 'ELECTRONICS', 'SERVICES', 'GENERAL',
+    ]);
+    if (QUESTION_FLOW_MODES.has(mode)) {
+      return startFlow({ flowName: 'QUESTION', session, business, tenant });
+    }
+    // No mode-specific QUESTION flow — use the generic AI question handler
+    await updateSession(session.customerPhone, session.tenantId, {
+      currentFlow: 'ENQUIRY', step: 'AWAITING_QUESTION',
+    });
+    const cfg = getModeConfig(business);
+    return {
+      type:    'buttons',
+      body:    '❓ What would you like to know? Type your question below.',
+      buttons: [{ id: 'SHOW_MENU', title: '🔄 Start Over' }],
+    };
   });
 
   registerAction('QUOTE_FOLLOW', async ({ session, message, business, tenant }) => {
