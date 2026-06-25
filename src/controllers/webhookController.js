@@ -995,17 +995,44 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
     if (pendingOrder) {
       // ── Cancel escape ────────────────────────────────────────────────────
       if (isEscPOL) {
-        await Order.findOneAndUpdate(
-          { _id: pendingOrder._id },
-          { $set: { status: 'cancelled', paymentStatus: 'cancelled' } }
-        ).catch(() => {});
-        await updateSession(from, tenantId, { currentFlow: null, step: null, data: {} });
-        const cfgPOL = getModeConfig(business);
-        await dispatchMessage(from, {
-          type:    'buttons',
-          body:    `❌ Your order *#${pendingOrder.shortId}* has been cancelled.\n\nWhat would you like to do next?`,
-          buttons: cfgPOL.ui?.welcomeButtons || [{ id: 'ORDER', title: '🛒 Place New Order' }],
-        }, tenantDoc);
+        // [FIX-POL-CANCEL-ALL] When the escape action is CANCEL_ALL (or a natural-language
+        // "cancel all" phrase), cancel ALL pending/confirmed orders — not just the one pendingOrder
+        // that triggered the lock. Previously findOneAndUpdate only touched the single order
+        // that matched the lock query, leaving any other active orders alive and the customer
+        // confused about why they still couldn't start a new flow.
+        // For single-order CANCEL/CANCEL_ORDER escapes, only cancel the one pendingOrder.
+        const isCancelAll = upperPOL === 'CANCEL_ALL' || _polCancelAllRe.test(messageText.trim());
+        if (isCancelAll) {
+          const cancelAllResult = await Order.updateMany(
+            {
+              customerPhone: from,
+              tenantId,
+              paymentStatus: { $in: ['proof_received', 'unpaid', 'self_confirmed'] },
+              status:        { $nin: ['cancelled', 'confirmed', 'completed'] },
+            },
+            { $set: { status: 'cancelled', paymentStatus: 'cancelled' } }
+          ).catch(() => ({ modifiedCount: 0 }));
+          await updateSession(from, tenantId, { currentFlow: null, step: null, data: {} });
+          const cfgPOL = getModeConfig(business);
+          const cancelCount = cancelAllResult?.modifiedCount || 1;
+          await dispatchMessage(from, {
+            type:    'buttons',
+            body:    `❌ Done — *${cancelCount} order${cancelCount !== 1 ? 's' : ''}* ${cancelCount !== 1 ? 'have' : 'has'} been cancelled.\n\nWhat would you like to do next?`,
+            buttons: cfgPOL.ui?.welcomeButtons || [{ id: 'ORDER', title: '🛒 Place New Order' }],
+          }, tenantDoc);
+        } else {
+          await Order.findOneAndUpdate(
+            { _id: pendingOrder._id },
+            { $set: { status: 'cancelled', paymentStatus: 'cancelled' } }
+          ).catch(() => {});
+          await updateSession(from, tenantId, { currentFlow: null, step: null, data: {} });
+          const cfgPOL = getModeConfig(business);
+          await dispatchMessage(from, {
+            type:    'buttons',
+            body:    `❌ Your order *#${pendingOrder.shortId}* has been cancelled.\n\nWhat would you like to do next?`,
+            buttons: cfgPOL.ui?.welcomeButtons || [{ id: 'ORDER', title: '🛒 Place New Order' }],
+          }, tenantDoc);
+        }
         return;
       }
 
@@ -1317,9 +1344,12 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
   if (isInteractive && messageText && /^COLLECTED_[A-Z0-9]+$/i.test(messageText.trim().toUpperCase())) {
     const shortIdCollect = messageText.trim().toUpperCase().replace('COLLECTED_', '');
     if (shortIdCollect) {
-      // [FIX-IMPORT-2] Order now a top-level import — removed redundant dynamic import
+      // [FIX-COLLECT-STATUS] Include 'preparing' in the status filter so orders that were
+      // never explicitly MARK READY'd (admin skipped the step) can still be marked completed
+      // when the customer taps Collected. Without 'preparing', a customer who collects before
+      // the admin fires MARK READY gets a silent no-op — the order stays in 'preparing' forever.
       await Order.findOneAndUpdate(
-        { shortId: shortIdCollect, tenantId, status: { $in: ['ready', 'confirmed'] } },
+        { shortId: shortIdCollect, tenantId, status: { $in: ['ready', 'confirmed', 'preparing'] } },
         { $set: { status: 'completed', completedAt: new Date() } }
       ).catch(() => {});
     }
@@ -1353,10 +1383,13 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
 
       if (recentOrder) {
         const statusMap = {
-          pending:   '⏳ Waiting for our team to confirm',
-          confirmed: '🍳 Being prepared',
-          ready:     '✅ Ready for collection!',
-          completed: '✅ Completed — thank you!',
+          pending:          '⏳ Waiting for our team to confirm',
+          confirmed:        '🍳 Being prepared',
+          preparing:        '🍳 Being prepared',
+          ready:            '✅ Ready for collection!',
+          out_for_delivery: '🚗 Out for delivery',
+          delivered:        '✅ Delivered!',
+          completed:        '✅ Completed — thank you!',
         };
         const payMap = {
           unpaid:         '💳 Awaiting payment',

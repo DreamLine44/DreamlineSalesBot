@@ -509,6 +509,7 @@ function _buildCategoryUI(categories, business) {
   return {
     type: 'list',
     body: `🛍 *${business?.name || 'Our Store'}*\n\nWhat are you shopping for today?`,
+    button: 'Browse Categories',
     sections: [{
       title: 'Categories',
       rows: categories.map(c => ({

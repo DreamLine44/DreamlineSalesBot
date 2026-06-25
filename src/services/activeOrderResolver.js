@@ -319,7 +319,7 @@ function _multipleOrders(orders, business) {
     uiResponse: {
       type: 'list',
       body: `📦 You have *${orders.length} active orders*.${overflowNote}\n\nWhich one would you like to check?`,
-      buttonText: 'View My Orders',
+      button: 'View My Orders',
       sections: [
         {
           title: 'Active Orders',

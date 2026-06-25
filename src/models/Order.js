@@ -174,6 +174,15 @@ const orderSchema = new mongoose.Schema({
   completedAt:    { type: Date, default: null }, // set by COLLECTED_* handler / admin
   deliveredAt:    { type: Date, default: null }, // set when out_for_delivery → delivered
 
+  // [FIX-CANCEL-FIELDS] cancelledAt/cancelledBy — written by moduleRouter CANCEL_ALL
+  // and CANCEL_BOOKING when the customer or admin cancels an order. Previously absent
+  // from schema so Mongoose strict mode silently dropped every $set write, leaving
+  // cancelledAt null in the DB and making it impossible to track when or why an order
+  // was cancelled. CANCEL_ALL writes cancelledBy: 'customer'; adminCommandService
+  // rejectPayment (cash branch) writes cancelledBy: adminPhone.
+  cancelledAt:    { type: Date,   default: null },
+  cancelledBy:    { type: String, default: null }, // 'customer' | admin phone
+
   // Last 6 hex chars of _id, stored at creation time for O(1) admin lookups.
   // Admin commands like "APPROVE ABC123" resolve against this field via an index
   // instead of an unindexed $expr/$regexMatch scan on the ObjectId string.

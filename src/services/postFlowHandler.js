@@ -517,7 +517,7 @@ async function handleOrderReady({
     const shortIdRef = flowData.shortId || upper.replace('COLLECTED_', '');
     if (shortIdRef) {
       await Order.findOneAndUpdate(
-        { shortId: shortIdRef, tenantId, status: 'ready' },
+        { shortId: shortIdRef, tenantId, status: { $in: ['ready', 'confirmed', 'preparing'] } },
         { $set: { status: 'completed', completedAt: new Date() } }
       ).catch(() => {});
     }

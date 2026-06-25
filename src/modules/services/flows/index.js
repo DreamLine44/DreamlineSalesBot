@@ -79,6 +79,7 @@ export async function handleEnquiryFlow({ session, message, business, tenant }) 
     return {
       type: 'list',
       body: '📋 *Get a Quote*\n\nWhat type of service are you looking for?\n\n_(Tap one below or type your answer)_',
+      button: 'Choose service',
       sections: [{
         title: 'Service Types',
         rows: serviceTypes.map(s => ({ id: `SVC_${s.toUpperCase().replace(/\s+/g, '_')}`, title: s })),
@@ -343,6 +344,7 @@ function _askServiceType(business) {
   return {
     type: 'list',
     body: '📋 *Get a Quote*\n\nWhat type of service are you looking for?',
+    button: 'Choose service',
     sections: [{
       title: 'Service Types',
       rows: serviceTypes.map(s => ({ id: `SVC_${s.toUpperCase().replace(/\s+/g, '_')}`, title: s })),
