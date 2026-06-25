@@ -61,6 +61,13 @@ const bookingSchema = new mongoose.Schema({
   adminDeclinedBy:    { type: String, default: null },
   adminNote:          { type: String, default: null }, // optional note to customer
 
+  // [FIX-CANCEL] cancelledAt/cancelledBy — written by moduleRouter CANCEL_BOOKING and
+  // CANCEL_ALL when the customer cancels a booking. Previously absent from schema so
+  // Mongoose strict mode silently dropped every $set write, leaving cancelledAt null in
+  // the DB and making it impossible to track when or why a booking was cancelled.
+  cancelledAt:        { type: Date,   default: null },
+  cancelledBy:        { type: String, default: null }, // 'customer' | admin phone
+
   // Short ID for admin WhatsApp commands (CONFIRM BOOK ABC123)
   // Last 6 hex chars of _id, indexed, populated by pre-save hook.
   shortId: { type: String, index: true, default: null },

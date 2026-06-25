@@ -63,9 +63,21 @@ function buildSystemPrompt({ business, intent, faqContext, orderContext }) {
   const hoursLines = (() => {
     const hours = business?.hours;
     if (!hours?.enabled) return '';
-    const days = hours.days || {};
+    const _rawDays = hours.days || {};
+    const days = (_rawDays instanceof Map) ? Object.fromEntries(_rawDays) : (typeof _rawDays.toObject === "function" ? _rawDays.toObject() : _rawDays);
+    // hours.days stores open/close as decimal Numbers (e.g. 8.5 = 08:30, 22.75 = 22:45).
+    // cfg.openTime / cfg.closeTime do not exist — they were a schema mismatch that caused
+    // the AI to see "Monday: undefined–undefined" for every business day.
+    // Fix: format the decimal numbers as HH:MM strings.
+    const decToHHMM = (n) => {
+      if (n == null) return '?';
+      const h = Math.floor(n);
+      const m = Math.round((n - h) * 60);
+      return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+    };
     const lines = Object.entries(days)
-      .map(([day, cfg]) => cfg?.open ? `${day}: ${cfg.openTime}–${cfg.closeTime}` : `${day}: Closed`)
+      .map(([day, cfg]) => cfg?.closed ? `${day}: Closed` : cfg?.open != null ? `${day}: ${decToHHMM(cfg.open)}–${decToHHMM(cfg.close)}` : '')
+      .filter(Boolean)
       .join(', ');
     return lines ? `\nBusiness hours: ${lines}` : '';
   })();
