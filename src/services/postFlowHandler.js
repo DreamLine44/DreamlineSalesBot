@@ -57,7 +57,7 @@ function isValidName(n) {
 }
 
 // ── Sentiment classifiers (shared across all ackCtx paths) ───────────────────
-const ACK_RE        = /^(ok|okay|k|kk|thanks?|thank\s*you|thank\s*u|thx|ty|tq|great|perfect|got\s*it|noted|alright|cool|nice|sounds\s*good|good|👍|🙏|😊|yep|yh|yah|understood|cheers|appreciate\s*it|brilliant|wonderful|awesome|lovely|received|noted|sure|fine|no\s*problem|np)$/i;
+const ACK_RE        = /^(ok|okay|k|kk|thanks?|thank\s*you|thank\s*u|thx|ty|tq|great|perfect|got\s*it|noted|alright|cool|nice|sounds\s*good|good|👍|🙏|😊|yep|yh|yah|understood|cheers|appreciate\s*it|brilliant|wonderful|awesome|lovely|received|noted|sure|fine|no\s*problem|np|sure\s*i\s*do|i\s*sure\s*do|i\s*will|will\s*do|definitely|absolutely|of\s*course|certainly|for\s*sure|sure\s*thing|yeah|yes|yes\s*please|indeed|exactly|right|totally|agreed|fair\s*enough)$/i;
 const COMPLIMENT_RE = /\b(amazing|excellent|fantastic|love|best|delicious|enjoyed|happy|pleased|satisfied|impressed|recommend|5\s*star|five\s*star|well\s*done|great\s*job|keep\s*it\s*up|good\s*job|wonderful|superb|outstanding|top\s*notch|quality)\b/i;
 const COMPLAINT_RE  = /\b(bad|terrible|awful|horrible|disappoint|not\s*good|wrong|cold|late|missing|never|complain|refund|cheat|fraud|angry|upset|poor|issue|problem|unsatisfied|unhappy|rubbish|disgusting|unacceptable|worst)\b/i;
 const QUESTION_RE   = /[?]|^(how|when|where|what|why|can\s*you|do\s*you|is\s*there|will\s*you|could\s*you)\b/i;
@@ -178,6 +178,38 @@ export async function handlePostFlowMessage({
       return true;
     }
 
+    // [FIX-ACK-COLLECT] ORDER_COLLECTED: set after the customer taps "Collected – Thanks!"
+    // in the ORDER_READY flow. Any follow-up (thank you, emoji, compliment) gets a warm
+    // farewell reply instead of going to AI → SUPPORT escalation.
+    case 'ORDER_COLLECTED': {
+      const itemStr = flowData.item ? ` *${flowData.item}*` : '';
+      if (isCompliment || isAck) {
+        await dispatchMessage(from, {
+          type:    'buttons',
+          body:    `You're so welcome${custName}! 😊 Glad you enjoyed your${itemStr}. Hope to see you again soon! 🙏`,
+          buttons: welcomeBtns,
+        }, tenantDoc);
+        return true;
+      }
+      if (isComplaint) {
+        const { getAIReply } = await import('../core/ai/providers/aiRouter.js');
+        const aiReply = await getAIReply({ customerMessage: msg, business, session, intent: 'COMPLAINT' });
+        await dispatchMessage(from, {
+          type:    'buttons',
+          body:    aiReply || `We're really sorry to hear that${custName}. 😔 Please let us know how we can make it right.`,
+          buttons: [{ id: 'SUPPORT', title: '💬 Speak to Team' }],
+        }, tenantDoc);
+        return true;
+      }
+      // Any other message — show welcome menu
+      await dispatchMessage(from, {
+        type:    'buttons',
+        body:    `😊 What would you like to do next${custName}?`,
+        buttons: welcomeBtns,
+      }, tenantDoc);
+      return true;
+    }
+
     // Legacy/generic postFlowAck (ORDER, BOOKING) — kept for backwards compat
     case 'ORDER': {
       await dispatchMessage(from, {
@@ -188,7 +220,11 @@ export async function handlePostFlowMessage({
     }
 
     case 'BOOKING': {
-      const body = `You're welcome${custName}! 😊 Your booking is confirmed. If anything changes, just let us know!`;
+      // [FIX-BOOKING-ACK] Previously said "Your booking is confirmed" — but at this point
+      // the admin has NOT yet confirmed; the booking is PENDING admin review. Saying
+      // "confirmed" is factually wrong and confuses customers who then ask why the admin
+      // later sends a separate confirmation message. Changed to "booking request received".
+      const body = `You're welcome${custName}! 😊 Your booking request has been received and is awaiting confirmation. We'll let you know as soon as it's confirmed!`;
       await dispatchMessage(from, { type: 'text', body }, tenantDoc);
       return true;
     }
@@ -336,6 +372,27 @@ async function handleOrderConfirmed({
     return true;
   }
 
+  // [FIX-SUPPORT-LOCK] Explicit human/support escalation requests must always escape
+  // the ORDER_CONFIRMED food-mode lock. Previously these fell into isUnrelated → the
+  // restaurant lock ("I can only help with your order") with no SUPPORT button — the
+  // customer was trapped with no way to reach a human while their order was being prepared.
+  // "i need help", "i want to talk to the admin", "talk to human", "help me", etc. all
+  // landed here and were silently stonewalled. Now detected BEFORE the isUnrelated check
+  // and routed to SUPPORT via the button tap (which moduleRouter handles correctly).
+  const SUPPORT_ESCAPE_RE = /\b(help|support|admin|human|agent|person|team|manager|someone|real\s*person|talk\s*to|speak\s*to|contact|reach\s*out|assistance|assist|escalat)\b/i;
+  if (SUPPORT_ESCAPE_RE.test(msg) || upper === 'SUPPORT') {
+    const itemRef3 = flowData.item ? `*${flowData.item}*` : 'your order';
+    await dispatchMessage(from, {
+      type:    'buttons',
+      body:    `Of course${custName}! 🙏 Let me connect you with our team.\n\n_${itemRef3} is still being prepared — we'll keep you updated._`,
+      buttons: [
+        { id: 'SUPPORT',  title: '💬 Speak to Team'  },
+        { id: 'QUESTION', title: '❓ Ask a Question' },
+      ],
+    }, tenantDoc);
+    return true;
+  }
+
   if (isCompliment) {
     const orderContext = flowData.item ? { item: flowData.item, shortId: flowData.shortId } : null;
     const aiReply = await getAIReply({ customerMessage: msg, business, session, intent: 'COMPLIMENT', orderContext });
@@ -376,6 +433,7 @@ async function handleOrderConfirmed({
         body:    `😊 I can only help with your ${bizName} order right now.\n\n${itemRef2} is still being prepared. We'll notify you when it's ready!`,
         buttons: [
           { id: 'QUESTION',     title: '❓ Ask a Question' },
+          { id: 'SUPPORT',      title: '💬 Contact Team'   },
           { id: 'CANCEL_ORDER', title: '❌ Cancel Order'   },
         ],
       }, tenantDoc);
@@ -467,6 +525,13 @@ async function handleOrderReady({
       type: 'text',
       body: `🎉 Enjoy! 😊\n\nHope to see you again soon.\n— *${bizName}*`,
     }, tenantDoc);
+    // [FIX-ACK-COLLECT] Set postFlowAck so that any immediate follow-up from the customer
+    // ("thank you", "was delicious", emoji) is handled with warm contextual reply instead
+    // of falling through to AI classify → SUPPORT and triggering an unintended escalation.
+    await updateSession(from, tenantId, {
+      postFlowAck:  'ORDER_COLLECTED',
+      postFlowData: { item: flowData.item, shortId: shortIdRef },
+    }).catch(() => {});
     return true;
   }
 

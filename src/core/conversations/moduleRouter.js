@@ -38,7 +38,7 @@
 import { startFlow, cancelFlow } from './flowEngine.js';
 import { updateSession }         from '../sessions/sessionService.js';
 import { generateGreeting }      from '../ai/providers/aiRouter.js';
-import { dispatchText }          from '../whatsapp/dispatcher.js';
+import { dispatchText, dispatchMessage }          from '../whatsapp/dispatcher.js';
 import { getModeConfig }         from '../../config/modes.js';
 import logger from '../../config/logger.js';
 
@@ -81,8 +81,7 @@ export async function route({ action, intent, session, message, business, tenant
 
           if (!throttled) {
             // First time (or throttle window expired) — send status text and record timestamp
-            const { updateSession: _ackUs } = await import('../sessions/sessionService.js');
-            await _ackUs(session.customerPhone, session.tenantId, {
+            await updateSession(session.customerPhone, session.tenantId, {
               lastOrderStatusAckAt: new Date().toISOString(),
             }).catch(() => {});
 
@@ -335,6 +334,44 @@ Your favourite is *${topItem}* — want to order it again? 😊`
       return cancelFlow(session, business);
     }
 
+    case 'CANCEL_BOOKING': {
+      // Tapped from booking status card (shown by GREET gate or AOR) when there is
+      // NO active BOOKING flow. Must cancel the Booking record in DB and confirm.
+      // Previously this fell through to CANCEL → cancelFlow() which only cleared
+      // session state and said "No problem!" without touching the Booking document.
+      try {
+        const { default: _Booking } = await import('../../models/Booking.js');
+        const cancelledBooking = await _Booking.findOneAndUpdate(
+          {
+            customerPhone: session.customerPhone,
+            tenantId:      session.tenantId,
+            status:        { $in: ['pending', 'confirmed'] },
+          },
+          { $set: { status: 'cancelled', cancelledAt: new Date(), cancelledBy: 'customer' } },
+          { sort: { createdAt: -1 }, new: true }
+        ).lean().catch(() => null);
+
+        await updateSession(session.customerPhone, session.tenantId, {
+          currentFlow: null, step: null, data: {}, postFlowAck: null,
+        });
+
+        const cfg = getModeConfig(business);
+        const whenStr = cancelledBooking?.date
+          ? ` for *${cancelledBooking.date}${cancelledBooking.time ? ` at ${cancelledBooking.time}` : ''}*`
+          : '';
+        return {
+          type:    'buttons',
+          body:    cancelledBooking
+            ? `✅ Your booking${whenStr} has been cancelled. We hope to see you again soon! 🙏`
+            : `ℹ️ No active booking found to cancel.`,
+          buttons: cfg.ui?.welcomeButtons || [{ id: 'BOOK', title: '📅 Book Again' }],
+        };
+      } catch (err) {
+        logger.error('[Router] CANCEL_BOOKING failed', { err: err.message });
+        return cancelFlow(session, business);
+      }
+    }
+
     case 'CANCEL_ALL': {
       // [FIX-CANCEL-ALL] Bulk-cancel all pending/confirmed orders for this customer.
       // Triggered when the customer types "cancel all", "cancel all of them", etc.
@@ -413,12 +450,24 @@ Your favourite is *${topItem}* — want to order it again? 😊`
           `Customer *${session.customerPhone}*${nameStr} needs help.\n` +
           `Message: "${message || '(no message)'}"\n\n` +
           `Bot is now *silent* for this customer.\n\n` +
-          `Reply directly to them on WhatsApp, then type:\n` +
-          `✅ \`RESUME BOT ${session.customerPhone}\``;
+          `Reply directly to them on WhatsApp, then tap the button below (or send \`RESUME BOT ${session.customerPhone}\` to your bot number) to re-enable the bot.`;
+        // [FIX-RESUME-BTN] Send RESUME_BOT_ as an interactive button alongside the alert.
+        // Previously the admin received plain text with a copy-paste command —
+        // "type RESUME BOT <phone>". Most admins missed the instruction or typed it wrong.
+        // The button (RESUME_BOT_<phone>) is handled by adminCommandService.handleAdminButtonReply
+        // and the webhookController admin button guard (FIX-RESUME-BTN-GATE). One tap resumes
+        // the bot; the text command is kept as a fallback for admins on desktop clients.
+        const safePhone = session.customerPhone.replace(/[^0-9+]/g, '');
+        const resumeBtnId = `RESUME_BOT_${safePhone}`;
+        const alertPayload = {
+          type:    'buttons',
+          body:    alert,
+          buttons: [{ id: resumeBtnId, title: '▶️ Resume Bot' }],
+        };
         // [FIX-RTR-4] Log dispatch failures — if this silently fails the admin is
         // never notified of the escalation and there is no trace in logs to diagnose it.
         // Consistent with adminCommandService which logs all customer dispatch failures.
-        dispatchText(adminPhone, alert, tenant).catch(err =>
+        dispatchMessage(adminPhone, alertPayload, tenant).catch(err =>
           logger.warn('[Router] SUPPORT: admin alert dispatch failed', {
             adminPhone, customerPhone: session.customerPhone, err: err.message,
           })

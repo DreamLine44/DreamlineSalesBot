@@ -241,7 +241,12 @@ function isFlowPassthroughId(id) {
     // for the "you have N active orders" list. Without passthrough they hit intent detection
     // which has no case for ORDER_STATUS_ → FALLBACK, showing a generic help menu instead
     // of the order details the customer tapped to see.
-    /^ORDER_STATUS_[A-Z0-9]+$/.test(upper) // multiple-order picker (ORDER_STATUS_<shortId>)
+    /^ORDER_STATUS_[A-Z0-9]+$/.test(upper) || // multiple-order picker (ORDER_STATUS_<shortId>)
+    // [FIX-RESUME-BTN-PT] RESUME_BOT_<phone> is an admin-facing button but must also be in
+    // the passthrough set so that if the admin has an active flow when they tap it, the button
+    // ID isn't forwarded to the flow handler as plain text. The admin button guard at step 6
+    // catches it BEFORE the flow engine, so adding it here is purely defensive.
+    /^RESUME_BOT_[0-9+\s()./-]+$/.test(upper) // admin resume-bot button (RESUME_BOT_<phone>)
   );
 }
 
@@ -717,15 +722,18 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
       }
     }
 
-    // Admin BUTTON replies: APPROVE_xxx / REJECT_xxx / CONFIRM_BOOK_xxx / DECLINE_BOOK_xxx / READY_xxx
+    // Admin BUTTON replies: APPROVE_xxx / REJECT_xxx / CONFIRM_BOOK_xxx / DECLINE_BOOK_xxx / READY_xxx / RESUME_BOT_xxx
     // [FIX-READY-BTN-GATE] Added READY_ to the admin button prefix check.
     // Previously READY_<shortId> was handled by handleAdminButtonReply() but was not
     // listed in this guard. It fell through to the non-admin branch which dispatched
     // "Sorry, that action isn't available" back to the admin who tapped their own button.
+    // [FIX-RESUME-BTN-GATE] Added RESUME_BOT_ — the button sent by the SUPPORT escalation
+    // alert (moduleRouter). Without this, tapping "▶️ Resume Bot" produced "Sorry, that
+    // action isn't available" rather than calling resumeBot() in adminCommandService.
     if (isInteractive && (
       upper.startsWith('APPROVE_') || upper.startsWith('REJECT_') ||
       upper.startsWith('CONFIRM_BOOK_') || upper.startsWith('DECLINE_BOOK_') ||
-      upper.startsWith('READY_')
+      upper.startsWith('READY_') || upper.startsWith('RESUME_BOT_')
     )) {
       const { handleAdminButtonReply, isAdminPhone } = await import('../services/adminCommandService.js');
       // [FIX-X2] Pass pre-fetched business and tenantDoc so isAdminPhone skips both DB queries.
@@ -875,16 +883,27 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
       return;
     }
 
-    // All other text (greetings, questions, anything) → strict reminder
-    await dispatchMessage(from, {
-      type:    'buttons',
-      body:
-        '⏳ *Awaiting your payment screenshot.*\n\n' +
-        'Please send a clear image of your payment confirmation (screenshot) to complete your order.\n\n' +
-        '_To cancel this order, tap the button below._',
-      buttons: [{ id: 'CANCEL', title: '❌ Cancel Order' }],
-    }, tenantDoc);
-    return;
+    // [FIX-SUPPORT-PROOF] Allow SUPPORT escape from PAYMENT_PROOF step.
+    // Previously step 10.5 intercepted ALL text including SUPPORT, showing "awaiting
+    // screenshot" in response to the customer tapping the "❓ Need Help" button — which
+    // is shown on the payment instructions card. The customer was stuck: they couldn't
+    // escalate to a human without cancelling. Now SUPPORT falls through to intent
+    // detection which routes to the SUPPORT case in moduleRouter → human handoff.
+    if (upper === 'SUPPORT') {
+      // Don't return — fall through to intent detection at step 16
+      // (no session currentFlow clear needed; the SUPPORT case in moduleRouter does it)
+    } else {
+      // All other text (greetings, questions, anything) → strict reminder
+      await dispatchMessage(from, {
+        type:    'buttons',
+        body:
+          '⏳ *Awaiting your payment screenshot.*\n\n' +
+          'Please send a clear image of your payment confirmation (screenshot) to complete your order.\n\n' +
+          '_To cancel this order, tap the button below._',
+        buttons: [{ id: 'CANCEL', title: '❌ Cancel Order' }],
+      }, tenantDoc);
+      return;
+    }
   }
 
   // ── 11. [Admin button replies moved to step 6 — before humanMode guard] ────
@@ -914,7 +933,7 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
       return;
     }
     // Everything else — classify ack/filler first, then politely hold the customer
-    const AAC_ACK_RE = /^(ok|okay|k|thanks?|thank\s*you|thx|got\s*it|noted|alright|cool|nice|great|sure|👍|🙏|😊|ahhh?|ohh?|hmm+|wow|yay|np)$/i;
+    const AAC_ACK_RE = /^(ok|okay|k|thanks?|thank\s*you|thx|got\s*it|noted|alright|cool|nice|great|sure|👍|🙏|😊|ahhh?|ohh?|hmm+|wow|yay|np|sure\s*i\s*do|i\s*will|will\s*do|definitely|absolutely|of\s*course|certainly|for\s*sure|yeah|yes|indeed|right|totally|agreed)$/i;
     if (AAC_ACK_RE.test(messageText.trim()) || messageText.trim().length <= 2) {
       await dispatchMessage(from, {
         type: 'text',
@@ -956,8 +975,8 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
     // and "Show Menu" were all blocked by the lock even though they're valid top-level
     // actions. The lock is meant to block RANDOM messages (greetings, status queries),
     // not deliberate navigation. The _cancelAllPattern handles "cancel all" / "cancel all of them"
-    // typed as free text.
-    const _polCancelAllRe = /^cancel\s+all(\s+of\s+(them|the\s+orders?))?$/i;
+    // typed as free text, plus "cancel everything" and similar natural phrasings.
+    const _polCancelAllRe = /^cancel\s+(all(\s+of\s+(them|the\s+orders?))?|everything|it\s+all|all\s+my\s+orders?)$/i;
     const isEscPOL  = upperPOL === 'CANCEL' || upperPOL === 'CANCEL_ORDER'
       || upperPOL === 'CANCEL_ALL' || _polCancelAllRe.test(messageText.trim())
       || upperPOL === 'ORDER' || upperPOL === 'BOOK'
@@ -998,7 +1017,7 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
         // This fixes the production bug where "Ahhh" triggered a full welcome greeting
         // because the lock hadn't fired yet and intent detection ran GREET instead.
         // Now the lock fires first and classifies filler/acks before anything else.
-        const POL_ACK_RE = /^(ok|okay|k|kk|thanks?|thank\s*you|thank\s*u|thx|ty|tq|great|perfect|got\s*it|noted|alright|cool|nice|sounds\s*good|good|👍|🙏|😊|yep|yh|yah|understood|cheers|appreciate\s*it|brilliant|wonderful|awesome|lovely|received|sure|fine|no\s*problem|np|ahhh?|ohh?|hmm+|wow|oh|yay|phew|aight)$/i;
+        const POL_ACK_RE = /^(ok|okay|k|kk|thanks?|thank\s*you|thank\s*u|thx|ty|tq|great|perfect|got\s*it|noted|alright|cool|nice|sounds\s*good|good|👍|🙏|😊|yep|yh|yah|understood|cheers|appreciate\s*it|brilliant|wonderful|awesome|lovely|received|sure|fine|no\s*problem|np|ahhh?|ohh?|hmm+|wow|oh|yay|phew|aight|sure\s*i\s*do|i\s*will|will\s*do|definitely|absolutely|of\s*course|certainly|for\s*sure|sure\s*thing|yeah|yes|yes\s*please|indeed|exactly|right|totally|agreed|fair\s*enough)$/i;
         const rawTrimPOL = messageText.trim();
         // [FIX-BUG10] rawTrimPOL.length <= 3 was too aggressive — a 3-char input like
         // "bad" is a genuine complaint that deserves the lock message, not a micro-reply.
@@ -1160,11 +1179,18 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
     const _aorUpper = messageText.trim().toUpperCase();
     // [FIX-AOR-4] Expanded escape list — CANCEL_ALL and navigation intents bypass the
     // resolver so customers can deliberately start a new flow or bulk-cancel.
-    const _cancelAllPattern = /^cancel\s+all(\s+of\s+(them|the\s+orders?))?$/i;
+    const _cancelAllPattern = /^cancel\s+(all(\s+of\s+(them|the\s+orders?))?|everything|it\s+all|all\s+my\s+orders?)$/i;
+    // [FIX-AOR-SUPPORT] Natural-language support/help phrases must also escape the AOR
+    // so customers can reach a human even when an active order is being tracked.
+    // Previously only the literal button ID 'SUPPORT' was checked — "i want to talk to human",
+    // "i need help", etc. all bypassed the escape and got the preparing card instead.
+    const _aorSupportRe = /\b(help|support|admin|human|agent|person|team|manager|someone|speak\s*to|talk\s*to|contact|escalat)\b/i;
     const _aorIsEscape = _aorUpper === 'CANCEL' || _aorUpper === 'CANCEL_ORDER'
-      || _aorUpper === 'SUPPORT' || _aorUpper === 'SHOW_MENU' || _aorUpper === 'MENU'
+      || _aorUpper === 'SUPPORT' || _aorSupportRe.test(messageText.trim())
+      || _aorUpper === 'SHOW_MENU' || _aorUpper === 'MENU'
       || _aorUpper === 'HOME' || _aorUpper === '0'
       || _aorUpper === 'CANCEL_ALL' || _cancelAllPattern.test(messageText.trim())
+      || _aorUpper === 'CANCEL_BOOKING'
       // Navigation intents — customer is deliberately starting a new flow
       || _aorUpper === 'ORDER' || _aorUpper === 'START_ORDER'
       || _aorUpper === 'BOOK' || _aorUpper === 'START_BOOKING'
@@ -1302,8 +1328,12 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
       type: 'text',
       body: `🎉 Enjoy your meal! 😊\n\nHope to see you again soon.\n— *${bizName}*`,
     }, tenantDoc);
-    // Clear any postFlowAck state so the next message gets a fresh welcome
-    await updateSession(from, tenantId, { postFlowAck: null, postFlowData: null }).catch(() => {});
+    // [FIX-ACK-COLLECT] Set postFlowAck so immediate follow-ups ("thank you", "was great")
+    // are handled warmly instead of going to AI → SUPPORT escalation.
+    await updateSession(from, tenantId, {
+      postFlowAck:  'ORDER_COLLECTED',
+      postFlowData: { shortId: shortIdCollect },
+    }).catch(() => {});
     return;
   }
 
@@ -1724,6 +1754,18 @@ export async function receiveWebhook(req, res) {
                 from,
                 tip: 'Check that the tenant exists, has status=ACTIVE, and whatsapp.phoneNumberId matches',
               });
+              continue;
+            }
+
+            // [FIX-ECHO] Skip messages where the sender is the bot's own WhatsApp number.
+            // Meta sometimes echoes outbound messages back as webhook events (type='message'
+            // not 'status'). Processing them would cause the bot to reply to itself, producing
+            // duplicate messages and infinite-loop-like behaviour. The bot's phone number is
+            // stored on the tenant as whatsapp.phoneNumber (E.164 without '+').
+            const botPhone = tenant.whatsapp?.phoneNumber?.replace(/\D/g, '') || null;
+            const fromDigits = from?.replace(/\D/g, '') || '';
+            if (botPhone && fromDigits && fromDigits.endsWith(botPhone.replace(/^\+/, ''))) {
+              logger.debug('[Webhook] Skipping echo — message is from bot own number', { from, botPhone, wamid: msg.id });
               continue;
             }
 

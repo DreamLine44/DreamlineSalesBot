@@ -222,6 +222,42 @@ export async function healthCheck() {
   }
 }
 
+/**
+ * classifyIntent({ message, validIntents, mode })
+ *
+ * [FIX-CLASSIFY] Lean intent classifier that bypasses the full persona system prompt.
+ * Previously classifyWithAI in intentEngine called groq.getReply() which prepends a
+ * customer-service persona ("You are a friendly restaurant assistant...") before the
+ * classification instruction — the persona conflicts with the classifier role and
+ * wastes tokens. This function sends only the minimal two-message prompt the model
+ * needs: a concise system instruction and the sanitised customer message.
+ *
+ * @param {object} params
+ * @param {string}   params.message       — sanitised customer message (≤200 chars)
+ * @param {string[]} params.validIntents  — allowed return values
+ * @param {string}   params.mode          — business mode for context (e.g. 'RESTAURANT')
+ * @returns {Promise<string>} — one of validIntents, or 'UNKNOWN'
+ */
+export async function classifyIntent({ message, validIntents, mode = 'RETAIL' }) {
+  if (!process.env.GROQ_API_KEY) return 'UNKNOWN';
+  try {
+    const result = await callGroq([
+      {
+        role: 'system',
+        content:
+          `You are an intent classifier for a ${mode} WhatsApp business bot.\n` +
+          `Classify the customer message into exactly ONE of: ${validIntents.join(', ')}\n` +
+          `Reply with ONLY the intent word — nothing else, no explanation, no punctuation.`,
+      },
+      { role: 'user', content: String(message || '').slice(0, 200) },
+    ]);
+    const classified = String(result || '').trim().toUpperCase();
+    return validIntents.includes(classified) ? classified : 'UNKNOWN';
+  } catch {
+    return 'UNKNOWN';
+  }
+}
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 function buildFaqContext(business) {
   const faqs = (business?.faq || []).filter(f => f.trigger && f.reply).slice(0, 10);

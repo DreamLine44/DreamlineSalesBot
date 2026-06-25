@@ -29,7 +29,10 @@ export const BUTTON_ID_MAP = {
   // an unmapped interactive ID at step 1 and returned CONTINUE_FLOW — routing to the
   // welcome menu instead of the cancel handler. Same target as CANCEL_BOOKING.
   'CANCEL_ORDER':       'CANCEL',
-  'CANCEL_BOOKING':     'CANCEL',
+  // [FIX-CANCEL-BOOKING] CANCEL_BOOKING must route to its own action so moduleRouter
+  // can cancel the Booking DB record. Previously mapped to 'CANCEL' which only called
+  // cancelFlow() — clearing session state without touching the Booking document.
+  'CANCEL_BOOKING':     'CANCEL_BOOKING',
   // [FIX-CANCEL-ALL] CANCEL_ALL button ID for bulk-cancellation of multiple orders.
   // Shown in the MULTIPLE_ACTIVE_ORDERS context; routes to the CANCEL_ALL handler
   // in webhookController which cancels all pending/confirmed orders for the customer.
@@ -171,6 +174,17 @@ export const INTENT_PATTERNS = {
     'cancel all', 'cancel all orders', 'cancel all of them',
     'cancel everything', 'cancel all my orders', 'cancel them all',
     'cancel all order', 'cancel all of the orders',
+    'cancel it all', 'cancel all my order',
+  ],
+
+  // ── CANCEL_ORDER — single-order cancellation typed as text ────────────────
+  // [FIX-CANCEL-TYPED] 'cancel order' was in the SUPPORT array — a customer typing
+  // "cancel order" triggered a human escalation instead of the cancel flow. Moved here
+  // so text-typed cancel phrases reach the CANCEL handler, consistent with button taps.
+  CANCEL_ORDER: [
+    'cancel order', 'cancel my order', 'cancel this order', 'cancel it',
+    'i want to cancel', 'stop my order', 'dont want it', "don't want it",
+    'never mind my order', 'nevermind my order',
   ],
 
   // ── [SPEC-PART7] ACKNOWLEDGEMENT classifier ──────────────────────────────
@@ -185,7 +199,25 @@ export const INTENT_PATTERNS = {
     'fine', 'good', 'sounds good',
     'ahhh', 'ahh', 'ah', 'ohh', 'oh', 'hmm', 'hmmm', 'wow', 'phew', 'yay',
     'np', 'no problem',
+    // [FIX-ACK-THANKS] "thank you" and its variants were missing — they hit step 7
+    // (AI classify) which returned SUPPORT, triggering an unintended human escalation.
+    // These must be hard-coded keyword matches so they never reach AI classification.
+    'thanks', 'thank you', 'thank u', 'thankyou', 'thank-you',
+    'thx', 'ty', 'tq', 'cheers', 'appreciate it', 'appreciate',
+    'many thanks', 'much appreciated', 'big thanks', 'thanks a lot',
+    'thanks so much', 'thank you so much', 'thank you very much',
     '👍', '🙏', '😊', '❤️',
+    // [FIX-ACK-AFFIRMATIVE] Conversational affirmative/agreeable phrases that AI tends
+    // to classify as GREETING (triggering the booking/order gate). These are valid
+    // acknowledgement responses to a farewell or follow-up message and must never
+    // cause a GREET flow reset or show stale booking/order status cards.
+    'sure i do', 'i sure do', 'i will', 'will do', 'definitely',
+    'absolutely', 'of course', 'certainly', 'for sure', 'sure thing',
+    'sounds great', 'sounds good to me', 'that sounds good', 'that works',
+    'yeah', 'yep', 'yep yep', 'yes', 'yes please', 'indeed',
+    'exactly', 'right', 'correct', 'true', 'fair enough', 'fair',
+    'agreed', 'for real', 'totally', 'sure enough',
+    'glad to hear', 'happy to hear', 'nice to know',
   ],
 
   GREETING: [
@@ -256,7 +288,17 @@ export const INTENT_PATTERNS = {
   SUPPORT: [ 'issue', 'complaint', 'wrong order',
     'speak to human', 'speak to agent', 'speak to someone', 'real person',
     'live agent', 'manager', 'customer service', 'not happy', 'unhappy',
-    'refund', 'cancel order', 'i have a problem', 'i have an issue',
+    'refund', 'i have a problem', 'i have an issue',
+    // [FIX-SUPPORT-NATURAL] Natural human-escalation phrases that customers use when
+    // they need help mid-order. Previously these fell into isUnrelated → food-mode lock
+    // with no escape. Now correctly classified as SUPPORT so moduleRouter routes them
+    // to the human handoff flow, even when said during an active order context.
+    'i need help', 'need help', 'help me', 'help please', 'please help',
+    'i want to talk to the admin', 'talk to admin', 'talk to human',
+    'i want to talk to human', 'talk to someone', 'i want to speak to someone',
+    'talk to a person', 'i want to talk to a person', 'connect me to admin',
+    'i want human', 'get me human', 'human please', 'contact support',
+    'i need support', 'get support', 'reach support',
   ],
 
   SHOW_MENU: [

@@ -293,12 +293,23 @@ function _preparingCard(order, business, session, stage) {
 }
 
 function _multipleOrders(orders, business) {
-  // Show a list so the customer can pick which order to check
-  const rows = orders.map(o => ({
+  // [FIX-LIST-LIMIT] WhatsApp enforces a hard cap of 10 rows across ALL sections
+  // in a single list message. We always include a CANCEL_ALL action row (1 row),
+  // so order rows must be capped at 9. With .limit(10) in the query, up to 10 orders
+  // can come back — the 10th would push the total to 11, causing Meta to reject the
+  // entire message with a 400 error and silently drop the response to the customer.
+  const MAX_ORDER_ROWS = 9;
+  const displayOrders = orders.slice(0, MAX_ORDER_ROWS);
+
+  const rows = displayOrders.map(o => ({
     id:          `ORDER_STATUS_${o.shortId || String(o._id).slice(-6).toUpperCase()}`,
     title:       `#${o.shortId || '???'} — ${(o.item || 'Order').slice(0, 24)}`,
     description: `${_statusLabel(o.status)} · ${_paymentLabel(o.paymentStatus)}`,
   }));
+
+  const overflowNote = orders.length > MAX_ORDER_ROWS
+    ? ` _(showing ${MAX_ORDER_ROWS} of ${orders.length})_`
+    : '';
 
   return {
     order:  orders[0],
@@ -307,7 +318,7 @@ function _multipleOrders(orders, business) {
     shouldIntercept: true,
     uiResponse: {
       type: 'list',
-      body: `📦 You have *${orders.length} active orders*.\n\nWhich one would you like to check?`,
+      body: `📦 You have *${orders.length} active orders*.${overflowNote}\n\nWhich one would you like to check?`,
       buttonText: 'View My Orders',
       sections: [
         {

@@ -154,6 +154,14 @@ export async function handleAdminButtonReply(buttonId, tenantId, adminPhone, ten
   if (upper.startsWith('REJECT_'))       return rejectPayment(upper.replace('REJECT_', ''),        tenantId, adminPhone, tenantDoc, business);
   if (upper.startsWith('CONFIRM_BOOK_')) return confirmBooking(upper.replace('CONFIRM_BOOK_', ''), tenantId, adminPhone, tenantDoc);
   if (upper.startsWith('READY_'))        return markOrderReady(upper.replace('READY_', ''),        tenantId, adminPhone, tenantDoc, business);
+  // [FIX-X3] RESUME_BOT_<phone> button — dispatched by the support escalation alert
+  // as an interactive button instead of a plain-text `RESUME BOT <phone>` command.
+  // Strip all non-digit chars from the phone suffix to match resumeBot()'s normalisation.
+  if (upper.startsWith('RESUME_BOT_')) {
+    const rawPhone = String(buttonId).slice('RESUME_BOT_'.length);
+    const normalised = rawPhone.replace(/[^\d]/g, '');
+    if (normalised) return resumeBot(normalised, tenantId, tenantDoc);
+  }
   if (upper.startsWith('DECLINE_BOOK_')) {
     // [FIX-CMD-9] Button payloads may encode a reason after the shortId using an
     // underscore delimiter: DECLINE_BOOK_A1B2_unavailable. Extract it if present
@@ -348,13 +356,19 @@ async function confirmPayment(shortId, tenantId, adminPhone, tenantDoc, business
     //   - Thank-you sign-off
     //   - NO buttons (state → PREPARING, customer should wait)
     const bizName = business?.name || 'us';
+    // [FIX-ETA] Use business.settings.estimatedDeliveryMinutes if configured (mirrors postFlowHandler
+    // [PFH-3]). Previously hardcoded "20–30 minutes" — wrong for bakeries, salons, retail etc.
+    const etaMins = business?.settings?.estimatedDeliveryMinutes;
+    const etaLine = etaMins
+      ? `⏱️  Estimated time: ${etaMins} minutes.\n\n`
+      : `⏱️  Estimated time: 20–30 minutes.\n\n`;
     const confirmBody = isCashConfirm
       ? `✅ *Order Confirmed!*\n\n` +
         `Your order has been accepted.\n\n` +
         `📦  Order: *${order.item}* × ${order.quantity}\n` +
         `🔖  Reference: #${order.shortId || shortId}\n\n` +
         `🍳 Our kitchen is now preparing your order.\n` +
-        `⏱️  Estimated time: 20–30 minutes.\n\n` +
+        etaLine +
         `We'll message you the moment it's ready.\n\n` +
         `Thank you for choosing *${bizName}* 😊`
       : `✅ *Payment Confirmed!*\n\n` +
@@ -362,7 +376,7 @@ async function confirmPayment(shortId, tenantId, adminPhone, tenantDoc, business
         `📦  Order: *${order.item}* × ${order.quantity}\n` +
         `🔖  Reference: #${order.shortId || shortId}\n\n` +
         `🍳 Our kitchen is now preparing your order.\n` +
-        `⏱️  Estimated time: 20–30 minutes.\n\n` +
+        etaLine +
         `We'll message you the moment it's ready.\n\n` +
         `Thank you for choosing *${bizName}* 😊`;
     await dispatchMessage(order.customerPhone, {

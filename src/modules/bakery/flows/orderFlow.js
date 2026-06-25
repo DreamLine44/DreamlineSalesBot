@@ -299,7 +299,22 @@ export async function handleBakeryOrderFlow({ session, message, business, tenant
         await updateSession(session.customerPhone, session.tenantId, {
           step: 'PAYMENT_PROOF', currentFlow: 'ORDER',
         });
-        return buildPaymentInstructionsUI(business, data.totalPrice, savedOrder?.shortId || null, null);
+        // [FIX-PAYREF-BAKERY] Generate and persist paymentReference so the ref shown to
+        // the customer never drifts between the initial instructions card and any follow-up
+        // messages. Mirrors restaurant/electronics/retail/delivery pattern.
+        const shortIdRef = savedOrder?.shortId || '';
+        let ref = null;
+        if (shortIdRef) {
+          const now = new Date();
+          const mm  = String(now.getMonth() + 1).padStart(2, '0');
+          const dd  = String(now.getDate()).padStart(2, '0');
+          ref = `DSB-${mm}${dd}-${shortIdRef}`;
+          if (savedOrder?._id) {
+            const { default: Order } = await import('../../../models/Order.js');
+            Order.updateOne({ _id: savedOrder._id }, { $set: { paymentReference: ref } }).catch(() => {});
+          }
+        }
+        return buildPaymentInstructionsUI(business, data.totalPrice, shortIdRef || null, ref);
       }
 
       // [FIX-BUG3-BAKERY] Upgrade admin alert from dispatchText (plain text, no buttons)
