@@ -133,7 +133,13 @@ export async function getTopItem(phone, tenantId) {
     if (items.length) {
       return items.sort((a, b) => b.count - a.count)[0]?.name || null;
     }
-    const last = await Order.findOne({ customerPhone: phone, tenantId })
+    // [FIX-TOP-ITEM] Exclude cancelled/rejected orders from the fallback lookup
+    // so a customer's top/last item never surfaces a cancelled order.
+    const last = await Order.findOne({
+      customerPhone: phone, tenantId,
+      status:        { $nin: ['cancelled', 'rejected'] },
+      paymentStatus: { $nin: ['cancelled', 'rejected'] },
+    })
       .sort({ createdAt: -1 })
       .select('item')
       .lean();
@@ -146,7 +152,12 @@ export async function getTopItem(phone, tenantId) {
 
 export async function isReturningCustomer(phone, tenantId) {
   try {
-    const count = await Order.countDocuments({ customerPhone: phone, tenantId });
+    // [FIX-RETURNING] Only count non-cancelled orders — a customer who placed and
+    // immediately cancelled their only order should not be considered a returning customer.
+    const count = await Order.countDocuments({
+      customerPhone: phone, tenantId,
+      status:        { $nin: ['cancelled', 'rejected'] },
+    });
     return count > 0;
   } catch {
     return false;
@@ -167,7 +178,14 @@ export async function getCustomerContext(phone, tenantId) {
       UserProfile.findOne({ phone, tenantId: toOid(tenantId) })
         .select('lead.name preferences.favoriteItems stats.totalOrders activity.lastSeen')
         .lean(),
-      Order.findOne({ customerPhone: phone, tenantId })
+      // [FIX-LAST-ORDER-CTX] Exclude cancelled and rejected orders so greeting
+      // context never says "Last time you ordered X — shall we do that again?"
+      // for an order the customer explicitly cancelled or that was rejected.
+      Order.findOne({
+        customerPhone: phone, tenantId,
+        status:        { $nin: ['cancelled', 'rejected'] },
+        paymentStatus: { $nin: ['cancelled', 'rejected'] },
+      })
         .sort({ createdAt: -1 })
         .select('item createdAt')
         .lean(),

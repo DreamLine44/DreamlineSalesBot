@@ -41,7 +41,15 @@ export async function getReply({ customerMessage, business, intent = 'FALLBACK',
     const lower = customerMessage.toLowerCase();
     for (const faq of faqs) {
       const triggers = String(faq.trigger || '').split(',').map(t => t.trim().toLowerCase());
-      if (triggers.some(t => t && lower.includes(t))) {
+      // [FIX-MOCK-FAQ-WHOLE-WORD] Use whole-word regex (mirrors groqProvider) instead of
+      // substring includes(). "price" was matching "surprised", "priceless", "appreciate" etc.,
+      // causing unintended FAQ responses on messages that merely contained the trigger as a substring.
+      const matched = triggers.some(t => {
+        if (!t) return false;
+        const re = new RegExp(`\\b${t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i');
+        return re.test(lower);
+      });
+      if (matched) {
         return { text: faq.reply, source: 'faq' };
       }
     }

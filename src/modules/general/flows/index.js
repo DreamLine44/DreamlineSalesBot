@@ -68,19 +68,30 @@ export async function handleGeneralQuestion({ session, message, business, tenant
     };
   }
 
+  // [FIX-GENERAL-Q-CTX] Inject order context so AI can answer status/payment questions truthfully.
+  let _genOrderCtx = null;
+  try {
+    const { default: _GenOrder } = await import('../../../models/Order.js');
+    const _genOrders = await _GenOrder.find({
+      customerPhone: session.customerPhone,
+      tenantId:      session.tenantId,
+      status:        { $nin: ['cancelled'] },
+    }).sort({ createdAt: -1 }).limit(3)
+      .select('shortId item quantity totalPrice paymentStatus status').lean();
+    if (_genOrders.length) _genOrderCtx = { recentOrders: _genOrders };
+  } catch { /* non-fatal */ }
+
   const aiReply = await getAIReply({
     customerMessage: raw,
     business,
     session,
     intent: 'FAQ',
+    orderContext: _genOrderCtx,
   });
 
-  // [FIX-1] Correct completeFlow signature: (session, completedFlow, business, tenant)
-  // [FIX-2] Capture return value — completeFlow may return a lead-capture UIResponse
-  const _lcRgq = await completeFlow(session, 'QUESTION', business, tenant);
-  if (_lcRgq) return _lcRgq;
-
-  return {
+  // [FIX-Q-ORDER] Build defaultReply before completeFlow so lead-capture doesn't
+  // discard the AI answer. completeFlow return value takes priority only for lead capture.
+  const _genDefaultReply = {
     type: 'buttons',
     body: aiReply || "That's a great question! Please reach out to us directly and we'll be happy to help.",
     buttons: [
@@ -89,6 +100,8 @@ export async function handleGeneralQuestion({ session, message, business, tenant
       { id: 'BOOK',       title: '📅 Book Appointment' },
     ],
   };
+  const _lcRgq = await completeFlow(session, 'QUESTION', business, tenant);
+  return _lcRgq || _genDefaultReply;
 }
 
 // ── About Handler ─────────────────────────────────────────────────────────────

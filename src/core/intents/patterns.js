@@ -271,11 +271,26 @@ export const INTENT_PATTERNS = {
     'track order', 'track my order', 'where is my order', 'order status',
     'when is my order', 'order update', 'my order', 'check order',
     'delivery status', 'where is my food', 'how long', 'where my order',
+    // [FIX-TRACK-ORDER] Reference number queries — customer pastes their shortId to ask
+    // about their order. Without this, "how about my order #2AC257" → START_ORDER (because
+    // "order" keyword matches) → bot starts a new order flow instead of looking up the ref.
+    'my order ref', 'my order number', 'order reference', 'ref number',
+    'how about my order', 'what about my order', 'update on my order',
   ],
 
   PAYMENT: [
     'pay', 'payment', 'how to pay', 'wave', 'pay now', 'make payment',
     'send payment', 'transfer', 'checkout', 'how do i pay',
+    // [FIX-PAY-INTENT] Payment-status queries — customers asking if their payment went
+    // through after sending a screenshot or completing a transfer. Previously these fell
+    // through to AI classification which returned QUESTION/SUPPORT, bypassing the
+    // dedicated PAYMENT handler in moduleRouter that correctly looks up the order state
+    // and returns a factual confirmed/pending/unpaid response.
+    'did i pay', 'did i paid', 'have i paid', 'was my payment', 'is my payment',
+    'did i make payment', 'did i send payment', 'i already paid', 'i paid already',
+    'i paid', 'i have paid', 'i already pay', 'payment confirmed', 'payment done',
+    'is my order paid', 'was my order paid', 'payment sent', 'i sent payment',
+    'check my payment', 'confirm my payment', 'payment status',
   ],
 
   WALKIN: [

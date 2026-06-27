@@ -210,6 +210,101 @@ export async function handlePostFlowMessage({
       return true;
     }
 
+    // [FIX-PFH-WALKIN] WALKIN postFlowAck — set by completeFlow after a customer joins
+    // the walk-in queue in salon/barbershop mode. Without this case every follow-up
+    // message ("ok thanks", "how long?", "ok") landed in the default branch, which
+    // showed a generic "How can I help?" welcome menu with no queue context — jarring
+    // for someone who just joined a physical queue and is waiting to be called.
+    case 'WALKIN': {
+      const { getAIReply: _walkinAI } = await import('../core/ai/providers/aiRouter.js');
+      if (isAck || isCompliment) {
+        await dispatchMessage(from, {
+          type:    'buttons',
+          body:    `You're welcome${custName}! 😊 You're in the queue — our team will call you shortly. Please stay nearby!`,
+          buttons: [
+            { id: 'SUPPORT',   title: '💬 Contact Us'   },
+            { id: 'SHOW_MENU', title: '🔄 Main Menu'    },
+          ],
+        }, tenantDoc);
+        return true;
+      }
+      if (isQuestion) {
+        const _walkinReply = await _walkinAI({ customerMessage: msg, business, session, intent: 'QUESTION' });
+        await dispatchMessage(from, {
+          type:    'buttons',
+          body:    (_walkinReply || `Happy to help${custName}! 😊`) + `\n\n_You're still in our walk-in queue — we'll call you shortly._`,
+          buttons: [{ id: 'SUPPORT', title: '💬 Contact Us' }],
+        }, tenantDoc);
+        return true;
+      }
+      if (isComplaint) {
+        const _walkinReply = await _walkinAI({ customerMessage: msg, business, session, intent: 'COMPLAINT' });
+        await dispatchMessage(from, {
+          type:    'buttons',
+          body:    _walkinReply || `We're sorry to hear that${custName}. 😔 Please let us know how we can help.`,
+          buttons: [{ id: 'SUPPORT', title: '💬 Speak to Team' }],
+        }, tenantDoc);
+        return true;
+      }
+      // Any other message — reassure and show menu
+      await dispatchMessage(from, {
+        type:    'buttons',
+        body:    `😊 You're in the queue${custName}. Our team will be with you shortly — please stay nearby!`,
+        buttons: [
+          { id: 'SUPPORT',   title: '💬 Contact Us'  },
+          { id: 'SHOW_MENU', title: '🔄 Main Menu'   },
+        ],
+      }, tenantDoc);
+      return true;
+    }
+
+    // [FIX-PFH-INFO-FLOWS] Informational flow completions — SPEC_REQUEST, WARRANTY,
+    // ENQUIRY, QUOTE_FOLLOW, QUESTION, ABOUT all call completeFlow() which sets
+    // postFlowAck to their flow name. Without these cases every follow-up "thanks",
+    // "ok", or question after an informational flow hit the default branch, showing a
+    // generic "How can I help?" with no context. Now gives a warm contextual reply.
+    case 'SPEC_REQUEST':
+    case 'WARRANTY':
+    case 'ENQUIRY':
+    case 'QUOTE_FOLLOW':
+    case 'QUESTION':
+    case 'ABOUT': {
+      const { getAIReply: _infoAI } = await import('../core/ai/providers/aiRouter.js');
+      if (isAck || isCompliment) {
+        await dispatchMessage(from, {
+          type:    'buttons',
+          body:    `You're welcome${custName}! 😊 Is there anything else I can help you with?`,
+          buttons: welcomeBtns,
+        }, tenantDoc);
+        return true;
+      }
+      if (isQuestion) {
+        const _infoReply = await _infoAI({ customerMessage: msg, business, session, intent: 'QUESTION' });
+        await dispatchMessage(from, {
+          type:    'buttons',
+          body:    _infoReply || `Happy to help${custName}! 😊`,
+          buttons: welcomeBtns,
+        }, tenantDoc);
+        return true;
+      }
+      if (isComplaint) {
+        const _infoReply = await _infoAI({ customerMessage: msg, business, session, intent: 'COMPLAINT' });
+        await dispatchMessage(from, {
+          type:    'buttons',
+          body:    _infoReply || `We're really sorry to hear that${custName}. 😔 Please let us know how we can make it right.`,
+          buttons: [{ id: 'SUPPORT', title: '💬 Speak to Team' }],
+        }, tenantDoc);
+        return true;
+      }
+      // Any other message — show welcome menu
+      await dispatchMessage(from, {
+        type:    'buttons',
+        body:    `😊 What else can I help you with${custName}?`,
+        buttons: welcomeBtns,
+      }, tenantDoc);
+      return true;
+    }
+
     // Legacy/generic postFlowAck (ORDER, BOOKING) — kept for backwards compat
     case 'ORDER': {
       await dispatchMessage(from, {
@@ -257,9 +352,13 @@ async function handleOrderConfirmed({
   // [SPEC-4H] Cancel intent — show confirmation prompt before doing anything
   const CANCEL_RE = /^(cancel|cancel\s*(my\s*)?order|stop|nevermind|never\s*mind|abort)$/i;
   if (CANCEL_RE.test(msg) || upper === 'CANCEL' || upper === 'CANCEL_ORDER') {
+    // [FIX-PFH-CANCEL-1] Include 'preparing' in the status filter. An order can be
+    // moved to status='preparing' by the admin before the customer taps cancel.
+    // Without 'preparing', activeOrd is null → shortRef is '' → the confirmation
+    // card shows "order #" with no reference, and SWITCH_YES has no shortId to cancel.
     const activeOrd = await Order.findOne({
       customerPhone: from, tenantId,
-      status: { $in: ['confirmed', 'pending'] },
+      status: { $in: ['confirmed', 'pending', 'preparing'] },
       paymentStatus: { $nin: ['cancelled', 'rejected'] },
     }).select('item quantity shortId').sort({ createdAt: -1 }).lean().catch(() => null);
 
@@ -287,9 +386,10 @@ async function handleOrderConfirmed({
   if (upper === 'SWITCH_YES') {
     const cancelShortId = session.data?.cancelShortId || flowData.shortId;
     if (cancelShortId) {
+      // [FIX-PFH-SWITCH-YES] Include cancelledAt/cancelledBy for consistent cancel history tracking.
       await Order.findOneAndUpdate(
         { shortId: cancelShortId, tenantId, status: { $nin: ['cancelled', 'completed'] } },
-        { $set: { status: 'cancelled', paymentStatus: 'cancelled' } }
+        { $set: { status: 'cancelled', paymentStatus: 'cancelled', cancelledAt: new Date(), cancelledBy: 'customer' } }
       ).catch(() => {});
     }
     await updateSession(from, tenantId, { postFlowAck: null, postFlowData: null, data: {} });
@@ -314,17 +414,32 @@ async function handleOrderConfirmed({
   // [SPEC-4G] "What did I order?" — show order summary
   const MY_ORDER_RE = /\b(what\s*(did\s*i|have\s*i)\s*order(ed)?|my\s*order|my\s*ref(erence)?|show\s*my\s*order|order\s*details?|what\s*am\s*i\s*(getting|having)|remind\s*me)\b/i;
   if (MY_ORDER_RE.test(msg)) {
+    // [FIX-PFH-MYORDER-1] Include 'preparing' and 'ready' so customers asking
+    // "what did I order?" after the admin marks their order ready still get a
+    // proper order summary instead of null → all-dash display.
     const ord = await Order.findOne({
       customerPhone: from, tenantId,
-      status: { $in: ['confirmed', 'pending'] },
+      status: { $in: ['confirmed', 'pending', 'preparing', 'ready', 'out_for_delivery'] },
     }).select('item quantity totalPrice shortId paymentStatus status').sort({ createdAt: -1 }).lean().catch(() => null);
 
     const currency  = business?.payment?.currency || 'D';
     const ordItem   = ord?.item      || flowData.item     || '—';
     const ordQty    = ord?.quantity  || flowData.quantity || '—';
-    const ordTotal  = ord?.totalPrice ? `${currency}${ord.totalPrice}` : '—';
+    // [FIX-PFH-TOTAL-FALLBACK] Use flowData.totalPrice (now stored by confirmPayment)
+    // as fallback when the DB query returns no order — prevents '—' on DB latency.
+    const ordTotal  = (ord?.totalPrice || flowData.totalPrice) ? `${currency}${ord?.totalPrice || flowData.totalPrice}` : '—';
     const ordRef    = ord?.shortId   || flowData.shortId || '—';
-    const ordStatus = (ord?.status === 'confirmed') ? 'Being Prepared 🍳' : '⏳ Pending';
+    // [FIX-PFH-ORDSTATUS-1] Map all non-terminal statuses so customers always get a
+    // human-readable label, not the raw DB string. Previously only 'confirmed' had
+    // a label — 'preparing', 'ready', 'out_for_delivery' all showed '⏳ Pending'.
+    const STATUS_LABELS = {
+      pending:          '⏳ Pending — awaiting confirmation',
+      confirmed:        '🍳 Being Prepared',
+      preparing:        '🍳 Being Prepared',
+      ready:            '✅ Ready for Collection',
+      out_for_delivery: '🚗 Out for Delivery',
+    };
+    const ordStatus = STATUS_LABELS[ord?.status] || '⏳ Pending';
 
     await updateSession(from, tenantId, { postFlowAck: 'ORDER_CONFIRMED', postFlowData: flowData });
     await dispatchMessage(from, {
@@ -548,7 +663,21 @@ async function handleOrderReady({
   }
 
   if (isQuestion) {
-    const aiReply = await getAIReply({ customerMessage: msg, business, intent: 'QUESTION' });
+    // [FIX-ORDER-READY-Q-CTX] Build order context so AI can answer payment/status questions
+    // ("Did I pay?", "Is my payment confirmed?") truthfully while in ORDER_READY ackCtx.
+    let _orQCtx = null;
+    try {
+      const { default: _OrQOrder } = await import('../models/Order.js');
+      const _orQOrders = await _OrQOrder.find({
+        customerPhone: from,
+        tenantId,
+        status: { $nin: ['cancelled'] },
+      }).sort({ createdAt: -1 }).limit(3)
+        .select('shortId item quantity totalPrice paymentStatus status').lean();
+      if (_orQOrders.length) _orQCtx = { recentOrders: _orQOrders };
+    } catch { /* non-fatal */ }
+
+    const aiReply = await getAIReply({ customerMessage: msg, business, intent: 'QUESTION', orderContext: _orQCtx });
     await dispatchMessage(from, {
       type:    'buttons',
       body:    (aiReply || `Happy to help${custName}! 😊`) + `\n\n_Your order is ready for collection at the counter._`,
@@ -578,9 +707,43 @@ async function handleBookingConfirmed({
     : '';
 
   if (upper === 'CANCEL_BOOKING' || upper === 'CANCEL') {
-    const { cancelFlow } = await import('../core/conversations/flowEngine.js');
-    const reply = await cancelFlow({ customerPhone: from, tenantId }, business);
-    await dispatchMessage(from, reply, tenantDoc);
+    // [FIX-PFH-CANCEL-BOOKING] Must cancel the Booking in the DB here, not just clear session.
+    // cancelFlow() from flowEngine only clears currentFlow/step/data — it does NOT touch the
+    // Booking document. Without this fix, tapping "Cancel Booking" from the BOOKING_CONFIRMED
+    // postFlowAck context would clear the session but leave the Booking record as 'confirmed',
+    // causing the GREET gate to keep showing "You have a confirmed booking" on every subsequent
+    // message, even though the customer explicitly cancelled it.
+    try {
+      const { default: _Booking } = await import('../models/Booking.js');
+      const cancelledBk = await _Booking.findOneAndUpdate(
+        {
+          customerPhone: from,
+          tenantId,
+          status: { $in: ['pending', 'confirmed'] },
+        },
+        { $set: { status: 'cancelled', cancelledAt: new Date(), cancelledBy: 'customer' } },
+        { sort: { createdAt: -1 }, new: true }
+      ).lean().catch(() => null);
+
+      await updateSession(from, tenantId, { currentFlow: null, step: null, data: {}, postFlowAck: null });
+
+      const cfgBkCancel = getModeConfig(business);
+      const whenBkStr = cancelledBk?.date
+        ? ` for *${cancelledBk.date}${cancelledBk.time ? ` at ${cancelledBk.time}` : ''}*`
+        : whenStr;
+      await dispatchMessage(from, {
+        type:    'buttons',
+        body:    cancelledBk
+          ? `✅ Your booking${whenBkStr} has been cancelled. We hope to see you another time! 🙏`
+          : `ℹ️ No active booking found to cancel.`,
+        buttons: cfgBkCancel.ui?.welcomeButtons || [{ id: 'BOOK', title: '📅 Book Again' }],
+      }, tenantDoc);
+    } catch (err) {
+      // Fallback to simple session clear if DB update fails
+      const { cancelFlow } = await import('../core/conversations/flowEngine.js');
+      const reply = await cancelFlow({ customerPhone: from, tenantId }, business);
+      await dispatchMessage(from, reply, tenantDoc);
+    }
     return true;
   }
 

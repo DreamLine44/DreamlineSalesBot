@@ -155,9 +155,30 @@ export async function registerAllModules() {
     return startFlow({ flowName: 'WARRANTY', session, business, tenant });
   });
 
+  // [FIX-ENQUIRY-FALLBACK] ENQUIRY flow is only registered for SERVICES and GENERAL.
+  // For all other modes (RESTAURANT, BAKERY, RETAIL, etc.) startFlow('ENQUIRY') was
+  // returning "⚠️ This option is not available right now." — a broken UX for any
+  // customer tapping "📬 Send an Enquiry" or triggering the ENQUIRY intent.
+  // Fix: only startFlow for modes that have a registered ENQUIRY flow handler.
+  // All other modes fall back to the generic AI question handler (AWAITING_QUESTION).
   registerAction('ENQUIRY', async ({ session, message, business, tenant }) => {
-    const { startFlow } = await import('../conversations/flowEngine.js');
-    return startFlow({ flowName: 'ENQUIRY', session, business, tenant });
+    const { startFlow }     = await import('../conversations/flowEngine.js');
+    const { updateSession } = await import('../sessions/sessionService.js');
+    const mode = (business?.businessMode || 'RETAIL').toUpperCase();
+    // Modes with dedicated ENQUIRY flows registered above
+    const ENQUIRY_FLOW_MODES = new Set(['SERVICES', 'GENERAL']);
+    if (ENQUIRY_FLOW_MODES.has(mode)) {
+      return startFlow({ flowName: 'ENQUIRY', session, business, tenant });
+    }
+    // No mode-specific ENQUIRY flow — use the generic AI question handler
+    await updateSession(session.customerPhone, session.tenantId, {
+      currentFlow: 'ENQUIRY', step: 'AWAITING_QUESTION',
+    });
+    return {
+      type:    'buttons',
+      body:    '❓ What would you like to know? Type your question below.',
+      buttons: [{ id: 'SHOW_MENU', title: '🔄 Start Over' }],
+    };
   });
 
   // [FIX-3] QUESTION action — routes the QUESTION button tap to the mode-specific
@@ -197,9 +218,25 @@ export async function registerAllModules() {
     };
   });
 
+  // [FIX-QUOTE-FOLLOW-FALLBACK] QUOTE_FOLLOW flow is only registered for SERVICES.
+  // For all other modes, startFlow('QUOTE_FOLLOW') returned "not available".
+  // Fix: only startFlow for SERVICES; all other modes fall back to the generic ENQUIRY handler.
   registerAction('QUOTE_FOLLOW', async ({ session, message, business, tenant }) => {
-    const { startFlow } = await import('../conversations/flowEngine.js');
-    return startFlow({ flowName: 'QUOTE_FOLLOW', session, business, tenant });
+    const { startFlow }     = await import('../conversations/flowEngine.js');
+    const { updateSession } = await import('../sessions/sessionService.js');
+    const mode = (business?.businessMode || 'RETAIL').toUpperCase();
+    if (mode === 'SERVICES') {
+      return startFlow({ flowName: 'QUOTE_FOLLOW', session, business, tenant });
+    }
+    // Generic fallback: start the ENQUIRY question flow
+    await updateSession(session.customerPhone, session.tenantId, {
+      currentFlow: 'ENQUIRY', step: 'AWAITING_QUESTION',
+    });
+    return {
+      type:    'buttons',
+      body:    '❓ What would you like to know? Type your question below.',
+      buttons: [{ id: 'SHOW_MENU', title: '🔄 Start Over' }],
+    };
   });
 
   // [FIX-8] ABOUT action — delegates directly to the mode handler via route()'s
@@ -230,9 +267,19 @@ export async function registerAllModules() {
 
     const lastItem = await getLastOrderItem(session.customerPhone, session.tenantId).catch(() => null);
     if (lastItem) {
+      // [FIX-REPEAT-PRICE] Look up the full menu item object to get the price.
+      // Previously only { name: lastItem } was stored — item.price was undefined in the
+      // QUANTITY step, causing total = undefined * qty = NaN, which was saved to the
+      // Order as totalPrice: NaN. Now we find the real menu item first; if not found
+      // (e.g. item was removed from menu), fall back to { name: lastItem, price: 0 }
+      // and inform the customer the price may have changed.
+      const menuItems = business?.menuItems || [];
+      const menuItem = menuItems.find(
+        i => i.name.toLowerCase() === lastItem.toLowerCase() && i.available !== false
+      ) || { name: lastItem, price: null };
       await updateSession(session.customerPhone, session.tenantId, {
         currentFlow: 'ORDER', step: 'QUANTITY',
-        data: { item: { name: lastItem } }, menuViewed: true,
+        data: { item: menuItem }, menuViewed: true,
       });
       return {
         type: 'buttons',

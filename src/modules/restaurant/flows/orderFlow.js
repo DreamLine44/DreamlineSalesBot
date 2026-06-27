@@ -30,7 +30,7 @@ import { buildMenuUI, buildOrderSummary, buildOrderSuccess } from '../handlers/u
 import { parseQuantity }    from '../../../utils/parseQuantity.js';
 import { saveOrder }        from '../../../services/orderService.js';
 import { recordRevenue, trackOrderAnalytics } from '../../../core/analytics/analyticsService.js';
-import { dispatchText }     from '../../../core/whatsapp/dispatcher.js';
+// [FIX-DEAD-IMPORT] dispatchText removed -- all admin dispatch uses dispatchMessage (dynamic import in CONFIRM case)
 import { buildPaymentInstructionsUI } from '../../../services/paymentService.js';
 import { buildWhatsAppImageUrl }       from '../../../config/cloudinary.js';
 import logger               from '../../../config/logger.js';
@@ -64,7 +64,6 @@ export async function handleOrderFlow({ session, message, business, tenant, isIn
     await updateSession(session.customerPhone, session.tenantId, {
       currentFlow: null, step: null, data: {},
     });
-    const cfg = (await import('../../../config/modes.js')).getModeConfig(business);
     return {
       type:    'buttons',
       body:    '⚠️ Our menu is being updated. Please contact us directly.',
@@ -104,7 +103,12 @@ export async function handleOrderFlow({ session, message, business, tenant, isIn
       }
 
       // Cancel / escape keywords — let the flow engine handle them
-      if (/^(cancel|stop|exit|back|menu|home)$/i.test(clean)) {
+      // [FIX-6] 'confirm' added: a stale ✅ Confirm button tap from a previous order
+      // step (e.g. the CONFIRM or SUGGESTION_CONFIRM card) passes through FLOW_PASSTHROUGH_IDS
+      // into SELECT_ITEM where it has no meaning. Without this guard, findBestMatch() would
+      // run on "confirm" and reply "I couldn't find confirm on our menu." — confusing.
+      // Treat it as an escape back to the menu so the customer sees their options again.
+      if (/^(cancel|stop|exit|back|menu|home|confirm)$/i.test(clean)) {
         return buildMenuUI(business);
       }
 
@@ -302,6 +306,17 @@ export async function handleOrderFlow({ session, message, business, tenant, isIn
         }
       } catch (err) {
         logger.error('[OrderFlow] saveOrder failed', { err: err.message });
+        // [FIX-SAVE-NULL] If saveOrder throws, savedOrder stays null. Every downstream
+        // branch (payment notification, admin alert) is gated on savedOrder existing.
+        // Return an explicit error so the customer can contact support instead.
+        await updateSession(session.customerPhone, session.tenantId, {
+          currentFlow: null, step: null, data: {},
+        });
+        return {
+          type:    'buttons',
+          body:    'Something went wrong placing your order. Please contact us directly.',
+          buttons: [{ id: 'SUPPORT', title: 'Contact Us' }],
+        };
       }
 
       // Payment configured?
@@ -411,9 +426,11 @@ export async function handleOrderFlow({ session, message, business, tenant, isIn
         };
       }
 
-      const _lcR = await completeFlow(session, 'ORDER', business, tenant);
-      if (_lcR) return _lcR;
-      return buildOrderSuccess({ item: data.item, qty: data.quantity, business });
+      // [FIX-DEAD-PATH] This code is structurally unreachable: both the payment-enabled
+      // branch and the no-payment branch always return early. completeFlow() for cash/delivery
+      // orders is intentionally NOT called here (session stays in AWAIT_ADMIN_CONFIRM until
+      // admin confirms). Kept as documentation of the intended state machine exit.
+      // return buildOrderSuccess({ item: data.item, qty: data.quantity, business });
     }
 
     default:
@@ -484,17 +501,36 @@ export async function handleRestaurantQuestion({ session, message, business, ten
     };
   }
 
+  // [FIX-RESTAURANT-Q-CTX] Fetch real order history so AI can answer payment/status
+  // questions ("Did I pay?", "What did I order?") truthfully instead of saying
+  // "I don't have access to payment records." Without this the AI operates blind,
+  // producing confusing non-answers even when order data is readily available in DB.
+  let _rstOrderCtx = null;
+  try {
+    const { default: _RstOrder } = await import('../../../models/Order.js');
+    const _rstOrders = await _RstOrder.find({
+      customerPhone: session.customerPhone,
+      tenantId:      session.tenantId,
+      status:        { $nin: ['cancelled'] },
+    }).sort({ createdAt: -1 }).limit(3)
+      .select('shortId item quantity totalPrice paymentStatus status').lean();
+    if (_rstOrders.length) _rstOrderCtx = { recentOrders: _rstOrders };
+  } catch { /* non-fatal */ }
+
   const aiReply = await getAIReply({
     customerMessage: raw,
     business,
     session,
     intent: 'FAQ',
+    orderContext: _rstOrderCtx,
   });
 
-  const _lcRrq = await completeFlow(session, 'QUESTION', business, tenant);
-  if (_lcRrq) return _lcRrq;
-
-  return {
+  // [FIX-Q-ORDER] completeFlow() must be called AFTER the aiReply response is built,
+  // not before. If lead capture is configured, completeFlow() returns a lead-capture
+  // UIResponse — returning it immediately caused the AI answer to be silently discarded
+  // and the customer received a lead-capture prompt instead of their question answer.
+  // Now: build the default response first, then override with lead-capture only if set.
+  const defaultReply = {
     type: 'buttons',
     body: aiReply || "Great question! Please contact us directly and we'll be happy to help.",
     buttons: [
@@ -503,4 +539,6 @@ export async function handleRestaurantQuestion({ session, message, business, ten
       { id: 'QUESTION', title: '❓ Ask Another'  },
     ],
   };
+  const _lcRrq = await completeFlow(session, 'QUESTION', business, tenant);
+  return _lcRrq || defaultReply;
 }

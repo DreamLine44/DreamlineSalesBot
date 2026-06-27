@@ -82,10 +82,46 @@ function buildSystemPrompt({ business, intent, faqContext, orderContext }) {
     return lines ? `\nBusiness hours: ${lines}` : '';
   })();
 
-  // [GROQ-OPT-2] Active order context so AI doesn't answer in a vacuum
-  const orderLine = orderContext?.item
-    ? `\nACTIVE ORDER: Customer has a confirmed order for *${sanitise(orderContext.item, 60)}* (ref #${orderContext.shortId || '?'}) currently being prepared. Any answers about timing, status, or next steps should acknowledge this.`
-    : '';
+  // [GROQ-OPT-2] Active order + customer history context so AI doesn't answer in a vacuum.
+  // Previously only included the item name of ONE active order. Now includes:
+  //   - All recent orders (up to 3) with status + payment state so AI can answer
+  //     "Did I paid?", "What did I order?", "Is my payment confirmed?" truthfully.
+  //   - Recent bookings so AI can answer "Did my booking go through?"
+  //   - Customer name for personalisation.
+  // This data is passed in by webhookController / moduleRouter via orderContext param.
+  const orderLine = (() => {
+    if (!orderContext) return '';
+    const lines = [];
+
+    // Recent orders
+    if (Array.isArray(orderContext.recentOrders) && orderContext.recentOrders.length) {
+      const orderSummaries = orderContext.recentOrders.slice(0, 3).map(o => {
+        const ps = o.paymentStatus || 'unknown';
+        const st = o.status || 'unknown';
+        const paid = ['confirmed', 'self_confirmed', 'paid'].includes(ps)
+          ? 'PAID ✅'
+          : ps === 'proof_received' ? 'AWAITING VERIFICATION ⏳'
+          : ps === 'rejected' ? 'PAYMENT REJECTED ❌'
+          : 'UNPAID';
+        return `• #${o.shortId || '?'} — ${sanitise(o.item || 'Order', 40)} ×${o.quantity || 1} | Status: ${st} | Payment: ${paid}`;
+      }).join('\n');
+      lines.push(`\nCUSTOMER'S RECENT ORDERS:\n${orderSummaries}`);
+    } else if (orderContext.item) {
+      // Legacy single-order path
+      lines.push(`\nACTIVE ORDER: Customer has a confirmed order for *${sanitise(orderContext.item, 60)}* (ref #${orderContext.shortId || '?'}) currently being prepared.`);
+    }
+
+    // Recent bookings
+    if (Array.isArray(orderContext.recentBookings) && orderContext.recentBookings.length) {
+      const bookSummaries = orderContext.recentBookings.slice(0, 2).map(b =>
+        `• ${sanitise(b.service || 'Appointment', 40)} on ${b.date || '?'} at ${b.time || '?'} — ${b.status || 'pending'}`
+      ).join('\n');
+      lines.push(`\nCUSTOMER'S RECENT BOOKINGS:\n${bookSummaries}`);
+    }
+
+    if (!lines.length) return '';
+    return lines.join('\n') + '\n\nUse this context to give accurate, specific answers. Never claim you cannot see payment or order records — you have the information above.';
+  })();
 
   return [
     `You are a ${persona} for *${name}*.`,
@@ -99,6 +135,8 @@ function buildSystemPrompt({ business, intent, faqContext, orderContext }) {
     `- Sound like a helpful human, not a robot.`,
     `- Only discuss ${name} and its services/products.`,
     `- NEVER claim you placed an order, made a booking, or took any action.`,
+    `- NEVER claim to have confirmed a payment, received a payment, or processed a transaction. Only the payment system does that.`,
+    `- NEVER say "Wave mobile money payment received", "I've confirmed your payment", "payment of D[amount]", or similar. These are system-generated messages, not your words.`,
     `- NEVER make up prices, hours, or menu items not listed above.`,
     `- If unsure, say "Let me check that for you" and offer to escalate.`,
     `- Use WhatsApp formatting: *bold* for emphasis. No markdown headers.`,
@@ -259,7 +297,11 @@ export async function classifyIntent({ message, validIntents, mode = 'RETAIL' })
         content:
           `You are an intent classifier for a ${mode} WhatsApp business bot.\n` +
           `Classify the customer message into exactly ONE of: ${validIntents.join(', ')}\n` +
-          `Reply with ONLY the intent word — nothing else, no explanation, no punctuation.`,
+          `Reply with ONLY the intent word — nothing else, no explanation, no punctuation.\n` +
+          // [FIX-GRATITUDE] Gratitude phrases must be ACKNOWLEDGEMENT, never SUPPORT.
+          // The keyword matcher catches short exact phrases; this guard covers longer
+          // variants that bypass keyword matching and reach AI classification.
+          `CRITICAL: Expressions of thanks, gratitude, or appreciation (e.g. "thanks so much", "really appreciate it", "you're amazing") MUST be classified as ACKNOWLEDGEMENT, NOT SUPPORT. SUPPORT is ONLY for complaints, problems, or requests for human help.`,
       },
       { role: 'user', content: String(message || '').slice(0, 200) },
     ]);

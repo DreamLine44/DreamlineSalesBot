@@ -107,6 +107,12 @@ export async function handleDeliveryOrder({ session, message, business, tenant, 
         if (confidenceLevel === 'HIGH') {
           item = m;
         } else if (confidenceLevel === 'LOW' && m) {
+          // [FIX-SUGGEST-DELIVERY] Advance to SUGGESTION_CONFIRM and save the matched item
+          // so that tapping CONFIRM selects the item rather than re-entering SELECT_ITEM.
+          await updateSession(session.customerPhone, session.tenantId, {
+            step: 'SUGGESTION_CONFIRM',
+            data: { ...data, suggestion: m.name },
+          });
           return {
             type: 'buttons',
             body: `Did you mean *${m.name}*?`,

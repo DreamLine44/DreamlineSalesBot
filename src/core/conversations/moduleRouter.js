@@ -68,7 +68,9 @@ export async function route({ action, intent, session, message, business, tenant
         const ackOrder = await _AckOrder.findOne({
           customerPhone: session.customerPhone,
           tenantId:      session.tenantId,
-          status:        { $in: ['confirmed', 'pending', 'ready'] },
+          // [FIX-ACK-DELIVERY] Include out_for_delivery so delivery-in-transit customers
+          // get a contextual acknowledgement instead of a generic "What would you like to do?" menu.
+          status:        { $in: ['confirmed', 'pending', 'preparing', 'ready', 'out_for_delivery'] },
           paymentStatus: { $nin: ['cancelled', 'rejected'] },
         }).select('item quantity shortId status').sort({ createdAt: -1 }).lean().catch(() => null);
 
@@ -85,11 +87,30 @@ export async function route({ action, intent, session, message, business, tenant
               lastOrderStatusAckAt: new Date().toISOString(),
             }).catch(() => {});
 
-            const statusLine = {
-              confirmed: `🍳 Being prepared`,
-              pending:   `⏳ Awaiting confirmation`,
-              ready:     `🍽️ Ready for collection!`,
-            }[ackOrder.status] || `⏳ Being processed`;
+            const statusLineMap = {
+              confirmed:        `🍳 Being prepared`,
+              preparing:        `🍳 Being prepared`,
+              pending:          `⏳ Awaiting confirmation`,
+              ready:            `🍽️ Ready for collection!`,
+              out_for_delivery: `🚗 Out for delivery`,
+            };
+            const statusLine = statusLineMap[ackOrder.status] || `⏳ Being processed`;
+
+            // [FIX-ACK-READY-TEXT] For 'ready' orders, "we'll let you know when there's an
+            // update" is factually wrong — the update HAS arrived (order is ready). Show the
+            // correct contextual message with a COLLECTED button so the customer can confirm
+            // pickup directly from this acknowledgement reply.
+            if (ackOrder.status === 'ready') {
+              return {
+                type:    'buttons',
+                body:    `✅ *Your order #${ackOrder.shortId} is ready for collection!* 😊\n\nPlease come collect at the counter.`,
+                buttons: [
+                  { id: `COLLECTED_${ackOrder.shortId}`, title: '✅ Collected — Thanks!' },
+                  { id: 'SUPPORT',                       title: '❓ Need Help'           },
+                ],
+              };
+            }
+
             return {
               type: 'text',
               body: `😊 ${statusLine} — we'll let you know when there's an update on *#${ackOrder.shortId}*!`,
@@ -101,14 +122,34 @@ export async function route({ action, intent, session, message, business, tenant
             // Products for retail) rather than hardcoded QUESTION/CANCEL which may not
             // be relevant. Always append CANCEL as a contextual action since the customer
             // has an active order.
+            //
+            // [FIX-ACK-READY-THROTTLE] For ready orders, the throttled response must still
+            // show the COLLECTED button — not a generic "being processed" message. The customer
+            // needs to know their order is ready regardless of how many times they message us.
+            if (ackOrder.status === 'ready') {
+              return {
+                type:    'buttons',
+                body:    `✅ *Your order #${ackOrder.shortId} is ready for collection!* 😊\n\nPlease come collect at the counter.`,
+                buttons: [
+                  { id: `COLLECTED_${ackOrder.shortId}`, title: '✅ Collected — Thanks!' },
+                  { id: 'SUPPORT',                       title: '❓ Need Help'           },
+                ],
+              };
+            }
             const cfgAck = getModeConfig(business);
             const throttledBtns = [
               { id: 'QUESTION', title: '❓ Ask a Question' },
               { id: 'CANCEL',   title: '❌ Cancel Order'   },
             ];
+            const _throttledStatusLine = {
+              confirmed:        `🍳 being prepared`,
+              preparing:        `🍳 being prepared`,
+              pending:          `⏳ awaiting confirmation`,
+              out_for_delivery: `🚗 out for delivery`,
+            }[ackOrder.status] || `⏳ being processed`;
             return {
               type:    'buttons',
-              body:    `😊 Your order *#${ackOrder.shortId}* is still being processed. What would you like to do?`,
+              body:    `😊 Your order *#${ackOrder.shortId}* is still ${_throttledStatusLine}. What would you like to do?`,
               buttons: throttledBtns,
             };
           }
@@ -155,14 +196,49 @@ export async function route({ action, intent, session, message, business, tenant
         const activeOrder = await _Order.findOne({
           customerPhone: session.customerPhone,
           tenantId:      session.tenantId,
-          status:        { $in: ['confirmed', 'pending'] },
+          status:        { $in: ['confirmed', 'pending', 'ready', 'preparing', 'out_for_delivery'] },
           paymentStatus: { $nin: ['cancelled', 'rejected'] },
         }).select('item quantity shortId paymentStatus status').sort({ createdAt: -1 }).lean().catch(() => null);
 
         if (activeOrder) {
+          // [FIX-GREET-READY] 'ready' orders need the collection card, not the preparing card.
+          // Previously only confirmed/pending were checked — a customer who greeted after
+          // their order was marked ready got a standard welcome screen with no mention of
+          // the ready order, losing the pickup prompt entirely.
+          if (activeOrder.status === 'ready') {
+            return {
+              type:    'buttons',
+              body:
+                `Hi there! 😊\n\n` +
+                `✅ *Your order #${activeOrder.shortId} is ready for collection!*\n\n` +
+                `📦 *${activeOrder.item}* × ${activeOrder.quantity}\n\n` +
+                `Please come collect at the counter. We're waiting for you! 🍽️`,
+              buttons: [
+                { id: `COLLECTED_${activeOrder.shortId}`, title: '✅ Collected — Thanks!' },
+                { id: 'SUPPORT',                          title: '❓ Need Help'           },
+              ],
+            };
+          }
+          // [FIX-GREET-DELIVERY] Out for delivery — show delivery status card.
+          if (activeOrder.status === 'out_for_delivery') {
+            return {
+              type:    'buttons',
+              body:
+                `Hi there! 😊\n\n` +
+                `🚗 *Your order #${activeOrder.shortId} is out for delivery!*\n\n` +
+                `📦 *${activeOrder.item}* × ${activeOrder.quantity}\n\n` +
+                `Your order is on its way — sit tight!`,
+              buttons: [
+                { id: 'CONTACT_BUSINESS', title: '💬 Contact Us'   },
+                { id: 'SHOW_MENU',        title: '🔄 Main Menu'    },
+              ],
+            };
+          }
           const statusLine = {
-            confirmed:      `🍳 Being prepared`,
-            pending:        `⏳ Awaiting confirmation`,
+            confirmed:        `🍳 Being prepared`,
+            preparing:        `🍳 Being prepared`,
+            pending:          `⏳ Awaiting confirmation`,
+            out_for_delivery: `🚗 Out for delivery`,
           }[activeOrder.status] || `⏳ Being processed`;
           return {
             type:    'buttons',
@@ -177,10 +253,14 @@ export async function route({ action, intent, session, message, business, tenant
           };
         }
 
+        // [FIX-GREET-BOOKING] Exclude 'cancelled' explicitly in the status $in so a
+        // customer who just cancelled their booking is not told "You have an active booking."
+        // The $in already restricts to ['pending','confirmed'], but an extra $ne guard is
+        // clearer and future-proofs against enum expansion where 'cancelled' might slip in.
         const activeBooking = await _Booking.findOne({
           customerPhone: session.customerPhone,
           tenantId:      session.tenantId,
-          status:        { $in: ['pending', 'confirmed'] },
+          status:        { $in: ['pending', 'confirmed'], $ne: 'cancelled' },
         }).select('shortId date time partySize status').sort({ createdAt: -1 }).lean().catch(() => null);
 
         if (activeBooking) {
@@ -503,6 +583,28 @@ Your favourite is *${topItem}* — want to order it again? 😊`
       };
     }
 
+    case 'CONTACT_BUSINESS': {
+      // [FIX-CONTACT-BUS] Dedicated handler for the "Contact Business" button shown by
+      // activeOrderResolver order-status cards. Previously these buttons used id='SUPPORT'
+      // which fired full SOS escalation — silencing the bot and alerting the admin —
+      // every time a customer tapped "Contact Business" while checking their order status.
+      // This handler just shows the business phone number without triggering SOS.
+      const bizPhone = business?.adminPhone || null;
+      const bizName  = business?.name || 'us';
+      return {
+        type: 'buttons',
+        body:
+          `💬 *Contact ${bizName}*\n\n` +
+          (bizPhone
+            ? `📞 You can reach us at *${bizPhone}*\n\nOr tap below if you need additional help from our team.`
+            : `Tap below if you need additional help from our team.`),
+        buttons: [
+          { id: 'SUPPORT',   title: '🆘 Get Help'     },
+          { id: 'SHOW_MENU', title: '🔄 Back to Menu' },
+        ],
+      };
+    }
+
     case 'REPEAT_ORDER': {
       const handler = ACTION_REGISTRY.get('REPEAT_ORDER');
       if (handler) return handler({ session, message, business, tenant });
@@ -514,7 +616,23 @@ Your favourite is *${topItem}* — want to order it again? 😊`
       const { getAIReply } = await import('../ai/providers/aiRouter.js');
       const cfg = getModeConfig(business);
 
-      const aiText = await getAIReply({ customerMessage: message, business, session, intent });
+      // [FIX-AI-CTX] Fetch recent order + booking history so the AI can answer
+      // payment/status questions ("Did I paid?", "What did I order?") truthfully.
+      let _fbOrderCtx = null;
+      try {
+        const { default: _FbOrder } = await import('../../models/Order.js');
+        // [FIX-FB-CTX-CANCEL] Exclude cancelled orders from AI FALLBACK context
+        const _fbOrders = await _FbOrder.find({
+          customerPhone: session.customerPhone,
+          tenantId:      session.tenantId,
+          status:        { $nin: ['cancelled', 'completed'] },
+          paymentStatus: { $ne: 'cancelled' },
+        }).sort({ createdAt: -1 }).limit(3)
+          .select('shortId item quantity totalPrice paymentStatus status').lean();
+        if (_fbOrders.length) _fbOrderCtx = { recentOrders: _fbOrders };
+      } catch { /* non-fatal */ }
+
+      const aiText = await getAIReply({ customerMessage: message, business, session, intent, orderContext: _fbOrderCtx });
       // [FIX-BUG1] cfg.messages.fallback not cfg.labels.fallback
       const fallbackMsg = business?.customMessages?.fallback || cfg.messages?.fallback;
       const body = aiText || fallbackMsg || 'How can I help you? 😊';
@@ -583,47 +701,84 @@ Your favourite is *${topItem}* — want to order it again? 😊`
 
     case 'PAYMENT': {
       // [FIX-RTR-PAY] PAYMENT intent (e.g. customer types "I paid", "payment sent",
-      // "I've made the transfer") with no active flow — they may have sent payment
-      // outside the normal flow, or the session expired after they paid.
-      // Check for an order awaiting proof first; if found, restore the PAYMENT_PROOF step.
-      // Otherwise show a gentle prompt to start a new order.
+      // "I've made the transfer", "Did I paid?") with no active flow.
+      // [FIX-PAY-STATUS] Previously only checked paymentStatus='unpaid'. A customer
+      // whose order is already confirmed/ready asking "Did I paid?" hit the dead-end
+      // "couldn't find a pending order" message — confusing and incorrect.
+      // Now we look up the most recent non-cancelled order and respond based on its
+      // actual payment state so the customer always gets a truthful answer.
       try {
         const { default: _PayOrder } = await import('../../models/Order.js');
-        const pendingPay = await _PayOrder.findOne({
+        const recentOrder = await _PayOrder.findOne({
           customerPhone: session.customerPhone,
           tenantId:      session.tenantId,
-          paymentStatus: { $in: ['unpaid'] },
           status:        { $nin: ['cancelled', 'completed'] },
-        }).select('_id item quantity totalPrice shortId').sort({ createdAt: -1 }).lean().catch(() => null);
+        }).select('_id item quantity totalPrice shortId paymentStatus status').sort({ createdAt: -1 }).lean().catch(() => null);
 
-        if (pendingPay) {
-          // Restore the payment proof step so the customer can send their screenshot
-          const { updateSession: _us } = await import('../sessions/sessionService.js');
-          await _us(session.customerPhone, session.tenantId, {
-            currentFlow: 'ORDER', step: 'PAYMENT_PROOF',
-          });
-          const cfg = getModeConfig(business);
+        if (recentOrder) {
+          const ps = recentOrder.paymentStatus;
+          const st = recentOrder.status;
           const currency = business?.payment?.currency || 'D';
-          return {
-            type:    'buttons',
-            body:
-              `📸 *Please send your payment screenshot*\n\n` +
-              `Order *#${pendingPay.shortId}* — *${pendingPay.item}* × ${pendingPay.quantity}\n` +
-              `💰 Amount: *${currency}${pendingPay.totalPrice || '—'}*\n\n` +
-              `Send a clear screenshot of your successful payment transfer here.`,
-            buttons: [
-              { id: 'SUPPORT', title: '❓ Need Help'    },
-              { id: 'CANCEL',  title: '❌ Cancel Order' },
-            ],
-          };
+          const cfg = getModeConfig(business);
+
+          // Already paid / confirmed / ready
+          if (['confirmed', 'self_confirmed', 'paid'].includes(ps) || ['confirmed', 'preparing', 'ready', 'out_for_delivery'].includes(st)) {
+            // [FIX-PAYMENT-READY] Show the correct status message based on order state.
+            // Previously all paid states returned "Your order is being processed" — wrong for
+            // 'ready' orders (the order is done, waiting for collection) and 'out_for_delivery'.
+            const statusMsg = st === 'ready'
+              ? `✅ Your order is *ready for collection* at the counter! 😊`
+              : st === 'out_for_delivery'
+              ? `🚗 Your order is *out for delivery* — it's on its way!`
+              : `🍳 Your order is being prepared. We'll notify you when it's ready!`;
+            const readyBtns = st === 'ready'
+              ? [{ id: `COLLECTED_${recentOrder.shortId}`, title: '✅ Collected — Thanks!' }]
+              : cfg.ui?.welcomeButtons || [{ id: 'SHOW_MENU', title: '🔄 Main Menu' }];
+            return {
+              type:    'buttons',
+              body:    `✅ *Yes — payment confirmed!*\n\nOrder *#${recentOrder.shortId}* — *${recentOrder.item}* × ${recentOrder.quantity}\n💰 *${currency}${recentOrder.totalPrice || '—'}*\n\n${statusMsg}`,
+              buttons: readyBtns,
+            };
+          }
+
+          // Proof submitted, awaiting admin
+          if (['proof_received', 'payment_pending_verification'].includes(ps)) {
+            return {
+              type:    'buttons',
+              body:    `⏳ *Payment received — pending verification*\n\nOrder *#${recentOrder.shortId}* — *${recentOrder.item}*\n\nOur team is reviewing your payment screenshot. We'll notify you as soon as it's confirmed. 🙏`,
+              buttons: [{ id: 'SUPPORT', title: '💬 Contact Us' }],
+            };
+          }
+
+          // [FIX-PAYMENT-UNPAID-ENUM] 'pending' is an order.status value, not a paymentStatus value.
+          // The paymentStatus enum only has 'unpaid' as the initial state. Removed 'pending' from
+          // this check to avoid confusion and to match the actual schema correctly.
+          if (['unpaid'].includes(ps)) {
+            const { updateSession: _us } = await import('../sessions/sessionService.js');
+            await _us(session.customerPhone, session.tenantId, {
+              currentFlow: 'ORDER', step: 'PAYMENT_PROOF',
+            });
+            return {
+              type:    'buttons',
+              body:
+                `📸 *Please send your payment screenshot*\n\n` +
+                `Order *#${recentOrder.shortId}* — *${recentOrder.item}* × ${recentOrder.quantity}\n` +
+                `💰 Amount: *${currency}${recentOrder.totalPrice || '—'}*\n\n` +
+                `Send a clear screenshot of your successful payment transfer here.`,
+              buttons: [
+                { id: 'SUPPORT', title: '❓ Need Help'    },
+                { id: 'CANCEL',  title: '❌ Cancel Order' },
+              ],
+            };
+          }
         }
       } catch { /* non-fatal — fall through to welcome */ }
 
-      // No pending payment found — show welcome menu
+      // No recent order at all
       const cfgPay = getModeConfig(business);
       return {
         type:    'buttons',
-        body:    `😊 We couldn't find a pending order for your payment. Would you like to place a new order?`,
+        body:    `😊 We couldn't find a recent order for your account. Would you like to place a new order?`,
         buttons: cfgPay.ui?.welcomeButtons || [{ id: 'ORDER', title: '🛒 Place an Order' }],
       };
     }
@@ -656,10 +811,37 @@ Your favourite is *${topItem}* — want to order it again? 😊`
       // ACTION_REGISTRY before this case runs. All other modes fall through here.
       const questionHandler = ACTION_REGISTRY.get('QUESTION');
       if (questionHandler) return questionHandler({ session, message, business, tenant, intent, isInteractive, suggestion });
-      // Generic fallback: same as ENQUIRY — start the generic question-capture flow
-      await updateSession(session.customerPhone, session.tenantId, {
-        currentFlow: 'ENQUIRY', step: 'AWAITING_QUESTION',
-      });
+      // [FIX-QUESTION-FLOW] For modes that have a dedicated QUESTION flow registered via
+      // registerFlow (e.g. RESTAURANT:QUESTION → handleRestaurantQuestion), delegate to
+      // startFlow('QUESTION') which resolves the correct mode-specific handler. Previously
+      // this fell straight to the generic ENQUIRY two-step path (currentFlow=ENQUIRY,
+      // step=AWAITING_QUESTION) bypassing dedicated question handlers entirely.
+      //
+      // Modes with registered QUESTION flows: RESTAURANT, SALON, BARBERSHOP
+      // Modes without (retail, delivery, bakery, etc.) → startFlow returns the "not available"
+      // fallback UI — we catch that below and redirect to the ENQUIRY two-step instead.
+      //
+      // Strategy: always try startFlow('QUESTION') first. flowEngine.advance() finds the
+      // RESTAURANT:QUESTION handler and calls it with message=null (init). If no handler
+      // is registered, startFlow logs a warn and returns the "not available" buttons
+      // response — in that case we show the generic ENQUIRY prompt instead.
+      const { startFlow: _qStartFlow } = await import('./flowEngine.js').catch(() => ({ startFlow: null }));
+      if (_qStartFlow) {
+        const _qResp = await _qStartFlow({ flowName: 'QUESTION', session, business, tenant });
+        // If startFlow found a handler, the response body will NOT start with ⚠️ Not available
+        // If it didn't find a handler, it returns the ⚠️ fallback — fall through to ENQUIRY
+        if (_qResp && !(_qResp.body || '').startsWith('⚠️ This option is not available')) {
+          return _qResp;
+        }
+        // No dedicated QUESTION flow — clear currentFlow set by startFlow and use ENQUIRY
+        await updateSession(session.customerPhone, session.tenantId, {
+          currentFlow: 'ENQUIRY', step: 'AWAITING_QUESTION',
+        });
+      } else {
+        await updateSession(session.customerPhone, session.tenantId, {
+          currentFlow: 'ENQUIRY', step: 'AWAITING_QUESTION',
+        });
+      }
       return {
         type:    'buttons',
         body:    '❓ What would you like to know? Type your question below.',

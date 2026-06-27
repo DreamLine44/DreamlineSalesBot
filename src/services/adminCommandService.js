@@ -337,9 +337,23 @@ async function confirmPayment(shortId, tenantId, adminPhone, tenantDoc, business
 
     // [FIX-AWAIT] Check if this is a cash order (AWAIT_ADMIN_CONFIRM) so we can
     // send the right confirmation message — "order confirmed" instead of "payment verified".
+    //
+    // [FIX-CASH-TTL] Session-based detection has a TTL race: if the admin takes longer
+    // than the session TTL (~30 min) to approve, session.step has already reset to null
+    // and isCashConfirm would be false — causing a cash/delivery customer to receive the
+    // wrong "Payment Confirmed! Your payment has been verified" message.
+    // Fix: use the order's own paymentStatus as the primary signal. Cash orders are
+    // placed without any payment interaction, so their paymentStatus stays 'unpaid'
+    // throughout the AWAIT_ADMIN_CONFIRM window. Payment-proof orders transition to
+    // 'proof_received' after the customer sends a screenshot. A paymentStatus of 'unpaid'
+    // on an otherwise-approvable order is the reliable cash-order fingerprint, even after
+    // the session expires. The session step check is kept as a secondary confirmation.
     const { getSession: _getSession } = await import('../core/sessions/sessionService.js');
     const custSession2 = await _getSession(order.customerPhone, tenantId).catch(() => null);
-    const isCashConfirm = custSession2?.step === 'AWAIT_ADMIN_CONFIRM';
+    const isCashConfirm =
+      custSession2?.step === 'AWAIT_ADMIN_CONFIRM' ||
+      // Fallback: session expired but order was never touched by payment system
+      (order.paymentStatus === 'unpaid' && !business?.payment?.enabled);
 
     // [FIX-CONFIRM-BTN] Plain text only on the initial confirmation — no welcome buttons.
     // Showing "Order Food / Book a Table" immediately after "your order is being prepared"
@@ -394,7 +408,10 @@ async function confirmPayment(shortId, tenantId, adminPhone, tenantDoc, business
     await updateSession(order.customerPhone, tenantId, {
       currentFlow: null, step: null,
       postFlowAck:  'ORDER_CONFIRMED',
-      postFlowData: { item: order.item, quantity: order.quantity, shortId: order.shortId || shortId },
+      // [FIX-POSTFLOW-TOTAL] Include totalPrice in postFlowData so postFlowHandler's
+      // MY_ORDER_RE and ETA handlers can show the correct total even when the DB query
+      // for the order is slow or fails (totalPrice falls back to flowData.totalPrice).
+      postFlowData: { item: order.item, quantity: order.quantity, shortId: order.shortId || shortId, totalPrice: order.totalPrice || null },
       lastAorInterceptAt: null,
     }).catch(() => {});
 
@@ -435,17 +452,25 @@ async function confirmPayment(shortId, tenantId, adminPhone, tenantDoc, business
 // ── Reject payment ────────────────────────────────────────────────────────────
 async function rejectPayment(shortId, tenantId, adminPhone, tenantDoc, business, rejectReason = null) {
   try {
-    // [FIX-CMD-11] shortId-only query (see confirmPayment for full explanation)
+    // [FIX-REJECT-ATOMIC] Single-step atomic findOneAndUpdate replacing the previous
+    // findOne-then-findOneAndUpdate TOCTOU pattern. Guard conditions (not cancelled,
+    // not already confirmed) are applied at the DB level so concurrent double-taps
+    // cannot both pass the guard and write conflicting state simultaneously.
     //
-    // [FIX-CMD-14] State-machine guard: previously only `status === 'cancelled'` blocked
-    // a re-reject, meaning an admin could REJECT an order that was already `paymentStatus:
-    // 'confirmed'` (and presumably already being prepared), flipping a confirmed order
-    // back to pending/unpaid with no protection. Now also excludes confirmed orders.
-    const order = await Order.findOne({
+    // Strategy:
+    //  1. Read the order with findOne to get customerPhone + determine isCashOrder.
+    //  2. Fetch the session (needs customerPhone) sequentially after step 1.
+    //  3. All WRITES go through a single findOneAndUpdate with the same guard filter
+    //     so the second concurrent tap sees no document and returns the "already handled" reply.
+
+    const readFilter = {
       shortId, tenantId,
       status:        { $ne: 'cancelled' },
       paymentStatus: { $ne: 'confirmed' },
-    }).select('_id customerPhone status paymentStatus item shortId').lean();
+    };
+
+    const order = await Order.findOne(readFilter)
+      .select('_id customerPhone status paymentStatus item shortId').lean();
 
     if (!order) {
       const existing = await Order.findOne({ shortId, tenantId })
@@ -455,29 +480,33 @@ async function rejectPayment(shortId, tenantId, adminPhone, tenantDoc, business,
       return `⚠️ Order #${shortId} can't be rejected — payment is already confirmed.`;
     }
 
-    // [FIX-AWAIT] Distinguish cash orders (AWAIT_ADMIN_CONFIRM) from payment-proof orders.
-    // Cash orders have no screenshot to retry — rejection means the order is cancelled
-    // and the session should be fully cleared. Payment-proof orders get a retry window.
-    //
-    // [FIX-CMD-14] This check now runs BEFORE any write (previously the function wrote
-    // status='pending'/paymentStatus='unpaid' unconditionally first, then immediately
-    // overwrote those same fields to 'cancelled' in the cash branch — a wasted write
-    // that also left the order briefly in the wrong state). We now write the correct
-    // final state exactly once, via an atomic findOneAndUpdate keyed off the same
-    // guard filter as the read above to close the double-tap TOCTOU race.
-    const { getSession } = await import('../core/sessions/sessionService.js');
-    const custSession = await getSession(order.customerPhone, tenantId).catch(() => null);
-    const isCashOrder = custSession?.step === 'AWAIT_ADMIN_CONFIRM';
+    // Determine cash vs proof path before writing.
+    // [FIX-CASH-TTL] Same TTL race as confirmPayment: session may have expired by the
+    // time the admin rejects. Use order.paymentStatus='unpaid' + payment not enabled
+    // as the reliable cash-order fingerprint when the session step is unavailable.
+    let isCashOrder = false;
+    try {
+      const { getSession } = await import('../core/sessions/sessionService.js');
+      const sess = await getSession(order.customerPhone, tenantId).catch(() => null);
+      isCashOrder =
+        sess?.step === 'AWAIT_ADMIN_CONFIRM' ||
+        (order.paymentStatus === 'unpaid' && !business?.payment?.enabled);
+    } catch {
+      // non-fatal — fall back to paymentStatus heuristic only
+      isCashOrder = order.paymentStatus === 'unpaid' && !business?.payment?.enabled;
+    }
 
-    const guardFilter = {
-      _id: order._id,
+    // Atomic write filter — keyed off _id + same state guards as readFilter
+    // so only one concurrent REJECT can succeed even under double-tap race
+    const atomicFilter = {
+      _id:           order._id,
       status:        { $ne: 'cancelled' },
       paymentStatus: { $ne: 'confirmed' },
     };
 
     if (isCashOrder) {
       // Cash/delivery rejection — mark cancelled, clear session, let customer restart
-      const updated = await Order.findOneAndUpdate(guardFilter, { $set: {
+      const updated = await Order.findOneAndUpdate(atomicFilter, { $set: {
         status:            'cancelled',
         paymentStatus:     'cancelled',
         paymentReviewedBy: adminPhone,
@@ -514,7 +543,7 @@ async function rejectPayment(shortId, tenantId, adminPhone, tenantDoc, business,
     // paymentStatus='unpaid'  → receiveProof() will accept a new screenshot
     // status='pending'        → order is alive and awaiting retry (was 'payment_failed',
     //                           which is semantically wrong when the retry window is open)
-    const updated = await Order.findOneAndUpdate(guardFilter, { $set: {
+    const updated = await Order.findOneAndUpdate(atomicFilter, { $set: {
       paymentStatus:     'unpaid',
       status:            'pending',
       paymentReviewedBy: adminPhone,
@@ -743,10 +772,17 @@ async function resumeBot(customerPhone, tenantId, tenantDoc) {
   // makes it easier to diagnose cases where an admin resumes a phone that never had
   // a human-mode session.
   const updated = await updateSession(customerPhone, tenantId, {
-    humanMode:         false,
-    humanModeNotified: false,
-    postFlowAck:       null,
-    postFlowData:      null,
+    humanMode:            false,
+    humanModeNotified:    false,
+    postFlowAck:          null,
+    postFlowData:         null,
+    // [FIX-RESUME-THROTTLE] Clear AOR and ACKNOWLEDGE throttle timestamps so the customer's
+    // first message after the bot resumes is processed cleanly. If these are stale they
+    // suppress the correct order-status reply on the first post-resume message, producing
+    // the confusing "we'll let you know when there's an update" text even though the order
+    // is already in a terminal ready/confirmed state.
+    lastAorInterceptAt:   null,
+    lastOrderStatusAckAt: null,
   });
 
   if (!updated) {

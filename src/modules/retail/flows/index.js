@@ -109,8 +109,10 @@ export async function handleRetailOrder({ session, message, business, tenant, is
 
       // They typed something — treat as a search
       if (raw.length >= 2) {
+        // [FIX-MEDIUM-RETAIL] matchEngine only returns HIGH / LOW / NONE — 'MEDIUM' is dead code.
+        // Changed to HIGH || LOW so a low-confidence typed match also shows the item detail.
         const { item, confidenceLevel } = findBestMatch(menu, clean);
-        if (confidenceLevel === 'HIGH' || confidenceLevel === 'MEDIUM') {
+        if (confidenceLevel === 'HIGH' || confidenceLevel === 'LOW') {
           await updateSession(session.customerPhone, session.tenantId, {
             step: 'SELECT_VARIANT',
             data: { ...data, item },
@@ -484,11 +486,12 @@ export async function handleProductQuery({ session, message, business, tenant })
     session,
     intent: 'PRODUCT_QUERY',
   });
-  // [FIX-1] Correct completeFlow signature: (session, completedFlow, business, tenant)
-  // [FIX-2] Capture return value — completeFlow may return a lead-capture UIResponse
-  const _lcRpq = await completeFlow(session, 'ORDER', business, tenant);
-  if (_lcRpq) return _lcRpq;
-  return {
+  // [FIX-PQ-ORDER] Build defaultReply BEFORE completeFlow. If lead capture is configured,
+  // completeFlow() returns a lead-capture UIResponse — returning it immediately would
+  // discard the aiReply and the customer would receive a lead-capture prompt instead of
+  // their product question answer. The same fix is applied in restaurant, salon, general,
+  // services question handlers for the same reason ([FIX-Q-ORDER]).
+  const defaultReply = {
     type: 'buttons',
     body: aiReply || "Great question! Let me point you to the right product.",
     buttons: [
@@ -496,6 +499,10 @@ export async function handleProductQuery({ session, message, business, tenant })
       { id: 'SHOW_MENU', title: '📋 View All'    },
     ],
   };
+  // [FIX-1] Correct completeFlow signature: (session, completedFlow, business, tenant)
+  // [FIX-2] Capture return value — completeFlow may return a lead-capture UIResponse
+  const _lcRpq = await completeFlow(session, 'ORDER', business, tenant);
+  return _lcRpq || defaultReply;
 }
 
 // ── UI Helpers ────────────────────────────────────────────────────────────────

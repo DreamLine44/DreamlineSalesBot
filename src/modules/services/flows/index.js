@@ -302,16 +302,28 @@ export async function handleQuoteFollowUp({ session, message, business, tenant }
 // ── AI Question Handler ───────────────────────────────────────────────────────
 
 export async function handleServicesQuestion({ session, message, business, tenant }) {
+  // [FIX-SERVICES-Q-CTX] Inject order/booking context so AI can answer status questions truthfully.
+  let _svcOrderCtx = null;
+  try {
+    const { default: _SvcOrder } = await import('../../../models/Order.js');
+    const _svcOrders = await _SvcOrder.find({
+      customerPhone: session.customerPhone,
+      tenantId:      session.tenantId,
+      status:        { $nin: ['cancelled'] },
+    }).sort({ createdAt: -1 }).limit(3)
+      .select('shortId item quantity totalPrice paymentStatus status').lean();
+    if (_svcOrders.length) _svcOrderCtx = { recentOrders: _svcOrders };
+  } catch { /* non-fatal */ }
+
   const aiReply = await getAIReply({
     customerMessage: String(message || '').trim(),
     business,
     session,
     intent: 'SERVICES_QUESTION',
+    orderContext: _svcOrderCtx,
   });
-  // [FIX-1] Correct completeFlow signature: (session, completedFlow, business, tenant)
-  const _lcRsq = await completeFlow(session, 'QUESTION', business, tenant);
-  if (_lcRsq) return _lcRsq;
-  return {
+  // [FIX-Q-ORDER] Build defaultReply before completeFlow — same fix as restaurant/salon/general.
+  const _svcDefaultReply = {
     type: 'buttons',
     body: aiReply || 'Happy to help! Feel free to ask us anything about our services.',
     buttons: [
@@ -319,6 +331,8 @@ export async function handleServicesQuestion({ session, message, business, tenan
       { id: 'BOOK',    title: '📅 Book Consultation' },
     ],
   };
+  const _lcRsq = await completeFlow(session, 'QUESTION', business, tenant);
+  return _lcRsq || _svcDefaultReply;
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────

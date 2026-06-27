@@ -154,9 +154,10 @@ export async function handleElectronicsOrder({
           return buildProductList(filtered, business, catMatch);
         }
 
-        // Product name typed — fuzzy match
+        // [FIX-MEDIUM-ELEC] matchEngine only returns HIGH / LOW / NONE — 'MEDIUM' is dead code.
+        // Changed to HIGH || LOW so a typed low-confidence match also shows the item detail card.
         const { item, confidenceLevel } = findBestMatch(menu, clean);
-        if (confidenceLevel === 'HIGH' || confidenceLevel === 'MEDIUM') {
+        if (confidenceLevel === 'HIGH' || confidenceLevel === 'LOW') {
           await updateSession(session.customerPhone, session.tenantId, {
             step: 'ITEM_DETAIL',
             data: { ...data, item },
@@ -666,7 +667,11 @@ export async function handleCompare({ session, message, business, tenant }) {
         return { type: 'text', body: 'Please type the name of the first product to compare:' };
       }
       const { item, confidenceLevel } = findBestMatch(menu, clean);
-      if (!item || (confidenceLevel !== 'HIGH' && confidenceLevel !== 'MEDIUM')) {
+      // [FIX-MEDIUM-CMP] matchEngine only returns HIGH / LOW / NONE — MEDIUM is never returned.
+      // The previous check (confidenceLevel !== 'HIGH' && confidenceLevel !== 'MEDIUM') treated
+      // every LOW-confidence match as "not found", falling through to the AI product-search
+      // fallback instead of using the matched item. Fixed: reject only NONE (no match).
+      if (!item || confidenceLevel === 'NONE') {
         const aiReply = await getAIReply({
           customerMessage: raw, business, session, intent: 'PRODUCT_SEARCH',
         });
@@ -696,7 +701,8 @@ export async function handleCompare({ session, message, business, tenant }) {
         return { type: 'text', body: 'Please type the name of the second product:' };
       }
       const { item, confidenceLevel } = findBestMatch(menu, clean);
-      if (!item || (confidenceLevel !== 'HIGH' && confidenceLevel !== 'MEDIUM')) {
+      // [FIX-MEDIUM-CMP] Same fix as SELECT_FIRST — reject only NONE, accept LOW matches.
+      if (!item || confidenceLevel === 'NONE') {
         const aiReply = await getAIReply({
           customerMessage: raw, business, session, intent: 'PRODUCT_SEARCH',
         });

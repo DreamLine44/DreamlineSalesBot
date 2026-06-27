@@ -36,6 +36,12 @@ export async function getRecentOrders(customerPhone, tenantId, limit = 5) {
 }
 
 export async function getLastOrderItem(customerPhone, tenantId) {
-  const order = await Order.findOne({ customerPhone, tenantId }).sort({ createdAt: -1 }).lean();
+  // [FIX-LAST-ORDER] Exclude cancelled/rejected orders so REPEAT_ORDER does not
+  // offer to repeat an order the customer explicitly cancelled or that was rejected.
+  const order = await Order.findOne({
+    customerPhone, tenantId,
+    status:        { $nin: ["cancelled", "rejected"] },
+    paymentStatus: { $nin: ["cancelled", "rejected"] },
+  }).sort({ createdAt: -1 }).lean();
   return order?.item || null;
 }

@@ -623,17 +623,29 @@ export async function handleSalonQuestion({ session, message, business, tenant }
     };
   }
 
+  // [FIX-SALON-Q-CTX] Inject order context so AI can answer booking/payment questions truthfully.
+  let _slnOrderCtx = null;
+  try {
+    const { default: _SlnOrder } = await import('../../../models/Order.js');
+    const _slnOrders = await _SlnOrder.find({
+      customerPhone: session.customerPhone,
+      tenantId:      session.tenantId,
+      status:        { $nin: ['cancelled'] },
+    }).sort({ createdAt: -1 }).limit(3)
+      .select('shortId item quantity totalPrice paymentStatus status').lean();
+    if (_slnOrders.length) _slnOrderCtx = { recentOrders: _slnOrders };
+  } catch { /* non-fatal */ }
+
   const aiReply = await getAIReply({
     customerMessage: raw,
     business,
     session,
     intent: 'SALON_QUESTION',
+    orderContext: _slnOrderCtx,
   });
 
-  const lc = await completeFlow(session, 'QUESTION', business, tenant);
-  if (lc) return lc;
-
-  return {
+  // [FIX-Q-ORDER] Same fix as restaurant question handler — build defaultReply first.
+  const _salonDefaultReply = {
     type: 'buttons',
     body: aiReply || `Great question! For detailed information please contact us directly.`,
     buttons: [
@@ -642,6 +654,8 @@ export async function handleSalonQuestion({ session, message, business, tenant }
       { id: 'QUESTION', title: '❓ Another Question'                            },
     ],
   };
+  const lc = await completeFlow(session, 'QUESTION', business, tenant);
+  return lc || _salonDefaultReply;
 }
 
 // ── UI Helpers ────────────────────────────────────────────────────────────────
