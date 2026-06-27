@@ -475,15 +475,36 @@ Your favourite is *${topItem}* — want to order it again? 😊`
           }
         );
         const count = cancelResult.modifiedCount || 0;
+
+        // [FIX-CANCEL-ALL-BOOKINGS] Also cancel any pending/confirmed bookings.
+        // Previously CANCEL_ALL only touched Orders — a customer with both an active
+        // order and an active booking who tapped "Cancel All" found their order gone
+        // but their booking persisting, then received "You have an active booking"
+        // on the next GREET, which was confusing. Both resources must be cancelled.
+        let bookingCount = 0;
+        try {
+          const { default: _CancelAllBooking } = await import('../../models/Booking.js');
+          const bookingResult = await _CancelAllBooking.updateMany(
+            {
+              customerPhone: session.customerPhone,
+              tenantId:      session.tenantId,
+              status:        { $in: ['pending', 'confirmed'] },
+            },
+            { $set: { status: 'cancelled', cancelledAt: new Date(), cancelledBy: 'customer' } }
+          ).catch(() => ({ modifiedCount: 0 }));
+          bookingCount = bookingResult?.modifiedCount || 0;
+        } catch { /* non-fatal — order cancellation already succeeded */ }
+
         await updateSession(session.customerPhone, session.tenantId, {
           currentFlow: null, step: null, data: {}, postFlowAck: null,
         });
         const cfgCancelAll = getModeConfig(business);
+        const totalCancelled = count + bookingCount;
         return {
           type:    'buttons',
-          body:    count > 0
-            ? `✅ Done — *${count} order${count !== 1 ? 's' : ''}* ${count !== 1 ? 'have' : 'has'} been cancelled. Sorry to see you go! 🙏`
-            : `ℹ️ No active orders found to cancel.`,
+          body:    totalCancelled > 0
+            ? `✅ Done — *${count} order${count !== 1 ? 's' : ''}*${bookingCount > 0 ? ` and *${bookingCount} booking${bookingCount !== 1 ? 's' : ''}*` : ''} ${totalCancelled !== 1 ? 'have' : 'has'} been cancelled. Sorry to see you go! 🙏`
+            : `ℹ️ No active orders or bookings found to cancel.`,
           buttons: cfgCancelAll.ui?.welcomeButtons || [{ id: 'SHOW_MENU', title: '🔄 Start Over' }],
         };
       } catch (err) {
@@ -754,6 +775,21 @@ Your favourite is *${topItem}* — want to order it again? 😊`
           // The paymentStatus enum only has 'unpaid' as the initial state. Removed 'pending' from
           // this check to avoid confusion and to match the actual schema correctly.
           if (['unpaid'].includes(ps)) {
+            // [FIX-PAYMENT-CASH-GUARD] When payment is disabled (cash-on-delivery), an order
+            // with paymentStatus='unpaid' is a cash order awaiting admin confirmation — NOT a
+            // payment-proof order. Restoring PAYMENT_PROOF step here would put the session in
+            // the wrong state and block the customer with an irrelevant screenshot request.
+            // Check payment.enabled: if false, show a "cash order pending confirmation" message instead.
+            if (!business?.payment?.enabled) {
+              return {
+                type:    'buttons',
+                body:    `⏳ *Your order is pending confirmation*\n\nOrder *#${recentOrder.shortId}* — *${recentOrder.item}* × ${recentOrder.quantity}\n\nOur team will confirm it shortly. No payment screenshot is needed for cash orders.`,
+                buttons: [
+                  { id: 'SUPPORT', title: '💬 Contact Us'   },
+                  { id: 'CANCEL',  title: '❌ Cancel Order' },
+                ],
+              };
+            }
             const { updateSession: _us } = await import('../sessions/sessionService.js');
             await _us(session.customerPhone, session.tenantId, {
               currentFlow: 'ORDER', step: 'PAYMENT_PROOF',

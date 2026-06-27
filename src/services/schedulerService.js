@@ -159,9 +159,12 @@ async function runAbandonedCartJob() {
   const weekAgo = new Date(now - 7 * 24 * 60 * 60 * 1000);
 
   // [FIX] abandonedCartAt: null — not $exists:false
+  // [FIX-SCHED-CANCEL] Also exclude paymentStatus='cancelled' as a defensive guard
+  // against pre-fix data where only status was set to 'cancelled' but paymentStatus
+  // was left as 'unpaid'. Prevents sending abandoned-cart reminders for cancelled orders.
   const orders = await Order.find({
     status:         'pending',
-    paymentStatus:  'unpaid',
+    paymentStatus:  { $nin: ['cancelled', 'rejected', 'confirmed', 'self_confirmed', 'paid', 'proof_received'] },
     createdAt:      { $gte: weekAgo, $lte: hourAgo },
     abandonedCartAt: null,
   }).lean();
@@ -288,8 +291,11 @@ async function runPaymentReminderJob() {
   const fourHoursAgo = new Date(now - 4 * 60 * 60 * 1000);
 
   // [FIX] paymentReminderSentAt: null — not $exists:false
+  // [FIX-SCHED-CANCEL-2] Exclude paymentStatus='cancelled' as a defensive guard
+  // against stale data. Also exclude 'proof_received' — those orders already have a
+  // screenshot and should not receive a "please send screenshot" reminder.
   const orders = await Order.find({
-    paymentStatus:        'unpaid',
+    paymentStatus:        { $nin: ['cancelled', 'rejected', 'confirmed', 'self_confirmed', 'paid', 'proof_received'] },
     status:               'pending',
     createdAt:            { $gte: fourHoursAgo, $lte: thirtyAgo },
     paymentReminderSentAt: null,

@@ -392,7 +392,12 @@ async function handleOrderConfirmed({
         { $set: { status: 'cancelled', paymentStatus: 'cancelled', cancelledAt: new Date(), cancelledBy: 'customer' } }
       ).catch(() => {});
     }
-    await updateSession(from, tenantId, { postFlowAck: null, postFlowData: null, data: {} });
+    // [FIX-SWITCH-YES-AOR] Clear lastAorInterceptAt after order cancellation so the
+    // AOR throttle doesn't suppress "no active order" detection on the next message.
+    // Without this the throttle window may still be active and the next message would
+    // fall through to intent detection which correctly shows the welcome menu — but if
+    // a new order is placed quickly, the AOR could show a stale "Being prepared" card.
+    await updateSession(from, tenantId, { postFlowAck: null, postFlowData: null, data: {}, lastAorInterceptAt: null });
     await dispatchMessage(from, {
       type:    'buttons',
       body:    `❌ Your order has been cancelled.\n\nWhat would you like to do next?`,

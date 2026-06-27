@@ -308,6 +308,8 @@ export async function handleBookingFlow({ session, message, business, tenant, is
 
     if (firstStep === 'SELECT_SERVICE') {
       if (services.length > 3) {
+        // [FIX-BOOK-CCY] Use configured currency symbol, not hardcoded 'D'
+        const _bkSvcCcy = business?.payment?.currency || 'D';
         return {
           type: 'list',
           body: 'Which service would you like to book?',
@@ -315,7 +317,7 @@ export async function handleBookingFlow({ session, message, business, tenant, is
           sections: [{ title: 'Our Services', rows: services.map(s => ({
             id: `SVC_${s.name.toUpperCase().replace(/\s+/g, '_')}`,
             title: s.name.slice(0, 24),
-            description: [s.price ? `D${s.price}` : null, s.duration ? `${s.duration} min` : null].filter(Boolean).join(' · ') || undefined,
+            description: [s.price ? `${_bkSvcCcy}${s.price}` : null, s.duration ? `${s.duration} min` : null].filter(Boolean).join(' · ') || undefined,
           }))}],
         };
       }
@@ -366,6 +368,8 @@ export async function handleBookingFlow({ session, message, business, tenant, is
       if (!service) {
         // Show as list for more than 3 services, buttons for ≤3
         if (services.length > 3) {
+          // [FIX-BOOK-CCY-2] Use configured currency symbol
+          const _bkSvc2Ccy = business?.payment?.currency || 'D';
           return {
             type: 'list',
             body: `Please choose a service:`,
@@ -373,7 +377,7 @@ export async function handleBookingFlow({ session, message, business, tenant, is
             sections: [{ title: 'Our Services', rows: services.map(s => ({
               id: `SVC_${s.name.toUpperCase().replace(/\s+/g, '_')}`,
               title: s.name.slice(0, 24),
-              description: s.price ? `D${s.price}${s.duration ? ` · ${s.duration}min` : ''}` : undefined,
+              description: s.price ? `${_bkSvc2Ccy}${s.price}${s.duration ? ` · ${s.duration}min` : ''}` : undefined,
             }))}],
           };
         }
@@ -670,9 +674,13 @@ export async function handleBookingFlow({ session, message, business, tenant, is
         logger.warn('[BookingFlow] Admin notification failed (non-fatal)', { err: err.message });
       }
 
-      const _lcRb = await completeFlow(session, 'BOOKING', business, tenant);
-      if (_lcRb) return _lcRb;
-
+      // [FIX-BK-LC] Build and return the booking confirmation FIRST, before checking
+      // for lead capture. Previously completeFlow() was called first — if lead capture
+      // fired, its prompt replaced the booking confirmation entirely, so the customer
+      // never received "Booking Request Received!" after submitting their booking.
+      // Now: always show the booking confirmation, then append the LC prompt on top if
+      // configured (LC prompt is returned by completeFlow as the caller return value,
+      // but the booking confirmation must be dispatched independently before that).
       const confirmBody =
         `📅 *Booking Request Received!*\n\n` +
         (service ? `💇  Service: *${service}*\n` : '') +
@@ -684,11 +692,31 @@ export async function handleBookingFlow({ session, message, business, tenant, is
 
       // [SPEC-6C] No welcome/sales buttons on booking receipt — customer is waiting
       // for admin confirmation. Just a cancel escape.
-      return {
+      const bookingConfirmPayload = {
         type:    'buttons',
         body:    confirmBody,
         buttons: [{ id: 'CANCEL_BOOKING', title: '❌ Cancel Booking' }],
       };
+
+      // Check for lead capture — dispatch booking confirmation first so customer
+      // always receives it, then return LC prompt (or the booking confirmation as fallback).
+      const _lcRb = await completeFlow(session, 'BOOKING', business, tenant);
+      if (_lcRb) {
+        // Lead capture is active — dispatch the booking confirmation now, then let
+        // the caller dispatch the LC prompt as the returned response.
+        // We need dispatchMessage here: import dynamically to avoid circular deps.
+        try {
+          const { dispatchMessage: _bkDispatch } = await import('../whatsapp/dispatcher.js');
+          await _bkDispatch(session.customerPhone, bookingConfirmPayload, tenant);
+        } catch (_bkDispErr) {
+          // Non-fatal: if dispatch fails, return the combined payload so customer at
+          // minimum sees the lead-capture form (booking details in DB are already saved).
+          logger.warn('[BookingFlow] Booking confirmation dispatch before LC failed', { err: _bkDispErr.message });
+        }
+        return _lcRb;
+      }
+
+      return bookingConfirmPayload;
     }
 
     default:

@@ -53,10 +53,12 @@ function buildSystemPrompt({ business, intent, faqContext, orderContext }) {
   const desc    = sanitise(business?.description || '');
   const persona = sanitise(getPersona(mode));
 
+  // [FIX-AI-CCY] Use configured currency symbol, not hardcoded 'D', in system prompt menu list.
+  const _aiCcy = business?.payment?.currency || 'D';
   const menuLines = (business?.menuItems || business?.services || [])
     .filter(i => i.available !== false)
     .slice(0, 20)
-    .map(i => `• ${i.name}${i.price ? ` — D${i.price}` : ''}${i.description ? ` (${sanitise(i.description, 80)})` : ''}`)
+    .map(i => `• ${i.name}${i.price ? ` — ${_aiCcy}${i.price}` : ''}${i.description ? ` (${sanitise(i.description, 80)})` : ''}`)
     .join('\n');
 
   // [GROQ-OPT-1] Business hours in system prompt

@@ -187,6 +187,18 @@ export const INTENT_PATTERNS = {
     'never mind my order', 'nevermind my order',
   ],
 
+  // ── CANCEL_BOOKING — booking-specific cancellation typed as text ───────────
+  // [FIX-CANCEL-BOOKING-INTENT] 'cancel booking' had no keyword entry — customers
+  // typing these phrases hit AI classification which frequently returned SUPPORT,
+  // triggering a full human escalation instead of the dedicated cancel-booking handler.
+  // Now correctly routes to CANCEL_BOOKING action → moduleRouter cancels the Booking DB record.
+  CANCEL_BOOKING: [
+    'cancel booking', 'cancel my booking', 'cancel reservation', 'cancel my reservation',
+    'cancel appointment', 'cancel my appointment', 'cancel table', 'cancel my table',
+    'i want to cancel booking', 'cancel the booking', 'remove my booking',
+    'delete my booking', 'cancel book', 'cancel my book',
+  ],
+
   // ── [SPEC-PART7] ACKNOWLEDGEMENT classifier ──────────────────────────────
   // These words/phrases must NEVER trigger a greeting, menu reset, or FALLBACK.
   // They are reactions / filler sent mid-conversation (especially while an order

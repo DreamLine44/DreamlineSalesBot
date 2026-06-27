@@ -224,9 +224,12 @@ export async function handleOrderFlow({ session, message, business, tenant, isIn
           upsellSent: true,
           data: { ...data, quantity: qty, totalPrice: total, pendingAddOn: addOn },
         });
+        // [FIX-CURRENCY-1] Use configured currency symbol — was hardcoded 'D', wrong
+        // for businesses using XOF, NGN, USD etc.
+        const _upsellCcy = business?.payment?.currency || 'D';
         return {
           type:    'buttons',
-          body:    `You've chosen *${qty}× ${item.name}*${total ? ` — D${total}` : ''}.\n\nWould you like to add *${addOn.name}* for D${addOn.price}? 🥤`,
+          body:    `You've chosen *${qty}× ${item.name}*${total ? ` — ${_upsellCcy}${total}` : ''}.\n\nWould you like to add *${addOn.name}* for ${_upsellCcy}${addOn.price}? 🥤`,
           buttons: [
             { id: 'UPSELL_YES', title: '✅ Yes, add it' },
             { id: 'UPSELL_NO',  title: '❌ No thanks'   },
@@ -369,19 +372,17 @@ export async function handleOrderFlow({ session, message, business, tenant, isIn
       // always see how to pay (even if the answer is "cash on delivery").
       if (!payment?.enabled || !data.totalPrice) {
         const currency   = payment?.currency || 'D';
-        const hasChannels = Array.isArray(payment?.channels) && payment.channels.length > 0;
+        // [FIX-CASH-CHANNELS] Do NOT show payment channel info when payment.enabled=false.
+        // payment.channels is only meaningful when the payment flow is active (screenshot
+        // required, session goes to PAYMENT_PROOF). In cash mode the session goes to
+        // AWAIT_ADMIN_CONFIRM — if we showed "send payment screenshot to any of the
+        // following channels", the customer would send a screenshot which the image guard
+        // at step 8.5 would reject (session.step is AWAIT_ADMIN_CONFIRM, not PAYMENT_PROOF),
+        // leaving the customer confused. Cash mode always means: pay on collection/delivery.
         const cashBody =
           `💳 *Payment*\n\n` +
           `🛒 Total: *${currency}${data.totalPrice || 0}*\n\n` +
-          (hasChannels
-            ? (() => {
-                const lines = payment.channels.map((ch, i) =>
-                  `${i + 1}. *${ch.provider}* → \`${ch.accountNo}\`${ch.label ? ` (${ch.label})` : ''}${ch.isDefault ? ' ⭐' : ''}`
-                ).join('\n');
-                return `📲 Please complete payment to any of the following:\n\n${lines}\n\nThen send your payment screenshot in this chat.`;
-              })()
-            : `💵 *Payment mode:* Cash on delivery\n\nPlease have *${currency}${data.totalPrice || 0}* ready when your order arrives.`
-          );
+          `💵 *Payment mode:* Cash on delivery\n\nPlease have *${currency}${data.totalPrice || 0}* ready when your order arrives.`;
 
         // [FIX-3] No payment — notify admin with interactive buttons
         try {
@@ -466,13 +467,15 @@ async function _selectItem(item, session, business, data) {
     // [FIX-IMG-URL] Apply WhatsApp delivery optimization (q_auto, f_auto, max w_1600)
     // before sending. The stored URL may have no transformation segment; this adds one.
     const whatsappImageUrl = buildWhatsAppImageUrl(imageUrl);
+    // [FIX-CURRENCY-2] Use configured currency in item image caption
+    const _imgCcy = business?.payment?.currency || 'D';
     return [
       {
         type:    'image',
         url:     whatsappImageUrl,
         caption: item.description
-          ? `*${item.name}*\n${item.description}${item.price ? `\n💰 D${item.price}` : ''}`
-          : `*${item.name}*${item.price ? ` — D${item.price}` : ''}`,
+          ? `*${item.name}*\n${item.description}${item.price ? `\n💰 ${_imgCcy}${item.price}` : ''}`
+          : `*${item.name}*${item.price ? ` — ${_imgCcy}${item.price}` : ''}`,
       },
       quantityPrompt,
     ];
