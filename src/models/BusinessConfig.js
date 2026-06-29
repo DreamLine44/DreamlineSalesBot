@@ -28,6 +28,16 @@ const menuItemSchema = new mongoose.Schema({
   description: { type: String, default: '', trim: true, maxlength: 300 },
   keywords:    { type: [String], default: [], validate: { validator: v => v.length <= 20, message: 'Max 20 keywords per item' } },
   available:   { type: Boolean, default: true },
+  // [v1-SALON] category: 'services'|'service' = appointment service; anything else = retail product.
+  // Salon flow uses this to split the menu into bookable services vs purchasable products.
+  category:    { type: String, default: null, trim: true, maxlength: 60 },
+  // [v1-SALON] currency: per-item currency override (defaults to business.payment.currency)
+  currency:    { type: String, default: null, trim: true, maxlength: 5 },
+  // [v1-SALON] duration: appointment duration in minutes (used in service list descriptions)
+  duration:    { type: Number, default: null, min: 5, max: 480 },
+  // [v14-PREP] prep: service-specific preparation tip shown on booking confirmation and reminder.
+  // e.g. "Please arrive with unwashed hair" for colour treatments.
+  prep:        { type: String, default: null, trim: true, maxlength: 300 },
 
   // ── Optional image (Cloudinary) ────────────────────────────────────────
   // All image fields are optional. The bot works perfectly with no images.
@@ -173,6 +183,7 @@ const businessConfigSchema = new mongoose.Schema({
     type: [{
       name:        { type: String, required: true, trim: true, maxlength: 60 },
       displayName: { type: String, default: null, trim: true, maxlength: 60 },
+      specialty:   { type: String, default: null, trim: true, maxlength: 100 }, // shown in stylist list description
       available:   { type: Boolean, default: true },
     }],
     default: [],
@@ -247,6 +258,8 @@ const businessConfigSchema = new mongoose.Schema({
     maxOrderQuantity:      { type: Number,  default: 20, min: 1, max: 500 },
     estimatedDeliveryMinutes: { type: Number,  default: null, min: 1, max: 1440 }, // null = no fixed ETA shown
     vipThreshold:          { type: Number,  default: 5,  min: 1, max: 1000 },  // orders needed for VIP status
+    // [v1-SALON] Salon/barbershop specific settings
+    requireNamedStylist:   { type: Boolean, default: false }, // true = no "Any available" option shown
     closedMessage: {
       type: String,
       default: "We're currently closed. Please contact us during business hours.",

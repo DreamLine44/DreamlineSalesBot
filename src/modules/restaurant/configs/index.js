@@ -43,11 +43,6 @@ export const RESTAURANT_CONFIG = {
 
   messages: {
     welcome:         '👋 Welcome! What would you like to do today?',
-    // [FIX-SHOW-MENU] showMenuPrompt is used by moduleRouter's SHOW_MENU case
-    // (cfg.messages?.showMenuPrompt). Without it, the router falls back to a
-    // generic '👇 What would you like to do?' which is fine, but a branded
-    // prompt is more consistent with the restaurant experience.
-    showMenuPrompt:  '👇 What would you like to do?',
     orderPrompt:     "Here's our menu — choose an item:",
     bookPrompt:      'What date would you like to book? 📅\n\n(e.g. *25 June*, *tomorrow*, *next Monday*)',
     servicePrompt:   'Please choose a table type or service:',

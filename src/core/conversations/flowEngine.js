@@ -169,10 +169,18 @@ export async function completeFlow(session, completedFlow, business = null, tena
     postFlowAck: completedFlow.toUpperCase(),
   });
 
-  // Lead capture trigger — fire after ORDER or BOOKING if configured
+  // Lead capture trigger — fire after ORDER or BOOKING if configured.
+  // [FIX-SALON-15] WALKIN uses saveBooking() just like BOOKING, so it should
+  // also trigger AFTER_BOOKING lead capture. Previously 'WALKIN' fell to the
+  // AFTER_ORDER branch (wrong trigger type) meaning any FIRST_MESSAGE-style
+  // lead-capture config would still work, but AFTER_BOOKING-only configs would
+  // never fire for walk-in customers.
   if (business) {
     try {
-      const trigger = completedFlow.toUpperCase() === 'BOOKING' ? 'AFTER_BOOKING' : 'AFTER_ORDER';
+      const completedUpper = completedFlow.toUpperCase();
+      const trigger = (completedUpper === 'BOOKING' || completedUpper === 'WALKIN')
+        ? 'AFTER_BOOKING'
+        : 'AFTER_ORDER';
       const { shouldCaptureLead, startLeadCapture } = await import('../../services/leadCaptureService.js');
       const freshSession = (await getSession(session.customerPhone, session.tenantId)) || session;
       if (await shouldCaptureLead(business, freshSession, trigger)) {

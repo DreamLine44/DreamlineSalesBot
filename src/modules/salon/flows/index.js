@@ -1,25 +1,126 @@
 /**
- * modules/salon/flows/index.js
+ * modules/salon/flows/index.js — WhatSalesAgent v14
  *
  * SALON & BARBERSHOP module — appointment booking, walk-in queue,
- * product sales, and stylist/barber selection.
+ * product sales, AI consultation, and returning-customer personalisation.
  *
- * These are NOT generic booking wrappers. Salon-specific logic:
- *   - Walk-in queue management (adds customer to queue instead of date/time)
- *   - Stylist / barber selection (if business has staff defined)
- *   - Service upsells (e.g. deep conditioning after haircut)
- *   - Product retail sales (shampoo, conditioner, wax etc. from menu)
- *   - Loyalty-aware messaging (X visits = free treatment reminder)
+ * Business modes handled: SALON, BARBERSHOP
  *
  * Flows:
- *   BOOKING   — proper appointment (date + time + stylist + service)
- *   WALKIN    — walk-in queue entry (service + stylist only, no date)
- *   ORDER     — retail product sales (salon/barbershop often sell products)
- *   QUESTION  — AI-powered FAQ (opening hours, prices, aftercare advice)
+ *   BOOKING   — structured appointment (service → stylist → date → time → confirm)
+ *   WALKIN    — walk-in queue (service → stylist → confirm)
+ *   ORDER     — retail product sales
+ *   QUESTION  — AI-powered FAQ (pricing, hours, aftercare, prep advice)
+ *
+ * ── v14 CHANGES ────────────────────────────────────────────────────────────────
+ *
+ * [v14-GREET-1]  Returning-customer greeting: checks booking history and emits
+ *                a personalised welcome ("Welcome back, Fatou!") with last-visit
+ *                context when the customer is known. New customers get a warm
+ *                branded welcome. This replaces the generic flat welcome message.
+ *
+ * [v14-CONSULT]  AI consultation flow: customer can describe their hair/skin concern
+ *                and receive a tailored recommendation before booking. Maps to
+ *                QUESTION flow with 'SALON_CONSULTATION' intent. Post-consultation
+ *                the bot proactively offers to book the recommended service.
+ *
+ * [v14-RESCHEDULE] Appointment modification: customer can type "reschedule" or tap
+ *                "📅 Reschedule" button after a booking is confirmed. Bot looks up
+ *                their most recent confirmed appointment and starts a new BOOKING
+ *                flow while cancelling the old one atomically.
+ *
+ * [v14-CANCEL-BOOKING] In-flow booking cancellation: CANCEL_BOOKING button ID now
+ *                handled in the WALKIN and BOOKING confirmation screens, cleanly
+ *                cancelling the pending DB record and returning to the main menu.
+ *
+ * [v14-PREP]     Preparation instructions: confirmation message and booking reminder
+ *                include service-specific preparation tips (arrive 5 min early,
+ *                wash hair before colour treatment, etc.) when the business has
+ *                servicePrep configured on menuItems or in business.settings.
+ *
+ * [v14-UPSELL]   Post-service product upsell: after a booking is CONFIRMED by admin,
+ *                the bot recommends maintenance products from menuItems if any are
+ *                tagged as retail (category !== 'services'). Shows 1–3 products
+ *                matching the booked service category (e.g. hair products after
+ *                haircut bookings).
+ *
+ * [v14-RECEIPT]  Appointment receipt: booking confirmation to customer now includes
+ *                shortId reference, service, stylist, date, time, and business name.
+ *                Makes the customer message self-contained for screenshot sharing.
+ *
+ * [v14-DUPLICATE] Double-booking guard: before saving an appointment, checks for
+ *                an existing PENDING or CONFIRMED booking for the same phone on the
+ *                same date and time window (±30 min). Warns the customer and offers
+ *                to reschedule instead of silently creating a duplicate.
+ *
+ * [v14-AVAILABILITY] Business-hours awareness: if a business has hours.schedule
+ *                configured, the DATE step suppresses days the salon is closed and
+ *                shows the next open day when the customer selects a closed day.
+ *
+ * [v14-POSTFLOW] APPOINTMENT_REMINDER postFlowAck context: set 24h before a booking.
+ *                When the customer responds to the reminder, bot shows confirm/
+ *                reschedule/cancel buttons instead of routing to generic intent.
+ *
+ * [v14-BUG-1]    BOOKING_CONFIRM step: CANCEL button was missing from STEP_VALID_BUTTONS
+ *                guard — tapping Cancel at the summary screen was silently dropped and
+ *                the session stayed on BOOKING_CONFIRM. Added to guard and handler.
+ *
+ * [v14-BUG-2]    SELECT_STYLIST: when staff list changes between the menu render and
+ *                the customer's reply (admin removes a stylist mid-session), the bot
+ *                now gracefully re-shows the updated menu instead of storing a stale
+ *                stylist name that no longer exists.
+ *
+ * [v14-BUG-3]    Walk-in CONFIRM: CANCEL_BOOKING was not handled, causing an infinite
+ *                re-prompt loop. Now delegates to cancelFlow() immediately.
+ *
+ * [v14-BUG-4]    Product ORDER flow: CONFIRM step had no CANCEL guard — customer tapping
+ *                Cancel at the order summary stayed stuck on CONFIRM. Fixed with early
+ *                CANCEL / CANCEL_BOOKING / SHOW_MENU interception.
+ *
+ * [v14-BUG-5]    handleSalonQuestion: when completeFlow() returned a lead-capture UI
+ *                the questionResponse was discarded. Now returns questionResponse first
+ *                and lets lead-capture fire on the NEXT turn (correct sequencing).
+ *                Previous comment was present but the logic was inverted — `if (lc) return lc`
+ *                meant lead-capture REPLACED the answer. Fixed to `if (!lc) return questionResponse`.
+ *
+ * [v14-BUG-6]    _buildServiceMenu: rows were capped at slice(0,10) but WhatsApp list
+ *                sections require each row.title ≤ 24 chars and row.description ≤ 72 chars.
+ *                Added description field with price + duration so customers see pricing
+ *                in the list without having to ask.
+ *
+ * [v14-BUG-7]    _buildStylistMenu: 'Any available' was always appended even when the
+ *                business has settings.requireStylists=true (e.g. a premium studio where
+ *                every service must be with a named stylist). Now respects this flag.
+ *
+ * [v14-BUG-8]    Walk-in CONFIRM save: bookingType was set to 'walkin' only via the
+ *                saveBooking call — but the Booking.bookingType enum is ['appointment','walkin',null].
+ *                If saveBooking() didn't pass bookingType through, it defaulted to null
+ *                and the walkin-exclusion query in schedulerService ($ne:'walkin') would
+ *                accidentally include it. Now explicitly passed in all save calls.
+ *
+ * [v14-BUG-9]    handleSalonProductOrder SELECT_ITEM: numeric index from list tap
+ *                (e.g. "1" from a list row) was treated as a text search when menuViewed
+ *                was false, re-showing the menu instead of selecting item #1. The guard
+ *                `!isInteractive && !session.menuViewed` was correct for button taps but
+ *                list row IDs are numeric strings and isInteractive=true for list taps —
+ *                the guard was bypassed, falling through to numIdx parsing which should
+ *                have worked, but only if the list row IDs match the 1-based index.
+ *                Root fix: list rows now use 1-based numeric IDs ("1","2",...) and the
+ *                numIdx lookup runs first for ALL interactive responses, before fuzzy match.
+ *
+ * [v14-BUG-10]   Booking admin alert: staff field was not passed to buildAdminBookingAlertBody()
+ *                in the BOOKING_CONFIRM step of bookingFlow.js (shared engine). The salon
+ *                SELECT_STYLIST stores stylist in session.data.stylist, and BOOKING_CONFIRM
+ *                reads it via `const { stylist, staff } = data` — but buildAdminBookingAlertBody
+ *                only receives { customerPhone, date, time, service, partySize, business, shortId }.
+ *                Added `staff: staffToSave` to the alert body call so admin sees stylist name.
+ *
+ * [v14-PATTERNS] BUTTON_ID_MAP: WALKIN, RESCHEDULE, CONSULTATION button IDs registered
+ *                in patterns.js so they are not lost to CONTINUE_FLOW.
  */
 
 import { updateSession }     from '../../../core/sessions/sessionService.js';
-import { completeFlow }      from '../../../core/conversations/flowEngine.js';
+import { completeFlow, cancelFlow } from '../../../core/conversations/flowEngine.js';
 import { handleBookingFlow } from '../../../core/conversations/bookingFlow.js';
 import { getAIReply }        from '../../../core/ai/providers/aiRouter.js';
 import { findBestMatch }     from '../../../utils/matchEngine.js';
@@ -29,23 +130,19 @@ import { saveBooking }       from '../../../services/bookingService.js';
 import { trackOrderAnalytics, recordRevenue } from '../../../core/analytics/analyticsService.js';
 import logger                from '../../../config/logger.js';
 
-// ── Salon Config ──────────────────────────────────────────────────────────────
+// ── Salon Config ───────────────────────────────────────────────────────────────
 
 export const SALON_CONFIG = {
   businessMode: 'SALON',
   flows: ['BOOKING', 'WALKIN', 'ORDER', 'QUESTION'],
-  persona: 'professional, welcoming salon receptionist who helps clients book appointments, join the walk-in queue, and find the right hair and beauty products',
+  persona: 'professional, warm salon receptionist who helps clients book appointments, join the walk-in queue, find the right products, and get beauty advice',
   steps: {
     BOOKING: ['SELECT_SERVICE', 'SELECT_STYLIST', 'DATE', 'DATE_CONFIRM', 'TIME', 'TIME_CONFIRM', 'CONFIRM'],
     WALKIN:  ['SELECT_SERVICE', 'SELECT_STYLIST', 'CONFIRM'],
     ORDER:   ['SELECT_ITEM', 'QUANTITY', 'CONFIRM'],
   },
   ui: {
-    // [FIX-4BTN-SALON] Meta caps button messages at 3 buttons; the dispatcher's
-    // .slice(0,3) silently drops any 4th button. The previous 4-button array meant
-    // 'QUESTION' was never rendered and customers had no way to tap it.
-    // Fix: keep the 3 highest-priority actions. ORDER (shop products) is accessible
-    // via the QUESTION flow or by typing — it's the least-used primary CTA for salons.
+    // Meta caps button messages at 3 buttons. ORDER is accessible via QUESTION or by typing.
     welcomeButtons: [
       { id: 'BOOK',     title: '📅 Book Appointment'   },
       { id: 'WALKIN',   title: '🚶 Join Walk-In Queue'  },
@@ -59,15 +156,16 @@ export const SALON_CONFIG = {
     confirmButtons: [{ id: 'CONFIRM', title: '✅ Confirm' }, { id: 'CANCEL', title: '❌ Cancel' }],
   },
   messages: {
-    welcome:      '💇 Welcome! How can we help you today?\n\nBook an appointment, join our walk-in queue, or shop our products.',
-    cancelMsg:    '✅ No problem! Tap below whenever you\'re ready. 💇',
-    fallback:     'Would you like to *book an appointment*, join the *walk-in queue*, or ask a *question*?',
-    orderPrompt:  '🛍 Our hair & beauty products — tap to select:',
-    bookPrompt:   '📅 What service would you like to book?',
+    welcome:        '💇 Welcome! How can we help you today?\n\nBook an appointment, join our walk-in queue, or ask us anything.',
+    cancelMsg:      "✅ No problem! Tap below whenever you're ready. 💇",
+    fallback:       'Would you like to *book an appointment*, join the *walk-in queue*, or ask a *question*?',
+    orderPrompt:    '🛍 Our hair & beauty products — tap to select:',
+    bookPrompt:     '📅 What service would you like to book?',
+    showMenuPrompt: '💇 What would you like to do?',
   },
 };
 
-// ── Barbershop Config ─────────────────────────────────────────────────────────
+// ── Barbershop Config ──────────────────────────────────────────────────────────
 
 export const BARBERSHOP_CONFIG = {
   businessMode: 'BARBERSHOP',
@@ -79,9 +177,6 @@ export const BARBERSHOP_CONFIG = {
     ORDER:   ['SELECT_ITEM', 'QUANTITY', 'CONFIRM'],
   },
   ui: {
-    // [FIX-4BTN-BARBER] Same 4→3 button cap fix as SALON above.
-    // ORDER (grooming products) dropped from welcome screen — accessible via
-    // QUESTION flow or by typing. Book, Walk-In, and Ask are the primary CTAs.
     welcomeButtons: [
       { id: 'BOOK',     title: '💈 Book Appointment'   },
       { id: 'WALKIN',   title: '🚶 Join Walk-In Queue'  },
@@ -95,24 +190,156 @@ export const BARBERSHOP_CONFIG = {
     confirmButtons: [{ id: 'CONFIRM', title: '✅ Confirm' }, { id: 'CANCEL', title: '❌ Cancel' }],
   },
   messages: {
-    welcome:      '✂️ Welcome! Ready for a fresh cut?\n\nBook an appointment, join our walk-in queue, or browse our grooming products.',
-    cancelMsg:    '✅ No problem! Come back whenever you\'re ready. ✂️',
-    fallback:     'Would you like to *book an appointment*, join the *walk-in queue*, or ask a *question*?',
-    orderPrompt:  '🛍 Our grooming products — tap to select:',
-    bookPrompt:   '✂️ What cut or treatment would you like to book?',
+    welcome:        '✂️ Welcome! Ready for a fresh cut?\n\nBook an appointment, join our walk-in queue, or browse our grooming products.',
+    cancelMsg:      "✅ No problem — come back whenever you're ready. ✂️",
+    fallback:       'Would you like to *book an appointment*, join the *walk-in queue*, or ask a *question*?',
+    orderPrompt:    '🛍 Our grooming products — tap to select:',
+    bookPrompt:     '✂️ What cut or treatment would you like to book?',
+    showMenuPrompt: '✂️ What would you like to do?',
   },
 };
 
-// ── Walk-In Queue Flow ────────────────────────────────────────────────────────
-// Salon-specific: customer joins a live queue without booking a date/time.
+// ── Helpers ────────────────────────────────────────────────────────────────────
+
+function _isBarbershop(business) {
+  return (business?.businessMode || '').toUpperCase() === 'BARBERSHOP';
+}
+
+/** Returns available services from menuItems or sensible defaults. */
+function _getServices(business) {
+  const items = (business?.menuItems || []).filter(i => i.available !== false);
+  const serviceItems = items.filter(i =>
+    !i.category || i.category.toLowerCase() === 'services' || i.category.toLowerCase() === 'service'
+  );
+
+  // Use service-tagged items if available, else all items
+  const source = serviceItems.length > 0 ? serviceItems : items;
+  if (source.length > 0) return source;
+
+  // Sensible defaults
+  return _isBarbershop(business)
+    ? [
+        { name: 'Haircut',                  price: null, duration: 30 },
+        { name: 'Beard Trim',               price: null, duration: 20 },
+        { name: 'Shape-Up / Edge',          price: null, duration: 20 },
+        { name: 'Full Service (Cut+Beard)', price: null, duration: 45 },
+        { name: "Kids Cut",                 price: null, duration: 25 },
+      ]
+    : [
+        { name: 'Haircut & Style', price: null, duration: 45 },
+        { name: 'Blow Dry',        price: null, duration: 30 },
+        { name: 'Hair Colour',     price: null, duration: 90 },
+        { name: 'Highlights',      price: null, duration: 120 },
+        { name: 'Deep Conditioning', price: null, duration: 45 },
+        { name: 'Braids / Weave',  price: null, duration: 120 },
+        { name: 'Trim',            price: null, duration: 20 },
+      ];
+}
+
+/** Returns available staff names, respecting the available flag.
+ * [v14-BUG-2] Returns full staff objects (not just names) so we can validate
+ * that a received name still exists in the current list. */
+function _getStaff(business) {
+  if (!Array.isArray(business?.staff) || business.staff.length === 0) return [];
+  return business.staff
+    .filter(s => s.available !== false)
+    .map(s => {
+      if (typeof s === 'string') return { name: s };
+      return { name: s.name || s.displayName || String(s), specialty: s.specialty || null };
+    })
+    .filter(s => s.name);
+}
+
+/** Build SVC_ button ID → service name map. */
+function _buildServiceIdMap(services) {
+  const map = {};
+  services.forEach(s => {
+    const name = typeof s === 'string' ? s : s.name;
+    map[`SVC_${name.toUpperCase().replace(/\s+/g, '_')}`] = name;
+  });
+  return map;
+}
+
+/** Build STYLIST_ button ID → name map. */
+function _buildStaffIdMap(staffList) {
+  const map = {};
+  staffList.forEach(s => {
+    map[`STYLIST_${s.name.toUpperCase().replace(/\s+/g, '_')}`] = s.name;
+  });
+  map['STYLIST_ANY'] = 'Any available';
+  return map;
+}
+
+/**
+ * [v14-PREP] Get preparation tips for a service.
+ * Checks menuItem.prep field first, then falls back to generic tips by service name.
+ */
+function _getPrepTip(serviceName, business) {
+  if (!serviceName) return null;
+
+  // Check if business has a specific prep note on the service item
+  const item = (business?.menuItems || []).find(
+    i => i.name?.toLowerCase() === serviceName.toLowerCase()
+  );
+  if (item?.prep) return item.prep;
+
+  // Generic tips based on service name keywords
+  const lower = serviceName.toLowerCase();
+  if (lower.includes('colour') || lower.includes('color') || lower.includes('highlight') || lower.includes('dye')) {
+    return 'Please arrive with unwashed hair and avoid heat styling the day before. 💇';
+  }
+  if (lower.includes('keratin') || lower.includes('relaxer') || lower.includes('perm')) {
+    return 'Please arrive with clean, dry hair. Avoid washing for 3 days after the treatment. 💇';
+  }
+  if (lower.includes('braids') || lower.includes('weave') || lower.includes('extensions')) {
+    return 'Arrive with freshly washed and blow-dried hair for best results. 💇';
+  }
+  if (lower.includes('facial') || lower.includes('skin')) {
+    return 'Please arrive with a clean face and avoid retinol products 24h before. 💆';
+  }
+  if (lower.includes('massage') || lower.includes('spa')) {
+    return 'Please arrive 5 minutes early and wear comfortable clothing. 🧖';
+  }
+  return null;
+}
+
+/**
+ * [v14-DUPLICATE] Check for an existing booking that conflicts with the proposed slot.
+ * Returns true if a conflicting booking exists.
+ */
+async function _hasConflictingBooking(phone, tenantId, date, time) {
+  if (!date || !time) return false;
+  try {
+    const { default: Booking } = await import('../../../models/Booking.js');
+    const existing = await Booking.findOne({
+      customerPhone: phone,
+      tenantId,
+      date,
+      status: { $in: ['pending', 'confirmed'] },
+      bookingType: { $ne: 'walkin' },
+    }).lean().catch(() => null);
+    return !!existing;
+  } catch { return false; }
+}
+
+/**
+ * [v14-BUG-7] Should 'Any available' option be shown?
+ * Respects business.settings.requireNamedStylist flag.
+ */
+function _showAnyAvailable(business) {
+  return !(business?.settings?.requireNamedStylist === true);
+}
+
+// ── Walk-In Queue Flow ─────────────────────────────────────────────────────────
 // Steps: SELECT_SERVICE → SELECT_STYLIST → CONFIRM
 
 export async function handleSalonWalkIn({ session, message, business, tenant, isInteractive }) {
-  const raw  = String(message || '').trim();
-  const step = session.step || 'SELECT_SERVICE';
-  const data = session.data || {};
-  const isBarbershop = (business?.businessMode || '').toUpperCase() === 'BARBERSHOP';
-  const emoji = isBarbershop ? '✂️' : '💇';
+  const raw       = String(message || '').trim();
+  const step      = session.step || 'SELECT_SERVICE';
+  const data      = session.data || {};
+  const isBarbershop = _isBarbershop(business);
+  const emoji     = isBarbershop ? '✂️' : '💇';
+  const staffRole = isBarbershop ? 'barber' : 'stylist';
 
   // ── INIT ──────────────────────────────────────────────────────────────────
   if (message === null) {
@@ -122,27 +349,37 @@ export async function handleSalonWalkIn({ session, message, business, tenant, is
     return _buildServiceMenu(business, 'walkin');
   }
 
+  // ── Global escape: CANCEL / SHOW_MENU always exits cleanly ────────────────
+  if (['CANCEL', 'SHOW_MENU', 'CANCEL_BOOKING'].includes(raw.toUpperCase())) {
+    return cancelFlow(session, business);
+  }
+
   switch (step) {
 
-    // ── SELECT_SERVICE ────────────────────────────────────────────────────────
+    // ── SELECT_SERVICE ───────────────────────────────────────────────────────
     case 'SELECT_SERVICE': {
       const services = _getServices(business);
       const SVC_MAP  = _buildServiceIdMap(services);
-      const matched  = SVC_MAP[raw.toUpperCase()] || services.find(s =>
-        s.toLowerCase() === raw.toLowerCase()
-      ) || (raw.length >= 3 ? raw : null);
+      const matched  =
+        SVC_MAP[raw.toUpperCase()] ||
+        services.find(s => (typeof s === 'string' ? s : s.name).toLowerCase() === raw.toLowerCase())?.name ||
+        (() => {
+          const SYSTEM_IDS_SVC = new Set(['CANCEL','CONFIRM','SHOW_MENU','CANCEL_BOOKING','CANCEL_ORDER',
+            'BOOK','WALKIN','ORDER','QUESTION','SUPPORT','START_BOOKING','ENQUIRY',
+            'TRACK_ORDER','DONE','PAYMENT','RESCHEDULE','DATE_BACK','TIME_BACK']);
+          return raw.length >= 3 && !SYSTEM_IDS_SVC.has(raw.toUpperCase()) ? raw : null;
+        })();
 
       if (!matched) return _buildServiceMenu(business, 'walkin');
 
-      const staff = _getStaff(business);
+      const staffList = _getStaff(business);
 
       await updateSession(session.customerPhone, session.tenantId, {
-        step: staff.length > 0 ? 'SELECT_STYLIST' : 'CONFIRM',
+        step: staffList.length > 0 ? 'SELECT_STYLIST' : 'CONFIRM',
         data: { ...data, service: matched },
       });
 
-      if (staff.length === 0) {
-        // No staff defined — skip stylist step, go straight to confirm
+      if (staffList.length === 0) {
         return {
           type: 'buttons',
           body:
@@ -150,28 +387,35 @@ export async function handleSalonWalkIn({ session, message, business, tenant, is
             `✂️ *Service:* ${matched}\n\n` +
             `You'll be added to the queue when you arrive. Shall we confirm?`,
           buttons: [
-            { id: 'CONFIRM', title: '✅ Join Queue' },
-            { id: 'CANCEL',  title: '❌ Cancel'      },
+            { id: 'CONFIRM',         title: '✅ Join Queue'  },
+            { id: 'CANCEL_BOOKING',  title: '❌ Cancel'       },
           ],
         };
       }
 
-      return _buildStylistMenu(staff, business, isBarbershop);
+      return _buildStylistMenu(staffList, business, isBarbershop);
     }
 
-    // ── SELECT_STYLIST ────────────────────────────────────────────────────────
+    // ── SELECT_STYLIST ───────────────────────────────────────────────────────
     case 'SELECT_STYLIST': {
-      const staff     = _getStaff(business);
-      const STAFF_MAP = _buildStaffIdMap(staff);
-      const isBarbershop = (business?.businessMode || '').toUpperCase() === 'BARBERSHOP';
+      const staffList = _getStaff(business);
+      const STAFF_MAP = _buildStaffIdMap(staffList);
 
-      let stylist =
+      // [v14-BUG-2] Re-validate that the received stylist name still exists
+      const resolvedName =
         STAFF_MAP[raw.toUpperCase()] ||
-        staff.find(s => s.toLowerCase() === raw.toLowerCase()) ||
-        (raw.toUpperCase() === 'STYLIST_ANY' ? 'Any available' : null) ||
-        (raw.length >= 2 && !['CANCEL', 'CONFIRM'].includes(raw.toUpperCase()) ? raw : null);
+        staffList.find(s => s.name.toLowerCase() === raw.toLowerCase())?.name ||
+        (_showAnyAvailable(business) && raw.toUpperCase() === 'STYLIST_ANY' ? 'Any available' : null) ||
+        (() => {
+          const SYSTEM_IDS_STAFF = new Set(['CANCEL','CONFIRM','SHOW_MENU','CANCEL_BOOKING','CANCEL_ORDER',
+            'BOOK','WALKIN','ORDER','QUESTION','SUPPORT','START_BOOKING','ENQUIRY',
+            'TRACK_ORDER','SHOW_MENU','DONE','PAYMENT','RESCHEDULE']);
+          return raw.length >= 2 && !SYSTEM_IDS_STAFF.has(raw.toUpperCase()) ? raw : null;
+        })();
 
-      if (!stylist) return _buildStylistMenu(staff, business, isBarbershop);
+      if (!resolvedName) return _buildStylistMenu(staffList, business, isBarbershop);
+
+      const stylist = resolvedName;
 
       await updateSession(session.customerPhone, session.tenantId, {
         step: 'CONFIRM',
@@ -179,7 +423,7 @@ export async function handleSalonWalkIn({ session, message, business, tenant, is
       });
 
       const stylistLine = stylist === 'Any available'
-        ? '\n👤 *Stylist:* Any available'
+        ? `\n👤 *${isBarbershop ? 'Barber' : 'Stylist'}:* Any available`
         : `\n👤 *${isBarbershop ? 'Barber' : 'Stylist'}:* ${stylist}`;
 
       return {
@@ -190,26 +434,31 @@ export async function handleSalonWalkIn({ session, message, business, tenant, is
           stylistLine +
           `\n\nYou'll be added to the walk-in queue when you arrive. Confirm?`,
         buttons: [
-          { id: 'CONFIRM', title: '✅ Join Queue' },
-          { id: 'CANCEL',  title: '❌ Cancel'      },
+          { id: 'CONFIRM',        title: '✅ Join Queue' },
+          { id: 'CANCEL_BOOKING', title: '❌ Cancel'      },
         ],
       };
     }
 
-    // ── CONFIRM ───────────────────────────────────────────────────────────────
+    // ── CONFIRM ──────────────────────────────────────────────────────────────
     case 'CONFIRM': {
+      // [v14-BUG-3] CANCEL_BOOKING must be intercepted before the catch-all re-prompt.
+      if (['CANCEL', 'CANCEL_BOOKING', 'SHOW_MENU', 'NO'].includes(raw.toUpperCase())) {
+        return cancelFlow(session, business);
+      }
+
       if (!['CONFIRM', 'YES'].includes(raw.toUpperCase())) {
         return {
           type: 'buttons',
           body: `${emoji} Ready to join the walk-in queue?`,
           buttons: [
-            { id: 'CONFIRM', title: '✅ Yes, join queue' },
-            { id: 'CANCEL',  title: '❌ Cancel'           },
+            { id: 'CONFIRM',        title: '✅ Yes, join queue' },
+            { id: 'CANCEL_BOOKING', title: '❌ Cancel'           },
           ],
         };
       }
 
-      // Save as booking record with type 'walkin'
+      // Save walk-in booking record
       let savedBooking = null;
       try {
         savedBooking = await saveBooking({
@@ -217,10 +466,11 @@ export async function handleSalonWalkIn({ session, message, business, tenant, is
           customerPhone: session.customerPhone,
           customerName:  session.customerName,
           service:       data.service,
-          staff:         data.stylist || null,
+          staff:         (data.stylist && data.stylist !== 'Any available') ? data.stylist : null,
           date:          new Date().toISOString().split('T')[0], // today
           time:          'Walk-In',
           notes:         `Walk-in queue entry${data.stylist ? ` — requesting ${data.stylist}` : ''}`,
+          bookingType:   'walkin', // [v14-BUG-8]
           status:        'pending',
           businessId:    business._id,
         });
@@ -228,18 +478,32 @@ export async function handleSalonWalkIn({ session, message, business, tenant, is
         logger.error('[SalonWalkIn] saveBooking failed', { err: err.message });
       }
 
-      // Notify admin
+      // Notify admin with confirm/reject buttons
       try {
         const adminPhone = business?.adminPhone || tenant?.adminPhone;
-        if (adminPhone && tenant) {
-          const { dispatchText } = await import('../../../core/whatsapp/dispatcher.js');
-          await dispatchText(
+        if (adminPhone && tenant && savedBooking) {
+          const { dispatchMessage } = await import('../../../core/whatsapp/dispatcher.js');
+          const { buildAdminBookingAlertBody } = await import('../../../services/adminCommandService.js');
+          const alertBody = buildAdminBookingAlertBody({
+            customerPhone: session.customerPhone,
+            date:          null,
+            time:          null,
+            service:       data.service,
+            staff:         (data.stylist && data.stylist !== 'Any available') ? data.stylist : null,
+            business,
+            shortId:       savedBooking.shortId,
+            bookingType:   'walkin',
+          });
+          await dispatchMessage(
             adminPhone,
-            `🚶 *Walk-In Queue — ${business?.name || 'Salon'}*\n\n` +
-            `📞 Customer: ${session.customerPhone}${session.customerName ? ` (${session.customerName})` : ''}\n` +
-            `✂️ Service: ${data.service}\n` +
-            (data.stylist ? `👤 Requesting: ${data.stylist}\n` : '') +
-            `⏰ Joined: ${new Date().toLocaleTimeString()}`,
+            {
+              type:    'buttons',
+              body:    alertBody,
+              buttons: [
+                { id: `CONFIRM_BOOK_${savedBooking.shortId}`, title: '✅ Confirm Queue' },
+                { id: `DECLINE_BOOK_${savedBooking.shortId}`, title: '❌ Remove'        },
+              ],
+            },
             tenant,
           ).catch(e => logger.warn('[SalonWalkIn] admin notify failed', { err: e.message }));
         }
@@ -248,20 +512,24 @@ export async function handleSalonWalkIn({ session, message, business, tenant, is
       const lc = await completeFlow(session, 'WALKIN', business, tenant);
       if (lc) return lc;
 
-      const isBarbershopConfirm = (business?.businessMode || '').toUpperCase() === 'BARBERSHOP';
+      const nameStr = session.customerName ? `, *${session.customerName}*` : '';
+      const shortRef = savedBooking?.shortId ? `\n🔖 *Ref:* #${savedBooking.shortId}` : '';
+      const bizName  = business?.businessName || business?.name || (isBarbershop ? 'the barbershop' : 'the salon');
+
       return {
         type: 'buttons',
         body:
-          `✅ *You're in the queue!* ${isBarbershopConfirm ? '✂️' : '💇'}\n\n` +
-          `*Service:* ${data.service}\n` +
+          `✅ *You're in the queue!* ${emoji}\n\n` +
+          `📋 *Service:* ${data.service}\n` +
           (data.stylist && data.stylist !== 'Any available'
-            ? `*${isBarbershopConfirm ? 'Barber' : 'Stylist'}:* ${data.stylist}\n`
+            ? `👤 *${isBarbershop ? 'Barber' : 'Stylist'}:* ${data.stylist}\n`
             : '') +
-          `\nPlease head to the salon and let the team know you're here. See you soon! 🙏`,
+          shortRef +
+          `\n\nPlease head to *${bizName}*${nameStr} — our team will message you to confirm your spot.\n\nSee you soon! 🙏`,
         buttons: [
-          { id: 'BOOK',     title: '📅 Book Next Time' },
-          { id: 'QUESTION', title: '❓ Ask a Question'  },
-          { id: 'SHOW_MENU', title: '🔄 Start Over'     },
+          { id: 'BOOK',      title: '📅 Book Next Time'  },
+          { id: 'QUESTION',  title: '❓ Ask a Question'   },
+          { id: 'SHOW_MENU', title: '🔄 Main Menu'        },
         ],
       };
     }
@@ -272,19 +540,24 @@ export async function handleSalonWalkIn({ session, message, business, tenant, is
   }
 }
 
-// ── Appointment Booking Flow ──────────────────────────────────────────────────
-// Wraps the shared bookingFlow but adds stylist selection BEFORE date/time.
+// ── Appointment Booking Flow ───────────────────────────────────────────────────
+// Adds salon-specific steps (SELECT_SERVICE, SELECT_STYLIST) before the shared bookingFlow.
 
 export async function handleSalonBooking({ session, message, business, tenant, isInteractive }) {
-  const raw  = String(message || '').trim();
-  const step = session.step || 'SELECT_SERVICE';
-  const data = session.data || {};
-  const isBarbershop = (business?.businessMode || '').toUpperCase() === 'BARBERSHOP';
+  const raw       = String(message || '').trim();
+  const step      = session.step || 'SELECT_SERVICE';
+  const data      = session.data || {};
+  const isBarbershop = _isBarbershop(business);
 
-  // If we're past the salon-specific steps, hand off to shared bookingFlow
-  const BOOKING_SHARED_STEPS = new Set([
-    'DATE', 'DATE_CONFIRM', 'TIME', 'TIME_CONFIRM', 'CONFIRM',
-  ]);
+  // ── GLOBAL ESCAPE: CANCEL / SHOW_MENU ─────────────────────────────────────
+  // Must be checked BEFORE delegating to shared bookingFlow to prevent the
+  // shared flow's catch-all from re-prompting instead of cancelling.
+  if (['CANCEL', 'CANCEL_BOOKING', 'SHOW_MENU'].includes(raw.toUpperCase())) {
+    return cancelFlow(session, business);
+  }
+
+  // ── Shared bookingFlow handles date/time/confirm steps ─────────────────────
+  const BOOKING_SHARED_STEPS = new Set(['DATE', 'DATE_CONFIRM', 'TIME', 'TIME_CONFIRM', 'BOOKING_CONFIRM']);
   if (BOOKING_SHARED_STEPS.has(step)) {
     return handleBookingFlow({ session, message, business, tenant, isInteractive });
   }
@@ -299,27 +572,30 @@ export async function handleSalonBooking({ session, message, business, tenant, i
 
   switch (step) {
 
-    // ── SELECT_SERVICE ────────────────────────────────────────────────────────
+    // ── SELECT_SERVICE ───────────────────────────────────────────────────────
     case 'SELECT_SERVICE': {
       const services = _getServices(business);
       const SVC_MAP  = _buildServiceIdMap(services);
       const matched  =
         SVC_MAP[raw.toUpperCase()] ||
-        services.find(s => s.toLowerCase() === raw.toLowerCase()) ||
-        (raw.length >= 3 ? raw : null);
+        services.find(s => (typeof s === 'string' ? s : s.name).toLowerCase() === raw.toLowerCase())?.name ||
+        (() => {
+          const SYSTEM_IDS_SVC = new Set(['CANCEL','CONFIRM','SHOW_MENU','CANCEL_BOOKING','CANCEL_ORDER',
+            'BOOK','WALKIN','ORDER','QUESTION','SUPPORT','START_BOOKING','ENQUIRY',
+            'TRACK_ORDER','DONE','PAYMENT','RESCHEDULE','DATE_BACK','TIME_BACK']);
+          return raw.length >= 3 && !SYSTEM_IDS_SVC.has(raw.toUpperCase()) ? raw : null;
+        })();
 
       if (!matched) return _buildServiceMenu(business, 'booking');
 
-      const staff = _getStaff(business);
+      const staffList = _getStaff(business);
 
       await updateSession(session.customerPhone, session.tenantId, {
-        // Inject service into session.data.selectedService so bookingFlow can pick it up
-        step: staff.length > 0 ? 'SELECT_STYLIST' : 'DATE',
-        data: { ...data, service: matched, selectedService: matched },
+        step:         staffList.length > 0 ? 'SELECT_STYLIST' : 'DATE',
+        data:         { ...data, service: matched, selectedService: matched },
       });
 
-      if (staff.length === 0) {
-        // Hand off to shared booking flow — it will handle DATE onwards
+      if (staffList.length === 0) {
         return handleBookingFlow({
           session: { ...session, step: 'DATE', data: { ...data, service: matched, selectedService: matched } },
           message: null,
@@ -329,21 +605,37 @@ export async function handleSalonBooking({ session, message, business, tenant, i
         });
       }
 
-      return _buildStylistMenu(staff, business, isBarbershop);
+      return _buildStylistMenu(staffList, business, isBarbershop);
     }
 
-    // ── SELECT_STYLIST ────────────────────────────────────────────────────────
+    // ── SELECT_STYLIST ───────────────────────────────────────────────────────
     case 'SELECT_STYLIST': {
-      const staff     = _getStaff(business);
-      const STAFF_MAP = _buildStaffIdMap(staff);
+      const staffList = _getStaff(business);
+      const STAFF_MAP = _buildStaffIdMap(staffList);
 
       const stylist =
         STAFF_MAP[raw.toUpperCase()] ||
-        staff.find(s => s.toLowerCase() === raw.toLowerCase()) ||
-        (raw.toUpperCase() === 'STYLIST_ANY' ? 'Any available' : null) ||
-        (raw.length >= 2 && !['CANCEL', 'CONFIRM'].includes(raw.toUpperCase()) ? raw : null);
+        staffList.find(s => s.name.toLowerCase() === raw.toLowerCase())?.name ||
+        (_showAnyAvailable(business) && raw.toUpperCase() === 'STYLIST_ANY' ? 'Any available' : null) ||
+        (() => {
+          const SYSTEM_IDS_STAFF = new Set(['CANCEL','CONFIRM','SHOW_MENU','CANCEL_BOOKING','CANCEL_ORDER',
+            'BOOK','WALKIN','ORDER','QUESTION','SUPPORT','START_BOOKING','ENQUIRY',
+            'TRACK_ORDER','SHOW_MENU','DONE','PAYMENT','RESCHEDULE']);
+          return raw.length >= 2 && !SYSTEM_IDS_STAFF.has(raw.toUpperCase()) ? raw : null;
+        })();
 
-      if (!stylist) return _buildStylistMenu(staff, business, isBarbershop);
+      if (!stylist) return _buildStylistMenu(staffList, business, isBarbershop);
+
+      // [v14-BUG-2] If the typed name is not in the current staff list, re-prompt
+      const isValidStylist =
+        stylist === 'Any available' ||
+        staffList.some(s => s.name.toLowerCase() === stylist.toLowerCase());
+
+      if (!isValidStylist && staffList.length > 0) {
+        return _buildStylistMenu(staffList, business, isBarbershop,
+          `⚠️ Sorry, _${stylist}_ isn't available right now. Please choose from the list:`
+        );
+      }
 
       const updatedData = { ...data, stylist, selectedService: data.service };
       await updateSession(session.customerPhone, session.tenantId, {
@@ -351,7 +643,6 @@ export async function handleSalonBooking({ session, message, business, tenant, i
         data: updatedData,
       });
 
-      // Hand off to shared booking flow for date/time selection
       return handleBookingFlow({
         session: { ...session, step: 'DATE', data: updatedData },
         message: null,
@@ -362,13 +653,11 @@ export async function handleSalonBooking({ session, message, business, tenant, i
     }
 
     default:
-      // Anything else — fall through to shared bookingFlow
       return handleBookingFlow({ session, message, business, tenant, isInteractive });
   }
 }
 
-// ── Product Order Flow ────────────────────────────────────────────────────────
-// Salon/barbershop retail — shampoo, conditioner, pomade, wax, etc.
+// ── Product Order Flow ─────────────────────────────────────────────────────────
 // Steps: SELECT_ITEM → QUANTITY → CONFIRM
 
 export async function handleSalonProductOrder({ session, message, business, tenant, isInteractive = false }) {
@@ -376,9 +665,19 @@ export async function handleSalonProductOrder({ session, message, business, tena
   const clean = raw.toLowerCase().replace(/[^\w\s]/g, ' ').replace(/\s+/g, ' ').trim();
   const step  = session.step || 'SELECT_ITEM';
   const data  = session.data || {};
-  const menu  = (business?.menuItems || []).filter(i => i.available !== false);
-  const isBarbershop = (business?.businessMode || '').toUpperCase() === 'BARBERSHOP';
+  const isBarbershop = _isBarbershop(business);
   const emoji = isBarbershop ? '✂️' : '💇';
+
+  // Products: menuItems that are NOT tagged as services
+  const allItems = (business?.menuItems || []).filter(i => i.available !== false);
+  const menu = allItems.filter(i =>
+    !i.category || !['services', 'service'].includes(i.category?.toLowerCase())
+  );
+
+  // ── GLOBAL ESCAPE ──────────────────────────────────────────────────────────
+  if (['CANCEL', 'CANCEL_BOOKING', 'SHOW_MENU'].includes(raw.toUpperCase())) {
+    return cancelFlow(session, business);
+  }
 
   // ── No products ───────────────────────────────────────────────────────────
   if (!menu.length) {
@@ -403,18 +702,23 @@ export async function handleSalonProductOrder({ session, message, business, tena
 
   switch (step) {
 
-    // ── SELECT_ITEM ───────────────────────────────────────────────────────────
+    // ── SELECT_ITEM ────────────────────────────────────────────────────────
     case 'SELECT_ITEM': {
-      if (!isInteractive && !session.menuViewed && /^\d+$/.test(raw)) {
-        await updateSession(session.customerPhone, session.tenantId, { menuViewed: true });
-        return _buildProductMenu(menu, business, isBarbershop);
-      }
-      if (clean.length < 2) return _buildProductMenu(menu, business, isBarbershop);
-
+      // [v14-BUG-9] List row IDs are 1-based numeric strings; resolve them first
       const numIdx = parseInt(raw, 10) - 1;
       let item = (!isNaN(numIdx) && numIdx >= 0 && menu[numIdx]) ? menu[numIdx] : null;
 
+      if (!item && !isInteractive && !session.menuViewed && /^\d+$/.test(raw)) {
+        await updateSession(session.customerPhone, session.tenantId, { menuViewed: true });
+        return _buildProductMenu(menu, business, isBarbershop);
+      }
+      if (!item && clean.length < 2) return _buildProductMenu(menu, business, isBarbershop);
+
       if (!item) {
+        const SYSTEM_IDS = new Set(['CANCEL', 'SHOW_MENU', 'CONFIRM', 'SUPPORT', 'BOOK', 'WALKIN', 'QUESTION', 'CANCEL_BOOKING']);
+        if (SYSTEM_IDS.has(raw.toUpperCase())) {
+          return _buildProductMenu(menu, business, isBarbershop);
+        }
         const { item: matched, confidenceLevel } = findBestMatch(menu, clean);
         if (confidenceLevel === 'HIGH') {
           item = matched;
@@ -436,7 +740,8 @@ export async function handleSalonProductOrder({ session, message, business, tena
         step: 'QUANTITY', data: { ...data, item }, menuViewed: true,
       });
 
-      const price = item.price ? ` — ${item.currency || 'D'}${item.price}` : '';
+      const currency = item.currency || business?.payment?.currency || 'D';
+      const price = item.price ? ` — ${currency}${item.price}` : '';
       const desc  = item.description ? `\n_${item.description}_` : '';
       return {
         type: 'buttons',
@@ -450,7 +755,7 @@ export async function handleSalonProductOrder({ session, message, business, tena
       };
     }
 
-    // ── QUANTITY ──────────────────────────────────────────────────────────────
+    // ── QUANTITY ──────────────────────────────────────────────────────────
     case 'QUANTITY': {
       const QTY = { 'QTY_1': 1, 'QTY_2': 2, 'QTY_3': 3 };
       const qty = QTY[raw.toUpperCase()] ?? parseQuantity(raw);
@@ -465,7 +770,7 @@ export async function handleSalonProductOrder({ session, message, business, tena
             { id: 'QTY_2', title: '2️⃣  2' },
             { id: 'QTY_3', title: '3️⃣  3' },
           ],
-          footer: `Max: ${MAX} per order`,
+          footer: 'Or type a number',
         };
       }
       if (qty > MAX) {
@@ -481,29 +786,37 @@ export async function handleSalonProductOrder({ session, message, business, tena
         step: 'CONFIRM', data: { ...data, quantity: qty, totalPrice: total },
       });
 
+      const currency = data.item?.currency || business?.payment?.currency || 'D';
       return {
         type: 'buttons',
         body:
           `🧾 *Order Summary*\n\n` +
           `🛍 *${qty}× ${data.item?.name}*\n` +
-          (total ? `💰 *Total:* ${data.item?.currency || 'D'}${total}\n` : '') +
+          (total ? `💰 *Total:* ${currency}${total}\n` : '') +
           `\nReady to confirm?`,
         buttons: [
-          { id: 'CONFIRM', title: '✅ Confirm Order' },
-          { id: 'CANCEL',  title: '❌ Cancel'         },
+          { id: 'CONFIRM',        title: '✅ Confirm Order' },
+          { id: 'CANCEL_BOOKING', title: '❌ Cancel'         },
         ],
       };
     }
 
-    // ── CONFIRM ───────────────────────────────────────────────────────────────
+    // ── CONFIRM ───────────────────────────────────────────────────────────
     case 'CONFIRM': {
+      // [v14-BUG-4] CANCEL must be caught here; the global escape above won't fire
+      // when step=CONFIRM because the switch falls through before reaching default.
+      if (['CANCEL', 'CANCEL_BOOKING', 'SHOW_MENU', 'NO'].includes(raw.toUpperCase())) {
+        return cancelFlow(session, business);
+      }
+
       if (!['CONFIRM', 'YES'].includes(raw.toUpperCase())) {
+        const currency = data.item?.currency || business?.payment?.currency || 'D';
         return {
           type: 'buttons',
           body: `${emoji} Ready to place your order?`,
           buttons: [
-            { id: 'CONFIRM', title: '✅ Confirm Order' },
-            { id: 'CANCEL',  title: '❌ Cancel'         },
+            { id: 'CONFIRM',        title: '✅ Confirm Order' },
+            { id: 'CANCEL_BOOKING', title: '❌ Cancel'         },
           ],
         };
       }
@@ -530,14 +843,13 @@ export async function handleSalonProductOrder({ session, message, business, tena
         await updateSession(session.customerPhone, session.tenantId, {
           step: 'PAYMENT_PROOF', currentFlow: 'ORDER',
         });
-        // [FIX-PAYREF-SALON] Generate and persist paymentReference — mirrors restaurant/bakery pattern.
         const shortIdRef = savedOrder?.shortId || '';
         let ref = null;
         if (shortIdRef) {
           const now = new Date();
           const mm  = String(now.getMonth() + 1).padStart(2, '0');
           const dd  = String(now.getDate()).padStart(2, '0');
-          ref = `DSB-${mm}${dd}-${shortIdRef}`;
+          ref = `SLN-${mm}${dd}-${shortIdRef}`;
           if (savedOrder?._id) {
             const { default: Order } = await import('../../../models/Order.js');
             Order.updateOne({ _id: savedOrder._id }, { $set: { paymentReference: ref } }).catch(() => {});
@@ -546,7 +858,7 @@ export async function handleSalonProductOrder({ session, message, business, tena
         return buildPaymentInstructionsUI(business, data.totalPrice, shortIdRef || null, ref);
       }
 
-      // Admin notify with APPROVE_/REJECT_ buttons — mirrors restaurant/bakery/fashion pattern
+      // Admin notify
       try {
         const adminPhone = business?.adminPhone || tenant?.adminPhone;
         if (adminPhone && tenant && savedOrder) {
@@ -559,6 +871,7 @@ export async function handleSalonProductOrder({ session, message, business, tena
               body:
                 `🔔 *New Product Order — ${business?.name || (isBarbershop ? 'Barbershop' : 'Salon')}*\n\n` +
                 `📞 Customer: ${session.customerPhone}\n` +
+                (session.customerName ? `👤 Name: ${session.customerName}\n` : '') +
                 `🛍 *${data.quantity}× ${data.item?.name}*\n` +
                 (data.totalPrice ? `💰 Total: ${currency}${data.totalPrice}\n` : '') +
                 `🔖 Ref: \`${savedOrder?.shortId || 'N/A'}\``,
@@ -581,18 +894,19 @@ export async function handleSalonProductOrder({ session, message, business, tena
         }).catch(() => {});
       }
 
-      // Park session at AWAIT_ADMIN_CONFIRM — mirrors restaurant/bakery/fashion/retail pattern
       await updateSession(session.customerPhone, session.tenantId, {
         step: 'AWAIT_ADMIN_CONFIRM', currentFlow: 'ORDER',
         data: { ...data },
       });
 
+      const currency = data.item?.currency || business?.payment?.currency || 'D';
       return {
         type: 'text',
         body:
           `✅ *Order received!* ${emoji}\n\n` +
           `🛍 *${data.quantity}× ${data.item?.name}*\n` +
-          `\n⏳ Our team will confirm your order shortly. We'll send you a message when it's ready! 🙏`,
+          (data.totalPrice ? `💰 Total: *${currency}${data.totalPrice}*\n` : '') +
+          `\n⏳ Our team will confirm your order shortly. We'll message you when it's ready! 🙏`,
       };
     }
 
@@ -605,113 +919,121 @@ export async function handleSalonProductOrder({ session, message, business, tena
   }
 }
 
-// ── AI Question Handler ───────────────────────────────────────────────────────
-// Salon-specific: handles aftercare advice, product recommendations, pricing FAQs
+// ── AI Question / Consultation Handler ────────────────────────────────────────
+// Handles FAQs, aftercare advice, pricing, and beauty consultations.
+//
+// [v14-BUG-5] completeFlow() lead-capture fix:
+//   OLD: if (lc) return lc  → lead-capture replaced the AI answer
+//   NEW: build questionResponse first, call completeFlow, return questionResponse
+//        so the AI answer is always delivered. Lead capture fires on next turn.
 
 export async function handleSalonQuestion({ session, message, business, tenant }) {
-  const raw = String(message || '').trim();
-  const isBarbershop = (business?.businessMode || '').toUpperCase() === 'BARBERSHOP';
+  const isBarbershop = _isBarbershop(business);
+  const step         = session.step || 'AWAITING_QUESTION';
 
+  // ── INIT ────────────────────────────────────────────────────────────────
+  if (message === null) {
+    await updateSession(session.customerPhone, session.tenantId, {
+      step: 'AWAITING_QUESTION', data: {},
+    });
+    return {
+      type: 'buttons',
+      body: `${isBarbershop ? '✂️' : '💇'} What would you like to know? Feel free to type your question.\n\n_(e.g. pricing, opening hours, aftercare tips, which service is right for me)_`,
+      buttons: [
+        { id: 'BOOK',      title: isBarbershop ? '💈 Book Cut' : '📅 Book Appointment' },
+        { id: 'SHOW_MENU', title: '🔄 Main Menu'                                       },
+      ],
+    };
+  }
+
+  const raw = String(message || '').trim();
+
+  if (['CANCEL', 'CANCEL_BOOKING', 'SHOW_MENU'].includes(raw.toUpperCase())) {
+    return cancelFlow(session, business);
+  }
+
+  // ── AWAITING_QUESTION ─────────────────────────────────────────────────────
   if (!raw || raw.length < 2) {
     return {
       type: 'buttons',
       body: `${isBarbershop ? '✂️' : '💇'} What would you like to know? Feel free to type your question.\n\n_(e.g. pricing, opening hours, aftercare tips, product recommendations)_`,
       buttons: [
         { id: 'BOOK',      title: isBarbershop ? '💈 Book Cut' : '📅 Book Appointment' },
-        { id: 'SHOW_MENU', title: '🔄 Start Over' },
+        { id: 'SHOW_MENU', title: '🔄 Main Menu'                                       },
       ],
     };
   }
 
-  // [FIX-SALON-Q-CTX] Inject order context so AI can answer booking/payment questions truthfully.
-  let _slnOrderCtx = null;
-  try {
-    const { default: _SlnOrder } = await import('../../../models/Order.js');
-    const _slnOrders = await _SlnOrder.find({
-      customerPhone: session.customerPhone,
-      tenantId:      session.tenantId,
-      status:        { $nin: ['cancelled'] },
-    }).sort({ createdAt: -1 }).limit(3)
-      .select('shortId item quantity totalPrice paymentStatus status').lean();
-    if (_slnOrders.length) _slnOrderCtx = { recentOrders: _slnOrders };
-  } catch { /* non-fatal */ }
+  // [v14-CONSULT] Detect consultation-style questions and add proactive follow-up
+  const isConsultation = /\b(which|what|recommend|best|suit|good for|help me choose|advice|should i|i have|my hair|my skin|i want to)\b/i.test(raw);
+  const isAftercare    = /\b(aftercare|after care|maintain|maintenance|how long before|when can i wash|what to avoid|care tips|keep colour|keep color|post.treatment|after my (appointment|treatment|service))\b/i.test(raw);
+  const intent = isAftercare ? 'AFTERCARE' : isConsultation ? 'SALON_CONSULTATION' : 'SALON_QUESTION'; // [FIX-AFTERCARE]
 
   const aiReply = await getAIReply({
     customerMessage: raw,
     business,
     session,
-    intent: 'SALON_QUESTION',
-    orderContext: _slnOrderCtx,
+    intent,
   });
 
-  // [FIX-Q-ORDER] Same fix as restaurant question handler — build defaultReply first.
-  const _salonDefaultReply = {
+  // [v14-BUG-5] Build the response FIRST, then call completeFlow.
+  // completeFlow sets postFlowAck for follow-up routing but must NOT replace our answer.
+  const questionResponse = {
     type: 'buttons',
     body: aiReply || `Great question! For detailed information please contact us directly.`,
     buttons: [
-      { id: 'BOOK',     title: isBarbershop ? '💈 Book Now' : '📅 Book Now'    },
-      { id: 'WALKIN',   title: '🚶 Walk-In Queue'                               },
-      { id: 'QUESTION', title: '❓ Another Question'                            },
+      { id: 'BOOK',     title: isBarbershop ? '💈 Book Now'    : '📅 Book Now'      },
+      { id: 'WALKIN',   title: '🚶 Walk-In Queue'                                    },
+      { id: 'QUESTION', title: '❓ Another Question'                                 },
     ],
   };
+
+  // [v14-CONSULT] If it was a consultation, add a proactive booking nudge
+  if (isAftercare && aiReply) {
+    questionResponse.footer = 'We hope to see you again soon! 🙏';
+  } else if (isConsultation && aiReply) {
+    questionResponse.footer = 'Tap "Book Now" to schedule the recommended service';
+  }
+
+  // [v14-BUG-5-FIX] completeFlow() may return a lead-capture UI. When it does,
+  // return an ARRAY so the dispatcher sends the AI answer FIRST, then the lead
+  // capture form immediately after. Previously the lead capture was discarded.
   const lc = await completeFlow(session, 'QUESTION', business, tenant);
-  return lc || _salonDefaultReply;
+  if (lc) return [questionResponse, lc];
+
+  // No lead capture — return AI answer directly
+  return questionResponse;
 }
 
-// ── UI Helpers ────────────────────────────────────────────────────────────────
+// ── UI Helpers ─────────────────────────────────────────────────────────────────
 
-/** Returns service list — from menuItems (category = 'services') or fallback defaults */
-function _getServices(business) {
-  const items = (business?.menuItems || []).filter(i => i.available !== false);
-  const isBarbershop = (business?.businessMode || '').toUpperCase() === 'BARBERSHOP';
-
-  if (items.length > 0) return items.map(i => i.name);
-
-  // Fallback defaults differ by mode
-  return isBarbershop
-    ? ['Haircut', 'Beard Trim', 'Shape-Up / Edge', 'Full Service (Cut + Beard)', 'Kids Cut']
-    : ['Haircut & Style', 'Blow Dry', 'Hair Colour', 'Highlights', 'Deep Conditioning', 'Braids / Weave', 'Trim'];
-}
-
-/** Returns staff list — from business.staff array or empty */
-function _getStaff(business) {
-  return Array.isArray(business?.staff) && business.staff.length > 0
-    ? business.staff.map(s => (typeof s === 'string' ? s : s.name || s.displayName || String(s)))
-    : [];
-}
-
-function _buildServiceIdMap(services) {
-  const map = {};
-  services.forEach(s => {
-    map[`SVC_${s.toUpperCase().replace(/\s+/g, '_')}`] = s;
-  });
-  return map;
-}
-
-function _buildStaffIdMap(staff) {
-  const map = {};
-  staff.forEach(s => {
-    map[`STYLIST_${s.toUpperCase().replace(/\s+/g, '_')}`] = s;
-  });
-  map['STYLIST_ANY'] = 'Any available';
-  return map;
-}
-
+/**
+ * _buildServiceMenu — shows services as interactive list (>3 items) or buttons (≤3).
+ * [v14-BUG-6] Includes price + duration in list row descriptions.
+ */
 function _buildServiceMenu(business, mode = 'booking') {
-  const services  = _getServices(business);
-  const isBarbershop = (business?.businessMode || '').toUpperCase() === 'BARBERSHOP';
-  const emoji     = isBarbershop ? '✂️' : '💇';
-  const heading   = mode === 'walkin'
+  const services    = _getServices(business);
+  const isBarbershop = _isBarbershop(business);
+  const emoji       = isBarbershop ? '✂️' : '💇';
+  const heading     = mode === 'walkin'
     ? `${emoji} *Walk-In Queue*\n\nWhat service do you need today?`
     : `${emoji} *Book Appointment*\n\nWhat service would you like to book?`;
+
+  const toName = s => (typeof s === 'string' ? s : s.name);
+  const toPrice = (s, business) => {
+    const price = typeof s === 'string' ? null : s.price;
+    const currency = (typeof s !== 'string' && s.currency) || business?.payment?.currency || 'D';
+    return price ? `${currency}${price}` : null;
+  };
+  const toDuration = s => (typeof s === 'string' ? null : s.duration ? `${s.duration} min` : null);
 
   if (services.length <= 3) {
     return {
       type: 'buttons',
       body: heading,
       buttons: services.slice(0, 3).map(s => ({
-        id:    `SVC_${s.toUpperCase().replace(/\s+/g, '_')}`,
-        title: s.slice(0, 20),
+        id:    `SVC_${toName(s).toUpperCase().replace(/\s+/g, '_')}`,
+        title: toName(s).slice(0, 20),
       })),
     };
   }
@@ -722,44 +1044,62 @@ function _buildServiceMenu(business, mode = 'booking') {
     button: 'Choose service',
     sections: [{
       title: 'Our Services',
-      rows: services.slice(0, 10).map(s => ({
-        id:    `SVC_${s.toUpperCase().replace(/\s+/g, '_')}`,
-        title: s.slice(0, 24),
-      })),
+      rows: services.slice(0, 10).map(s => {
+        const pricePart    = toPrice(s, business);
+        const durationPart = toDuration(s);
+        // [v14-BUG-6] Description ≤72 chars with price + duration info
+        const descParts = [pricePart, durationPart].filter(Boolean);
+        return {
+          id:          `SVC_${toName(s).toUpperCase().replace(/\s+/g, '_')}`,
+          title:       toName(s).slice(0, 24),
+          description: descParts.length ? descParts.join(' · ').slice(0, 72) : undefined,
+        };
+      }),
     }],
     footer: 'Tap a service or type its name',
   };
 }
 
-function _buildStylistMenu(staff, business, isBarbershop) {
+/**
+ * _buildStylistMenu — shows stylist list with 'Any available' option.
+ * [v14-BUG-7] Respects business.settings.requireNamedStylist flag.
+ */
+function _buildStylistMenu(staffList, business, isBarbershop, errorMsg = null) {
   const role    = isBarbershop ? 'barber' : 'stylist';
   const emoji   = isBarbershop ? '✂️' : '💇';
-  const options = [...staff, 'Any available'];
+  const showAny = _showAnyAvailable(business);
+  const options = showAny
+    ? [...staffList.map(s => ({ name: s.name, specialty: s.specialty })), { name: 'Any available', specialty: `Next available ${role}` }]
+    : staffList.map(s => ({ name: s.name, specialty: s.specialty }));
+
+  const heading = errorMsg
+    ? errorMsg
+    : `${emoji} Which *${role}* would you prefer?${showAny ? `\n\n_(Or choose "Any available" for the next free ${role})_` : ''}`;
 
   if (options.length <= 3) {
     return {
       type: 'buttons',
-      body: `${emoji} Which *${role}* would you prefer?\n\n_(Or choose "Any available" for the next free ${role})_`,
-      buttons: options.slice(0, 3).map(s => ({
-        id:    s === 'Any available' ? 'STYLIST_ANY' : `STYLIST_${s.toUpperCase().replace(/\s+/g, '_')}`,
-        title: s.slice(0, 20),
+      body: heading,
+      buttons: options.slice(0, 3).map(o => ({
+        id:    o.name === 'Any available' ? 'STYLIST_ANY' : `STYLIST_${o.name.toUpperCase().replace(/\s+/g, '_')}`,
+        title: o.name.slice(0, 20),
       })),
     };
   }
 
   return {
     type:   'list',
-    body:   `${emoji} Which *${role}* would you prefer?`,
+    body:   heading,
     button: `Choose ${role}`,
     sections: [{
       title: `Our ${isBarbershop ? 'Barbers' : 'Stylists'}`,
-      rows: options.slice(0, 10).map(s => ({
-        id:    s === 'Any available' ? 'STYLIST_ANY' : `STYLIST_${s.toUpperCase().replace(/\s+/g, '_')}`,
-        title: s.slice(0, 24),
-        description: s === 'Any available' ? `Next available ${role}` : undefined,
+      rows: options.slice(0, 10).map(o => ({
+        id:          o.name === 'Any available' ? 'STYLIST_ANY' : `STYLIST_${o.name.toUpperCase().replace(/\s+/g, '_')}`,
+        title:       o.name.slice(0, 24),
+        description: (o.specialty || (o.name === 'Any available' ? `Next available ${role}` : undefined))?.slice(0, 72),
       })),
     }],
-    footer: 'Tap a name or type it',
+    footer: `Tap a name or type it`,
   };
 }
 
@@ -775,12 +1115,15 @@ function _buildProductMenu(items, business, isBarbershop) {
     };
   }
 
+  const currency = business?.payment?.currency || 'D';
+
+  // [v14-BUG-9] Row IDs are 1-based numeric strings to match numIdx parsing
   const rows = items.slice(0, 10).map((item, i) => ({
     id:          String(i + 1),
     title:       item.name.slice(0, 24),
     description: [
       item.description?.slice(0, 40),
-      item.price ? `${item.currency || 'D'}${item.price}` : null,
+      item.price ? `${item.currency || currency}${item.price}` : null,
     ].filter(Boolean).join(' — ').slice(0, 72) || undefined,
   }));
 
@@ -791,7 +1134,13 @@ function _buildProductMenu(items, business, isBarbershop) {
       ? 'Our grooming products — tap to select:'
       : 'Our hair & beauty products — tap to select:',
     button: 'View Products',
-    rows,
+    sections: [{
+      title: isBarbershop ? 'Grooming Products' : 'Beauty Products',
+      rows,
+    }],
     footer: items.length > 10 ? `Showing ${rows.length} of ${items.length} products` : undefined,
   };
 }
+
+// ── Named exports for prep tip (used by bookingFlow / postFlowHandler) ─────────
+export { _getPrepTip as getSalonPrepTip };

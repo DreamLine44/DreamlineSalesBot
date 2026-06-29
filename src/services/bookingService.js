@@ -8,14 +8,19 @@ import Booking from '../models/Booking.js';
 import { recordBooking } from '../core/memory/customerMemory.js';
 import logger from '../config/logger.js';
 
-export async function saveBooking({ customerPhone, customerName, date, time, service, partySize, parsedDate, tenantId, businessId }) {
+export async function saveBooking({ customerPhone, customerName, date, time, service, partySize, parsedDate, tenantId, businessId, staff, bookingType, notes }) {
   const booking = await Booking.create({
     customerPhone,
     customerName:  customerName || null,
     date, time,
-    service:       service   || null,
-    partySize:     partySize || null,
-    parsedDate:    parsedDate || null,
+    service:       service      || null,
+    partySize:     partySize    || null,
+    parsedDate:    parsedDate   || null,
+    // [FIX-SALON-1] Persist stylist/barber name in dedicated field
+    staff:         staff        || null,
+    // [FIX-SALON-2] Persist booking type (appointment vs walkin)
+    bookingType:   bookingType  || null,
+    notes:         notes        || null,
     tenantId, businessId,
     status: 'pending',
   });

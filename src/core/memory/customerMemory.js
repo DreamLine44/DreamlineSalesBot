@@ -18,6 +18,7 @@
 
 import UserProfile from '../../models/UserProfile.js';
 import Order       from '../../models/Order.js';
+import Booking     from '../../models/Booking.js';
 import mongoose    from 'mongoose';
 import logger      from '../../config/logger.js';
 
@@ -133,13 +134,7 @@ export async function getTopItem(phone, tenantId) {
     if (items.length) {
       return items.sort((a, b) => b.count - a.count)[0]?.name || null;
     }
-    // [FIX-TOP-ITEM] Exclude cancelled/rejected orders from the fallback lookup
-    // so a customer's top/last item never surfaces a cancelled order.
-    const last = await Order.findOne({
-      customerPhone: phone, tenantId,
-      status:        { $nin: ['cancelled', 'rejected'] },
-      paymentStatus: { $nin: ['cancelled', 'rejected'] },
-    })
+    const last = await Order.findOne({ customerPhone: phone, tenantId })
       .sort({ createdAt: -1 })
       .select('item')
       .lean();
@@ -152,12 +147,7 @@ export async function getTopItem(phone, tenantId) {
 
 export async function isReturningCustomer(phone, tenantId) {
   try {
-    // [FIX-RETURNING] Only count non-cancelled orders — a customer who placed and
-    // immediately cancelled their only order should not be considered a returning customer.
-    const count = await Order.countDocuments({
-      customerPhone: phone, tenantId,
-      status:        { $nin: ['cancelled', 'rejected'] },
-    });
+    const count = await Order.countDocuments({ customerPhone: phone, tenantId });
     return count > 0;
   } catch {
     return false;
@@ -174,20 +164,26 @@ export async function isReturningCustomer(phone, tenantId) {
  */
 export async function getCustomerContext(phone, tenantId) {
   try {
-    const [profile, lastOrder] = await Promise.all([
+    const [profile, lastOrder, lastBooking] = await Promise.all([
       UserProfile.findOne({ phone, tenantId: toOid(tenantId) })
-        .select('lead.name preferences.favoriteItems stats.totalOrders activity.lastSeen')
+        .select('lead.name preferences.favoriteItems stats.totalOrders stats.totalBookings activity.lastSeen')
         .lean(),
-      // [FIX-LAST-ORDER-CTX] Exclude cancelled and rejected orders so greeting
-      // context never says "Last time you ordered X — shall we do that again?"
-      // for an order the customer explicitly cancelled or that was rejected.
-      Order.findOne({
-        customerPhone: phone, tenantId,
-        status:        { $nin: ['cancelled', 'rejected'] },
-        paymentStatus: { $nin: ['cancelled', 'rejected'] },
-      })
+      Order.findOne({ customerPhone: phone, tenantId, status: { $nin: ['cancelled', 'rejected'] } })
         .sort({ createdAt: -1 })
         .select('item createdAt')
+        .lean(),
+      // [MEM-SALON-1] Fetch last non-cancelled booking so salon returning customers
+      // get a personalised greeting referencing their last appointment and stylist,
+      // even if they've never placed a product order. Without this, all salon customers
+      // were treated as new customers in the greeting flow.
+      Booking.findOne({
+        customerPhone: phone,
+        tenantId,
+        status: { $nin: ['cancelled'] },
+        bookingType: { $ne: 'walkin' },
+      })
+        .sort({ createdAt: -1 })
+        .select('service staff date createdAt')
         .lean(),
     ]);
 
@@ -197,15 +193,28 @@ export async function getCustomerContext(phone, tenantId) {
       : null;
 
     return {
-      name:        profile?.lead?.name || null,
+      name:           profile?.lead?.name || null,
       topItem,
-      lastItem:    lastOrder?.item || null,
-      lastOrderAt: lastOrder?.createdAt || null,   // [MEM-OPT-2] new field
-      orderCount:  profile?.stats?.totalOrders || 0,
-      isReturning: !!lastOrder,
+      lastItem:        lastOrder?.item || null,
+      lastOrderAt:     lastOrder?.createdAt || null,
+      // [FIX-MEM] lastBookingAt for salon returning-customer greeting cooldown
+      lastBookingAt:   lastBooking?.createdAt || null,
+      orderCount:     profile?.stats?.totalOrders || 0,
+      totalBookings:  profile?.stats?.totalBookings || 0,
+      isReturning:    !!(lastOrder || lastBooking),
+      // [MEM-SALON-1] Booking context for salon/barbershop personalisation
+      lastBooking:    lastBooking ? {
+        service:    lastBooking.service || null,
+        staff:      lastBooking.staff || null,
+        date:       lastBooking.date || null,
+        createdAt:  lastBooking.createdAt || null,
+      } : null,
     };
   } catch (err) {
     logger.debug('[Memory] getCustomerContext failed', { err: err.message });
-    return { name: null, topItem: null, lastItem: null, lastOrderAt: null, orderCount: 0, isReturning: false };
+    return {
+      name: null, topItem: null, lastItem: null, lastOrderAt: null,
+      orderCount: 0, totalBookings: 0, isReturning: false, lastBooking: null,
+    };
   }
 }

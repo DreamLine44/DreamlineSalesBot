@@ -16,20 +16,11 @@ export function buildMenuUI(business) {
       buttons: [{ id: 'SUPPORT', title: '💬 Contact Us' }],
     };
   }
-  // [FIX-MENU-CCY] Use configured currency symbol, not hardcoded 'D'.
-  // [FIX-MENU-PRICE] Compute price string before building the row so the slice
-  // never truncates the price off the end of a long description.
-  const _menuCcy = business?.payment?.currency || 'D';
-  const rows = items.map((item, i) => {
-    const _priceStr   = item.price ? `${_menuCcy}${item.price}` : '';
-    const _descStr    = item.description ? item.description.slice(0, 50) : '';
-    const description = [_descStr, _priceStr].filter(Boolean).join(' — ').slice(0, 72);
-    return {
-      id:          String(i + 1),
-      title:       item.name.slice(0, 24),
-      description,
-    };
-  });
+  const rows = items.map((item, i) => ({
+    id:          String(i + 1),
+    title:       item.name.slice(0, 24),
+    description: [item.description, item.price ? `${business?.payment?.currency || 'D'}${item.price}` : ''].filter(Boolean).join(' — ').slice(0, 72),
+  }));
   return {
     type:        'list',
     header:      business?.name || 'Menu',

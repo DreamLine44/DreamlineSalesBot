@@ -17,7 +17,7 @@
  */
 
 import { updateSession }           from '../sessions/sessionService.js';
-import { completeFlow }            from './flowEngine.js';
+import { completeFlow, cancelFlow } from './flowEngine.js';
 import { saveBooking }             from '../../services/bookingService.js';
 // buildAdminBookingAlertBody is imported dynamically inside BOOKING_CONFIRM to stay consistent
 // with the dynamic import already there. The static buildAdminBookingAlert alias was dead code.
@@ -308,8 +308,6 @@ export async function handleBookingFlow({ session, message, business, tenant, is
 
     if (firstStep === 'SELECT_SERVICE') {
       if (services.length > 3) {
-        // [FIX-BOOK-CCY] Use configured currency symbol, not hardcoded 'D'
-        const _bkSvcCcy = business?.payment?.currency || 'D';
         return {
           type: 'list',
           body: 'Which service would you like to book?',
@@ -317,7 +315,7 @@ export async function handleBookingFlow({ session, message, business, tenant, is
           sections: [{ title: 'Our Services', rows: services.map(s => ({
             id: `SVC_${s.name.toUpperCase().replace(/\s+/g, '_')}`,
             title: s.name.slice(0, 24),
-            description: [s.price ? `${_bkSvcCcy}${s.price}` : null, s.duration ? `${s.duration} min` : null].filter(Boolean).join(' · ') || undefined,
+            description: [s.price ? `D${s.price}` : null, s.duration ? `${s.duration} min` : null].filter(Boolean).join(' · ') || undefined,
           }))}],
         };
       }
@@ -368,8 +366,6 @@ export async function handleBookingFlow({ session, message, business, tenant, is
       if (!service) {
         // Show as list for more than 3 services, buttons for ≤3
         if (services.length > 3) {
-          // [FIX-BOOK-CCY-2] Use configured currency symbol
-          const _bkSvc2Ccy = business?.payment?.currency || 'D';
           return {
             type: 'list',
             body: `Please choose a service:`,
@@ -377,7 +373,7 @@ export async function handleBookingFlow({ session, message, business, tenant, is
             sections: [{ title: 'Our Services', rows: services.map(s => ({
               id: `SVC_${s.name.toUpperCase().replace(/\s+/g, '_')}`,
               title: s.name.slice(0, 24),
-              description: s.price ? `${_bkSvc2Ccy}${s.price}${s.duration ? ` · ${s.duration}min` : ''}` : undefined,
+              description: s.price ? `D${s.price}${s.duration ? ` · ${s.duration}min` : ''}` : undefined,
             }))}],
           };
         }
@@ -558,10 +554,16 @@ export async function handleBookingFlow({ session, message, business, tenant, is
     case 'TIME_CONFIRM': {
       if (clean === 'confirm' || /^(yes|y|yep|yeah)$/i.test(clean)) {
         await updateSession(session.customerPhone, session.tenantId, { step: 'BOOKING_CONFIRM' });
-        const { date, time, service } = data;
+        const { date, time, service, partySize, stylist, staff } = data;
+        // [FIX-SALON-9] Show stylist/staff in booking summary when set by salon flow.
+        // session.data.stylist is written by handleSalonBooking SELECT_STYLIST step.
+        const staffDisplay = stylist || staff || null;
+        const isBarbershopSummary = (business?.businessMode || '').toUpperCase() === 'BARBERSHOP';
         const summary =
           `📋 *Booking Summary*\n\n` +
-          (service ? `🗓 *${service}*\n` : '') +
+          (service      ? `${isBarbershopSummary ? '✂️' : '💇'} *${service}*\n`                      : '') +
+          (staffDisplay ? `👤 *${isBarbershopSummary ? 'Barber' : 'Stylist'}:* ${staffDisplay}\n`    : '') +
+          (partySize    ? `👥 *${partySize} guest${partySize > 1 ? 's' : ''}*\n`                     : '') +
           `📅 *${date}*\n⏰ *${time}*\n\nShall we confirm this booking?`;
         return {
           type:    'buttons',
@@ -600,18 +602,74 @@ export async function handleBookingFlow({ session, message, business, tenant, is
     }
 
     case 'BOOKING_CONFIRM': {
+      // [FIX-v14-BUG-1] CANCEL must be intercepted FIRST, before the summary re-prompt.
+      // Without this guard, CANCEL at the booking summary screen hits the else-branch
+      // of the confirm regex and re-shows the booking summary — an infinite loop.
+      // handleSalonBooking's global escape catches it only when the flow delegates here;
+      // for non-salon modes (restaurant, services) that call handleBookingFlow directly,
+      // no outer escape exists, so the fix must live here in the shared flow.
+      if (/^(cancel|cancel_booking|no|nope|show_menu)$/i.test(clean)) {
+        return cancelFlow(session, business);
+      }
+
       if (!/^(yes|y|confirm|ok|okay|sure)$/i.test(clean) && clean !== 'confirm') {
-        const { date, time, service } = data;
+        const { date, time, service, partySize, stylist, staff } = data;
+        const staffDisplay2 = stylist || staff || null;
+        const isBarbershopReprompt = (business?.businessMode || '').toUpperCase() === 'BARBERSHOP';
         return {
           type:    'buttons',
-          body:    `📋 *Booking Summary*\n\n${service ? `🗓 *${service}*\n` : ''}📅 *${date}*\n⏰ *${time}*\n\nConfirm?`,
-          buttons: [{ id: 'CONFIRM', title: '✅ Confirm' }, { id: 'CANCEL', title: '❌ Cancel' }],
+          body:
+            `📋 *Booking Summary*\n\n` +
+            (service       ? `${isBarbershopReprompt ? '✂️' : '💇'} *${service}*\n`                         : '') +
+            (staffDisplay2 ? `👤 *${isBarbershopReprompt ? 'Barber' : 'Stylist'}:* ${staffDisplay2}\n`      : '') +
+            (partySize     ? `👥 *${partySize} guest${partySize > 1 ? 's' : ''}*\n`                         : '') +
+            `📅 *${date}*\n⏰ *${time}*\n\nShall we confirm this booking?`,
+          buttons: [{ id: 'CONFIRM', title: '✅ Confirm Booking' }, { id: 'CANCEL', title: '❌ Cancel' }],
         };
       }
 
       // Save booking
       const customerName = session.customerName || null;
-      const { date, time, service, partySize } = data;
+      const { date, time, service, partySize, stylist, staff } = data;
+      // [FIX-SALON-9] stylist is set by handleSalonBooking SELECT_STYLIST → session.data.stylist
+      const staffToSave = stylist || staff || null;
+      // [FIX-SALON-2] Mark appointments as 'appointment' type (vs walk-in 'walkin')
+      const isSalonMode = ['SALON','BARBERSHOP'].includes((business?.businessMode || '').toUpperCase());
+      const bookingTypeToSave = isSalonMode ? 'appointment' : null;
+
+      // [v14-DUPLICATE] Double-booking guard: check for an existing pending/confirmed
+      // booking on the same date BEFORE saving. Prevents duplicate appointments for
+      // the same customer at the same salon on the same day.
+      // The helper is defined in salon/flows/index.js and imported dynamically to
+      // avoid circular imports (bookingFlow → salonFlows → bookingFlow).
+      if (isSalonMode && date) {
+        try {
+          const { default: _BookingModel } = await import('../../models/Booking.js');
+          const conflict = await _BookingModel.findOne({
+            customerPhone: session.customerPhone,
+            tenantId:      session.tenantId,
+            date,
+            status:        { $in: ['pending', 'confirmed'] },
+            bookingType:   { $ne: 'walkin' },
+          }).lean().catch(() => null);
+          if (conflict) {
+            return {
+              type: 'buttons',
+              body:
+                `⚠️ *You already have a booking on ${date}*\n\n` +
+                (conflict.service ? `💇 *${conflict.service}*\n` : '') +
+                (conflict.time    ? `⏰ *${conflict.time}*\n`    : '') +
+                `\nWould you like to reschedule that booking, or book a different date?`,
+              buttons: [
+                { id: 'RESCHEDULE', title: '📅 Reschedule'      },
+                { id: 'BOOK',       title: '📅 Different Date'  },
+                { id: 'SHOW_MENU',  title: '🔄 Main Menu'        },
+              ],
+            };
+          }
+        } catch { /* non-fatal — proceed with save */ }
+      }
+
       // [FIX-16] parsedDate is stored as a Date object but comes back from
       // session.data (lean MongoDB read) as an ISO string. Coerce explicitly
       // so saveBooking always receives a real Date or null — never a string.
@@ -628,11 +686,29 @@ export async function handleBookingFlow({ session, message, business, tenant, is
           date, time, service,
           partySize:    partySize || null,
           parsedDate,
+          // [FIX-SALON-1] Persist stylist in dedicated staff field
+          staff:        staffToSave,
+          // [FIX-SALON-2] Persist booking type
+          bookingType:  bookingTypeToSave,
           tenantId:     session.tenantId,
           businessId:   business._id,
         });
       } catch (err) {
         logger.error('[BookingFlow] saveBooking failed', { err: err.message });
+        // [FIX-SAVE-ERR] If we couldn't persist the booking, do NOT proceed to send a
+        // confirmation — the customer would think they're booked when they're not, and
+        // the admin would never receive an alert. Clear the flow and show a retry prompt.
+        await updateSession(session.customerPhone, session.tenantId, {
+          currentFlow: null, step: null, data: {},
+        });
+        return {
+          type:    'buttons',
+          body:    `⚠️ *Something went wrong saving your booking.*\n\nPlease try again — tap below to restart.`,
+          buttons: [
+            { id: 'BOOK',    title: '📅 Try Again'  },
+            { id: 'SUPPORT', title: '💬 Contact Us' },
+          ],
+        };
       }
 
       // Track booking analytics
@@ -652,12 +728,16 @@ export async function handleBookingFlow({ session, message, business, tenant, is
         if (adminPhone && tenant && savedBooking) {
           const { buildAdminBookingAlertBody } = await import('../../services/adminCommandService.js');
           const { dispatchMessage } = await import('../whatsapp/dispatcher.js');
+          // [v14-BUG-10] Pass staff (stylist) to admin alert so admin sees who
+          // the customer requested. Previously omitted — admin saw service/date/time
+          // but no stylist name even when the salon booking flow captured one.
           const alertBody = buildAdminBookingAlertBody({
             customerPhone: session.customerPhone,
             date,
             time,
             service,
             partySize:   partySize || null,
+            staff:       staffToSave,
             business,
             shortId: savedBooking.shortId,
           });
@@ -674,49 +754,26 @@ export async function handleBookingFlow({ session, message, business, tenant, is
         logger.warn('[BookingFlow] Admin notification failed (non-fatal)', { err: err.message });
       }
 
-      // [FIX-BK-LC] Build and return the booking confirmation FIRST, before checking
-      // for lead capture. Previously completeFlow() was called first — if lead capture
-      // fired, its prompt replaced the booking confirmation entirely, so the customer
-      // never received "Booking Request Received!" after submitting their booking.
-      // Now: always show the booking confirmation, then append the LC prompt on top if
-      // configured (LC prompt is returned by completeFlow as the caller return value,
-      // but the booking confirmation must be dispatched independently before that).
+      const _lcRb = await completeFlow(session, 'BOOKING', business, tenant);
+      if (_lcRb) return _lcRb;
+
       const confirmBody =
-        `📅 *Booking Request Received!*\n\n` +
-        (service ? `💇  Service: *${service}*\n` : '') +
-        (date    ? `📅  Date: *${date}*\n`        : '') +
-        (time    ? `⏰  Time: *${time}*\n`        : '') +
-        (partySize ? `👥  Party size: *${partySize} guest${partySize > 1 ? 's' : ''}*\n` : '') +
-        `\nWe're reviewing your booking and will confirm shortly 🙏\n\n` +
-        `If anything changes, just message us here.`;
+        `📅 *Booking Request Received!* ✨\n\n` +
+        (service     ? `${isBarbershopConfirm ? '✂️' : '💇'}  Service: *${service}*\n`   : '') +
+        (staffToSave ? `👤  ${isBarbershopConfirm ? 'Barber' : 'Stylist'}: *${staffToSave}*\n` : '') +
+        (date        ? `📅  Date: *${date}*\n`          : '') +
+        (time        ? `⏰  Time: *${time}*\n`          : '') +
+        (partySize   ? `👥  Party size: *${partySize} guest${partySize > 1 ? 's' : ''}*\n` : '') +
+        shortIdLine +
+        `\n⏳ We're reviewing your booking and will confirm shortly. We'll send you a message as soon as it's confirmed! 🙏`;
 
       // [SPEC-6C] No welcome/sales buttons on booking receipt — customer is waiting
       // for admin confirmation. Just a cancel escape.
-      const bookingConfirmPayload = {
+      return {
         type:    'buttons',
         body:    confirmBody,
         buttons: [{ id: 'CANCEL_BOOKING', title: '❌ Cancel Booking' }],
       };
-
-      // Check for lead capture — dispatch booking confirmation first so customer
-      // always receives it, then return LC prompt (or the booking confirmation as fallback).
-      const _lcRb = await completeFlow(session, 'BOOKING', business, tenant);
-      if (_lcRb) {
-        // Lead capture is active — dispatch the booking confirmation now, then let
-        // the caller dispatch the LC prompt as the returned response.
-        // We need dispatchMessage here: import dynamically to avoid circular deps.
-        try {
-          const { dispatchMessage: _bkDispatch } = await import('../whatsapp/dispatcher.js');
-          await _bkDispatch(session.customerPhone, bookingConfirmPayload, tenant);
-        } catch (_bkDispErr) {
-          // Non-fatal: if dispatch fails, return the combined payload so customer at
-          // minimum sees the lead-capture form (booking details in DB are already saved).
-          logger.warn('[BookingFlow] Booking confirmation dispatch before LC failed', { err: _bkDispErr.message });
-        }
-        return _lcRb;
-      }
-
-      return bookingConfirmPayload;
     }
 
     default:

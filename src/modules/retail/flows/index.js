@@ -109,10 +109,8 @@ export async function handleRetailOrder({ session, message, business, tenant, is
 
       // They typed something — treat as a search
       if (raw.length >= 2) {
-        // [FIX-MEDIUM-RETAIL] matchEngine only returns HIGH / LOW / NONE — 'MEDIUM' is dead code.
-        // Changed to HIGH || LOW so a low-confidence typed match also shows the item detail.
         const { item, confidenceLevel } = findBestMatch(menu, clean);
-        if (confidenceLevel === 'HIGH' || confidenceLevel === 'LOW') {
+        if (confidenceLevel === 'HIGH' || confidenceLevel === 'MEDIUM') {
           await updateSession(session.customerPhone, session.tenantId, {
             step: 'SELECT_VARIANT',
             data: { ...data, item },
@@ -305,7 +303,7 @@ export async function handleRetailOrder({ session, message, business, tenant, is
       const item     = data.item;
       const qty      = data.quantity || 1;
       const variant  = data.variant  ? ` (${data.variant})` : '';
-      const price    = item?.price   ? `\n💰 *Price:* ${item.currency || '$'}${(item.price * qty).toFixed(2)}` : '';
+      const price    = item?.price   ? `\n💰 *Price:* ${item.currency || business?.payment?.currency || 'D'}${(item.price * qty).toFixed(2)}` : '';
 
       await updateSession(session.customerPhone, session.tenantId, {
         step: 'CONFIRM',
@@ -486,12 +484,13 @@ export async function handleProductQuery({ session, message, business, tenant })
     session,
     intent: 'PRODUCT_QUERY',
   });
-  // [FIX-PQ-ORDER] Build defaultReply BEFORE completeFlow. If lead capture is configured,
-  // completeFlow() returns a lead-capture UIResponse — returning it immediately would
-  // discard the aiReply and the customer would receive a lead-capture prompt instead of
-  // their product question answer. The same fix is applied in restaurant, salon, general,
-  // services question handlers for the same reason ([FIX-Q-ORDER]).
-  const defaultReply = {
+  // [FIX-24] Was: completeFlow(session, 'ORDER', ...) which sets postFlowAck='ORDER'
+  // and tells the customer "We're preparing your order" — completely wrong after a
+  // product Q&A. Correct ackCtx is 'QUESTION' so postFlowHandler delivers a warm
+  // "any other questions?" reply on the customer's next message.
+  const _lcRpq = await completeFlow(session, 'QUESTION', business, tenant);
+  if (_lcRpq) return _lcRpq;
+  return {
     type: 'buttons',
     body: aiReply || "Great question! Let me point you to the right product.",
     buttons: [
@@ -499,10 +498,6 @@ export async function handleProductQuery({ session, message, business, tenant })
       { id: 'SHOW_MENU', title: '📋 View All'    },
     ],
   };
-  // [FIX-1] Correct completeFlow signature: (session, completedFlow, business, tenant)
-  // [FIX-2] Capture return value — completeFlow may return a lead-capture UIResponse
-  const _lcRpq = await completeFlow(session, 'ORDER', business, tenant);
-  return _lcRpq || defaultReply;
 }
 
 // ── UI Helpers ────────────────────────────────────────────────────────────────
@@ -516,7 +511,6 @@ function _buildCategoryUI(categories, business) {
   return {
     type: 'list',
     body: `🛍 *${business?.name || 'Our Store'}*\n\nWhat are you shopping for today?`,
-    button: 'Browse Categories',
     sections: [{
       title: 'Categories',
       rows: categories.map(c => ({
@@ -564,7 +558,7 @@ function _buildProductList(items, business, category = null) {
 }
 
 function _buildItemDetail(item) {
-  const price    = item.price    ? `💰 *Price:* ${item.currency || '$'}${item.price}\n` : '';
+  const price    = item.price    ? `💰 *Price:* ${item.currency || business?.payment?.currency || 'D'}${item.price}\n` : '';
   const desc     = item.description ? `\n_${item.description}_\n` : '';
   const variants = item.variants && item.variants.length > 0
     ? `\n📐 *Options:* ${item.variants.map(v => v.name || v).join(', ')}\n`

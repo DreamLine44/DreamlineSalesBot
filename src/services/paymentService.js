@@ -26,52 +26,18 @@ import logger from '../config/logger.js';
 
 const PROOF_WINDOW_HOURS = Number(process.env.PROOF_ELIGIBLE_HOURS || 4);
 
-// [FIX-2] Retry window — used when the admin rejected the first proof and reset
-// paymentStatus back to 'unpaid' via rejectPayment(). The order was created before
-// the original window (could be 8+ hours old) so the standard 4-hour createdAt
-// gate would block the retry. A 24-hour retry window lets the customer re-upload
-// their screenshot the same day without having to start a new order.
-// This window is intentionally wider than PROOF_WINDOW_HOURS because the clock
-// started at order creation, not at rejection — the customer is always retrying
-// a valid existing order, never submitting proof for a phantom order.
-const PROOF_RETRY_WINDOW_HOURS = Number(process.env.PROOF_RETRY_ELIGIBLE_HOURS || 24);
-
 /**
  * receiveProof — customer has sent a payment screenshot.
  */
 export async function receiveProof(customerPhone, tenantId, imageId, tenantDoc) {
-  // [FIX-2] Two-phase order lookup:
-  //   Phase 1: standard 4-hour window (fresh submission path — order just placed).
-  //   Phase 2: 24-hour window (retry path — admin rejected, rejectPayment() reset
-  //            paymentStatus to 'unpaid' so the customer can resubmit). This covers
-  //            the case where an order is placed at 8am, proof rejected at noon, and
-  //            the customer retries at 1pm (5 hours after order creation) — the
-  //            standard 4-hour gate rejects it even though the retry is perfectly valid.
-  const windowStart      = new Date(Date.now() - PROOF_WINDOW_HOURS       * 60 * 60 * 1000);
-  const retryWindowStart = new Date(Date.now() - PROOF_RETRY_WINDOW_HOURS * 60 * 60 * 1000);
+  const windowStart = new Date(Date.now() - PROOF_WINDOW_HOURS * 60 * 60 * 1000);
 
-  // Phase 1: fresh window
-  let order = await Order.findOne({
+  const order = await Order.findOne({
     customerPhone, tenantId,
     paymentStatus: 'unpaid',
     createdAt:     { $gte: windowStart },
   }).sort({ createdAt: -1 });
 
-  // Phase 2: retry window (order older than 4h but within 24h, proof previously rejected)
-  if (!order) {
-    order = await Order.findOne({
-      customerPhone, tenantId,
-      paymentStatus: 'unpaid',
-      // Only extend the window when there's evidence of a prior rejection attempt
-      // (rejectedNote or paymentReviewedAt set by rejectPayment()). This prevents
-      // a stale 23-hour-old unpaid order from accidentally absorbing a fresh screenshot.
-      paymentReviewedAt: { $exists: true, $ne: null },
-      createdAt:         { $gte: retryWindowStart },
-    }).sort({ createdAt: -1 });
-  }
-
-  // [FIX-PROOF-GUARD] Removed duplicate orphaned outer if (!order) { that had no body
-  // (copy-paste error). The inner guard below is the correct and only check.
   if (!order) {
     return `⚠️ We couldn't find a pending order to attach this payment to.\n\nIf you believe this is an error, please contact us directly.`;
   }
@@ -81,6 +47,9 @@ export async function receiveProof(customerPhone, tenantId, imageId, tenantDoc) 
       paymentStatus:   'proof_received',
       paymentProof:    imageId,         // [FIX] schema field is paymentProof, not proofImageId
       proofReceivedAt: new Date(),
+      // [FIX-32] Clear abandonedCartAt — customer has re-engaged and submitted payment proof.
+      // Prevents the scheduler from sending an abandoned-cart nudge after proof submission.
+      abandonedCartAt: null,
     },
   });
 

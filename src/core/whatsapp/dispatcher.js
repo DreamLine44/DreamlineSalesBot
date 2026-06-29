@@ -81,6 +81,11 @@ function buildPayload(to, ui) {
       interactive: {
         type: 'button',
         body: { text: String(ui.body || '').slice(0, 1024) },
+        // [FIX-25] footer is valid on button interactive messages (WhatsApp API supports it).
+        // Previously footer was only serialised for 'list' type — so hints like
+        // "Or type any date e.g. 25 June" from bookingFlow date/party-size pickers
+        // were silently dropped and never reached the customer.
+        ...(ui.footer ? { footer: { text: String(ui.footer).slice(0, 60) } } : {}),
         action: { buttons },
       },
     };

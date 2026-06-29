@@ -267,11 +267,11 @@ function getValidIntents(mode) {
   const base = ['ORDER', 'BOOKING', 'WALKIN', 'QUESTION', 'SUPPORT', 'GREETING', 'PAYMENT', 'TRACK_ORDER', 'ACKNOWLEDGEMENT', 'UNKNOWN'];
   const extra = {
     RESTAURANT:  ['ADD_TO_CART', 'REMOVE_FROM_CART', 'CHECKOUT', 'RECOMMENDATION'],
-    SALON:       ['AVAILABILITY_CHECK'],
+    SALON:       ['AVAILABILITY_CHECK', 'AFTERCARE'],  // [FIX-AFTERCARE]
     // [FIX-BB-1] BARBERSHOP was absent from the extra intents map — the same
     // AVAILABILITY_CHECK intent that salon uses (to ask if a barber is free) was
     // completely unavailable to AI classification for barbershop tenants.
-    BARBERSHOP:  ['AVAILABILITY_CHECK'],
+    BARBERSHOP:  ['AVAILABILITY_CHECK', 'AFTERCARE'],  // [FIX-AFTERCARE]
     BAKERY:      ['CAKE_CUSTOMIZATION', 'COLLECTION_SCHEDULE'],
     FASHION:     ['SIZE_GUIDE', 'PRODUCT_INQUIRY'],
     COSMETICS:   ['SKINCARE_ADVICE', 'RECOMMENDATION'],
@@ -290,9 +290,6 @@ function intentToAction(intent, business) {
     // the same CANCEL action as the button tap. Previously 'cancel order' was in SUPPORT
     // and triggered a human escalation instead of the cancel handler.
     CANCEL_ORDER:       'CANCEL',
-    // [FIX-CANCEL-BOOKING-ACTION] CANCEL_BOOKING maps to its own action so the router
-    // case can cancel the Booking DB record. Previously fell through to CANCEL.
-    CANCEL_BOOKING:     'CANCEL_BOOKING',
     ORDER:              'START_ORDER',
     BOOKING:            'START_BOOKING',
     SALON_BOOKING:      'START_BOOKING',
@@ -321,7 +318,13 @@ function intentToAction(intent, business) {
     // with zero product/skin context. Now they route to their registered actions.
     SPEC_REQUEST:       'SPEC_REQUEST',
     WARRANTY_INFO:      'WARRANTY',
-    AVAILABILITY_CHECK: 'ENQUIRY',
+    // [FIX-SALON-AVAIL] AVAILABILITY_CHECK for SALON/BARBERSHOP must reach the
+    // mode-specific QUESTION flow (handleSalonQuestion) which has AI context about
+    // services, staff, and hours. Previously routed to generic 'ENQUIRY' which for
+    // salon had no registered flow — it fell back to the plain ENQUIRY path with zero
+    // salon context. "Are you available Friday?" or "Is Maria free?" now reaches the
+    // AI-powered salon Q&A handler which can answer with proper business context.
+    AVAILABILITY_CHECK: 'QUESTION',
     SKINCARE_ADVICE:    'SKINCARE_ADVICE',
     SIZE_GUIDE:         'ENQUIRY',
     // [FIX-5] These were listed as valid AI intents but absent from this map —

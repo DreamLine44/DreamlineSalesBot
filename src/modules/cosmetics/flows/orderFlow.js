@@ -117,19 +117,13 @@ export async function handleCosmeticsOrderFlow({ session, message, business, ten
         if (confidenceLevel === 'HIGH') {
           item = matched;
         } else if (confidenceLevel === 'LOW' && matched) {
-          // [FIX-SUGGEST-COSMETICS] Advance to SUGGESTION_CONFIRM and save the matched item
-          // so that tapping CONFIRM selects the item rather than re-entering SELECT_ITEM.
-          // AI reply is still used as the suggestion body when available.
+          // AI-assisted product recommendation based on what they typed
           const aiReply = await getAIReply({
             customerMessage: raw,
             business,
             session,
             intent: 'PRODUCT_QUERY',
           }).catch(() => null);
-          await updateSession(session.customerPhone, session.tenantId, {
-            step: 'SUGGESTION_CONFIRM',
-            data: { ...data, suggestion: matched.name },
-          });
           return {
             type: 'buttons',
             body: aiReply || `Did you mean *${matched.name}*? 💄`,
@@ -167,40 +161,10 @@ export async function handleCosmeticsOrderFlow({ session, message, business, ten
       };
     }
 
-    // ── SUGGESTION_CONFIRM ────────────────────────────────────────────────────
-    // [FIX-SUGGEST-COSMETICS] Handles CONFIRM button after a low-confidence product match.
-    case 'SUGGESTION_CONFIRM': {
-      if (/^(yes|y|yep|yeah|confirm|ok|okay)$/i.test(clean) || raw.toUpperCase() === 'CONFIRM') {
-        const suggestedName = data.suggestion;
-        const item = menu.find(i => i.name === suggestedName) || menu.find(i => norm(i.name) === norm(suggestedName || ''));
-        if (item) {
-          await updateSession(session.customerPhone, session.tenantId, {
-            step: item.shades?.length ? 'SELECT_SHADE' : 'QUANTITY',
-            data: { ...data, item },
-            menuViewed: true,
-          });
-          if (item.shades?.length) return _buildShadeUI(item);
-          const price = item.price ? ` — ${item.currency || 'D'}${item.price}` : '';
-          return {
-            type: 'buttons',
-            body: `💄 *${item.name}*${price}\n\nHow many would you like?`,
-            buttons: [
-              { id: 'QTY_1', title: '1️⃣  1' },
-              { id: 'QTY_2', title: '2️⃣  2' },
-              { id: 'QTY_3', title: '3️⃣  3' },
-            ],
-            footer: 'Or type any number',
-          };
-        }
-      }
-      return _buildCosmeticsMenu(menu, business, data.skinType || null);
-    }
-
     // ── SELECT_SHADE ──────────────────────────────────────────────────────────
     case 'SELECT_SHADE': {
       const item = data.item;
       const shades = item?.shades || [];
-
 
       // Match shade button ID or typed text
       const shadeMatch = shades.find(s =>

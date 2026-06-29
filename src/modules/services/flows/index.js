@@ -79,7 +79,6 @@ export async function handleEnquiryFlow({ session, message, business, tenant }) 
     return {
       type: 'list',
       body: '📋 *Get a Quote*\n\nWhat type of service are you looking for?\n\n_(Tap one below or type your answer)_',
-      button: 'Choose service',
       sections: [{
         title: 'Service Types',
         rows: serviceTypes.map(s => ({ id: `SVC_${s.toUpperCase().replace(/\s+/g, '_')}`, title: s })),
@@ -302,28 +301,19 @@ export async function handleQuoteFollowUp({ session, message, business, tenant }
 // ── AI Question Handler ───────────────────────────────────────────────────────
 
 export async function handleServicesQuestion({ session, message, business, tenant }) {
-  // [FIX-SERVICES-Q-CTX] Inject order/booking context so AI can answer status questions truthfully.
-  let _svcOrderCtx = null;
-  try {
-    const { default: _SvcOrder } = await import('../../../models/Order.js');
-    const _svcOrders = await _SvcOrder.find({
-      customerPhone: session.customerPhone,
-      tenantId:      session.tenantId,
-      status:        { $nin: ['cancelled'] },
-    }).sort({ createdAt: -1 }).limit(3)
-      .select('shortId item quantity totalPrice paymentStatus status').lean();
-    if (_svcOrders.length) _svcOrderCtx = { recentOrders: _svcOrders };
-  } catch { /* non-fatal */ }
-
   const aiReply = await getAIReply({
     customerMessage: String(message || '').trim(),
     business,
     session,
     intent: 'SERVICES_QUESTION',
-    orderContext: _svcOrderCtx,
   });
-  // [FIX-Q-ORDER] Build defaultReply before completeFlow — same fix as restaurant/salon/general.
-  const _svcDefaultReply = {
+  // [FIX-SQ-1] completeFlow() clears the session. Previously it was called BEFORE
+  // building the return value and its result was checked with `if (_lcRsq) return _lcRsq`
+  // — meaning a lead-capture response REPLACED the AI answer entirely (same bug as
+  // restaurant handleRestaurantQuestion). Fix: call completeFlow AFTER assembling the
+  // response; discard its return value since the AI reply is the complete response.
+  await completeFlow(session, 'QUESTION', business, tenant).catch(() => {});
+  return {
     type: 'buttons',
     body: aiReply || 'Happy to help! Feel free to ask us anything about our services.',
     buttons: [
@@ -331,8 +321,6 @@ export async function handleServicesQuestion({ session, message, business, tenan
       { id: 'BOOK',    title: '📅 Book Consultation' },
     ],
   };
-  const _lcRsq = await completeFlow(session, 'QUESTION', business, tenant);
-  return _lcRsq || _svcDefaultReply;
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -358,7 +346,6 @@ function _askServiceType(business) {
   return {
     type: 'list',
     body: '📋 *Get a Quote*\n\nWhat type of service are you looking for?',
-    button: 'Choose service',
     sections: [{
       title: 'Service Types',
       rows: serviceTypes.map(s => ({ id: `SVC_${s.toUpperCase().replace(/\s+/g, '_')}`, title: s })),

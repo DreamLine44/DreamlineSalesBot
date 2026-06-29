@@ -322,6 +322,9 @@ async function confirmPayment(shortId, tenantId, adminPhone, tenantDoc, business
         status:            'confirmed',
         paymentReviewedBy: adminPhone,
         paymentReviewedAt: new Date(),
+        // [FIX-32] Clear abandonedCartAt on confirmation so the scheduler abandoned-cart
+        // job doesn't send a nudge for an order that has already been confirmed and paid.
+        abandonedCartAt:   null,
       }},
       { new: false } // need the pre-update doc for item/quantity/customerPhone
     ).select('_id customerPhone status paymentStatus item quantity totalPrice shortId').lean();
@@ -337,23 +340,9 @@ async function confirmPayment(shortId, tenantId, adminPhone, tenantDoc, business
 
     // [FIX-AWAIT] Check if this is a cash order (AWAIT_ADMIN_CONFIRM) so we can
     // send the right confirmation message — "order confirmed" instead of "payment verified".
-    //
-    // [FIX-CASH-TTL] Session-based detection has a TTL race: if the admin takes longer
-    // than the session TTL (~30 min) to approve, session.step has already reset to null
-    // and isCashConfirm would be false — causing a cash/delivery customer to receive the
-    // wrong "Payment Confirmed! Your payment has been verified" message.
-    // Fix: use the order's own paymentStatus as the primary signal. Cash orders are
-    // placed without any payment interaction, so their paymentStatus stays 'unpaid'
-    // throughout the AWAIT_ADMIN_CONFIRM window. Payment-proof orders transition to
-    // 'proof_received' after the customer sends a screenshot. A paymentStatus of 'unpaid'
-    // on an otherwise-approvable order is the reliable cash-order fingerprint, even after
-    // the session expires. The session step check is kept as a secondary confirmation.
     const { getSession: _getSession } = await import('../core/sessions/sessionService.js');
     const custSession2 = await _getSession(order.customerPhone, tenantId).catch(() => null);
-    const isCashConfirm =
-      custSession2?.step === 'AWAIT_ADMIN_CONFIRM' ||
-      // Fallback: session expired but order was never touched by payment system
-      (order.paymentStatus === 'unpaid' && !business?.payment?.enabled);
+    const isCashConfirm = custSession2?.step === 'AWAIT_ADMIN_CONFIRM';
 
     // [FIX-CONFIRM-BTN] Plain text only on the initial confirmation — no welcome buttons.
     // Showing "Order Food / Book a Table" immediately after "your order is being prepared"
@@ -376,21 +365,36 @@ async function confirmPayment(shortId, tenantId, adminPhone, tenantDoc, business
     const etaLine = etaMins
       ? `⏱️  Estimated time: ${etaMins} minutes.\n\n`
       : `⏱️  Estimated time: 20–30 minutes.\n\n`;
+    // [FIX-SALON-18] Mode-aware order confirmation message. Previously hardcoded
+    // "🍳 Our kitchen is now preparing your order" for ALL business modes — wrong
+    // for salon/barbershop/retail where there is no kitchen. Now uses a generic
+    // "we're preparing your order" for non-food modes. Also drop the hardcoded
+    // ETA fallback "20-30 minutes" for modes where it's meaningless — instead show
+    // the configured estimatedDeliveryMinutes or omit the ETA line entirely.
+    const _mode       = (business?.businessMode || 'RESTAURANT').toUpperCase();
+    const _isFoodMode = ['RESTAURANT', 'BAKERY', 'DELIVERY'].includes(_mode);
+    const preparingLine = _isFoodMode
+      ? `🍳 Our kitchen is now preparing your order.\n`
+      : `🛍️  We're preparing your order.\n`;
+    const etaLineToShow = etaMins
+      ? `⏱️  Estimated time: ${etaMins} minutes.\n\n`
+      : (_isFoodMode ? `⏱️  Estimated time: 20–30 minutes.\n\n` : `\n`);
+
     const confirmBody = isCashConfirm
       ? `✅ *Order Confirmed!*\n\n` +
         `Your order has been accepted.\n\n` +
         `📦  Order: *${order.item}* × ${order.quantity}\n` +
         `🔖  Reference: #${order.shortId || shortId}\n\n` +
-        `🍳 Our kitchen is now preparing your order.\n` +
-        etaLine +
+        preparingLine +
+        etaLineToShow +
         `We'll message you the moment it's ready.\n\n` +
         `Thank you for choosing *${bizName}* 😊`
       : `✅ *Payment Confirmed!*\n\n` +
         `Your payment has been verified.\n\n` +
         `📦  Order: *${order.item}* × ${order.quantity}\n` +
         `🔖  Reference: #${order.shortId || shortId}\n\n` +
-        `🍳 Our kitchen is now preparing your order.\n` +
-        etaLine +
+        preparingLine +
+        etaLineToShow +
         `We'll message you the moment it's ready.\n\n` +
         `Thank you for choosing *${bizName}* 😊`;
     await dispatchMessage(order.customerPhone, {
@@ -408,10 +412,7 @@ async function confirmPayment(shortId, tenantId, adminPhone, tenantDoc, business
     await updateSession(order.customerPhone, tenantId, {
       currentFlow: null, step: null,
       postFlowAck:  'ORDER_CONFIRMED',
-      // [FIX-POSTFLOW-TOTAL] Include totalPrice in postFlowData so postFlowHandler's
-      // MY_ORDER_RE and ETA handlers can show the correct total even when the DB query
-      // for the order is slow or fails (totalPrice falls back to flowData.totalPrice).
-      postFlowData: { item: order.item, quantity: order.quantity, shortId: order.shortId || shortId, totalPrice: order.totalPrice || null },
+      postFlowData: { item: order.item, quantity: order.quantity, shortId: order.shortId || shortId },
       lastAorInterceptAt: null,
     }).catch(() => {});
 
@@ -452,25 +453,17 @@ async function confirmPayment(shortId, tenantId, adminPhone, tenantDoc, business
 // ── Reject payment ────────────────────────────────────────────────────────────
 async function rejectPayment(shortId, tenantId, adminPhone, tenantDoc, business, rejectReason = null) {
   try {
-    // [FIX-REJECT-ATOMIC] Single-step atomic findOneAndUpdate replacing the previous
-    // findOne-then-findOneAndUpdate TOCTOU pattern. Guard conditions (not cancelled,
-    // not already confirmed) are applied at the DB level so concurrent double-taps
-    // cannot both pass the guard and write conflicting state simultaneously.
+    // [FIX-CMD-11] shortId-only query (see confirmPayment for full explanation)
     //
-    // Strategy:
-    //  1. Read the order with findOne to get customerPhone + determine isCashOrder.
-    //  2. Fetch the session (needs customerPhone) sequentially after step 1.
-    //  3. All WRITES go through a single findOneAndUpdate with the same guard filter
-    //     so the second concurrent tap sees no document and returns the "already handled" reply.
-
-    const readFilter = {
+    // [FIX-CMD-14] State-machine guard: previously only `status === 'cancelled'` blocked
+    // a re-reject, meaning an admin could REJECT an order that was already `paymentStatus:
+    // 'confirmed'` (and presumably already being prepared), flipping a confirmed order
+    // back to pending/unpaid with no protection. Now also excludes confirmed orders.
+    const order = await Order.findOne({
       shortId, tenantId,
       status:        { $ne: 'cancelled' },
       paymentStatus: { $ne: 'confirmed' },
-    };
-
-    const order = await Order.findOne(readFilter)
-      .select('_id customerPhone status paymentStatus item shortId').lean();
+    }).select('_id customerPhone status paymentStatus item shortId').lean();
 
     if (!order) {
       const existing = await Order.findOne({ shortId, tenantId })
@@ -480,33 +473,29 @@ async function rejectPayment(shortId, tenantId, adminPhone, tenantDoc, business,
       return `⚠️ Order #${shortId} can't be rejected — payment is already confirmed.`;
     }
 
-    // Determine cash vs proof path before writing.
-    // [FIX-CASH-TTL] Same TTL race as confirmPayment: session may have expired by the
-    // time the admin rejects. Use order.paymentStatus='unpaid' + payment not enabled
-    // as the reliable cash-order fingerprint when the session step is unavailable.
-    let isCashOrder = false;
-    try {
-      const { getSession } = await import('../core/sessions/sessionService.js');
-      const sess = await getSession(order.customerPhone, tenantId).catch(() => null);
-      isCashOrder =
-        sess?.step === 'AWAIT_ADMIN_CONFIRM' ||
-        (order.paymentStatus === 'unpaid' && !business?.payment?.enabled);
-    } catch {
-      // non-fatal — fall back to paymentStatus heuristic only
-      isCashOrder = order.paymentStatus === 'unpaid' && !business?.payment?.enabled;
-    }
+    // [FIX-AWAIT] Distinguish cash orders (AWAIT_ADMIN_CONFIRM) from payment-proof orders.
+    // Cash orders have no screenshot to retry — rejection means the order is cancelled
+    // and the session should be fully cleared. Payment-proof orders get a retry window.
+    //
+    // [FIX-CMD-14] This check now runs BEFORE any write (previously the function wrote
+    // status='pending'/paymentStatus='unpaid' unconditionally first, then immediately
+    // overwrote those same fields to 'cancelled' in the cash branch — a wasted write
+    // that also left the order briefly in the wrong state). We now write the correct
+    // final state exactly once, via an atomic findOneAndUpdate keyed off the same
+    // guard filter as the read above to close the double-tap TOCTOU race.
+    const { getSession } = await import('../core/sessions/sessionService.js');
+    const custSession = await getSession(order.customerPhone, tenantId).catch(() => null);
+    const isCashOrder = custSession?.step === 'AWAIT_ADMIN_CONFIRM';
 
-    // Atomic write filter — keyed off _id + same state guards as readFilter
-    // so only one concurrent REJECT can succeed even under double-tap race
-    const atomicFilter = {
-      _id:           order._id,
+    const guardFilter = {
+      _id: order._id,
       status:        { $ne: 'cancelled' },
       paymentStatus: { $ne: 'confirmed' },
     };
 
     if (isCashOrder) {
       // Cash/delivery rejection — mark cancelled, clear session, let customer restart
-      const updated = await Order.findOneAndUpdate(atomicFilter, { $set: {
+      const updated = await Order.findOneAndUpdate(guardFilter, { $set: {
         status:            'cancelled',
         paymentStatus:     'cancelled',
         paymentReviewedBy: adminPhone,
@@ -543,7 +532,7 @@ async function rejectPayment(shortId, tenantId, adminPhone, tenantDoc, business,
     // paymentStatus='unpaid'  → receiveProof() will accept a new screenshot
     // status='pending'        → order is alive and awaiting retry (was 'payment_failed',
     //                           which is semantically wrong when the retry window is open)
-    const updated = await Order.findOneAndUpdate(atomicFilter, { $set: {
+    const updated = await Order.findOneAndUpdate(guardFilter, { $set: {
       paymentStatus:     'unpaid',
       status:            'pending',
       paymentReviewedBy: adminPhone,
@@ -610,7 +599,7 @@ async function confirmBooking(shortId, tenantId, adminPhone, tenantDoc) {
         adminConfirmedBy:  adminPhone,
       }},
       { new: false }
-    ).select('_id customerPhone date time service status customerName').lean();
+    ).select('_id customerPhone date time service status customerName partySize staff bookingType').lean();
 
     if (!booking) {
       const existing = await Booking.findOne({ shortId: shortId.toUpperCase(), tenantId })
@@ -623,26 +612,110 @@ async function confirmBooking(shortId, tenantId, adminPhone, tenantDoc) {
     const serviceStr = booking.service ? ` (${booking.service})` : '';
 
     // [SPEC-6C] Booking confirmed message — structured format with reference,
-    // date/time clearly on own lines, warm sign-off, no buttons, no upsell.
+    // date/time clearly on own lines, warm sign-off.
+    // [FIX-SALON-4] Include stylist name and handle walk-in type display.
+    const nameForBody = booking.customerName ? ` for *${booking.customerName}*` : '';
+    const isWalkInBooking = booking.bookingType === 'walkin';
     const bookingBody =
-      `✅ *Booking Confirmed!*\n\n` +
-      (booking.date ? `📅  Date: *${booking.date}*\n` : '') +
-      (booking.time ? `⏰  Time: *${booking.time}*\n` : '') +
+      `✅ *${isWalkInBooking ? 'Walk-In Queue Confirmed!' : 'Booking Confirmed!'}*${nameForBody}\n\n` +
+      (!isWalkInBooking && booking.date ? `📅  Date: *${booking.date}*\n` : '') +
+      (!isWalkInBooking && booking.time ? `⏰  Time: *${booking.time}*\n` : '') +
       (booking.partySize ? `👥  Party size: *${booking.partySize}*\n` : '') +
-      (booking.service ? `💇  Service: *${booking.service}*\n` : '') +
+      (booking.service   ? `💇  Service: *${booking.service}*\n`       : '') +
+      (booking.staff     ? `👤  Stylist/Barber: *${booking.staff}*\n`   : '') +
       `🔖  Reference: *${shortId}*\n\n` +
       `We look forward to seeing you 😊\n\n` +
       `If anything changes, just message us here.`;
 
-    await dispatchText(booking.customerPhone, bookingBody,
+    // [FIX-SALON-CONFIRM-BTNS] Send as interactive buttons so customer has clear CTAs.
+    // Plain dispatchText left customers with no next step after confirmation.
+    // Walk-ins get "Leave Queue" instead of "Cancel Booking" for correct framing.
+    await dispatchMessage(booking.customerPhone, {
+      type:    'buttons',
+      body:    bookingBody,
+      buttons: isWalkInBooking
+        ? [
+            { id: 'QUESTION',       title: '❓ Ask a Question' },
+            { id: 'CANCEL_BOOKING', title: '❌ Leave Queue'     },
+          ]
+        : [
+            { id: 'QUESTION',       title: '❓ Ask a Question' },
+            { id: 'CANCEL_BOOKING', title: '❌ Cancel Booking'  },
+          ],
+    },
     // [FIX-CMD-2] Log dispatch failures — customer won't know their booking is confirmed.
     tenantDoc).catch(err => logger.warn('[AdminCmd] confirmBooking: customer dispatch failed', {
       customerPhone: booking.customerPhone, err: err.message,
     }));
 
+    // [v14-UPSELL] Post-confirmation product upsell for salon/barbershop bookings.
+    // After sending the confirmation, check if the business has retail products tagged
+    // to the booked service category and send a follow-up recommendation.
+    // Only fires for salon/barbershop modes (not restaurant, retail, etc.) and only
+    // when the business has non-service menuItems available.
+    try {
+      const { default: _BizCfg } = await import('../models/BusinessConfig.js');
+      const _bizFull = await _BizCfg.findOne({ tenantId }).select('businessMode menuItems settings').lean().catch(() => null);
+      const _mode = (_bizFull?.businessMode || '').toUpperCase();
+      const _isSalonUpsell = _mode === 'SALON' || _mode === 'BARBERSHOP';
+      const _isWalkInUpsell = booking.bookingType === 'walkin';
+
+      if (_isSalonUpsell && !_isWalkInUpsell && _bizFull?.menuItems?.length) {
+        const _retailItems = (_bizFull.menuItems || []).filter(i =>
+          i.available !== false &&
+          i.category &&
+          !['services', 'service'].includes(i.category.toLowerCase())
+        );
+
+        if (_retailItems.length > 0) {
+          // Pick up to 3 products to recommend
+          const _toShow = _retailItems.slice(0, 3);
+          const _currency = _bizFull?.payment?.currency || 'D';
+          const _serviceKeyword = (booking.service || '').toLowerCase();
+
+          // Prefer products whose category/name matches the booked service
+          const _matched = _toShow.filter(p =>
+            p.category?.toLowerCase().includes(_serviceKeyword.split(' ')[0]) ||
+            p.name?.toLowerCase().includes(_serviceKeyword.split(' ')[0])
+          );
+          const _upsellItems = _matched.length > 0 ? _matched.slice(0, 3) : _toShow;
+
+          if (_upsellItems.length > 0) {
+            const _productLines = _upsellItems.map(p => {
+              const _price = p.price ? ` — ${p.currency || _currency}${p.price}` : '';
+              return `• *${p.name}*${_price}`;
+            }).join('\n');
+
+            const _isBarbershopUpsell = _mode === 'BARBERSHOP';
+            const _upsellBody =
+              `${_isBarbershopUpsell ? '✂️' : '💇'} *Aftercare tip:* Maintain your results at home!\n\n` +
+              `We recommend:\n${_productLines}\n\n` +
+              `Tap below to order, or reply *"shop"*.`;
+
+            // Send as interactive buttons after confirmation (3s delay so confirmation lands first)
+            setTimeout(async () => {
+              await dispatchMessage(booking.customerPhone, {
+                type:    'buttons',
+                body:    _upsellBody,
+                buttons: [
+                  { id: 'ORDER',     title: '🛍 Shop Products' },
+                  { id: 'SHOW_MENU', title: '🔄 Main Menu'     },
+                ],
+              }, tenantDoc).catch(() => {});
+            }, 3000);
+          }
+        }
+      }
+    } catch { /* upsell is non-fatal */ }
+
+    // [FIX-SALON-17] Set walk-in specific postFlowAck so postFlowHandler routes
+    // admin-confirmed walk-in follow-ups to the queue-context handler, not the generic
+    // appointment BOOKING_CONFIRMED handler (which references dates/times that don't
+    // exist for walk-ins). WALKIN_CONFIRMED has a dedicated case in postFlowHandler.
+    const _confirmedAck = booking.bookingType === 'walkin' ? 'WALKIN_CONFIRMED' : 'BOOKING_CONFIRMED';
     await updateSession(booking.customerPhone, tenantId, {
-      postFlowAck:  'BOOKING_CONFIRMED',
-      postFlowData: { service: booking.service, date: booking.date, time: booking.time },
+      postFlowAck:  _confirmedAck,
+      postFlowData: { service: booking.service, date: booking.date, time: booking.time, staff: booking.staff || null, bookingType: booking.bookingType || null, shortId },
     }).catch(() => {});
 
     logger.info('[AdminCmd] Booking confirmed', { shortId, adminPhone });
@@ -667,7 +740,7 @@ async function declineBooking(shortId, reason, tenantId, adminPhone, tenantDoc) 
         adminNote:        reason || null,
       }},
       { new: false }
-    ).select('_id customerPhone date time service status customerName').lean();
+    ).select('_id customerPhone date time service status customerName staff bookingType').lean();
 
     if (!booking) {
       const existing = await Booking.findOne({ shortId: shortId.toUpperCase(), tenantId })
@@ -676,12 +749,32 @@ async function declineBooking(shortId, reason, tenantId, adminPhone, tenantDoc) 
       return `ℹ️ Booking #${shortId} already cancelled.`;
     }
 
-    const when       = booking.time ? `${booking.date} at ${booking.time}` : booking.date;
-    const serviceStr = booking.service ? ` (${booking.service})` : '';
-    const reasonStr  = reason ? `\n\n*Reason:* ${reason}` : '';
+    const when        = booking.time && booking.bookingType !== 'walkin' ? `${booking.date} at ${booking.time}` : booking.date;
+    const serviceStr  = booking.service ? ` (${booking.service})` : '';
+    const reasonStr   = reason ? `\n\n*Reason:* ${reason}` : '';
+    const isWalkInDec = booking.bookingType === 'walkin';
 
-    await dispatchText(booking.customerPhone,
-      `❌ *Booking Unavailable*\n\nUnfortunately we can't confirm your booking${serviceStr} for *${when}*.${reasonStr}\n\nPlease contact us to arrange an alternative time.`,
+    // [FIX-SALON-10] Tailor decline message for walk-in vs appointment.
+    // Walk-in: "we can't add you to the queue right now" — no "arrange alternative time"
+    // which doesn't make sense for a walk-in context.
+    const refStr     = shortId ? ` _(Ref: #${shortId})_` : ''; // [FIX-DECLINE-REF]
+    const declineBody = isWalkInDec
+      ? `❌ *Walk-In Unavailable*${refStr}\n\nSorry, we're unable to add you to the queue right now${serviceStr}.${reasonStr}\n\nPlease try again later or book an appointment.`
+      : `❌ *Booking Unavailable*${refStr}\n\nUnfortunately we can't confirm your booking${serviceStr}${when ? ` for *${when}*` : ''}.${reasonStr}\n\nWe'd love to find another time that works — tap below to try again.`;
+
+    await dispatchMessage(booking.customerPhone, {
+      type:    'buttons',
+      body:    declineBody,
+      buttons: isWalkInDec
+        ? [
+            { id: 'BOOK',     title: '📅 Book Appointment' },
+            { id: 'QUESTION', title: '❓ Ask a Question'   },
+          ]
+        : [
+            { id: 'BOOK',     title: '📅 Try Different Date' },
+            { id: 'QUESTION', title: '❓ Ask a Question'      },
+          ],
+    },
     // [FIX-CMD-2] Log dispatch failures — customer won't know their booking was declined.
     tenantDoc).catch(err => logger.warn('[AdminCmd] declineBooking: customer dispatch failed', {
       customerPhone: booking.customerPhone, err: err.message,
@@ -689,7 +782,8 @@ async function declineBooking(shortId, reason, tenantId, adminPhone, tenantDoc) 
 
     await updateSession(booking.customerPhone, tenantId, {
       postFlowAck:  'BOOKING_DECLINED',
-      postFlowData: { service: booking.service, date: booking.date },
+      // [FIX-SALON-10] Include staff and bookingType so postFlowHandler can tailor response
+      postFlowData: { service: booking.service, date: booking.date, staff: booking.staff || null, bookingType: booking.bookingType || null },
     }).catch(() => {});
 
     logger.info('[AdminCmd] Booking declined', { shortId, adminPhone, reason });
@@ -772,17 +866,10 @@ async function resumeBot(customerPhone, tenantId, tenantDoc) {
   // makes it easier to diagnose cases where an admin resumes a phone that never had
   // a human-mode session.
   const updated = await updateSession(customerPhone, tenantId, {
-    humanMode:            false,
-    humanModeNotified:    false,
-    postFlowAck:          null,
-    postFlowData:         null,
-    // [FIX-RESUME-THROTTLE] Clear AOR and ACKNOWLEDGE throttle timestamps so the customer's
-    // first message after the bot resumes is processed cleanly. If these are stale they
-    // suppress the correct order-status reply on the first post-resume message, producing
-    // the confusing "we'll let you know when there's an update" text even though the order
-    // is already in a terminal ready/confirmed state.
-    lastAorInterceptAt:   null,
-    lastOrderStatusAckAt: null,
+    humanMode:         false,
+    humanModeNotified: false,
+    postFlowAck:       null,
+    postFlowData:      null,
   });
 
   if (!updated) {
@@ -797,9 +884,16 @@ async function resumeBot(customerPhone, tenantId, tenantDoc) {
   // is confusing. The bot will re-create the session correctly on the customer's next
   // message regardless of whether we send this notification now.
   if (updated && tenantDoc) {
-    dispatchText(
+    dispatchMessage(
       customerPhone,
-      `✅ Our team has finished assisting you. Our automated assistant is back! 😊`,
+      {
+        type:    'buttons',
+        body:    `✅ Our team has finished assisting you. Our automated assistant is back! 😊\n\nTap below if you need anything.`,
+        buttons: [
+          { id: 'SHOW_MENU', title: '🔄 Main Menu'       },
+          { id: 'QUESTION',  title: '❓ Ask a Question'  },
+        ],
+      },
       tenantDoc,
     ).catch(() => {});
   }
@@ -815,17 +909,40 @@ async function resumeBot(customerPhone, tenantId, tenantDoc) {
 // itself (CONFIRM_BOOK_<shortId> / DECLINE_BOOK_<shortId>), which is the correct path
 // since admin alerts are sent as WhatsApp interactive button messages, not plain text
 // with typed commands in the footer.
-export function buildAdminBookingAlertBody({ customerPhone, date, time, service, partySize, business, shortId }) {
-  const bizName    = business?.name || 'Business';
-  const serviceStr = service   ? `\n🗓 Service: *${service}*`      : '';
-  const timeStr    = time      ? `\n⏰ Time: *${time}*`            : '';
-  const partyStr   = partySize ? `\n👥 Party size: *${partySize}*` : '';
-  const idStr      = shortId   ? `\n🔖 Ref: \`${shortId}\``        : '';
+export function buildAdminBookingAlertBody({ customerPhone, date, time, service, partySize, business, shortId, staff, bookingType }) {
+  const bizName       = business?.name || 'Business';
+  const mode          = (business?.businessMode || '').toUpperCase();
+  const isSalon       = mode === 'SALON' || mode === 'BARBERSHOP';
+  const isWalkIn      = bookingType === 'walkin';
+  const staffLabel    = mode === 'BARBERSHOP' ? 'Barber' : 'Stylist';
+
+  const typeHeader    = isWalkIn ? '🚶 *Walk-In Queue* — ' : '📅 *New Booking* — ';
+  const serviceStr    = service   ? `\n💇 Service: *${service}*`             : '';
+  const staffStr      = staff     ? `\n👤 ${staffLabel}: *${staff}*`          : '';
+  const timeStr       = time && !isWalkIn ? `\n⏰ Time: *${time}*`           : '';
+  const partyStr      = partySize ? `\n👥 Party size: *${partySize}*`         : '';
+  const idStr         = shortId   ? `\n🔖 Ref: \`${shortId}\``               : '';
+
+  // [FIX-SALON-3] For walk-ins show the time they joined, not a booked time slot.
+  // [FIX-SALON-16] Use business timezone for the join time display. Previously used
+  // toLocaleTimeString() without a timezone, falling back to server TZ (UTC on Railway).
+  const _walkInTz     = business?.hours?.timezone || 'UTC';
+  const walkInTimeStr = isWalkIn
+    ? `\n⏰ Joined: *${new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', timeZone: _walkInTz })}*`
+    : '';
+
+  const dateStr = (!isWalkIn && date) ? `\n📅 Date: *${date}*` : '';
 
   return (
-    `🔔 *New Booking — ${bizName}*\n\n` +
-    `👤 Customer: *${customerPhone}*\n` +
-    `📅 Date: *${date}*${timeStr}${serviceStr}${partyStr}${idStr}\n\n` +
-    `Status: *Pending* — please confirm.`
+    `🔔 ${typeHeader}${bizName}\n\n` +
+    `📞 Customer: *${customerPhone}*` +
+    dateStr +
+    timeStr +
+    walkInTimeStr +
+    serviceStr +
+    staffStr +
+    partyStr +
+    idStr +
+    '\n\n⏳ Status: *Pending* — please confirm or decline.'
   );
 }

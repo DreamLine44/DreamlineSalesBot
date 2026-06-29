@@ -120,7 +120,10 @@ export function startScheduler() {
   _timers.push(setInterval(() => runAbandonedCartJob().catch(e => logger.error('[Scheduler] abandoned cart', { e: e.message })), 15 * 60 * 1000));
   _timers.push(setInterval(() => runBookingReminderJob().catch(e => logger.error('[Scheduler] booking reminder', { e: e.message })), 60 * 60 * 1000));
   _timers.push(setInterval(() => runPaymentReminderJob().catch(e => logger.error('[Scheduler] payment reminder', { e: e.message })), 20 * 60 * 1000));
-  logger.info('[Scheduler] 3 jobs running');
+  // [v15-FOLLOWUP] Post-appointment follow-up: 3 days after a completed booking,
+  // check in with the customer and offer to rebook. Runs every 6 hours.
+  _timers.push(setInterval(() => runPostAppointmentFollowUpJob().catch(e => logger.error('[Scheduler] post-appointment follow-up', { e: e.message })), 6 * 60 * 60 * 1000));
+  logger.info('[Scheduler] 4 jobs running');
 }
 
 export function stopScheduler() {
@@ -159,12 +162,9 @@ async function runAbandonedCartJob() {
   const weekAgo = new Date(now - 7 * 24 * 60 * 60 * 1000);
 
   // [FIX] abandonedCartAt: null — not $exists:false
-  // [FIX-SCHED-CANCEL] Also exclude paymentStatus='cancelled' as a defensive guard
-  // against pre-fix data where only status was set to 'cancelled' but paymentStatus
-  // was left as 'unpaid'. Prevents sending abandoned-cart reminders for cancelled orders.
   const orders = await Order.find({
     status:         'pending',
-    paymentStatus:  { $nin: ['cancelled', 'rejected', 'confirmed', 'self_confirmed', 'paid', 'proof_received'] },
+    paymentStatus:  'unpaid',
     createdAt:      { $gte: weekAgo, $lte: hourAgo },
     abandonedCartAt: null,
   }).lean();
@@ -207,8 +207,14 @@ async function runBookingReminderJob() {
 
   // [FIX] Status includes both pending and confirmed (bookings are created as pending)
   // [FIX] reminderSentAt: null — not $exists:false
+  // [FIX-WALKIN-SCHED] Exclude walk-in bookings: bookingType='walkin' entries have
+  // date=today and time='Walk-In' with no parsedDate, so Strategy A never fires and
+  // Strategy B would send a nonsensical "reminder about your upcoming booking" the
+  // same evening the customer already walked in. Walk-ins are transient queue entries
+  // — not scheduled appointments — so they should never receive date-based reminders.
   const bookings = await Booking.find({
     status:         { $in: ['pending', 'confirmed'] },
+    bookingType:    { $ne: 'walkin' },
     createdAt:      { $gte: weekAgo },
     reminderSentAt: null,
   }).lean();
@@ -233,20 +239,52 @@ async function runBookingReminderJob() {
       const when       = booking.time ? `${booking.date} at ${booking.time}` : booking.date;
       const serviceStr = booking.service || 'your appointment';
       const nameStr    = booking.customerName || 'there';
+      const mode       = (business?.businessMode || '').toUpperCase();
+      const isSalon    = mode === 'SALON' || mode === 'BARBERSHOP';
+      const staffStr   = (isSalon && booking.staff) ? `\n👤 ${mode === 'BARBERSHOP' ? 'Barber' : 'Stylist'}: *${booking.staff}*` : '';
+
+      // [v14-PREP] Include service-specific prep tip in the reminder for salon bookings
+      let prepLine = '';
+      if (isSalon) {
+        try {
+          const { getSalonPrepTip } = await import('../modules/salon/flows/index.js');
+          const tip = getSalonPrepTip(booking.service, business);
+          if (tip) prepLine = `\n\n💡 *Tip:* ${tip}`;
+        } catch {}
+      }
+
+      const fallbackText = isSalon
+        ? `📅 *Appointment Reminder*\n\nHi *${nameStr}*! Just a reminder about your upcoming *${serviceStr}* at *${business.name || 'us'}*.${staffStr}\n\n📅 *${when}*${prepLine}\n\nSee you soon! 💇`
+        : `📅 *Booking Reminder*\n\nHi *${nameStr}*, reminder about your upcoming booking for *${serviceStr}* at *${business.name || 'us'}*.\n\n📅 *${when}*\n\nSee you soon! 😊`;
 
       await sendReminder({
         phone:           booking.customerPhone,
         tenant,
         templateNameStr: templateName.bookingReminder(),
         components:      buildBookingReminderComponents(nameStr, serviceStr, when, business.name),
-        fallbackText:
-          `📅 *Booking Reminder*\n\n` +
-          `Hi *${nameStr}*, reminder about your upcoming booking for *${serviceStr}* at *${business.name || 'us'}*.\n\n` +
-          `📅 *${when}*\n\n` +
-          `See you soon! 😊`,
+        fallbackText,
       });
 
       await Booking.updateOne({ _id: booking._id }, { $set: { reminderSentAt: new Date() } });
+
+      // [v14-POSTFLOW] Set postFlowAck so that when the customer replies to the reminder,
+      // postFlowHandler routes them to the APPOINTMENT_REMINDER case which shows
+      // confirm/reschedule/cancel buttons — not generic intent detection.
+      // Without this, any reply to the reminder (even "ok 👍") would fall through to
+      // AI classify and potentially trigger a SUPPORT escalation.
+      const { updateSession: _updateSess } = await import('../core/sessions/sessionService.js');
+      await _updateSess(booking.customerPhone, booking.tenantId, {
+        postFlowAck:  'APPOINTMENT_REMINDER',
+        postFlowData: {
+          service:     booking.service || null,
+          date:        booking.date    || null,
+          time:        booking.time    || null,
+          staff:       booking.staff   || null,
+          shortId:     booking.shortId || null,
+          bookingType: booking.bookingType || 'appointment',
+        },
+      }).catch(() => {});
+
       logger.info('[Scheduler] Booking reminder sent', { phone: booking.customerPhone, when });
     } catch (err) {
       logger.error('[Scheduler] Booking reminder failed', { err: err.message, bookingId: booking._id });
@@ -291,11 +329,8 @@ async function runPaymentReminderJob() {
   const fourHoursAgo = new Date(now - 4 * 60 * 60 * 1000);
 
   // [FIX] paymentReminderSentAt: null — not $exists:false
-  // [FIX-SCHED-CANCEL-2] Exclude paymentStatus='cancelled' as a defensive guard
-  // against stale data. Also exclude 'proof_received' — those orders already have a
-  // screenshot and should not receive a "please send screenshot" reminder.
   const orders = await Order.find({
-    paymentStatus:        { $nin: ['cancelled', 'rejected', 'confirmed', 'self_confirmed', 'paid', 'proof_received'] },
+    paymentStatus:        'unpaid',
     status:               'pending',
     createdAt:            { $gte: fourHoursAgo, $lte: thirtyAgo },
     paymentReminderSentAt: null,
@@ -348,6 +383,106 @@ async function runPaymentReminderJob() {
       logger.info('[Scheduler] Payment reminder sent', { phone: order.customerPhone });
     } catch (err) {
       logger.error('[Scheduler] Payment reminder failed', { err: err.message, orderId: order._id });
+    }
+  }
+}
+
+// ─── Job 4: Post-Appointment Follow-Up ───────────────────────────────────────
+// [v15-FOLLOWUP] Sends a follow-up message ~3 days after a completed/confirmed
+// salon appointment to check in and offer to rebook. Increases retention.
+// Only fires for SALON and BARBERSHOP businesses.
+async function runPostAppointmentFollowUpJob() {
+  const now         = new Date();
+  const threeDaysAgo = new Date(now - 3 * 24 * 60 * 60 * 1000);
+  const fourDaysAgo  = new Date(now - 4 * 24 * 60 * 60 * 1000);
+
+  // Find confirmed salon bookings 3–4 days old that haven't had a follow-up sent.
+  // We check for confirmed (admin approved) appointments only — not declined.
+  // The follow-up window is 3–4 days to avoid sending too early or too late.
+  const bookings = await Booking.find({
+    status:              'confirmed',
+    bookingType:         { $ne: 'walkin' },
+    followUpSentAt:      null,  // [FIX-SCHED-FU-2] field default is null, $exists:false never matches
+    adminConfirmedAt:    { $gte: fourDaysAgo, $lte: threeDaysAgo },
+  }).lean();
+
+  if (!bookings.length) return;
+  logger.info(`[Scheduler] Post-appointment follow-up: ${bookings.length} candidates`);
+
+  for (const booking of bookings) {
+    try {
+      const { tenant, business } = await loadContext(booking.tenantId);
+      if (!tenant || !business) continue;
+      if (tenant.status !== 'ACTIVE') continue;
+
+      // Only fire for salon/barbershop businesses
+      const mode = (business?.businessMode || '').toUpperCase();
+      if (mode !== 'SALON' && mode !== 'BARBERSHOP') continue;
+
+      const isBarbershop = mode === 'BARBERSHOP';
+      const emoji        = isBarbershop ? '✂️' : '💇';
+      const nameStr      = booking.customerName || 'there';
+      const serviceStr   = booking.service || 'your appointment';
+      const bizName      = business.name || (isBarbershop ? 'the barbershop' : 'the salon');
+      const staffStr     = booking.staff ? ` with *${booking.staff}*` : '';
+
+      const followUpText =
+        `${emoji} *How are you feeling after your ${serviceStr}?*\n\n` +
+        `Hi *${nameStr}*! We hope you loved the results${staffStr} at *${bizName}*. 😊\n\n` +
+        `💬 We'd love to hear your feedback — just reply here!\n\n` +
+        `Ready to book your next appointment? We're here whenever you are 🙏`;
+
+      // [FIX-SCHED] Send interactive follow-up first (rebook button), fall back to template
+      const { dispatchMessage: _dispFU } = await import('../core/whatsapp/dispatcher.js');
+      const _isBarbershopFU = (business?.businessMode || '').toUpperCase() === 'BARBERSHOP';
+      await _dispFU(booking.customerPhone, {
+        type:    'buttons',
+        body:    followUpText,
+        buttons: [
+          { id: 'BOOK',     title: `${_isBarbershopFU ? '💈' : '💇'} Book Again` },
+          { id: 'QUESTION', title: '❓ Ask a Question'                            },
+        ],
+      }, tenant).catch(async () => {
+        // [FIX-SCHED-FU-1] Plain-text interactive failed (24h window) — fall back to template.
+        await sendReminder({
+          phone:           booking.customerPhone,
+          tenant,
+          templateNameStr: 'appointment_follow_up',
+          components:      buildBookingReminderComponents(nameStr, serviceStr, 'your recent visit', bizName),
+          fallbackText:    followUpText,
+        });
+      });
+      // [FIX-SCHED-FU-1] Mark follow-up sent and set postFlowAck OUTSIDE the .catch() block
+      // so they always run on success, not only when dispatchMessage fails.
+      // Previously the closing }) for sendReminder was misplaced — all post-send
+      // bookkeeping (Booking.updateOne, updateSession, logger.info) was inside the
+      // .catch() handler and therefore only ran when the primary dispatchMessage threw.
+      // On a successful send nothing was persisted, causing the job to re-fire every 6h.
+      await Booking.updateOne(
+        { _id: booking._id },
+        { $set: { followUpSentAt: now } }
+      );
+
+      // Set postFlowAck so any reply is handled contextually
+      const { updateSession: _updSess } = await import('../core/sessions/sessionService.js');
+      await _updSess(booking.customerPhone, booking.tenantId, {
+        postFlowAck:  'BOOKING_CONFIRMED',
+        postFlowData: {
+          service:     booking.service    || null,
+          date:        booking.date       || null,
+          time:        booking.time       || null,
+          staff:       booking.staff      || null,
+          bookingType: booking.bookingType || 'appointment',
+        },
+      }).catch(() => {});
+
+      logger.info('[Scheduler] Post-appointment follow-up sent', {
+        phone: booking.customerPhone, service: booking.service,
+      });
+    } catch (err) {
+      logger.error('[Scheduler] Post-appointment follow-up failed', {
+        err: err.message, bookingId: booking._id,
+      });
     }
   }
 }

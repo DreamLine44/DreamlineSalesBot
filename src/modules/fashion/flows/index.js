@@ -86,19 +86,17 @@ export async function handleFashionOrder({ session, message, business, tenant, i
           id: `SIZE_${String(v).toUpperCase().replace(/\s+/g, '_')}`,
           title: String(v),
         }));
-        // [FIX-FASHION-CCY] Use configured currency symbol, not hardcoded 'D'
-        const _fsnCcy = business?.payment?.currency || 'D';
         if (item.variants.length > 3) {
           return {
             type: 'list',
-            body: `✨ *${item.name}*${item.price ? ` — ${_fsnCcy}${item.price}` : ''}\n\nWhat *size* would you like?`,
+            body: `✨ *${item.name}*${item.price ? ` — ${business?.payment?.currency || 'D'}${item.price}` : ''}\n\nWhat *size* would you like?`,
             button: 'Choose size',
             sections: [{ title: 'Available Sizes', rows: item.variants.map(v => ({ id: `SIZE_${String(v).toUpperCase().replace(/\s+/g, '_')}`, title: String(v) })) }],
           };
         }
         return {
           type: 'buttons',
-          body: `✨ *${item.name}*${item.price ? ` — ${_fsnCcy}${item.price}` : ''}\n\nWhat *size* would you like?`,
+          body: `✨ *${item.name}*${item.price ? ` — ${business?.payment?.currency || 'D'}${item.price}` : ''}\n\nWhat *size* would you like?`,
           buttons: [...variantButtons, { id: 'CANCEL', title: '❌ Cancel' }].slice(0, 3),
         };
       }
@@ -238,11 +236,9 @@ export async function handleFashionOrder({ session, message, business, tenant, i
       await updateSession(session.customerPhone, session.tenantId, { step: 'CONFIRM', data: { ...data, quantity: qty, totalPrice: total } });
       const sizeStr  = data.size  ? ` (${data.size})`  : '';
       const colorStr = data.color ? ` — ${data.color}` : '';
-      // [FIX-FASHION-CCY-2] Use configured currency symbol
-      const _fsnSumCcy = business?.payment?.currency || 'D';
       return {
         type: 'buttons',
-        body: `🧾 *Order Summary*\n\n👗 *${qty}× ${data.item?.name}${sizeStr}${colorStr}*${total ? `\n💰 ${_fsnSumCcy}${total}` : ''}\n\nConfirm?`,
+        body: `🧾 *Order Summary*\n\n👗 *${qty}× ${data.item?.name}${sizeStr}${colorStr}*${total ? `\n💰 ${business?.payment?.currency || 'D'}${total}` : ''}\n\nConfirm?`,
         buttons: [{ id: 'CONFIRM', title: '✅ Confirm Order' }, { id: 'CANCEL', title: '❌ Cancel' }],
       };
     }
@@ -353,11 +349,9 @@ function buildCatalogUI(business) {
       buttons: [{ id: 'SUPPORT', title: '💬 Contact Us' }],
     };
   }
-  // [FIX-FASHION-CCY-3] Use configured currency symbol, not hardcoded 'D'
-  const _catCcy = business?.payment?.currency || 'D';
   const rows = items.map((item, i) => ({
     id: String(i + 1), title: item.name.slice(0, 24),
-    description: [item.description, item.price ? `${_catCcy}${item.price}` : ''].filter(Boolean).join(' — ').slice(0, 72),
+    description: [item.description, item.price ? `${business?.payment?.currency || 'D'}${item.price}` : ''].filter(Boolean).join(' — ').slice(0, 72),
   }));
   return { type: 'list', header: business?.name || 'Collection', body: "Our latest collection — choose an item:", button: 'View Collection', rows };
 }

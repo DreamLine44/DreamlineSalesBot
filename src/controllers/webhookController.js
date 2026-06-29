@@ -376,14 +376,6 @@ const FLOW_PASSTHROUGH_IDS = new Set([
   // the button tap bypasses intent detection and reaches the handler at step 14.7 (active
   // order resolver) or falls through cleanly to the payment proof flow at step 9/10.5.
   'RESEND_PROOF',
-
-  // [FIX-CONTACT-BUS] CONTACT_BUSINESS is shown by activeOrderResolver's "Contact Business"
-  // buttons. Previously the button ID was 'SUPPORT' which fired full SOS escalation —
-  // silencing the bot and alerting the admin — every time a customer tapped "Contact Business"
-  // while checking their order status. This is not an SOS. CONTACT_BUSINESS now bypasses
-  // intent detection and reaches a dedicated handler in moduleRouter that shows the business
-  // phone number without triggering SOS.
-  'CONTACT_BUSINESS',
 ]);
 
 // ── [FIX-BUG3] Hours enforcement ─────────────────────────────────────────────
@@ -876,10 +868,9 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
     // Allow explicit cancellation or order restart
     if (upper === 'CANCEL' || upper === 'CANCEL_ORDER' || upper === 'NEW_ORDER' || upper === 'ORDER') {
       // [FIX-IMPORT-2] Order now a top-level import — removed redundant dynamic import
-      // [FIX-CANCEL-10.5] Include cancelledAt/cancelledBy so cancel history is properly tracked.
       await Order.findOneAndUpdate(
         { customerPhone: from, tenantId, paymentStatus: { $in: ['unpaid', 'proof_received'] } },
-        { $set: { status: 'cancelled', paymentStatus: 'cancelled', cancelledAt: new Date(), cancelledBy: 'customer' } },
+        { $set: { status: 'cancelled', paymentStatus: 'cancelled' } },
         { sort: { createdAt: -1 } }
       ).catch(() => {});
       await updateSession(from, tenantId, { currentFlow: null, step: null, data: {} });
@@ -902,16 +893,26 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
       // Don't return — fall through to intent detection at step 16
       // (no session currentFlow clear needed; the SUPPORT case in moduleRouter does it)
     } else {
-      // All other text (greetings, questions, anything) → strict reminder
-      await dispatchMessage(from, {
-        type:    'buttons',
-        body:
-          '⏳ *Awaiting your payment screenshot.*\n\n' +
-          'Please send a clear image of your payment confirmation (screenshot) to complete your order.\n\n' +
-          '_To cancel this order, tap the button below._',
-        buttons: [{ id: 'CANCEL', title: '❌ Cancel Order' }],
-      }, tenantDoc);
-      return;
+      // [FIX-PROOF-ACK] If the customer has a pending ORDER_REJECTED postFlowAck
+      // (set by adminCommandService.rejectPayment for the payment retry window), an
+      // acknowledgement message like "ok", "thanks" would be caught here and shown
+      // "awaiting screenshot" — the ORDER_REJECTED handler at step 14 is unreachable.
+      // Allow ack/filler messages through to postFlowAck handling when postFlowAck is set,
+      // so the customer gets a warm rejection-context reply instead of screenshot reminder.
+      if (session.postFlowAck) {
+        // Fall through to step 14 — don't return here
+      } else {
+        // All other text (greetings, questions, anything) → strict reminder
+        await dispatchMessage(from, {
+          type:    'buttons',
+          body:
+            '⏳ *Awaiting your payment screenshot.*\n\n' +
+            'Please send a clear image of your payment confirmation (screenshot) to complete your order.\n\n' +
+            '_To cancel this order, tap the button below._',
+          buttons: [{ id: 'CANCEL', title: '❌ Cancel Order' }],
+        }, tenantDoc);
+        return;
+      }
     }
   }
 
@@ -927,13 +928,9 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
     // Allow explicit cancel only
     if (upper === 'CANCEL' || upper === 'CANCEL_ORDER') {
       // [FIX-IMPORT-2] Order now a top-level import — removed redundant dynamic import
-      // [FIX-CANCEL-11.5] Set paymentStatus='cancelled' alongside status so activeOrderResolver
-      // and the PENDING ORDER LOCK (step 11.7) correctly exclude this order on the next message.
-      // Previously only status was cancelled — paymentStatus stayed 'unpaid', causing the lock
-      // to re-fire and tell the customer they still had a pending order they just cancelled.
       await Order.findOneAndUpdate(
         { customerPhone: from, tenantId, status: 'pending' },
-        { $set: { status: 'cancelled', paymentStatus: 'cancelled', cancelledAt: new Date(), cancelledBy: 'customer' } },
+        { $set: { status: 'cancelled' } },
         { sort: { createdAt: -1 } }
       ).catch(() => {});
       await updateSession(from, tenantId, { currentFlow: null, step: null, data: {} });
@@ -946,7 +943,7 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
       return;
     }
     // Everything else — classify ack/filler first, then politely hold the customer
-    const AAC_ACK_RE = /^(ok|okay|k|thanks?|thank\s*you|thx|got\s*it|noted|alright|cool|nice|great|sure|👍|🙏|😊|ahhh?|ohh?|hmm+|wow|yay|np|sure\s*i\s*do|i\s*will|will\s*do|definitely|absolutely|of\s*course|certainly|for\s*sure|yeah|yes|indeed|right|totally|agreed)$/i;
+    const AAC_ACK_RE = /^(ok|okay|k|thanks?|thank\s*you|thx|got\s*it|noted|alright|cool|nice|great|sure|👍|🙏|😊|ahhh?|ohh?|hmm+|wow|yay|np)$/i;
     if (AAC_ACK_RE.test(messageText.trim()) || messageText.trim().length <= 2) {
       await dispatchMessage(from, {
         type: 'text',
@@ -988,8 +985,8 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
     // and "Show Menu" were all blocked by the lock even though they're valid top-level
     // actions. The lock is meant to block RANDOM messages (greetings, status queries),
     // not deliberate navigation. The _cancelAllPattern handles "cancel all" / "cancel all of them"
-    // typed as free text, plus "cancel everything" and similar natural phrasings.
-    const _polCancelAllRe = /^cancel\s+(all(\s+of\s+(them|the\s+orders?))?|everything|it\s+all|all\s+my\s+orders?)$/i;
+    // typed as free text.
+    const _polCancelAllRe = /^cancel\s+all(\s+of\s+(them|the\s+orders?))?$/i;
     const isEscPOL  = upperPOL === 'CANCEL' || upperPOL === 'CANCEL_ORDER'
       || upperPOL === 'CANCEL_ALL' || _polCancelAllRe.test(messageText.trim())
       || upperPOL === 'ORDER' || upperPOL === 'BOOK'
@@ -1008,46 +1005,17 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
     if (pendingOrder) {
       // ── Cancel escape ────────────────────────────────────────────────────
       if (isEscPOL) {
-        // [FIX-POL-CANCEL-ALL] When the escape action is CANCEL_ALL (or a natural-language
-        // "cancel all" phrase), cancel ALL pending/confirmed orders — not just the one pendingOrder
-        // that triggered the lock. Previously findOneAndUpdate only touched the single order
-        // that matched the lock query, leaving any other active orders alive and the customer
-        // confused about why they still couldn't start a new flow.
-        // For single-order CANCEL/CANCEL_ORDER escapes, only cancel the one pendingOrder.
-        const isCancelAll = upperPOL === 'CANCEL_ALL' || _polCancelAllRe.test(messageText.trim());
-        if (isCancelAll) {
-          // [FIX-CANCEL-POL-ALL] Include cancelledAt/cancelledBy in the $set so cancel history is tracked.
-          const cancelAllResult = await Order.updateMany(
-            {
-              customerPhone: from,
-              tenantId,
-              paymentStatus: { $in: ['proof_received', 'unpaid', 'self_confirmed'] },
-              status:        { $nin: ['cancelled', 'confirmed', 'completed'] },
-            },
-            { $set: { status: 'cancelled', paymentStatus: 'cancelled', cancelledAt: new Date(), cancelledBy: 'customer' } }
-          ).catch(() => ({ modifiedCount: 0 }));
-          await updateSession(from, tenantId, { currentFlow: null, step: null, data: {} });
-          const cfgPOL = getModeConfig(business);
-          const cancelCount = cancelAllResult?.modifiedCount || 1;
-          await dispatchMessage(from, {
-            type:    'buttons',
-            body:    `❌ Done — *${cancelCount} order${cancelCount !== 1 ? 's' : ''}* ${cancelCount !== 1 ? 'have' : 'has'} been cancelled.\n\nWhat would you like to do next?`,
-            buttons: cfgPOL.ui?.welcomeButtons || [{ id: 'ORDER', title: '🛒 Place New Order' }],
-          }, tenantDoc);
-        } else {
-          // [FIX-CANCEL-POL-SINGLE] Include cancelledAt/cancelledBy for cancel history tracking.
-          await Order.findOneAndUpdate(
-            { _id: pendingOrder._id },
-            { $set: { status: 'cancelled', paymentStatus: 'cancelled', cancelledAt: new Date(), cancelledBy: 'customer' } }
-          ).catch(() => {});
-          await updateSession(from, tenantId, { currentFlow: null, step: null, data: {} });
-          const cfgPOL = getModeConfig(business);
-          await dispatchMessage(from, {
-            type:    'buttons',
-            body:    `❌ Your order *#${pendingOrder.shortId}* has been cancelled.\n\nWhat would you like to do next?`,
-            buttons: cfgPOL.ui?.welcomeButtons || [{ id: 'ORDER', title: '🛒 Place New Order' }],
-          }, tenantDoc);
-        }
+        await Order.findOneAndUpdate(
+          { _id: pendingOrder._id },
+          { $set: { status: 'cancelled', paymentStatus: 'cancelled' } }
+        ).catch(() => {});
+        await updateSession(from, tenantId, { currentFlow: null, step: null, data: {} });
+        const cfgPOL = getModeConfig(business);
+        await dispatchMessage(from, {
+          type:    'buttons',
+          body:    `❌ Your order *#${pendingOrder.shortId}* has been cancelled.\n\nWhat would you like to do next?`,
+          buttons: cfgPOL.ui?.welcomeButtons || [{ id: 'ORDER', title: '🛒 Place New Order' }],
+        }, tenantDoc);
         return;
       }
 
@@ -1059,7 +1027,7 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
         // This fixes the production bug where "Ahhh" triggered a full welcome greeting
         // because the lock hadn't fired yet and intent detection ran GREET instead.
         // Now the lock fires first and classifies filler/acks before anything else.
-        const POL_ACK_RE = /^(ok|okay|k|kk|thanks?|thank\s*you|thank\s*u|thx|ty|tq|great|perfect|got\s*it|noted|alright|cool|nice|sounds\s*good|good|👍|🙏|😊|yep|yh|yah|understood|cheers|appreciate\s*it|brilliant|wonderful|awesome|lovely|received|sure|fine|no\s*problem|np|ahhh?|ohh?|hmm+|wow|oh|yay|phew|aight|sure\s*i\s*do|i\s*will|will\s*do|definitely|absolutely|of\s*course|certainly|for\s*sure|sure\s*thing|yeah|yes|yes\s*please|indeed|exactly|right|totally|agreed|fair\s*enough)$/i;
+        const POL_ACK_RE = /^(ok|okay|k|kk|thanks?|thank\s*you|thank\s*u|thx|ty|tq|great|perfect|got\s*it|noted|alright|cool|nice|sounds\s*good|good|👍|🙏|😊|yep|yh|yah|understood|cheers|appreciate\s*it|brilliant|wonderful|awesome|lovely|received|sure|fine|no\s*problem|np|ahhh?|ohh?|hmm+|wow|oh|yay|phew|aight)$/i;
         const rawTrimPOL = messageText.trim();
         // [FIX-BUG10] rawTrimPOL.length <= 3 was too aggressive — a 3-char input like
         // "bad" is a genuine complaint that deserves the lock message, not a micro-reply.
@@ -1144,30 +1112,7 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
     if (session.step === 'AWAITING_QUESTION') {
       await updateSession(from, tenantId, { step: 'ANSWERED' });
       const { getAIReply } = await import('../core/ai/providers/aiRouter.js');
-
-      // [FIX-AI-CTX] Fetch real order + booking history to inject into AI context.
-      // Without this, the AI answers "Did I paid?" with "I don't have access to payment
-      // records" — confusing and dishonest. With the real data in orderContext, the AI
-      // can give accurate, specific answers grounded in actual DB state.
-      let _aiOrderCtx = null;
-      try {
-        const [_recentOrders, _recentBookings] = await Promise.all([
-          // [FIX-AI-CTX-CANCEL] Exclude cancelled/completed orders from AI context
-          Order.find({ customerPhone: from, tenantId, status: { $nin: ['cancelled', 'completed'] }, paymentStatus: { $ne: 'cancelled' } })
-            .sort({ createdAt: -1 }).limit(3)
-            .select('shortId item quantity totalPrice paymentStatus status').lean(),
-          (await import('../models/Booking.js').catch(() => ({ default: null }))).default
-            ? (await import('../models/Booking.js')).default.find({ customerPhone: from, tenantId })
-                .sort({ createdAt: -1 }).limit(2)
-                .select('service date time status').lean()
-            : [],
-        ]);
-        if (_recentOrders.length || _recentBookings.length) {
-          _aiOrderCtx = { recentOrders: _recentOrders, recentBookings: _recentBookings };
-        }
-      } catch { /* non-fatal — AI falls back gracefully */ }
-
-      const aiText = await getAIReply({ customerMessage: messageText, business, session, intent: 'QUESTION', orderContext: _aiOrderCtx });
+      const aiText = await getAIReply({ customerMessage: messageText, business, session, intent: 'QUESTION' });
       // [FIX-ENQ-1] Clear the flow AFTER dispatching the reply, not before.
       // The previous order (clear → dispatch) meant that if dispatchMessage threw,
       // the session was already cleared: the customer got no response, and their next
@@ -1244,71 +1189,32 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
     const _aorUpper = messageText.trim().toUpperCase();
     // [FIX-AOR-4] Expanded escape list — CANCEL_ALL and navigation intents bypass the
     // resolver so customers can deliberately start a new flow or bulk-cancel.
-    const _cancelAllPattern = /^cancel\s+(all(\s+of\s+(them|the\s+orders?))?|everything|it\s+all|all\s+my\s+orders?)$/i;
-    // [FIX-AOR-SUPPORT] Natural-language support/help phrases must also escape the AOR
-    // so customers can reach a human even when an active order is being tracked.
-    // Previously only the literal button ID 'SUPPORT' was checked — "i want to talk to human",
-    // "i need help", etc. all bypassed the escape and got the preparing card instead.
-    const _aorSupportRe = /\b(help|support|admin|human|agent|person|team|manager|someone|speak\s*to|talk\s*to|contact|escalat)\b/i;
-    // [FIX-AOR-PAYMENT] Payment-status queries ("did I pay?", "have I paid?", "did I paid?",
-    // "how about my order #XXX", "is my payment confirmed?") must reach the dedicated PAYMENT
-    // handler in moduleRouter, not the AOR ready/preparing card. The AOR card shows order
-    // status but not payment status — the customer explicitly wants to know about payment.
-    // Without this escape the AOR intercepts every payment question and shows the wrong card.
-    const _aorPaymentRe = /\b(paid|pay|payment|confirm|transfer|wave|sent|did\s+i|have\s+i|was\s+my|is\s+my\s+payment)\b/i;
+    const _cancelAllPattern = /^cancel\s+all(\s+of\s+(them|the\s+orders?))?$/i;
     const _aorIsEscape = _aorUpper === 'CANCEL' || _aorUpper === 'CANCEL_ORDER'
-      || _aorUpper === 'SUPPORT' || _aorSupportRe.test(messageText.trim())
-      || _aorUpper === 'SHOW_MENU' || _aorUpper === 'MENU'
+      || _aorUpper === 'SUPPORT' || _aorUpper === 'SHOW_MENU' || _aorUpper === 'MENU'
       || _aorUpper === 'HOME' || _aorUpper === '0'
       || _aorUpper === 'CANCEL_ALL' || _cancelAllPattern.test(messageText.trim())
-      || _aorUpper === 'CANCEL_BOOKING'
       // Navigation intents — customer is deliberately starting a new flow
       || _aorUpper === 'ORDER' || _aorUpper === 'START_ORDER'
       || _aorUpper === 'BOOK' || _aorUpper === 'START_BOOKING'
       || _aorUpper === 'QUESTION' || _aorUpper === 'ASK_A_QUESTION'
-      || _aorUpper === 'ENQUIRY'
-      // [FIX-AOR-PAYMENT] Payment-related queries bypass AOR → handled by PAYMENT intent
-      || _aorUpper === 'PAYMENT' || _aorPaymentRe.test(messageText.trim());
+      || _aorUpper === 'ENQUIRY';
     if (!_aorIsEscape) {
       try {
         // [FIX-AOR-5] Throttle: only intercept once per 5-minute window per customer.
         // Without this, every filler message ("Ahh", "ok", "hmm") triggered a fresh
         // preparing-card dispatch — resulting in 2-3 identical messages before loop
         // detection fired. The throttle key `lastAorInterceptAt` is stored on the session.
-        //
-        // [FIX-AOR-READY-THROTTLE] READY orders get a longer throttle (30 min) because
-        // the customer was already notified via the "Your Order is Ready" push notification
-        // sent by markOrderReady(). Re-intercepting every 5 minutes causes the bot to spam
-        // the customer with "Your order is ready!" on every filler message they send, which
-        // is disruptive and confusing. After the first AOR intercept, subsequent messages
-        // fall through to ACKNOWLEDGE → correctly shows "ready for collection" contextual
-        // reply. Only re-show the full ready card after 30 min of inactivity.
-        const AOR_THROTTLE_MS       = 5  * 60 * 1000; // 5 min  — for confirmed/preparing
-        const AOR_READY_THROTTLE_MS = 30 * 60 * 1000; // 30 min — for ready orders
+        const AOR_THROTTLE_MS = 5 * 60 * 1000; // 5 minutes
         const lastAorAt = session.lastAorInterceptAt ? new Date(session.lastAorInterceptAt) : null;
-
-        // Determine which throttle to use by peeking at the current order state.
-        // We do a lightweight check here (no full resolveActiveOrder call) to avoid
-        // a DB round-trip when the throttle will block us anyway.
-        let effectiveThrottleMs = AOR_THROTTLE_MS;
-        if (lastAorAt) {
-          // Check DB only when a recent intercept exists and we need to decide which window
-          const _quickOrder = await Order.findOne({
-            customerPhone: from, tenantId,
-            status: 'ready',
-            paymentStatus: { $nin: ['cancelled', 'rejected'] },
-          }).select('_id').lean().catch(() => null);
-          if (_quickOrder) effectiveThrottleMs = AOR_READY_THROTTLE_MS;
-        }
-
-        const aorThrottled = lastAorAt && (Date.now() - lastAorAt.getTime()) < effectiveThrottleMs;
+        const aorThrottled = lastAorAt && (Date.now() - lastAorAt.getTime()) < AOR_THROTTLE_MS;
 
         if (!aorThrottled) {
           const { shouldIntercept, uiResponse } = await resolveActiveOrder(
             from, tenantId, business, session,
           );
           if (shouldIntercept && uiResponse) {
-            // Record the timestamp so the next message within the window is not intercepted again
+            // Record the timestamp so the next message within 5 min is not intercepted again
             await updateSession(from, tenantId, { lastAorInterceptAt: new Date().toISOString() }).catch(() => {});
             await dispatchMessage(from, uiResponse, tenantDoc);
             return;
@@ -1338,10 +1244,7 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
     if (rejectedOrder) {
       await Order.findOneAndUpdate(
         { _id: rejectedOrder._id },
-        // [FIX-RESEND-REASON] Also clear rejectedNote when the customer resends proof.
-        // Without this, the admin still sees the old rejection reason after approving
-        // the new screenshot, which is misleading (the reason no longer applies).
-        { $set: { paymentStatus: 'unpaid', proofReceivedAt: null, paymentProof: null, rejectedNote: null } }
+        { $set: { paymentStatus: 'unpaid', proofReceivedAt: null, paymentProof: null } }
       ).catch(() => {});
       await updateSession(from, tenantId, { currentFlow: 'ORDER', step: 'PAYMENT_PROOF' });
       const currency = business?.payment?.currency || 'D';
@@ -1379,29 +1282,13 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
 
       if (pickedOrder) {
         const currency = business?.payment?.currency || 'D';
-        // [FIX-STATUS-PICK-1] statusMap now covers all non-terminal statuses including
-        //   'out_for_delivery' and 'delivered' which can appear in the multiple-orders list.
         const statusMap = {
-          pending:                     '⏳ Waiting for confirmation',
-          payment_pending_verification:'⏳ Awaiting payment',
-          confirmed:                   '🍳 Being prepared',
-          preparing:                   '🍳 Being prepared',
-          ready:                       '✅ Ready for collection!',
-          out_for_delivery:            '🚗 Out for delivery',
-          delivered:                   '✅ Delivered',
+          pending: '⏳ Waiting for confirmation', confirmed: '🍳 Being prepared',
+          preparing: '🍳 Being prepared', ready: '✅ Ready for collection!',
         };
-        // [FIX-STATUS-PICK-2] payMap now covers self_confirmed (cash / requireProof=false),
-        //   payment_pending_verification (canonical alias for proof_received), paid, and
-        //   cancelled so none of these ever surface as raw enum strings in the customer UI.
         const payMap = {
-          unpaid:                       '💳 Awaiting payment screenshot',
-          proof_received:               '📸 Screenshot received — verifying',
-          payment_pending_verification: '📸 Screenshot received — verifying',
-          self_confirmed:               '✅ Payment received (cash)',
-          confirmed:                    '✅ Payment verified',
-          paid:                         '✅ Paid',
-          rejected:                     '❌ Payment rejected — tap to retry',
-          cancelled:                    '❌ Cancelled',
+          unpaid: '💳 Awaiting payment screenshot', proof_received: '📸 Screenshot received — verifying',
+          confirmed: '✅ Payment verified', rejected: '❌ Payment rejected — tap to retry',
         };
         await dispatchMessage(from, {
           type: 'buttons',
@@ -1432,21 +1319,12 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
   // no active flow at this point, intercept it here before step 15 tries advance().
   if (isInteractive && messageText && /^COLLECTED_[A-Z0-9]+$/i.test(messageText.trim().toUpperCase())) {
     const shortIdCollect = messageText.trim().toUpperCase().replace('COLLECTED_', '');
-    // [FIX-COLLECT-ITEM] Capture the pre-update doc with { new: false } so we can read
-    // order.item for postFlowData personalisation. Previously the result was discarded,
-    // meaning flowData.item was always undefined in postFlowHandler ORDER_COLLECTED →
-    // the "enjoyed your *[item]*" line never rendered.
-    let _collectedOrder = null;
     if (shortIdCollect) {
-      // [FIX-COLLECT-STATUS] Include 'preparing' in the status filter so orders that were
-      // never explicitly MARK READY'd (admin skipped the step) can still be marked completed
-      // when the customer taps Collected. Without 'preparing', a customer who collects before
-      // the admin fires MARK READY gets a silent no-op — the order stays in 'preparing' forever.
-      _collectedOrder = await Order.findOneAndUpdate(
-        { shortId: shortIdCollect, tenantId, status: { $in: ['ready', 'confirmed', 'preparing'] } },
-        { $set: { status: 'completed', completedAt: new Date() } },
-        { new: false }
-      ).select('item quantity').lean().catch(() => null);
+      // [FIX-IMPORT-2] Order now a top-level import — removed redundant dynamic import
+      await Order.findOneAndUpdate(
+        { shortId: shortIdCollect, tenantId, status: { $in: ['ready', 'confirmed'] } },
+        { $set: { status: 'completed', completedAt: new Date() } }
+      ).catch(() => {});
     }
     const bizName = business?.name || 'us';
     await dispatchMessage(from, {
@@ -1455,14 +1333,9 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
     }, tenantDoc);
     // [FIX-ACK-COLLECT] Set postFlowAck so immediate follow-ups ("thank you", "was great")
     // are handled warmly instead of going to AI → SUPPORT escalation.
-    // [FIX-COLLECT-ITEM] Include item/quantity so postFlowHandler can personalise the reply.
     await updateSession(from, tenantId, {
       postFlowAck:  'ORDER_COLLECTED',
-      postFlowData: {
-        shortId:  shortIdCollect,
-        item:     _collectedOrder?.item     || null,
-        quantity: _collectedOrder?.quantity || null,
-      },
+      postFlowData: { shortId: shortIdCollect },
     }).catch(() => {});
     return;
   }
@@ -1475,41 +1348,26 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
   const STATUS_CMD_RE = /^(status|order status|my order|where is my order|check order|track my order|track|check my order)$/i;
   if (messageText && STATUS_CMD_RE.test(messageText.trim()) && !session.currentFlow) {
     try {
-      // [FIX-STATUS-CMD] Exclude completed and cancelled orders from the status command
-      // so customers who cancel their order don't see it re-surfaced here.
       const recentOrder = await Order.findOne({
         customerPhone: from,
         tenantId,
-        status: { $nin: ['cancelled', 'completed'] },
-        paymentStatus: { $ne: 'cancelled' },
+        status: { $nin: ['cancelled'] },
       }).select('item quantity shortId status paymentStatus createdAt').sort({ createdAt: -1 }).lean();
 
       if (recentOrder) {
         const statusMap = {
-          pending:          '⏳ Waiting for our team to confirm',
-          confirmed:        '🍳 Being prepared',
-          preparing:        '🍳 Being prepared',
-          ready:            '✅ Ready for collection!',
-          out_for_delivery: '🚗 Out for delivery',
-          delivered:        '✅ Delivered!',
-          completed:        '✅ Completed — thank you!',
+          pending:   '⏳ Waiting for our team to confirm',
+          confirmed: '🍳 Being prepared',
+          ready:     '✅ Ready for collection!',
+          completed: '✅ Completed — thank you!',
         };
-        // [FIX-STATUS-PAYMAP-1] Added missing paymentStatus values:
-        //   self_confirmed — written by handleDonePayment (requireProof=false cash path).
-        //     Without this, cash customers typing "status" saw the raw string
-        //     "self_confirmed" instead of a human-readable label.
-        //   payment_pending_verification — canonical alias used alongside proof_received
-        //     in some code paths; now shows the same label to avoid a raw string output.
         const payMap = {
-          unpaid:                        '💳 Awaiting payment',
-          proof_received:                '📸 Payment screenshot received — verifying',
-          payment_pending_verification:  '📸 Payment screenshot received — verifying',
-          self_confirmed:                '✅ Payment received (cash/self-confirm)',
-          verified:                      '✅ Payment verified',
-          paid:                          '✅ Paid',
-          confirmed:                     '✅ Payment confirmed',
-          rejected:                      '❌ Payment rejected — please resubmit',
-          cancelled:                     '❌ Cancelled',
+          unpaid:         '💳 Awaiting payment',
+          proof_received: '📸 Payment screenshot received — verifying',
+          verified:       '✅ Payment verified',
+          paid:           '✅ Paid',
+          confirmed:      '✅ Payment confirmed',
+          rejected:       '❌ Payment rejected — please resubmit',
         };
         await dispatchMessage(from, {
           type: 'text',
@@ -1630,22 +1488,7 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
     // anything outside that set gets a "that option has passed" reply.
     const STEP_VALID_BUTTONS = {
       // ── Generic steps (used by restaurant / bakery / retail etc.) ──────────
-      // [FIX-1] SELECT_ITEM valid set:
-      //   • List-row IDs from buildMenuUI are String(i+1): '1', '2', … up to N items.
-      //     Without entries here, tapping any menu item at SELECT_ITEM triggered the
-      //     stale-button guard ("That option is no longer available") because the numeric
-      //     string is not in FLOW_PASSTHROUGH_IDS and was absent from the valid set.
-      //     Fix: accept any 1–2 digit numeric string (covers up to 99 menu items).
-      //   • 'CONFIRM' removed — a stale Confirm tap at SELECT_ITEM was silently passed
-      //     through to the flow handler which ran fuzzy-match on "CONFIRM", found no menu
-      //     item, and replied "I couldn't find confirm on our menu." Removing it causes
-      //     the stale-button guard to fire with the correct "option no longer available" reply.
-      //   • isListReply IDs bypass this guard via the regex below.
-      SELECT_ITEM:          new Set([
-        'SHOW_MENU', 'CANCEL',
-        // Numeric menu row IDs from buildMenuUI (String(i+1), 1-based, up to 99 items)
-        ...(Array.from({ length: 99 }, (_, i) => String(i + 1))),
-      ]),
+      SELECT_ITEM:          new Set(['SHOW_MENU', 'CANCEL', 'CONFIRM']),
       SUGGESTION_CONFIRM:   new Set(['CONFIRM', 'SHOW_MENU', 'CANCEL']),
       QUANTITY:             new Set([]), // expects free text — no valid buttons
       UPSELL:               new Set(['UPSELL_YES', 'UPSELL_NO']),
@@ -1666,34 +1509,31 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
       // Without these entries, a stale-button tap at these steps silently passed
       // through to the flow handler with no validation. Adding them gives customers
       // the clear "option no longer available" reply for out-of-step taps.
-      BAKERY_FULFILMENT:   new Set(['COLLECT', 'DELIVERY', 'CANCEL']),
+      // [FIX-22] Removed BAKERY_FULFILMENT and RETAIL_FULFILMENT — dead code.
+      // Both bakery and retail use step='FULFILMENT' internally; the specific-named
+      // keys never matched. FULFILMENT entry above covers both correctly.
       PICKUP_TIME:         new Set(['SLOT_MORNING', 'SLOT_AFTERNOON', 'SLOT_EVENING', 'SLOT_TOMORROW', 'CANCEL']),
       NOTES:               new Set([]), // free-text OR NOTES_NONE — passthrough handles button
       SELECT_SKIN:         new Set(['SKIN_DRY', 'SKIN_OILY', 'SKIN_COMBO', 'SKIN_NORMAL', 'SKIN_CUSTOM', 'SKIP_SKIN', 'CANCEL']),
       GIFT_NOTE:           new Set([]), // free-text OR GIFT_NONE — passthrough handles button
-      RETAIL_FULFILMENT:   new Set(['PICKUP', 'DELIVERY', 'CANCEL']),
-      // ── Booking flow steps ─────────────────────────────────────────────────
-      // [FIX-5] Add booking-specific step validation so stale button taps (e.g.
-      // a QTY_1 or UPSELL_YES from a previous order flow) at booking steps give
-      // the correct "option no longer available" reply instead of reaching the
-      // bookingFlow handler which treats every input as typed text and may produce
-      // confusing responses (e.g. "I couldn't parse that as a date").
-      //
-      // DATE_CONFIRM: shows CONFIRM + DATE_BACK only
-      DATE_CONFIRM:        new Set(['CONFIRM', 'DATE_BACK', 'CANCEL']),
-      // TIME_CONFIRM: shows CONFIRM + TIME_BACK only
-      TIME_CONFIRM:        new Set(['CONFIRM', 'TIME_BACK', 'CANCEL']),
-      // BOOKING_CONFIRM: shows CONFIRM + CANCEL only
+      // [FIX-22] RETAIL_FULFILMENT removed — retail uses step='FULFILMENT' internally,
+      // not 'RETAIL_FULFILMENT'. The FULFILMENT entry above covers retail correctly.
+      // ── Salon / Barbershop specific steps ──────────────────────────────────
+      // [v14-BUG-1] BOOKING_CONFIRM was missing — stale button taps (e.g. QTY_1 from
+      // a previous order screen) passed through validation unchecked and reached the
+      // BOOKING_CONFIRM handler with an unexpected button ID, causing silent mis-routing.
+      // CANCEL_BOOKING is also valid here (same semantic as CANCEL for booking screens).
       BOOKING_CONFIRM:     new Set(['CONFIRM', 'CANCEL', 'CANCEL_BOOKING']),
-      // PARTY_SIZE: PARTY_2/4/6 are in FLOW_PASSTHROUGH_IDS; free-text numbers pass
-      // through because STEP_VALID_BUTTONS is only enforced when isInteractive=true.
-      // An empty set means "no interactive validation" — any interactive tap is rejected
-      // unless it matches a passthrough ID. PARTY_2/4/6 are in the passthrough set ✓.
-      PARTY_SIZE:          new Set([]), // free-text or PARTY_* passthrough buttons
+      // SELECT_SERVICE and SELECT_STYLIST use dynamic SVC_* / STYLIST_* IDs covered by
+      // isFlowPassthroughId() regex — no static set needed. Omitting them is correct.
     };
     const upperMsg = messageText.trim().toUpperCase();
     const currentStep = session.step;
-    if (isInteractive && currentStep && STEP_VALID_BUTTONS[currentStep] !== undefined) {
+    // [FIX-21] List-reply taps (isListReply=true) always bypass stale-button validation.
+    // WhatsApp list widget row IDs are dynamic numeric strings ('1','2','3') and cannot be
+    // enumerated statically in STEP_VALID_BUTTONS. Without this guard, every menu/product
+    // list-reply tap at SELECT_ITEM was rejected — breaking restaurant, retail, and electronics.
+    if (isInteractive && !isListReply && currentStep && STEP_VALID_BUTTONS[currentStep] !== undefined) {
       const validSet = STEP_VALID_BUTTONS[currentStep];
       // Only enforce when the set is non-empty (empty means free-text step, no valid buttons)
       if (validSet.size > 0 && !validSet.has(upperMsg) && !isFlowPassthroughId(upperMsg)) {
@@ -1932,18 +1772,6 @@ export async function receiveWebhook(req, res) {
                 from,
                 tip: 'Check that the tenant exists, has status=ACTIVE, and whatsapp.phoneNumberId matches',
               });
-              continue;
-            }
-
-            // [FIX-ECHO] Skip messages where the sender is the bot's own WhatsApp number.
-            // Meta sometimes echoes outbound messages back as webhook events (type='message'
-            // not 'status'). Processing them would cause the bot to reply to itself, producing
-            // duplicate messages and infinite-loop-like behaviour. The bot's phone number is
-            // stored on the tenant as whatsapp.phoneNumber (E.164 without '+').
-            const botPhone = tenant.whatsapp?.phoneNumber?.replace(/\D/g, '') || null;
-            const fromDigits = from?.replace(/\D/g, '') || '';
-            if (botPhone && fromDigits && fromDigits.endsWith(botPhone.replace(/^\+/, ''))) {
-              logger.debug('[Webhook] Skipping echo — message is from bot own number', { from, botPhone, wamid: msg.id });
               continue;
             }
 

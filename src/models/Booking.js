@@ -33,6 +33,23 @@ const bookingSchema = new mongoose.Schema({
   service:  { type: String, default: null },
   duration: { type: Number, default: null }, // minutes
 
+  // [FIX-SALON-1] Stylist / barber name chosen during salon booking or walk-in flow.
+  // Previously the salon flow saved the stylist inside the `notes` text field only —
+  // no dedicated column, so dashboards and admin alerts had no structured way to read it.
+  // Now written by saveBooking() when staff is provided; shown in admin alerts and
+  // confirmBooking() customer message.
+  staff:       { type: String, default: null },
+
+  // [FIX-SALON-2] Booking type — differentiates appointment from walk-in queue entry.
+  // 'appointment' = standard date+time booking (BOOKING flow).
+  // 'walkin'      = walk-in queue registration (WALKIN flow, date = today, time = 'Walk-In').
+  // Absent field (null) = legacy bookings created before this field was added.
+  bookingType: {
+    type:    String,
+    enum:    ['appointment', 'walkin', null],
+    default: null,
+  },
+
   // [FIX] Customer display name (captured during booking flow or from UserProfile).
   // Used in booking reminders and admin dashboard — previously absent from model.
   customerName: { type: String, default: null },
@@ -61,13 +78,6 @@ const bookingSchema = new mongoose.Schema({
   adminDeclinedBy:    { type: String, default: null },
   adminNote:          { type: String, default: null }, // optional note to customer
 
-  // [FIX-CANCEL] cancelledAt/cancelledBy — written by moduleRouter CANCEL_BOOKING and
-  // CANCEL_ALL when the customer cancels a booking. Previously absent from schema so
-  // Mongoose strict mode silently dropped every $set write, leaving cancelledAt null in
-  // the DB and making it impossible to track when or why a booking was cancelled.
-  cancelledAt:        { type: Date,   default: null },
-  cancelledBy:        { type: String, default: null }, // 'customer' | admin phone
-
   // Short ID for admin WhatsApp commands (CONFIRM BOOK ABC123)
   // Last 6 hex chars of _id, indexed, populated by pre-save hook.
   shortId: { type: String, index: true, default: null },
@@ -75,7 +85,8 @@ const bookingSchema = new mongoose.Schema({
   // [FIX] Set by schedulerService when a booking-reminder WhatsApp template is sent.
   // Without this field, Mongoose strict mode silently drops the $set and the
   // scheduler re-sends the reminder on every hourly run — spamming customers.
-  reminderSentAt: { type: Date, default: null },
+  reminderSentAt:     { type: Date, default: null },
+  followUpSentAt:     { type: Date, default: null },   // [v15-FOLLOWUP] post-appointment follow-up
 
 }, { timestamps: true });
 

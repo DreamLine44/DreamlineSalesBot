@@ -107,12 +107,6 @@ export async function handleDeliveryOrder({ session, message, business, tenant, 
         if (confidenceLevel === 'HIGH') {
           item = m;
         } else if (confidenceLevel === 'LOW' && m) {
-          // [FIX-SUGGEST-DELIVERY] Advance to SUGGESTION_CONFIRM and save the matched item
-          // so that tapping CONFIRM selects the item rather than re-entering SELECT_ITEM.
-          await updateSession(session.customerPhone, session.tenantId, {
-            step: 'SUGGESTION_CONFIRM',
-            data: { ...data, suggestion: m.name },
-          });
           return {
             type: 'buttons',
             body: `Did you mean *${m.name}*?`,
@@ -147,7 +141,7 @@ export async function handleDeliveryOrder({ session, message, business, tenant, 
         menuViewed: true,
       });
 
-      const price = item.price ? ` — ${item.currency || '$'}${item.price}` : '';
+      const price = item.price ? ` — ${item.currency || business?.payment?.currency || 'D'}${item.price}` : '';
       return {
         type: 'buttons',
         body: `🚚 *${item.name}*${price}\n\n${item.description ? `_${item.description}_\n\n` : ''}How many would you like?`,
@@ -343,7 +337,7 @@ export async function handleDeliveryOrder({ session, message, business, tenant, 
             `🚚 *Item:* ${item?.name} × ${qty}\n` +
             `📍 *Deliver to:* ${address}\n` +
             `⏱ *When:* ${resolvedScheduled}` +
-            (subtotal ? `\n💰 *Total:* ${item.currency || '$'}${subtotal.toFixed(2)}` : '') +
+            (subtotal ? `\n💰 *Total:* ${item.currency || business?.payment?.currency || 'D'}${subtotal.toFixed(2)}` : '') +
             `\n\nReady to confirm?`,
           buttons: [
             { id: 'CONFIRM', title: '✅ Confirm Order' },
@@ -434,7 +428,7 @@ export async function handleDeliveryOrder({ session, message, business, tenant, 
           `🚚 *Item:* ${item?.name} × ${qty}\n` +
           `📍 *Deliver to:* ${address}\n` +
           `⏱ *When:* ${slot}` +
-          (subtotal ? `\n💰 *Total:* ${item.currency || '$'}${subtotal.toFixed(2)}` : '') +
+          (subtotal ? `\n💰 *Total:* ${item.currency || business?.payment?.currency || 'D'}${subtotal.toFixed(2)}` : '') +
           `\n\nReady to confirm?`,
         buttons: [
           { id: 'CONFIRM', title: '✅ Confirm Order' },
@@ -605,7 +599,7 @@ function _buildMenuUI(menu, business) {
   }
 
   const lines = menu.slice(0, 20).map((item, idx) => {
-    const price = item.price ? ` — ${item.currency || '$'}${item.price}` : '';
+    const price = item.price ? ` — ${item.currency || business?.payment?.currency || 'D'}${item.price}` : '';
     const desc  = item.description ? `\n   _${item.description.slice(0, 60)}_` : '';
     return `${idx + 1}. *${item.name}*${price}${desc}`;
   });

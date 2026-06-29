@@ -68,30 +68,17 @@ export async function handleGeneralQuestion({ session, message, business, tenant
     };
   }
 
-  // [FIX-GENERAL-Q-CTX] Inject order context so AI can answer status/payment questions truthfully.
-  let _genOrderCtx = null;
-  try {
-    const { default: _GenOrder } = await import('../../../models/Order.js');
-    const _genOrders = await _GenOrder.find({
-      customerPhone: session.customerPhone,
-      tenantId:      session.tenantId,
-      status:        { $nin: ['cancelled'] },
-    }).sort({ createdAt: -1 }).limit(3)
-      .select('shortId item quantity totalPrice paymentStatus status').lean();
-    if (_genOrders.length) _genOrderCtx = { recentOrders: _genOrders };
-  } catch { /* non-fatal */ }
-
   const aiReply = await getAIReply({
     customerMessage: raw,
     business,
     session,
     intent: 'FAQ',
-    orderContext: _genOrderCtx,
   });
 
-  // [FIX-Q-ORDER] Build defaultReply before completeFlow so lead-capture doesn't
-  // discard the AI answer. completeFlow return value takes priority only for lead capture.
-  const _genDefaultReply = {
+  // [FIX-GENERAL-CF] completeFlow was called BEFORE building the return value.
+  // If lead capture triggered, _lcRgq replaced the AI answer entirely. 
+  // Fix: build the response first, then call completeFlow (discard its return).
+  const response = {
     type: 'buttons',
     body: aiReply || "That's a great question! Please reach out to us directly and we'll be happy to help.",
     buttons: [
@@ -100,8 +87,8 @@ export async function handleGeneralQuestion({ session, message, business, tenant
       { id: 'BOOK',       title: '📅 Book Appointment' },
     ],
   };
-  const _lcRgq = await completeFlow(session, 'QUESTION', business, tenant);
-  return _lcRgq || _genDefaultReply;
+  await completeFlow(session, 'QUESTION', business, tenant).catch(() => {});
+  return response;
 }
 
 // ── About Handler ─────────────────────────────────────────────────────────────
@@ -117,11 +104,8 @@ export async function handleAbout({ session, message, business, tenant }) {
   if (address) lines.push(`\n📍 *Address:* ${address}`);
   if (phone)   lines.push(`📞 *Contact:* ${phone}`);
 
-  // [FIX-1] Correct completeFlow signature: (session, completedFlow, business, tenant)
-  const _lcRa = await completeFlow(session, 'ABOUT', business, tenant);
-  if (_lcRa) return _lcRa;
-
-  return {
+  // [FIX-GENERAL-CF] Same fix as handleGeneralQuestion: build response first.
+  const aboutResponse = {
     type: 'buttons',
     body: lines.join('\n'),
     buttons: [
@@ -130,6 +114,8 @@ export async function handleAbout({ session, message, business, tenant }) {
       { id: 'BOOK',     title: '📅 Book Appointment' },
     ],
   };
+  await completeFlow(session, 'ABOUT', business, tenant).catch(() => {});
+  return aboutResponse;
 }
 
 // ── Enquiry Flow ──────────────────────────────────────────────────────────────

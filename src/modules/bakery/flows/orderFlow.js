@@ -65,14 +65,6 @@ export async function handleBakeryOrderFlow({ session, message, business, tenant
         if (confidenceLevel === 'HIGH') {
           item = matched;
         } else if (confidenceLevel === 'LOW' && matched) {
-          // [FIX-SUGGEST-BAKERY] Advance to SUGGESTION_CONFIRM and save the matched item
-          // in session.data so that tapping the CONFIRM button reaches the item, not a dead loop.
-          // Previously the step was never advanced, so CONFIRM re-entered SELECT_ITEM with
-          // raw='CONFIRM', which matched nothing and re-showed the menu endlessly.
-          await updateSession(session.customerPhone, session.tenantId, {
-            step: 'SUGGESTION_CONFIRM',
-            data: { ...data, suggestion: matched.name },
-          });
           return {
             type: 'buttons',
             body: `Did you mean *${matched.name}*? 🥐`,
@@ -102,35 +94,6 @@ export async function handleBakeryOrderFlow({ session, message, business, tenant
         ],
         footer: 'Or type any number e.g. 6, 12, 24',
       };
-    }
-
-    // ── SUGGESTION_CONFIRM ────────────────────────────────────────────────────
-    // [FIX-SUGGEST-BAKERY] Added to handle the CONFIRM button tap after a low-confidence
-    // item suggestion. Without this case, CONFIRM fell through to QUANTITY (default) and
-    // the order was placed without an item set in session.data.
-    case 'SUGGESTION_CONFIRM': {
-      if (/^(yes|y|yep|yeah|confirm|ok|okay)$/i.test(clean) || raw.toUpperCase() === 'CONFIRM') {
-        const suggestedName = data.suggestion;
-        const item = menu.find(i => i.name === suggestedName) || menu.find(i => norm(i.name) === norm(suggestedName || ''));
-        if (item) {
-          const price = item.price ? ` — ${item.currency || 'D'}${item.price}` : '';
-          const desc  = item.description ? `\n_${item.description}_` : '';
-          await updateSession(session.customerPhone, session.tenantId, {
-            step: 'QUANTITY', data: { item }, menuViewed: true,
-          });
-          return {
-            type: 'buttons',
-            body: `🧁 *${item.name}*${price}${desc}\n\nHow many would you like?`,
-            buttons: [
-              { id: 'QTY_1', title: '1️⃣  1' },
-              { id: 'QTY_2', title: '2️⃣  2' },
-              { id: 'QTY_3', title: '3️⃣  3' },
-            ],
-            footer: 'Or type any number e.g. 6, 12, 24',
-          };
-        }
-      }
-      return _buildBakeryMenu(menu, business);
     }
 
     // ── QUANTITY ──────────────────────────────────────────────────────────────

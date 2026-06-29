@@ -12,6 +12,8 @@ export const BUTTON_ID_MAP = {
   // Primary actions
   'ORDER':              'START_ORDER',
   'BOOK':               'START_BOOKING',
+  'BOOK_AGAIN':         'START_BOOKING',   // [FIX] post-appointment rebook button
+  'BOOK_NOW':           'START_BOOKING',   // [FIX] alternate booking trigger
   // [FIX-BTN-Q] QUESTION must map to 'QUESTION' not 'ENQUIRY'. Previously this
   // caused the QUESTION button tap to become action='ENQUIRY' which was intercepted
   // by the webhookController inline handler before route() was ever called —
@@ -29,10 +31,7 @@ export const BUTTON_ID_MAP = {
   // an unmapped interactive ID at step 1 and returned CONTINUE_FLOW — routing to the
   // welcome menu instead of the cancel handler. Same target as CANCEL_BOOKING.
   'CANCEL_ORDER':       'CANCEL',
-  // [FIX-CANCEL-BOOKING] CANCEL_BOOKING must route to its own action so moduleRouter
-  // can cancel the Booking DB record. Previously mapped to 'CANCEL' which only called
-  // cancelFlow() — clearing session state without touching the Booking document.
-  'CANCEL_BOOKING':     'CANCEL_BOOKING',
+  'CANCEL_BOOKING':     'CANCEL',
   // [FIX-CANCEL-ALL] CANCEL_ALL button ID for bulk-cancellation of multiple orders.
   // Shown in the MULTIPLE_ACTIVE_ORDERS context; routes to the CANCEL_ALL handler
   // in webhookController which cancels all pending/confirmed orders for the customer.
@@ -82,7 +81,11 @@ export const BUTTON_ID_MAP = {
 
   // Salon/Barbershop walk-in queue
   'WALKIN':             'WALKIN',
+  'WALKIN_NOW':         'WALKIN',           // [FIX] Join Now variant button
   'JOIN_QUEUE':         'WALKIN',
+  // [v14-PATTERNS] Salon/barbershop new button IDs
+  'RESCHEDULE':         'START_BOOKING',   // reschedule taps re-enter the booking flow
+  'CONSULTATION':       'QUESTION',        // consultation taps go to the QUESTION/AI flow
 
   // Payment
   'PAYMENT':            'PAYMENT',
@@ -174,7 +177,6 @@ export const INTENT_PATTERNS = {
     'cancel all', 'cancel all orders', 'cancel all of them',
     'cancel everything', 'cancel all my orders', 'cancel them all',
     'cancel all order', 'cancel all of the orders',
-    'cancel it all', 'cancel all my order',
   ],
 
   // ── CANCEL_ORDER — single-order cancellation typed as text ────────────────
@@ -185,18 +187,6 @@ export const INTENT_PATTERNS = {
     'cancel order', 'cancel my order', 'cancel this order', 'cancel it',
     'i want to cancel', 'stop my order', 'dont want it', "don't want it",
     'never mind my order', 'nevermind my order',
-  ],
-
-  // ── CANCEL_BOOKING — booking-specific cancellation typed as text ───────────
-  // [FIX-CANCEL-BOOKING-INTENT] 'cancel booking' had no keyword entry — customers
-  // typing these phrases hit AI classification which frequently returned SUPPORT,
-  // triggering a full human escalation instead of the dedicated cancel-booking handler.
-  // Now correctly routes to CANCEL_BOOKING action → moduleRouter cancels the Booking DB record.
-  CANCEL_BOOKING: [
-    'cancel booking', 'cancel my booking', 'cancel reservation', 'cancel my reservation',
-    'cancel appointment', 'cancel my appointment', 'cancel table', 'cancel my table',
-    'i want to cancel booking', 'cancel the booking', 'remove my booking',
-    'delete my booking', 'cancel book', 'cancel my book',
   ],
 
   // ── [SPEC-PART7] ACKNOWLEDGEMENT classifier ──────────────────────────────
@@ -219,17 +209,6 @@ export const INTENT_PATTERNS = {
     'many thanks', 'much appreciated', 'big thanks', 'thanks a lot',
     'thanks so much', 'thank you so much', 'thank you very much',
     '👍', '🙏', '😊', '❤️',
-    // [FIX-ACK-AFFIRMATIVE] Conversational affirmative/agreeable phrases that AI tends
-    // to classify as GREETING (triggering the booking/order gate). These are valid
-    // acknowledgement responses to a farewell or follow-up message and must never
-    // cause a GREET flow reset or show stale booking/order status cards.
-    'sure i do', 'i sure do', 'i will', 'will do', 'definitely',
-    'absolutely', 'of course', 'certainly', 'for sure', 'sure thing',
-    'sounds great', 'sounds good to me', 'that sounds good', 'that works',
-    'yeah', 'yep', 'yep yep', 'yes', 'yes please', 'indeed',
-    'exactly', 'right', 'correct', 'true', 'fair enough', 'fair',
-    'agreed', 'for real', 'totally', 'sure enough',
-    'glad to hear', 'happy to hear', 'nice to know',
   ],
 
   GREETING: [
@@ -265,6 +244,16 @@ export const INTENT_PATTERNS = {
     'i want to book', 'schedule', 'appointment', 'make appointment',
     'book appointment', 'i need appointment', 'book a slot',
     'book a service', 'i want appointment',
+    // Natural language booking questions — previously fell to AI classify
+    'how do i book', 'how to book', 'can i book', 'can i make a booking',
+    'can i make a reservation', 'i want to make a reservation',
+    'make a reservation', 'do you take bookings', 'do you take reservations',
+    'how do i reserve', 'how do i make an appointment',
+    'can i get a table', 'i need a table', 'table for tonight',
+    'table for today', 'table for tomorrow',
+    // Rescheduling
+    'reschedule', 'change my appointment', 'move my booking', 'change booking',
+    'reschedule my appointment', 'different time', 'different date',
     // Salon specific
     'haircut', 'hair cut', 'cut my hair', 'beard trim', 'trim beard',
     'i want a haircut', 'book haircut', 'i need a haircut',
@@ -283,26 +272,11 @@ export const INTENT_PATTERNS = {
     'track order', 'track my order', 'where is my order', 'order status',
     'when is my order', 'order update', 'my order', 'check order',
     'delivery status', 'where is my food', 'how long', 'where my order',
-    // [FIX-TRACK-ORDER] Reference number queries — customer pastes their shortId to ask
-    // about their order. Without this, "how about my order #2AC257" → START_ORDER (because
-    // "order" keyword matches) → bot starts a new order flow instead of looking up the ref.
-    'my order ref', 'my order number', 'order reference', 'ref number',
-    'how about my order', 'what about my order', 'update on my order',
   ],
 
   PAYMENT: [
     'pay', 'payment', 'how to pay', 'wave', 'pay now', 'make payment',
     'send payment', 'transfer', 'checkout', 'how do i pay',
-    // [FIX-PAY-INTENT] Payment-status queries — customers asking if their payment went
-    // through after sending a screenshot or completing a transfer. Previously these fell
-    // through to AI classification which returned QUESTION/SUPPORT, bypassing the
-    // dedicated PAYMENT handler in moduleRouter that correctly looks up the order state
-    // and returns a factual confirmed/pending/unpaid response.
-    'did i pay', 'did i paid', 'have i paid', 'was my payment', 'is my payment',
-    'did i make payment', 'did i send payment', 'i already paid', 'i paid already',
-    'i paid', 'i have paid', 'i already pay', 'payment confirmed', 'payment done',
-    'is my order paid', 'was my order paid', 'payment sent', 'i sent payment',
-    'check my payment', 'confirm my payment', 'payment status',
   ],
 
   WALKIN: [
@@ -316,16 +290,6 @@ export const INTENT_PATTERNS = {
     'speak to human', 'speak to agent', 'speak to someone', 'real person',
     'live agent', 'manager', 'customer service', 'not happy', 'unhappy',
     'refund', 'i have a problem', 'i have an issue',
-    // [FIX-SUPPORT-NATURAL] Natural human-escalation phrases that customers use when
-    // they need help mid-order. Previously these fell into isUnrelated → food-mode lock
-    // with no escape. Now correctly classified as SUPPORT so moduleRouter routes them
-    // to the human handoff flow, even when said during an active order context.
-    'i need help', 'need help', 'help me', 'help please', 'please help',
-    'i want to talk to the admin', 'talk to admin', 'talk to human',
-    'i want to talk to human', 'talk to someone', 'i want to speak to someone',
-    'talk to a person', 'i want to talk to a person', 'connect me to admin',
-    'i want human', 'get me human', 'human please', 'contact support',
-    'i need support', 'get support', 'reach support',
   ],
 
   SHOW_MENU: [
@@ -350,6 +314,16 @@ export const INTENT_PATTERNS = {
     'how long warranty', 'what is warranty',
   ],
 
+
+  AFTERCARE: [
+    'aftercare', 'after care', 'how to maintain', 'how do i maintain',
+    'how to care', 'what do i do after', 'how long before i wash',
+    'when can i wash', 'how to keep', 'how long does it last',
+    'maintenance tips', 'what to avoid', 'care tips', 'tips for my hair',
+    'keep colour', 'maintain colour', 'maintain color', 'after my appointment',
+    'after my treatment', 'post treatment', 'post-treatment',
+  ],
+
   AVAILABILITY_CHECK: [
     'available', 'in stock', 'do you have', 'is it available',
     'any available slots', 'when are you free', 'open today',
@@ -368,5 +342,15 @@ export const INTENT_PATTERNS = {
     'when', 'where', 'opening hours', 'hours', 'location', 'address',
     'price', 'prices', 'cost', 'how much does', 'what time', 'contact',
     'faq',
+    // Natural booking-capability questions — previously hit AI and sometimes got wrong answer
+    'how do i order', 'how to order', 'can i order online', 'how does ordering work',
+    'how does booking work', 'what can i order', 'what do you serve',
+    'what do you sell', 'what services do you offer', 'what do you offer',
+    'do you deliver', 'do you do delivery', 'delivery available',
+    'are you open', 'are you open now', 'are you open today', 'are you open tomorrow',
+    'what are your hours', 'what are your opening hours', 'when do you open',
+    'when do you close', 'how can i pay', 'payment options', 'do you accept',
+    'where are you', 'where are you located', 'how do i find you',
+    'do you have', 'is there', 'any allergens', 'allergen info',
   ],
 };

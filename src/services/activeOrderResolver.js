@@ -68,28 +68,16 @@ export async function resolveActiveOrder(customerPhone, tenantId, business = nul
     //   cancelled / completed / payment_failed older than 24h
     // Delivered orders within the last 2h are included so we can show context.
     const cutoff24h  = new Date(Date.now() - 24 * 60 * 60 * 1000);
-    // [FIX-AOR-CANCELLED] Exclude explicitly cancelled orders from EVERY branch of the $or.
-    // Previously { paymentStatus: 'rejected' } had no status guard — a cancelled order
-    // with paymentStatus='rejected' (admin rejected and admin later cancelled, or customer
-    // cancelled from the retry screen) would still be intercepted, showing a confusing
-    // "Payment Not Approved" card to a customer whose order no longer exists.
-    // Similarly { paymentStatus: 'proof_received' } had no guard: an order cancelled at
-    // the PAYMENT_PROOF step (step 10.5) sets both status='cancelled' and paymentStatus='cancelled',
-    // but defensive exclusion here ensures stale data from before that fix is also safe.
     const activeOrders = await Order.find({
       customerPhone,
       tenantId,
-      status: { $nin: ['cancelled', 'completed', 'rejected', 'payment_failed'] }, // global pre-filter
       $or: [
         // All non-terminal statuses
         { status: { $in: ['pending', 'payment_pending_verification', 'confirmed', 'preparing', 'ready', 'out_for_delivery'] } },
         // Delivered within the context window
         { status: 'delivered', updatedAt: { $gte: new Date(Date.now() - DELIVERED_CONTEXT_WINDOW_MS) } },
         // Rejected payments (order.status may be 'pending' after a reject+retry window)
-        // [FIX-AOR-CANCELLED] Added status:'pending' guard so cancelled orders (status='cancelled')
-        // with a stale paymentStatus='rejected' are excluded. In normal flow rejectPayment()
-        // sets status='pending' for the retry path; cash rejections set status='cancelled'.
-        { paymentStatus: 'rejected', status: 'pending' },
+        { paymentStatus: 'rejected' },
         // Proof submitted, still awaiting admin decision
         { paymentStatus: { $in: ['proof_received', 'payment_pending_verification'] } },
       ],
@@ -148,7 +136,7 @@ function _resolveState(order, business, session) {
           `\n\nWhat would you like to do?`,
         buttons: [
           { id: 'RESEND_PROOF', title: '📸 Upload New Proof' },
-          { id: 'CONTACT_BUSINESS', title: '💬 Contact Business' },
+          { id: 'SUPPORT',      title: '💬 Contact Business' },
           { id: 'CANCEL',       title: '❌ Cancel Order'     },
         ],
       },
@@ -174,7 +162,7 @@ function _resolveState(order, business, session) {
           `\n\nOur team is reviewing your payment. We'll notify you once it's confirmed. 🙏`,
         buttons: [
           { id: 'TRACK_ORDER', title: '🔍 Check Status'    },
-          { id: 'CONTACT_BUSINESS', title: '💬 Contact Business' },
+          { id: 'SUPPORT',     title: '💬 Contact Business'},
         ],
       },
     };
@@ -219,7 +207,7 @@ function _resolveState(order, business, session) {
         // acknowledge collection, so orders stayed in 'ready' state forever in the DB.
         buttons: [
           { id: shortId ? `COLLECTED_${shortId}` : 'SUPPORT', title: '✅ Collected — Thanks!' },
-          { id: 'CONTACT_BUSINESS', title: '💬 Contact Business' },
+          { id: 'SUPPORT', title: '💬 Contact Business' },
         ],
       },
     };
@@ -238,7 +226,7 @@ function _resolveState(order, business, session) {
           `Order *#${shortId}* — ${itemSummary}` +
           `\n\nSit tight — your delivery is en route! 🙏`,
         buttons: [
-          { id: 'CONTACT_BUSINESS', title: '💬 Contact Business' },
+          { id: 'SUPPORT', title: '💬 Contact Business' },
           { id: 'ORDER',   title: '🛒 Order Again'      },
         ],
       },
@@ -264,7 +252,7 @@ function _resolveState(order, business, session) {
             `Thank you for ordering with us! We hope you enjoy it. 😊`,
           buttons: [
             { id: 'ORDER',   title: '🛒 Order Again'     },
-            { id: 'CONTACT_BUSINESS', title: '💬 Contact Business' },
+            { id: 'SUPPORT', title: '💬 Contact Business' },
           ],
         },
       };
@@ -287,11 +275,6 @@ function _preparingCard(order, business, session, stage) {
     ? `🟡 Status: *Preparing*`
     : `✅ Status: *Payment Confirmed*`;
 
-  // [FIX-AOR-PREPARING-BTN] Removed the "🛒 Order Again" button from the preparing card.
-  // Showing "Order Again" while the customer's current order is still being prepared
-  // encourages placing a duplicate order. The customer's first action should be to
-  // wait or contact the business — not re-order. CONTACT_BUSINESS is the right
-  // primary action here. TRACK_ORDER stays as a secondary context button.
   return {
     type: 'buttons',
     body:
@@ -302,8 +285,9 @@ function _preparingCard(order, business, session, stage) {
       `\n${statusLine}\n\n` +
       `We'll notify you when it's ready. 🙏`,
     buttons: [
-      { id: 'TRACK_ORDER',       title: '🔍 Track Order'      },
-      { id: 'CONTACT_BUSINESS',  title: '💬 Contact Business' },
+      { id: 'TRACK_ORDER', title: '🔍 Track Order'      },
+      { id: 'ORDER',       title: '🛒 Order Again'      },
+      { id: 'SUPPORT',     title: '💬 Contact Business' },
     ],
   };
 }
@@ -335,7 +319,7 @@ function _multipleOrders(orders, business) {
     uiResponse: {
       type: 'list',
       body: `📦 You have *${orders.length} active orders*.${overflowNote}\n\nWhich one would you like to check?`,
-      button: 'View My Orders',
+      buttonText: 'View My Orders',
       sections: [
         {
           title: 'Active Orders',

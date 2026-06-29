@@ -124,6 +124,11 @@ export async function updateOrderStatus(req, res) {
           // is generated when the customer is shown payment instructions again. Without this
           // the scheduler / payment instructions UI would continue to display the old ref.
           ...(status === 'pending' ? { paymentReference: null } : {}),
+          ...(status === 'confirmed' ? { abandonedCartAt: null } : {}),
+          // [FIX-32] Clear abandonedCartAt on completion/cancellation — order is no longer
+          // "abandoned" regardless of outcome. Without this, the scheduler job could send
+          // a follow-up nudge for an order that was already completed or cancelled.
+          ...(status === 'completed' || status === 'cancelled' || status === 'rejected' ? { abandonedCartAt: null } : {}),
           // Track lifecycle timestamps
           ...(status === 'preparing'        ? { preparingAt:      new Date() } : {}),
           ...(status === 'ready'            ? { readyAt:          new Date() } : {}),
@@ -194,10 +199,26 @@ export async function updateOrderStatus(req, res) {
           }, tenant);
 
         } else if (status === 'confirmed') {
+          // [FIX-23] Set postFlowAck=ORDER_CONFIRMED so any customer follow-up after
+          // a dashboard-triggered confirmation gets a warm ORDER_CONFIRMED context reply
+          // instead of the cold "👋 Welcome! What would you like to do?" (GREET).
+          // This mirrors the WhatsApp button path (adminCommandService.confirmPayment()).
+          await updateSession(order.customerPhone, String(tenantId), {
+            currentFlow:  null, step: null,
+            postFlowAck:  'ORDER_CONFIRMED',
+            postFlowData: { item: order.item, quantity: order.quantity, shortId: order.shortId },
+          }).catch(() => {});
           await dispatchText(order.customerPhone,
             `✅ *Your order is confirmed!*\n\n🍽 *${order.item}* × ${order.quantity}\n\nThank you for your patience! 😊`,
             tenant);
         } else if (status === 'cancelled' || status === 'rejected') {
+          // [FIX-23] Set postFlowAck=ORDER_REJECTED so customer follow-up ("ok", "why?")
+          // is handled with rejection-context empathy, not a generic welcome screen.
+          await updateSession(order.customerPhone, String(tenantId), {
+            currentFlow:  null, step: null,
+            postFlowAck:  'ORDER_REJECTED',
+            postFlowData: { item: order.item, shortId: order.shortId, rejectReason: notes || null },
+          }).catch(() => {});
           await dispatchText(order.customerPhone,
             `❌ *Order update*\n\nUnfortunately your order (*${order.item}*) has been ${status}.${notes ? `\n\nNote: ${notes}` : ''}\n\nPlease contact us if you have questions.`,
             tenant);

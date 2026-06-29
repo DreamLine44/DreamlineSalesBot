@@ -30,7 +30,7 @@ import { buildMenuUI, buildOrderSummary, buildOrderSuccess } from '../handlers/u
 import { parseQuantity }    from '../../../utils/parseQuantity.js';
 import { saveOrder }        from '../../../services/orderService.js';
 import { recordRevenue, trackOrderAnalytics } from '../../../core/analytics/analyticsService.js';
-// [FIX-DEAD-IMPORT] dispatchText removed -- all admin dispatch uses dispatchMessage (dynamic import in CONFIRM case)
+import { dispatchText }     from '../../../core/whatsapp/dispatcher.js';
 import { buildPaymentInstructionsUI } from '../../../services/paymentService.js';
 import { buildWhatsAppImageUrl }       from '../../../config/cloudinary.js';
 import logger               from '../../../config/logger.js';
@@ -64,6 +64,7 @@ export async function handleOrderFlow({ session, message, business, tenant, isIn
     await updateSession(session.customerPhone, session.tenantId, {
       currentFlow: null, step: null, data: {},
     });
+    const cfg = (await import('../../../config/modes.js')).getModeConfig(business);
     return {
       type:    'buttons',
       body:    '⚠️ Our menu is being updated. Please contact us directly.',
@@ -103,12 +104,7 @@ export async function handleOrderFlow({ session, message, business, tenant, isIn
       }
 
       // Cancel / escape keywords — let the flow engine handle them
-      // [FIX-6] 'confirm' added: a stale ✅ Confirm button tap from a previous order
-      // step (e.g. the CONFIRM or SUGGESTION_CONFIRM card) passes through FLOW_PASSTHROUGH_IDS
-      // into SELECT_ITEM where it has no meaning. Without this guard, findBestMatch() would
-      // run on "confirm" and reply "I couldn't find confirm on our menu." — confusing.
-      // Treat it as an escape back to the menu so the customer sees their options again.
-      if (/^(cancel|stop|exit|back|menu|home|confirm)$/i.test(clean)) {
+      if (/^(cancel|stop|exit|back|menu|home)$/i.test(clean)) {
         return buildMenuUI(business);
       }
 
@@ -193,6 +189,8 @@ export async function handleOrderFlow({ session, message, business, tenant, isIn
       // MAX_QTY is per-business configurable; default 20 for restaurants.
       // Read from business.settings.maxOrderQuantity if set, otherwise 20.
       const MAX_QTY = business?.settings?.maxOrderQuantity || 20;
+      // [FIX-CURR-1] Read currency once at the top of QUANTITY case for consistency.
+      const currency = business?.payment?.currency || 'D';
 
       // Can't parse at all (e.g. "any", "yes", blank, or unrecognised words)
       if (!qty || qty < 1) {
@@ -224,12 +222,9 @@ export async function handleOrderFlow({ session, message, business, tenant, isIn
           upsellSent: true,
           data: { ...data, quantity: qty, totalPrice: total, pendingAddOn: addOn },
         });
-        // [FIX-CURRENCY-1] Use configured currency symbol — was hardcoded 'D', wrong
-        // for businesses using XOF, NGN, USD etc.
-        const _upsellCcy = business?.payment?.currency || 'D';
         return {
           type:    'buttons',
-          body:    `You've chosen *${qty}× ${item.name}*${total ? ` — ${_upsellCcy}${total}` : ''}.\n\nWould you like to add *${addOn.name}* for ${_upsellCcy}${addOn.price}? 🥤`,
+          body:    `You've chosen *${qty}× ${item.name}*${total ? ` — ${currency}${total}` : ''}.\n\nWould you like to add *${addOn.name}* for ${currency}${addOn.price}? 🥤`,
           buttons: [
             { id: 'UPSELL_YES', title: '✅ Yes, add it' },
             { id: 'UPSELL_NO',  title: '❌ No thanks'   },
@@ -309,16 +304,20 @@ export async function handleOrderFlow({ session, message, business, tenant, isIn
         }
       } catch (err) {
         logger.error('[OrderFlow] saveOrder failed', { err: err.message });
-        // [FIX-SAVE-NULL] If saveOrder throws, savedOrder stays null. Every downstream
-        // branch (payment notification, admin alert) is gated on savedOrder existing.
-        // Return an explicit error so the customer can contact support instead.
+        // [FIX-SAVE-ERR] If we couldn't persist the order, do NOT proceed to payment
+        // instructions or AWAIT_ADMIN_CONFIRM — the customer would be stuck (no order
+        // in DB to approve, or payment instructions for a ghost order). Clear the flow
+        // and show a retry prompt so the customer can try again immediately.
         await updateSession(session.customerPhone, session.tenantId, {
           currentFlow: null, step: null, data: {},
         });
         return {
           type:    'buttons',
-          body:    'Something went wrong placing your order. Please contact us directly.',
-          buttons: [{ id: 'SUPPORT', title: 'Contact Us' }],
+          body:    `⚠️ *Something went wrong saving your order.*\n\nPlease try again — tap below to start over.`,
+          buttons: [
+            { id: 'ORDER',    title: '🛒 Try Again'   },
+            { id: 'SUPPORT',  title: '💬 Contact Us'  },
+          ],
         };
       }
 
@@ -372,17 +371,23 @@ export async function handleOrderFlow({ session, message, business, tenant, isIn
       // always see how to pay (even if the answer is "cash on delivery").
       if (!payment?.enabled || !data.totalPrice) {
         const currency   = payment?.currency || 'D';
-        // [FIX-CASH-CHANNELS] Do NOT show payment channel info when payment.enabled=false.
-        // payment.channels is only meaningful when the payment flow is active (screenshot
-        // required, session goes to PAYMENT_PROOF). In cash mode the session goes to
-        // AWAIT_ADMIN_CONFIRM — if we showed "send payment screenshot to any of the
-        // following channels", the customer would send a screenshot which the image guard
-        // at step 8.5 would reject (session.step is AWAIT_ADMIN_CONFIRM, not PAYMENT_PROOF),
-        // leaving the customer confused. Cash mode always means: pay on collection/delivery.
+        // [FIX-CASH-MODE] Only show channel instructions when payment IS enabled.
+        // When payment.enabled=false (cash mode), payment.channels may still be populated
+        // from a previous config — must NOT be shown. Cash-mode restaurants must always
+        // show the cash-on-delivery message regardless of what channels array contains.
+        const hasChannels = payment?.enabled && Array.isArray(payment?.channels) && payment.channels.length > 0;
         const cashBody =
           `💳 *Payment*\n\n` +
           `🛒 Total: *${currency}${data.totalPrice || 0}*\n\n` +
-          `💵 *Payment mode:* Cash on delivery\n\nPlease have *${currency}${data.totalPrice || 0}* ready when your order arrives.`;
+          (hasChannels
+            ? (() => {
+                const lines = payment.channels.map((ch, i) =>
+                  `${i + 1}. *${ch.provider}* → \`${ch.accountNo}\`${ch.label ? ` (${ch.label})` : ''}${ch.isDefault ? ' ⭐' : ''}`
+                ).join('\n');
+                return `📲 Please complete payment to any of the following:\n\n${lines}\n\nThen send your payment screenshot in this chat.`;
+              })()
+            : `💵 *Payment mode:* Cash on delivery\n\nPlease have *${currency}${data.totalPrice || 0}* ready when your order arrives.`
+          );
 
         // [FIX-3] No payment — notify admin with interactive buttons
         try {
@@ -427,11 +432,9 @@ export async function handleOrderFlow({ session, message, business, tenant, isIn
         };
       }
 
-      // [FIX-DEAD-PATH] This code is structurally unreachable: both the payment-enabled
-      // branch and the no-payment branch always return early. completeFlow() for cash/delivery
-      // orders is intentionally NOT called here (session stays in AWAIT_ADMIN_CONFIRM until
-      // admin confirms). Kept as documentation of the intended state machine exit.
-      // return buildOrderSuccess({ item: data.item, qty: data.quantity, business });
+      const _lcR = await completeFlow(session, 'ORDER', business, tenant);
+      if (_lcR) return _lcR;
+      return buildOrderSuccess({ item: data.item, qty: data.quantity, business });
     }
 
     default:
@@ -467,15 +470,13 @@ async function _selectItem(item, session, business, data) {
     // [FIX-IMG-URL] Apply WhatsApp delivery optimization (q_auto, f_auto, max w_1600)
     // before sending. The stored URL may have no transformation segment; this adds one.
     const whatsappImageUrl = buildWhatsAppImageUrl(imageUrl);
-    // [FIX-CURRENCY-2] Use configured currency in item image caption
-    const _imgCcy = business?.payment?.currency || 'D';
     return [
       {
         type:    'image',
         url:     whatsappImageUrl,
         caption: item.description
-          ? `*${item.name}*\n${item.description}${item.price ? `\n💰 ${_imgCcy}${item.price}` : ''}`
-          : `*${item.name}*${item.price ? ` — ${_imgCcy}${item.price}` : ''}`,
+          ? `*${item.name}*\n${item.description}${item.price ? `\n💰 ${business?.payment?.currency || 'D'}${item.price}` : ''}`
+          : `*${item.name}*${item.price ? ` — ${business?.payment?.currency || 'D'}${item.price}` : ''}`,
       },
       quantityPrompt,
     ];
@@ -504,36 +505,20 @@ export async function handleRestaurantQuestion({ session, message, business, ten
     };
   }
 
-  // [FIX-RESTAURANT-Q-CTX] Fetch real order history so AI can answer payment/status
-  // questions ("Did I pay?", "What did I order?") truthfully instead of saying
-  // "I don't have access to payment records." Without this the AI operates blind,
-  // producing confusing non-answers even when order data is readily available in DB.
-  let _rstOrderCtx = null;
-  try {
-    const { default: _RstOrder } = await import('../../../models/Order.js');
-    const _rstOrders = await _RstOrder.find({
-      customerPhone: session.customerPhone,
-      tenantId:      session.tenantId,
-      status:        { $nin: ['cancelled'] },
-    }).sort({ createdAt: -1 }).limit(3)
-      .select('shortId item quantity totalPrice paymentStatus status').lean();
-    if (_rstOrders.length) _rstOrderCtx = { recentOrders: _rstOrders };
-  } catch { /* non-fatal */ }
-
   const aiReply = await getAIReply({
     customerMessage: raw,
     business,
     session,
     intent: 'FAQ',
-    orderContext: _rstOrderCtx,
   });
 
-  // [FIX-Q-ORDER] completeFlow() must be called AFTER the aiReply response is built,
-  // not before. If lead capture is configured, completeFlow() returns a lead-capture
-  // UIResponse — returning it immediately caused the AI answer to be silently discarded
-  // and the customer received a lead-capture prompt instead of their question answer.
-  // Now: build the default response first, then override with lead-capture only if set.
-  const defaultReply = {
+  // [FIX-Q-COMPLETE] completeFlow() clears the session. Previously it was called BEFORE
+  // building the return value and `if (_lcRrq) return _lcRrq` meant a lead-capture response
+  // REPLACED the AI answer. Fix: call completeFlow AFTER assembling the response and discard
+  // its return — the AI answer is the complete response for the QUESTION flow.
+  await completeFlow(session, 'QUESTION', business, tenant).catch(() => {});
+
+  return {
     type: 'buttons',
     body: aiReply || "Great question! Please contact us directly and we'll be happy to help.",
     buttons: [
@@ -542,6 +527,4 @@ export async function handleRestaurantQuestion({ session, message, business, ten
       { id: 'QUESTION', title: '❓ Ask Another'  },
     ],
   };
-  const _lcRrq = await completeFlow(session, 'QUESTION', business, tenant);
-  return _lcRrq || defaultReply;
 }

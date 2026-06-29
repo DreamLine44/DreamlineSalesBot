@@ -35,23 +35,21 @@ export async function getReply({ customerMessage, business, intent = 'FALLBACK',
   const businessName = business?.name || 'us';
   const industryKey  = (industry || business?.businessMode || 'RETAIL').toUpperCase();
 
-  // Check FAQ first — free, always correct
+  // [MOCK-FIX-1] FAQ short-circuit — whole-word regex, not substring includes().
+  // groqProvider was fixed (GROQ-OPT-3) but mockProvider still used lower.includes(t)
+  // meaning "price" matched "surprised", "priceless", "apprise", etc.
+  // Now consistent with groqProvider: whole-word boundary match only.
   const faqs = business?.faq || [];
   if (faqs.length && customerMessage) {
     const lower = customerMessage.toLowerCase();
     for (const faq of faqs) {
       const triggers = String(faq.trigger || '').split(',').map(t => t.trim().toLowerCase());
-      // [FIX-MOCK-FAQ-WHOLE-WORD] Use whole-word regex (mirrors groqProvider) instead of
-      // substring includes(). "price" was matching "surprised", "priceless", "appreciate" etc.,
-      // causing unintended FAQ responses on messages that merely contained the trigger as a substring.
       const matched = triggers.some(t => {
         if (!t) return false;
         const re = new RegExp(`\\b${t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i');
         return re.test(lower);
       });
-      if (matched) {
-        return { text: faq.reply, source: 'faq' };
-      }
+      if (matched) return { text: faq.reply, source: 'faq' };
     }
   }
 
