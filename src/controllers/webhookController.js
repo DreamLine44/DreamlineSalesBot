@@ -376,6 +376,17 @@ const FLOW_PASSTHROUGH_IDS = new Set([
   // the button tap bypasses intent detection and reaches the handler at step 14.7 (active
   // order resolver) or falls through cleanly to the payment proof flow at step 9/10.5.
   'RESEND_PROOF',
+  // ── [MFQ] Mid-Flow Question intercept response buttons ───────────────────
+  // When the customer is inside an active flow and sends a question intent,
+  // the bot pauses and presents two options. These button IDs are the customer's
+  // response and must reach the MFQ handler (step 15.1) without going through intent
+  // detection, which would otherwise misclassify MFQ_SWITCH_YES as FALLBACK.
+  'MFQ_SWITCH_YES',
+  'MFQ_SWITCH_NO',
+  // [MFQ] Resume-flow button shown after Q&A is complete — lets the customer jump
+  // back into the paused flow. Must bypass intent detection so it reaches the
+  // MFQ_RESUME_FLOW handler at step 15.1b, not GREET or FALLBACK.
+  'MFQ_RESUME_FLOW',
 ]);
 
 // ── [FIX-BUG3] Hours enforcement ─────────────────────────────────────────────
@@ -507,6 +518,184 @@ function extractMessage(msgObj) {
     return { text: (msgObj.button?.payload || '').trim(), isInteractive: true, isListReply: false, imageUrl: null };
 
   return { text: '', imageUrl: null, isInteractive: false, isListReply: false };
+}
+
+// ── [MFQ] Mid-Flow Question helpers ──────────────────────────────────────────
+//
+// _detectMidFlowQuestion(text, session)
+//   Returns true when a typed message inside an active flow looks like a question
+//   or question-intent, NOT a valid answer to the current step.
+//
+// DETECTION STRATEGY — layered, strict:
+//   1. Keyword match: known question-intent phrases (fast, zero AI cost).
+//   2. Step-exclusion: if the current step accepts any text as a valid answer
+//      (e.g. ADDRESS, NOTES, PHONE) we NEVER intercept — those are free-text steps.
+//   3. Pattern match: classic question forms (starts with wh-word, ends with "?").
+//   4. Length sanity: < 4 chars or numeric-only → always CONTINUE (qty/date input).
+//
+// DELIBERATELY STRICT — false negatives (missing a question) are acceptable.
+// False positives (blocking a valid flow answer) are NOT acceptable and cause loops.
+
+// Steps that accept ANY free text as a valid answer — must NEVER be intercepted.
+const MFQ_FREE_TEXT_STEPS = new Set([
+  'ADDRESS', 'DELIVERY_ADDRESS', 'PHONE', 'CUSTOMER_NAME', 'NOTES',
+  'SPECIAL_REQUEST', 'GIFT_NOTE', 'CAKE_MESSAGE', 'CUSTOM_NOTES',
+  'ENTER_NAME', 'ENTER_PHONE', 'ENTER_ADDRESS', 'ENTER_EMAIL',
+  'AWAITING_QUESTION',  // already in Q&A mode
+  'SPEC_ANSWER',        // electronics mid-spec-Q&A
+  'ENQUIRY_DETAILS',    // services enquiry details step
+  'QUOTE_DETAILS',
+  'PROJECT_DETAILS',
+  // [FIX-MFQ-1] Service/stylist selection steps accept typed names —
+  // "Hair Colour" or "Maria" look nothing like questions but _detectMidFlowQuestion
+  // could match them if they start with "do you have" or similar.
+  // Exclude both so the customer can type a name freely without getting intercepted.
+  'SELECT_SERVICE',
+  'SELECT_STYLIST',
+  'SELECT_STAFF',
+]);
+
+// Steps that only accept date/time strings — intercept would be annoying
+const MFQ_DATE_TIME_STEPS = new Set([
+  'SELECT_DATE', 'ENTER_DATE', 'SELECT_TIME', 'ENTER_TIME',
+  'BOOKING_DATE', 'BOOKING_TIME', 'PICKUP_TIME', 'CUSTOM_TIME',
+]);
+
+// Explicit question-intent keywords/phrases (lowercase, normalised)
+// IMPORTANT: these must be SPECIFIC enough that they never match valid flow answers.
+// "how much" is safe — it's a price question, never a valid item name or quantity.
+// "what is" is safe — not a food item or booking date.
+// Do NOT include single-word entries that could be misread from context.
+const MFQ_QUESTION_KEYWORDS = new Set([
+  // Explicit question declarations — unambiguous
+  'question', 'questions', 'i have a question', 'i want to ask', 'i want to ask a question',
+  'can i ask', 'can i ask something', 'let me ask', 'i need to know',
+  'i need to ask', 'quick question', 'one question', 'just a question',
+  'need some info', 'need information', 'just wondering',
+  'before i continue', 'before i book', 'before i order',
+  'i want to know', 'want to know',
+  // Classic question openers that are NEVER valid flow answers
+  'how much', 'how long does', 'how long will', 'how long is',
+  'what is your', 'what are your', 'what time do you',
+  'do you have', 'do you offer', 'can you tell me',
+  'is it possible', 'are you able', 'can you help me',
+  'opening hours', 'what time do you open', 'when do you open', 'when do you close',
+  'where are you', 'where are you located',
+  'do you deliver', 'do you do delivery',
+  'how do i pay', 'payment options',
+  'tell me more about', 'can you explain',
+]);
+
+// Regex for classic question forms: starts with wh-/how/can/is/are/do/does/would/could
+const MFQ_QUESTION_RE = /^(wh(at|o|y|en|ere|ich)|how|can|is|are|do|does|would|could|will|shall|may|might)\b/i;
+
+function _detectMidFlowQuestion(text, session) {
+  const step  = (session.step  || '').toUpperCase();
+  const flow  = (session.currentFlow || '').toUpperCase();
+  const clean = text.toLowerCase().replace(/[^\w\s?]/g, ' ').replace(/\s+/g, ' ').trim();
+
+  // 1. Free-text steps — never intercept (these accept any text as the expected answer)
+  if (MFQ_FREE_TEXT_STEPS.has(step)) return false;
+
+  // 2. Date/time steps — never intercept (customer is typing a date/time, not a question)
+  if (MFQ_DATE_TIME_STEPS.has(step)) return false;
+
+  // 3. PAYMENT_PROOF step — handled by its own guard; never intercept here
+  if (step === 'PAYMENT_PROOF') return false;
+
+  // 4. Confirm steps accept "confirm"/"cancel" only — anything else is worth intercepting
+  //    BUT very short inputs (1-2 words, < 15 chars) at confirm steps are noise, not questions
+  if ((step === 'CONFIRM' || step === 'BOOKING_CONFIRM') && clean.length < 15 && !clean.includes('?')) {
+    return false;
+  }
+
+  // 5. Explicit keyword match (highest precision, zero cost)
+  // Exact match first (e.g. "question" alone)
+  if (MFQ_QUESTION_KEYWORDS.has(clean)) return true;
+  // Starts-with match only for multi-word keywords (single words already caught above)
+  for (const kw of MFQ_QUESTION_KEYWORDS) {
+    if (kw.includes(' ') && (clean.startsWith(kw) || clean.includes(' ' + kw))) {
+      return true;
+    }
+  }
+
+  // 6. Ends with "?" — classic question
+  if (text.trim().endsWith('?')) return true;
+
+  // 7. Classic question form: starts with wh-/how/can/is/are/do/does...
+  //    Only fires for genuinely long messages to avoid false positives.
+  //    "which" at SELECT_SERVICE step is a service name start, not a question.
+  //    15-char minimum means the message must be a real sentence, not a single word.
+  if (MFQ_QUESTION_RE.test(clean) && clean.length >= 15) return true;
+
+  // 8. "before i [verb]" pattern — question as a prerequisite
+  if (/\bbefore (i|we)\b/i.test(text)) return true;
+
+  return false;
+}
+
+// _mfqStepLabel(flow, step)
+//   Returns a human-readable description of the current flow + step.
+//   Used in the intercept message: "You're currently [stepLabel]."
+function _mfqStepLabel(flow, step) {
+  const f = (flow || '').toUpperCase();
+  const s = (step || '').toUpperCase();
+
+  const stepMap = {
+    // Booking / restaurant table booking
+    'BOOKING:SELECT_DATE':      'in the middle of booking — choosing a date',
+    'BOOKING:SELECT_TIME':      'in the middle of booking — choosing a time',
+    'BOOKING:BOOKING_DATE':     'in the middle of booking — choosing a date',
+    'BOOKING:BOOKING_TIME':     'in the middle of booking — choosing a time',
+    'BOOKING:PARTY_SIZE':       'in the middle of booking — selecting the number of guests',
+    'BOOKING:SELECT_PARTY':     'in the middle of booking — selecting your party size',
+    'BOOKING:SELECT_GUESTS':    'in the middle of booking — selecting the number of guests',
+    'BOOKING:SELECT_SERVICE':   'in the middle of booking — choosing a service',
+    'BOOKING:SELECT_STYLIST':   'in the middle of booking — choosing a stylist',
+    'BOOKING:SELECT_STAFF':     'in the middle of booking — choosing a team member',
+    'BOOKING:DATE':             'in the middle of booking — choosing a date',
+    'BOOKING:DATE_CONFIRM':     'in the middle of booking — confirming your date',
+    'BOOKING:TIME':             'in the middle of booking — choosing a time',
+    'BOOKING:TIME_CONFIRM':     'in the middle of booking — confirming your time',
+    'BOOKING:BOOKING_CONFIRM':  'in the middle of booking — confirming your appointment',
+    'BOOKING:CONFIRM':          'in the middle of booking — confirming your appointment',
+    // Walk-in queue
+    'WALKIN:SELECT_SERVICE':    'joining the walk-in queue — choosing a service',
+    'WALKIN:SELECT_STYLIST':    'joining the walk-in queue — choosing a stylist',
+    'WALKIN:CONFIRM':           'joining the walk-in queue — confirming your spot',
+    // Order flow
+    'ORDER:SELECT_ITEM':        'placing an order — choosing an item',
+    'ORDER:QUANTITY':           'placing an order — entering a quantity',
+    'ORDER:UPSELL':             'placing an order — reviewing extras',
+    'ORDER:CONFIRM':            'placing an order — confirming your order',
+    'ORDER:FULFILMENT':         'placing an order — choosing delivery or collection',
+    'ORDER:SELECT_SKIN':        'placing an order — selecting your skin type',
+    'ORDER:BROWSE_CATEGORY':    'browsing products — selecting a category',
+    'ORDER:ITEM_DETAIL':        'browsing products — viewing a product',
+    'ORDER:SUGGEST_CONFIRM':    'placing an order — reviewing a suggestion',
+    'ORDER:PICKUP_TIME':        'placing an order — choosing a pickup time',
+    'ORDER:PAYMENT_PROOF':      'finalising payment',  // shouldn't reach MFQ but just in case
+    'ORDER:AWAIT_ADMIN_CONFIRM':'waiting for your order to be confirmed',
+    // General / enquiry
+    'ENQUIRY:AWAITING_QUESTION':'asking a question',
+    'LEAD_CAPTURE:ENTER_NAME':  'sharing your details',
+    'LEAD_CAPTURE:ENTER_PHONE': 'sharing your contact number',
+  };
+
+  const key = `${f}:${s}`;
+  if (stepMap[key]) return stepMap[key];
+
+  // Generic fallbacks by flow
+  const flowFallbacks = {
+    'BOOKING':      'in the middle of booking your appointment',
+    'WALKIN':       'in the walk-in queue process',
+    'ORDER':        'placing your order',
+    'ENQUIRY':      'in the middle of an enquiry',
+    'LEAD_CAPTURE': 'sharing your contact information',
+  };
+  if (flowFallbacks[f]) return flowFallbacks[f];
+
+  return 'in the middle of something';
 }
 
 // ── Main handler ──────────────────────────────────────────────────────────────
@@ -1585,8 +1774,243 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
       return;
     }
 
-    const freshSession = await getSession(from, tenantId) || session;
-    // [FIX-2.1] Pass only messageText to advance(). Both image guards at steps 8.5 and 9
+    // ── 15.1. [MFQ] Mid-Flow Question Intercept ───────────────────────────
+    // CONTEXT: The customer is inside an active flow (booking, order, etc.) and has
+    // sent a free-text message that looks like a question or question intent.
+    //
+    // PROBLEM (seen in screenshots): typing "question" or "i want to ask a question"
+    // while at the BOOKING step "How many guests?" caused the bot to silently pass the
+    // text to advance(), which didn't recognise it and re-sent the same step prompt —
+    // creating an infinite loop until the customer typed "cancel".
+    //
+    // FIX: Detect QUESTION/ENQUIRY intent mid-flow. If detected:
+    //   1. Identify the current flow+step in plain customer language.
+    //   2. Inform the customer what step they are on.
+    //   3. Offer two buttons: pause for questions or continue current flow.
+    //   4. Store the pending question text + flow context in session so we can
+    //      restore the flow after the question is answered.
+    //
+    // RULE: This ONLY fires for typed (non-interactive) text. Button taps inside a
+    // flow are already handled by the passthrough/stale-button logic above and should
+    // NEVER reach this block — they go directly to advance(). This keeps button UX crisp.
+    //
+    // RULE: Short messages (< 4 chars), numeric-only, or pure emojis are NOT treated as
+    // question intents here — they're far more likely to be quantity/date inputs.
+    //
+    // RULE: The intercept checks the AI classifier ONLY when keyword matching is
+    // inconclusive — it never fires blindly, so it never breaks legitimate flow inputs.
+    //
+    // SESSION KEYS USED:
+    //   session.data._mfqPendingQuestion  — the raw question text the customer typed
+    //   session.data._mfqResumeFlow       — flow name to resume after Q&A (e.g. 'BOOKING')
+    //   session.data._mfqResumeStep       — step to resume at (e.g. 'SELECT_TIME')
+    //   session.data._mfqResumeData       — full session.data snapshot at intercept time
+
+    // ── 15.1a: Handle MFQ button responses (YES = answer question, NO = continue flow)
+    if (isInteractive) {
+      if (upperMsg === 'MFQ_SWITCH_YES') {
+        // Customer wants to ask their question. Clear the flow, open the AI Q&A channel.
+        const pendingQ    = session.data?._mfqPendingQuestion || null;
+        const resumeFlow  = session.data?._mfqResumeFlow  || null;
+        const resumeStep  = session.data?._mfqResumeStep  || null;
+        const resumeData  = session.data?._mfqResumeData  || {};
+
+        // Persist resume context + clear flow so AI Q&A handler gets a clean session
+        await updateSession(from, tenantId, {
+          currentFlow:  null,
+          step:         null,
+          // Store resume context so after the question is answered the flow can restart
+          // from where it was. postFlowData carries it through to postFlowHandler.
+          postFlowAck:  resumeFlow ? 'MFQ_RESUME' : null,
+          postFlowData: resumeFlow ? { resumeFlow, resumeStep, resumeData } : null,
+          data:         {},
+        });
+
+        // If the customer already typed their question (captured in _mfqPendingQuestion),
+        // answer it immediately. Otherwise ask them to type it.
+        if (pendingQ && pendingQ.length >= 4) {
+          // Answer the pending question directly
+          const { getAIReply } = await import('../core/ai/providers/aiRouter.js');
+          const aiText = await getAIReply({ customerMessage: pendingQ, business, session, intent: 'QUESTION' }).catch(() => null);
+
+          const resumeHint = resumeFlow
+            ? `\n\n_When you're done, tap below to continue where you left off._`
+            : '';
+
+          const resumeButtons = resumeFlow
+            ? [
+                { id: 'MFQ_RESUME_FLOW', title: '↩️ Continue'        },
+                { id: 'QUESTION',        title: '❓ Ask Another'       },
+                { id: 'SHOW_MENU',       title: '🔄 Main Menu'         },
+              ]
+            : [
+                { id: 'QUESTION',  title: '❓ Ask Another' },
+                { id: 'SHOW_MENU', title: '🔄 Main Menu'   },
+              ];
+
+          await dispatchMessage(from, {
+            type:    'buttons',
+            body:    (aiText || 'Let me check that for you! 😊') + resumeHint,
+            buttons: resumeButtons,
+          }, tenantDoc);
+          return;
+        }
+
+        // No pending question captured — ask them to type it
+        const resumeHint = resumeFlow
+          ? `\n\n_Tap "↩️ Continue" at any time to go back to what you were doing._`
+          : '';
+
+        await dispatchMessage(from, {
+          type:    'buttons',
+          body:    `❓ *Go ahead — what would you like to know?*${resumeHint}\n\nJust type your question below.`,
+          buttons: resumeFlow
+            ? [
+                { id: 'MFQ_RESUME_FLOW', title: '↩️ Continue'  },
+                { id: 'SHOW_MENU',       title: '🔄 Main Menu'  },
+              ]
+            : [{ id: 'SHOW_MENU', title: '🔄 Main Menu' }],
+        }, tenantDoc);
+        return;
+      }
+
+      if (upperMsg === 'MFQ_SWITCH_NO') {
+        // Customer wants to continue their flow. Restore session and re-send the current step.
+        const resumeFlow  = session.data?._mfqResumeFlow || session.currentFlow;
+        const resumeStep  = session.data?._mfqResumeStep || session.step;
+        const resumeData  = session.data?._mfqResumeData || {};
+
+        await updateSession(from, tenantId, {
+          currentFlow: resumeFlow,
+          step:        resumeStep,
+          data:        resumeData,
+        });
+
+        // Re-run advance() with a null message to re-send the current step prompt
+        const freshSess = await getSession(from, tenantId) || session;
+        const resumeReply = await advance({
+          session:       { ...freshSess, currentFlow: resumeFlow, step: resumeStep, data: resumeData },
+          message:       '',   // empty = re-send the step prompt
+          business,
+          tenant:        tenantDoc,
+          isInteractive: false,
+        });
+
+        // If advance() returned nothing (some flows don't re-send on empty), show a
+        // context hint instead of going silent.
+        if (resumeReply) {
+          const rPayloads = Array.isArray(resumeReply) ? resumeReply : [resumeReply];
+          for (const rp of rPayloads) await dispatchMessage(from, rp, tenantDoc);
+        } else {
+          const stepLabel = _mfqStepLabel(resumeFlow, resumeStep);
+          await dispatchMessage(from, {
+            type: 'text',
+            body: `👍 No problem! Let's continue — ${stepLabel}`,
+          }, tenantDoc);
+        }
+        return;
+      }
+    }
+
+    // ── 15.1b: Handle MFQ_RESUME_FLOW button (re-enter the flow after question answered)
+    if (isInteractive && upperMsg === 'MFQ_RESUME_FLOW') {
+      const resumeFlow = session.postFlowData?.resumeFlow || null;
+      const resumeStep = session.postFlowData?.resumeStep || null;
+      const resumeData = session.postFlowData?.resumeData || {};
+
+      if (resumeFlow) {
+        await updateSession(from, tenantId, {
+          currentFlow:  resumeFlow,
+          step:         resumeStep,
+          data:         resumeData,
+          postFlowAck:  null,
+          postFlowData: null,
+        });
+        const freshSess2 = await getSession(from, tenantId) || session;
+        const resumeReply2 = await advance({
+          session:       { ...freshSess2, currentFlow: resumeFlow, step: resumeStep, data: resumeData },
+          message:       '',
+          business,
+          tenant:        tenantDoc,
+          isInteractive: false,
+        });
+        if (resumeReply2) {
+          const rPayloads2 = Array.isArray(resumeReply2) ? resumeReply2 : [resumeReply2];
+          for (const rp2 of rPayloads2) await dispatchMessage(from, rp2, tenantDoc);
+        } else {
+          const cfg = getModeConfig(business);
+          await dispatchMessage(from, {
+            type:    'buttons',
+            body:    '👇 What would you like to do?',
+            buttons: cfg.ui?.welcomeButtons || [],
+          }, tenantDoc);
+        }
+        return;
+      }
+      // No resume context — fall through to main menu
+      await updateSession(from, tenantId, { postFlowAck: null, postFlowData: null });
+      const cfg = getModeConfig(business);
+      await dispatchMessage(from, {
+        type:    'buttons',
+        body:    '👇 What would you like to do?',
+        buttons: cfg.ui?.welcomeButtons || [],
+      }, tenantDoc);
+      return;
+    }
+
+    // ── 15.1c: Detect question intent in typed free-text mid-flow ──────────
+    // Only fires for non-interactive (typed) text with no active flow passthrough.
+    // Numeric inputs, pure emoji, and very short inputs are excluded — they are
+    // almost certainly quantity/date answers, not questions.
+    if (
+      !isInteractive &&
+      messageText.length >= 4 &&
+      !/^\d+$/.test(messageText.trim()) &&
+      session.currentFlow &&
+      session.step
+    ) {
+      const _mfqIsQuestionLike = _detectMidFlowQuestion(messageText, session);
+      if (_mfqIsQuestionLike) {
+        // Describe the current step to the customer in plain language
+        const stepLabel    = _mfqStepLabel(session.currentFlow, session.step);
+        const questionFlow = session.currentFlow;
+        const questionStep = session.step;
+        const questionData = { ...(session.data || {}) };
+
+        // Sanitise internal MFQ keys from the snapshot so they don't persist recursively
+        delete questionData._mfqPendingQuestion;
+        delete questionData._mfqResumeFlow;
+        delete questionData._mfqResumeStep;
+        delete questionData._mfqResumeData;
+
+        // Store the pending question + resume context in session.data
+        await updateSession(from, tenantId, {
+          // Keep the flow active so MFQ_SWITCH_NO can restore it correctly
+          data: {
+            ...questionData,
+            _mfqPendingQuestion: messageText,
+            _mfqResumeFlow:      questionFlow,
+            _mfqResumeStep:      questionStep,
+            _mfqResumeData:      questionData,
+          },
+        });
+
+        await dispatchMessage(from, {
+          type:    'buttons',
+          body:
+            `💡 *Looks like you have a question!*\n\n` +
+            `You're currently ${stepLabel}.\n\n` +
+            `Would you like to *pause and get your question answered*, or *continue* where you left off?`,
+          buttons: [
+            { id: 'MFQ_SWITCH_YES', title: '❓ Answer My Question' },
+            { id: 'MFQ_SWITCH_NO',  title: '↩️ Continue'          },
+          ],
+        }, tenantDoc);
+        return;
+      }
+    }
+
+    // ──────────────────────────────────────────────────────────────────────────
     // ensure imageUrl cannot be truthy here with messageText empty — but including it as
     // a fallback is a silent footgun: if either guard is ever relaxed or a new message
     // type is added, advance() would receive a WhatsApp media ID as customer text,

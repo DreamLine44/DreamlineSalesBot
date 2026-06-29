@@ -436,6 +436,43 @@ export async function handlePostFlowMessage({
       return true;
     }
 
+    // ── [MFQ] Mid-Flow Question Resume ────────────────────────────────────
+    // Set when the customer paused a flow (booking/order) to ask a question.
+    // The question has been answered. Now offer to take them back to the flow.
+    case 'MFQ_RESUME': {
+      const resumeFlow = flowData?.resumeFlow || null;
+      const resumeStep = flowData?.resumeStep || null;
+
+      if (resumeFlow) {
+        const flowLabel = {
+          'BOOKING':   'your booking',
+          'WALKIN':    'your walk-in queue entry',
+          'ORDER':     'your order',
+          'ENQUIRY':   'your enquiry',
+        }[resumeFlow] || 'what you were doing';
+
+        await dispatchMessage(from, {
+          type:    'buttons',
+          body:    `😊 Hope that helped! Would you like to continue with *${flowLabel}*?`,
+          buttons: [
+            { id: 'MFQ_RESUME_FLOW', title: `↩️ Continue ${resumeFlow === 'BOOKING' ? 'Booking' : resumeFlow === 'ORDER' ? 'Order' : 'Flow'}` },
+            { id: 'SHOW_MENU',       title: '🔄 Main Menu' },
+          ],
+        }, tenantDoc);
+        // Restore the postFlowData so MFQ_RESUME_FLOW button tap can use it
+        await updateSession(from, tenantId, { postFlowAck: 'MFQ_RESUME', postFlowData: flowData });
+        return true;
+      }
+
+      // No resume context — just show the menu
+      await dispatchMessage(from, {
+        type:    'buttons',
+        body:    `😊 Hope that helped! What would you like to do next?`,
+        buttons: welcomeBtns,
+      }, tenantDoc);
+      return true;
+    }
+
     default: {
       // [PFH-2] Unknown ackCtx — stale session or unhandled future state.
       // Clear it and show a gentle menu. Without this, the caller's intent detection

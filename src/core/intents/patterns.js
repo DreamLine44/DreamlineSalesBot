@@ -43,9 +43,15 @@ export const BUTTON_ID_MAP = {
   'UPSELL_YES':         'UPSELL_YES',
   'UPSELL_NO':          'UPSELL_NO',
 
-  // Switch flow
+  // Switch flow (cancel-confirm context in postFlowHandler)
   'SWITCH_YES':         'SWITCH_YES',
   'SWITCH_NO':          'SWITCH_NO',
+
+  // [MFQ] Mid-Flow Question intercept — customer paused flow for a question
+  'MFQ_SWITCH_YES':     'MFQ_SWITCH_YES',
+  'MFQ_SWITCH_NO':      'MFQ_SWITCH_NO',
+  // [MFQ] Resume the paused flow after question is answered
+  'MFQ_RESUME_FLOW':    'MFQ_RESUME_FLOW',
 
   // Post-flow
   'REPEAT_ORDER':       'REPEAT_ORDER',

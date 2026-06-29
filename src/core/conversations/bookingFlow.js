@@ -22,7 +22,7 @@ import { saveBooking }             from '../../services/bookingService.js';
 // buildAdminBookingAlertBody is imported dynamically inside BOOKING_CONFIRM to stay consistent
 // with the dynamic import already there. The static buildAdminBookingAlert alias was dead code.
 import { trackBookingAnalytics }   from '../analytics/analyticsService.js';
-import { dispatchText }            from '../whatsapp/dispatcher.js';
+// [FIX-BC-2] dispatchText was imported but never called anywhere in this file — dead import removed.
 import logger                      from '../../config/logger.js';
 
 // ── Timezone helper ───────────────────────────────────────────────────────────
@@ -756,6 +756,15 @@ export async function handleBookingFlow({ session, message, business, tenant, is
 
       const _lcRb = await completeFlow(session, 'BOOKING', business, tenant);
       if (_lcRb) return _lcRb;
+
+      // [FIX-BC-1] CRITICAL: isBarbershopConfirm and shortIdLine were used below
+      // but never declared anywhere in this function — this was a ReferenceError crash
+      // on every successful booking save, meaning NO customer ever received a booking
+      // confirmation message. Both variables defined here.
+      const isBarbershopConfirm = (business?.businessMode || '').toUpperCase() === 'BARBERSHOP';
+      const shortIdLine = savedBooking?.shortId
+        ? `🔖 Ref: \`#${savedBooking.shortId}\`\n`
+        : '';
 
       const confirmBody =
         `📅 *Booking Request Received!* ✨\n\n` +
