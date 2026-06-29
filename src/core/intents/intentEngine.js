@@ -205,20 +205,14 @@ export async function detectIntent({ message, isInteractive = false, session, bu
   }
 
   // ── 7. AI classify (last resort — multi-word, non-numeric messages only) ──
-  // [FIX-INTENT-AI] Skip AI classify when session is already in an active flow
-  // that owns the input (e.g. ENQUIRY:AWAITING_QUESTION). The flow engine handles
-  // it at step 13/15 of webhookController — running the classifier here wastes a
-  // Groq API call and risks overriding the flow handler with an incorrect intent.
-  if (!session?.currentFlow) {
-    try {
-      const aiIntent = await classifyWithAI({ message: raw, business });
-      if (aiIntent && aiIntent !== 'UNKNOWN') {
-        const action = intentToAction(aiIntent, business);
-        return { action, intent: aiIntent, confidence: 'AI', source: 'ai' };
-      }
-    } catch (err) {
-      logger.warn('[IntentEngine] AI classify failed', { err: err.message });
+  try {
+    const aiIntent = await classifyWithAI({ message: raw, business });
+    if (aiIntent && aiIntent !== 'UNKNOWN') {
+      const action = intentToAction(aiIntent, business);
+      return { action, intent: aiIntent, confidence: 'AI', source: 'ai' };
     }
+  } catch (err) {
+    logger.warn('[IntentEngine] AI classify failed', { err: err.message });
   }
 
   // ── 8. Final fallback ──────────────────────────────────────────────────────

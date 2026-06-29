@@ -191,7 +191,7 @@ function buildSystemPrompt({ business, intent, faqContext, orderContext, session
     `\nCRITICAL RULES:`,
     `- Reply in 1-3 short sentences maximum. Never write essays or long lists.`,
     `- Sound like a helpful, friendly human — not a robot or corporate script.`,
-    `- Only discuss ${name} and its services/products/policies. Stay strictly on topic.`,
+    `- Only discuss ${name} and its services/products/policies. Stay on topic.`,
     `- NEVER claim you placed an order, made a booking, or took any action.`,
     // [GROQ-V3-7] Explicit anti-hallucination rules per data type
     `- NEVER make up prices, hours, staff names, or items not listed above. If unsure, say so.`,
@@ -199,11 +199,6 @@ function buildSystemPrompt({ business, intent, faqContext, orderContext, session
     `- NEVER invent policy details (returns, warranties, delivery fees) not explicitly mentioned.`,
     `- If asked about a capability listed under "This business supports:", confirm it IS available and tell the customer to use the button menu below to get started.`,
     `- If you genuinely don't know something specific, say "I'll need to check that — please contact us directly" rather than guessing.`,
-    // [GROQ-STRICT-1] Prevent the AI from going off-topic or generating unnecessary responses
-    `- If the customer's message has NOTHING to do with ${name} (e.g. general chit-chat, weather, politics, other businesses), politely redirect: "I'm only able to help with ${name} — is there something I can help you with here?"`,
-    `- NEVER apologise repeatedly. If unsure, be brief. Never pad responses with filler sentences.`,
-    `- NEVER ask more than ONE question in a response.`,
-    `- NEVER suggest the customer contact another business, competitor, or third-party service.`,
     `- Use WhatsApp formatting: *bold* for emphasis. No markdown headers or bullet lists.`,
     intentInstruction,
   ].filter(Boolean).join('\n');
@@ -498,13 +493,8 @@ export async function classifyIntent({ message, validIntents, mode = 'RETAIL' })
       { role: 'user', content: String(message || '').slice(0, 200) },
     ], { model: GROQ_MODEL_FAST, maxTokens: 20, temperature: 0.1 });
 
-    // [FIX-CLASSIFY-2] The model sometimes returns a word followed by a period or
-    // explanation (e.g. "QUESTION." or "BOOKING — the customer wants...").
-    // Extract only the first whitespace/punctuation-bounded token and uppercase it.
-    const rawResult = String(result || '').trim();
-    const firstWord = rawResult.split(/[\s.,;:!?—\-]/)[0].toUpperCase();
-    const classified = validIntents.includes(firstWord) ? firstWord : 'UNKNOWN';
-    return classified;
+    const classified = String(result || '').trim().toUpperCase();
+    return validIntents.includes(classified) ? classified : 'UNKNOWN';
   } catch {
     return 'UNKNOWN';
   }

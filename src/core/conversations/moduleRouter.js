@@ -548,26 +548,6 @@ export async function route({ action, intent, session, message, business, tenant
       const { getAIReply } = await import('../ai/providers/aiRouter.js');
       const cfg = getModeConfig(business);
 
-      // [FIX-FALLBACK-1] Off-topic gate: detect and reject messages that have
-      // clearly nothing to do with this business before calling the AI.
-      // The AI would otherwise respond to "what's the weather?", "who is the president",
-      // random complaints about other businesses, etc. — making the bot seem unreliable.
-      // Gate: if the message is very short gibberish OR matches an off-topic pattern,
-      // show the main menu without an AI call.
-      const cleanMsg = (message || '').toLowerCase().trim();
-      const OFF_TOPIC_RE = /^(hi+|hey+|hello+|yo+|ok+|sure|test|ping|bye|haha+|lol+|hmm+|wow|yay|phew|aight|nah|meh)$/i;
-      const GIBBERISH_RE = /^([a-z]{1,3})\1{2,}$/i;  // aaaa, hihihi, lolol
-      const SPAM_RE = /^[^aeiou\s]{5,}$/i;             // consonant-only spam
-      const isOffTopic = OFF_TOPIC_RE.test(cleanMsg) || GIBBERISH_RE.test(cleanMsg) || SPAM_RE.test(cleanMsg);
-
-      if (isOffTopic) {
-        return {
-          type:    'buttons',
-          body:    cfg.messages?.welcome || '👋 How can I help you today?',
-          buttons: cfg.ui?.welcomeButtons || [{ id: 'SHOW_MENU', title: '🔄 Start Over' }],
-        };
-      }
-
       const aiText = await getAIReply({ customerMessage: message, business, session, intent });
       // [FIX-BUG1] cfg.messages.fallback not cfg.labels.fallback
       const fallbackMsg = business?.customMessages?.fallback || cfg.messages?.fallback;
