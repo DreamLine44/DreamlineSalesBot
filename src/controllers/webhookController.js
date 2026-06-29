@@ -546,6 +546,13 @@ const MFQ_FREE_TEXT_STEPS = new Set([
   'ENQUIRY_DETAILS',    // services enquiry details step
   'QUOTE_DETAILS',
   'PROJECT_DETAILS',
+  // [FIX-MFQ-1] Service/stylist selection steps accept typed names —
+  // "Hair Colour" or "Maria" look nothing like questions but _detectMidFlowQuestion
+  // could match them if they start with "do you have" or similar.
+  // Exclude both so the customer can type a name freely without getting intercepted.
+  'SELECT_SERVICE',
+  'SELECT_STYLIST',
+  'SELECT_STAFF',
 ]);
 
 // Steps that only accept date/time strings — intercept would be annoying
@@ -555,19 +562,28 @@ const MFQ_DATE_TIME_STEPS = new Set([
 ]);
 
 // Explicit question-intent keywords/phrases (lowercase, normalised)
+// IMPORTANT: these must be SPECIFIC enough that they never match valid flow answers.
+// "how much" is safe — it's a price question, never a valid item name or quantity.
+// "what is" is safe — not a food item or booking date.
+// Do NOT include single-word entries that could be misread from context.
 const MFQ_QUESTION_KEYWORDS = new Set([
-  'question', 'questions', 'ask', 'asking', 'enquiry', 'inquiry',
-  'i have a question', 'i want to ask', 'i want to ask a question',
+  // Explicit question declarations — unambiguous
+  'question', 'questions', 'i have a question', 'i want to ask', 'i want to ask a question',
   'can i ask', 'can i ask something', 'let me ask', 'i need to know',
   'i need to ask', 'quick question', 'one question', 'just a question',
   'need some info', 'need information', 'just wondering',
   'before i continue', 'before i book', 'before i order',
-  'i want to know', 'tell me more', 'want to know',
-  'how much', 'how long', 'how does', 'what is', 'what are',
-  'do you have', 'do you offer', 'can you tell',
-  'is it possible', 'are you able', 'can you help',
-  'opening hours', 'what time do you', 'when do you',
-  'where are you', 'do you deliver',
+  'i want to know', 'want to know',
+  // Classic question openers that are NEVER valid flow answers
+  'how much', 'how long does', 'how long will', 'how long is',
+  'what is your', 'what are your', 'what time do you',
+  'do you have', 'do you offer', 'can you tell me',
+  'is it possible', 'are you able', 'can you help me',
+  'opening hours', 'what time do you open', 'when do you open', 'when do you close',
+  'where are you', 'where are you located',
+  'do you deliver', 'do you do delivery',
+  'how do i pay', 'payment options',
+  'tell me more about', 'can you explain',
 ]);
 
 // Regex for classic question forms: starts with wh-/how/can/is/are/do/does/would/could
@@ -594,9 +610,11 @@ function _detectMidFlowQuestion(text, session) {
   }
 
   // 5. Explicit keyword match (highest precision, zero cost)
+  // Exact match first (e.g. "question" alone)
   if (MFQ_QUESTION_KEYWORDS.has(clean)) return true;
+  // Starts-with match only for multi-word keywords (single words already caught above)
   for (const kw of MFQ_QUESTION_KEYWORDS) {
-    if (clean.startsWith(kw + ' ') || clean.includes(' ' + kw + ' ') || clean.endsWith(' ' + kw)) {
+    if (kw.includes(' ') && (clean.startsWith(kw) || clean.includes(' ' + kw))) {
       return true;
     }
   }
@@ -605,8 +623,10 @@ function _detectMidFlowQuestion(text, session) {
   if (text.trim().endsWith('?')) return true;
 
   // 7. Classic question form: starts with wh-/how/can/is/are/do/does...
-  //    BUT only if the message is long enough to be a genuine question (not "can" or "where")
-  if (MFQ_QUESTION_RE.test(clean) && clean.length >= 10) return true;
+  //    Only fires for genuinely long messages to avoid false positives.
+  //    "which" at SELECT_SERVICE step is a service name start, not a question.
+  //    15-char minimum means the message must be a real sentence, not a single word.
+  if (MFQ_QUESTION_RE.test(clean) && clean.length >= 15) return true;
 
   // 8. "before i [verb]" pattern — question as a prerequisite
   if (/\bbefore (i|we)\b/i.test(text)) return true;
@@ -627,11 +647,16 @@ function _mfqStepLabel(flow, step) {
     'BOOKING:SELECT_TIME':      'in the middle of booking — choosing a time',
     'BOOKING:BOOKING_DATE':     'in the middle of booking — choosing a date',
     'BOOKING:BOOKING_TIME':     'in the middle of booking — choosing a time',
+    'BOOKING:PARTY_SIZE':       'in the middle of booking — selecting the number of guests',
     'BOOKING:SELECT_PARTY':     'in the middle of booking — selecting your party size',
     'BOOKING:SELECT_GUESTS':    'in the middle of booking — selecting the number of guests',
     'BOOKING:SELECT_SERVICE':   'in the middle of booking — choosing a service',
     'BOOKING:SELECT_STYLIST':   'in the middle of booking — choosing a stylist',
     'BOOKING:SELECT_STAFF':     'in the middle of booking — choosing a team member',
+    'BOOKING:DATE':             'in the middle of booking — choosing a date',
+    'BOOKING:DATE_CONFIRM':     'in the middle of booking — confirming your date',
+    'BOOKING:TIME':             'in the middle of booking — choosing a time',
+    'BOOKING:TIME_CONFIRM':     'in the middle of booking — confirming your time',
     'BOOKING:BOOKING_CONFIRM':  'in the middle of booking — confirming your appointment',
     'BOOKING:CONFIRM':          'in the middle of booking — confirming your appointment',
     // Walk-in queue
