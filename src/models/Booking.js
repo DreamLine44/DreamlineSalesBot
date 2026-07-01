@@ -78,6 +78,14 @@ const bookingSchema = new mongoose.Schema({
   adminDeclinedBy:    { type: String, default: null },
   adminNote:          { type: String, default: null }, // optional note to customer
 
+  // [AUDIT-FIX-1] cancelledBy / cancelledAt — written by moduleRouter.js's CANCEL
+  // handler and flowEngine.js's cancelFlow() whenever a customer cancels a booking,
+  // but previously absent from this schema. Mongoose strict mode silently dropped
+  // both fields on every cancel $set — status:'cancelled' saved correctly, but the
+  // who/when audit trail was always lost.
+  cancelledBy: { type: String, default: null }, // 'customer' | admin phone
+  cancelledAt: { type: Date,   default: null },
+
   // Short ID for admin WhatsApp commands (CONFIRM BOOK ABC123)
   // Last 6 hex chars of _id, indexed, populated by pre-save hook.
   shortId: { type: String, index: true, default: null },

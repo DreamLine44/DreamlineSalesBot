@@ -17,6 +17,21 @@
  * [FIX-IMG-ORDER] receiveProof forwards the payment proof image to the admin BEFORE
  *                 the approval card, then waits 500 ms. The old code sent them
  *                 concurrently so the card often arrived before the image.
+ *
+ * [FIX-PROOF-WINDOW] receiveProof's lookup query was gated ONLY on `createdAt >=
+ *                    windowStart` (now - PROOF_WINDOW_HOURS). That window is correct
+ *                    for a brand-new unpaid order, but adminCommandService.rejectPayment()
+ *                    reactivates a rejected order for retry by resetting paymentStatus
+ *                    back to 'unpaid' and stamping paymentReviewedAt — it does NOT touch
+ *                    createdAt. If an admin reviews/rejects an order more than
+ *                    PROOF_WINDOW_HOURS after the order was originally placed (very
+ *                    common — admins don't always respond within 4 hours), the customer
+ *                    taps RESEND_PROOF, is told to send a new screenshot, sends it, and
+ *                    receiveProof() fails to find the order because its stale createdAt
+ *                    falls outside the window — even though the order was just reopened
+ *                    for retry moments ago. The customer sees "we couldn't find a pending
+ *                    order" and is stuck. Fix: also accept orders whose paymentReviewedAt
+ *                    (the retry-reactivation timestamp) falls within the window.
  */
 
 import Order          from '../models/Order.js';
@@ -32,10 +47,16 @@ const PROOF_WINDOW_HOURS = Number(process.env.PROOF_ELIGIBLE_HOURS || 4);
 export async function receiveProof(customerPhone, tenantId, imageId, tenantDoc) {
   const windowStart = new Date(Date.now() - PROOF_WINDOW_HOURS * 60 * 60 * 1000);
 
+  // [FIX-PROOF-WINDOW] $or covers both a fresh order (createdAt within window) and a
+  // rejected order reopened for retry (paymentReviewedAt within window), regardless of
+  // how long ago it was originally created.
   const order = await Order.findOne({
     customerPhone, tenantId,
     paymentStatus: 'unpaid',
-    createdAt:     { $gte: windowStart },
+    $or: [
+      { createdAt:        { $gte: windowStart } },
+      { paymentReviewedAt: { $gte: windowStart } },
+    ],
   }).sort({ createdAt: -1 });
 
   if (!order) {

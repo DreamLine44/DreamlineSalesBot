@@ -37,10 +37,25 @@ import Session        from '../models/Session.js';
 import UserProfile    from '../models/UserProfile.js';
 import BusinessConfig from '../models/BusinessConfig.js';
 import Tenant         from '../models/Tenant.js';
-import { getAnalyticsSummary } from '../core/analytics/analyticsService.js';
+import { getAnalyticsSummary, getAnalyticsTimeseries } from '../core/analytics/analyticsService.js';
 import { updateSession }       from '../core/sessions/sessionService.js';
 import { dispatchText, dispatchMessage } from '../core/whatsapp/dispatcher.js';
 import logger from '../config/logger.js';
+
+// [AUDIT-FIX-9] User-supplied search strings were interpolated directly into
+// $regex filters (getCustomers below, and the equivalent pattern in
+// tenantController.listTenants). Two real problems: (1) a search containing
+// a regex metacharacter that isn't a valid standalone pattern — e.g. a phone
+// number search like "+220..." starts with an unescaped quantifier — throws
+// a MongoDB regex-compile error and 500s the request for an entirely
+// legitimate query; (2) a crafted pattern (e.g. nested quantifiers) can
+// trigger catastrophic backtracking against every document field scanned,
+// a regex-injection DoS vector. Escaping all regex metacharacters before
+// building the filter makes the search a literal substring match again,
+// which is what "search by name or phone" was always meant to be.
+function escapeRegex(str) {
+  return String(str).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
 import { uploadMenuImage, deleteMenuImage, CLOUDINARY_ENABLED } from '../config/cloudinary.js';
 
 // ── Helper: load tenant doc for WhatsApp dispatch ─────────────────────────────
@@ -435,6 +450,22 @@ export async function getAnalytics(req, res) {
   }
 }
 
+// [IMPROVE-TIMESERIES] New endpoint — getAnalytics above only ever returned 3
+// flat numbers (orders/bookings/revenue totals), nothing chart-shaped. This
+// gives the frontend a real day-by-day breakdown plus top items, without
+// changing the existing getAnalytics response that may already be relied on.
+export async function getAnalyticsTimeseriesHandler(req, res) {
+  try {
+    const { tenantId } = req.params;
+    const { days = 30 } = req.query;
+    const timeseries = await getAnalyticsTimeseries(tenantId, Number(days));
+    res.json(timeseries);
+  } catch (err) {
+    logger.error('[Dashboard] getAnalyticsTimeseries failed', { err: err.message });
+    res.status(500).json({ error: err.message });
+  }
+}
+
 // ── Conversations / Sessions ──────────────────────────────────────────────────
 export async function getConversations(req, res) {
   try {
@@ -501,7 +532,12 @@ export async function getCustomers(req, res) {
   try {
     const { tenantId } = req.params;
     // [FIX-DASH-1] ?page pagination support
-    const limit = Math.min(Number(req.query.limit) || 50, 200);
+    // [AUDIT-FIX-9] Added Math.max(...,1) lower bound — every other paginated
+    // endpoint in this file (orders, bookings) bounds limit to [1,200]; this one
+    // only bounded the upper end, so ?limit=-5 (or any negative number) passed
+    // straight through to Mongoose's .limit(), which is undefined/surprising
+    // behaviour for a negative skip-less page size.
+    const limit = Math.min(Math.max(Number(req.query.limit) || 50, 1), 200);
     const page  = Math.max(Number(req.query.page)  || 1, 1);
     const skip  = (page - 1) * limit;
 
@@ -510,7 +546,7 @@ export async function getCustomers(req, res) {
     // Applied server-side so large tenants don't have to fetch the full customer list
     // just to find one person.
     if (req.query.search?.trim()) {
-      const q = req.query.search.trim();
+      const q = escapeRegex(req.query.search.trim());
       filter.$or = [
         { name:          { $regex: q, $options: 'i' } },
         { customerName:  { $regex: q, $options: 'i' } },

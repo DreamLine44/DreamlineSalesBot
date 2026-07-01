@@ -459,8 +459,15 @@ export async function handlePostFlowMessage({
             { id: 'SHOW_MENU',       title: '🔄 Main Menu' },
           ],
         }, tenantDoc);
-        // Restore the postFlowData so MFQ_RESUME_FLOW button tap can use it
-        await updateSession(from, tenantId, { postFlowAck: 'MFQ_RESUME', postFlowData: flowData });
+        // [FIX-MFQ-LOOP] Do NOT restore postFlowAck here. Previously we set
+        // postFlowAck='MFQ_RESUME' again after every message, causing an infinite
+        // loop where every customer message showed "Hope that helped!" repeatedly.
+        // The MFQ_RESUME_FLOW button tap is intercepted in webhookController step 15.1b
+        // which reads postFlowData directly from the session (already set by updateSession
+        // at step 15.1a). We only need to keep postFlowData for the button to work —
+        // postFlowAck was already cleared by [PFH-2] at the top of this function, which
+        // is correct: one "Hope that helped!" message per Q&A session, not per message.
+        await updateSession(from, tenantId, { postFlowData: flowData });
         return true;
       }
 
@@ -533,7 +540,10 @@ async function handleOrderConfirmed({
     if (cancelShortId) {
       await Order.findOneAndUpdate(
         { shortId: cancelShortId, tenantId, status: { $nin: ['cancelled', 'completed'] } },
-        { $set: { status: 'cancelled', paymentStatus: 'cancelled' } }
+        // [AUDIT-FIX-7] Add cancelledBy/cancelledAt — this SWITCH_YES post-flow cancel
+        // path was also dropping the audit trail (same gap as the inline cancel paths
+        // in webhookController.js).
+        { $set: { status: 'cancelled', paymentStatus: 'cancelled', cancelledBy: 'customer', cancelledAt: new Date() } }
       ).catch(() => {});
     }
     await updateSession(from, tenantId, { postFlowAck: null, postFlowData: null, data: {} });

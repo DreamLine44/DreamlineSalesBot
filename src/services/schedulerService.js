@@ -435,15 +435,28 @@ async function runPostAppointmentFollowUpJob() {
       // [FIX-SCHED] Send interactive follow-up first (rebook button), fall back to template
       const { dispatchMessage: _dispFU } = await import('../core/whatsapp/dispatcher.js');
       const _isBarbershopFU = (business?.businessMode || '').toUpperCase() === 'BARBERSHOP';
-      await _dispFU(booking.customerPhone, {
+      // [AUDIT-FIX-3] dispatchMessage() never rejects — it catches its own fetch/network
+      // errors internally and, on a non-2xx Meta response (e.g. the 24h-window rejection
+      // this fallback exists to catch), logs and resolves with the Response object instead
+      // of throwing. The previous `.catch(async () => {...})` here could therefore never
+      // run: a failed interactive send would resolve normally, the template fallback would
+      // never fire, and the customer outside the 24h window would silently get nothing —
+      // while followUpSentAt still gets stamped below, so the job never retries either.
+      // Fixed by inspecting the resolved result instead of relying on rejection: SIM mode
+      // returns {simulated:true}, a genuine success returns a Response with ok:true: both
+      // are treated as delivered. Anything else (undefined, or a Response with ok:false)
+      // triggers the template fallback exactly as originally intended.
+      const _dispFUResult = await _dispFU(booking.customerPhone, {
         type:    'buttons',
         body:    followUpText,
         buttons: [
           { id: 'BOOK',     title: `${_isBarbershopFU ? '💈' : '💇'} Book Again` },
           { id: 'QUESTION', title: '❓ Ask a Question'                            },
         ],
-      }, tenant).catch(async () => {
-        // [FIX-SCHED-FU-1] Plain-text interactive failed (24h window) — fall back to template.
+      }, tenant).catch(() => null);
+      const _dispFUDelivered = !!_dispFUResult && (_dispFUResult.simulated === true || _dispFUResult.ok === true);
+      if (!_dispFUDelivered) {
+        // Plain-text interactive failed (24h window) — fall back to template.
         await sendReminder({
           phone:           booking.customerPhone,
           tenant,
@@ -451,7 +464,7 @@ async function runPostAppointmentFollowUpJob() {
           components:      buildBookingReminderComponents(nameStr, serviceStr, 'your recent visit', bizName),
           fallbackText:    followUpText,
         });
-      });
+      }
       // [FIX-SCHED-FU-1] Mark follow-up sent and set postFlowAck OUTSIDE the .catch() block
       // so they always run on success, not only when dispatchMessage fails.
       // Previously the closing }) for sendReminder was misplaced — all post-send

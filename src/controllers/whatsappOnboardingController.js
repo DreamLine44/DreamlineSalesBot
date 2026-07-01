@@ -166,7 +166,11 @@ export async function getAllConnectionRequests(req, res, next) {
     const filter = {};
     if (status) filter.status = status;
 
-    const safeLimit = Math.min(Number(limit) || 20, 100);
+    // [AUDIT-FIX-10] Added Math.max(...,1) lower bound — same gap as
+    // adminRoutes.js's sessions endpoint and the (already-fixed)
+    // dashboardController.getCustomers. ?limit=-5 would otherwise pass straight
+    // through to Mongoose's .limit() unguarded.
+    const safeLimit = Math.min(Math.max(Number(limit) || 20, 1), 100);
     const safePage  = Math.max(Number(page)  || 1,  1);
     const skip      = (safePage - 1) * safeLimit;
 

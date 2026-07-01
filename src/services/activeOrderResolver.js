@@ -67,13 +67,30 @@ export async function resolveActiveOrder(customerPhone, tenantId, business = nul
     // Exclude orders that are definitively done and old:
     //   cancelled / completed / payment_failed older than 24h
     // Delivered orders within the last 2h are included so we can show context.
+    //
+    // [AUDIT-FIX-2] cutoff24h was declared but never wired into the query below —
+    // every 'pending' order was treated as active forever, regardless of age. A
+    // customer who started an order, abandoned it, and came back three weeks later
+    // would still have that stale pending order intercept every new message
+    // ("you have an active order...") instead of letting them start fresh. This is
+    // the exact "stale pending+unpaid orders older than 24h" bug from past audits —
+    // the fix was written (the cutoff variable) but never actually applied to the
+    // query. 'pending' orders are now only considered active if created within the
+    // last 24h; once past that window they're abandoned carts, not active orders,
+    // and should not block new intents. Other non-terminal statuses (confirmed,
+    // preparing, ready, out_for_delivery, payment verification states) are left
+    // unbounded since those represent orders genuinely in progress in the real
+    // world and a stale one is an admin/ops problem, not a "let the bot keep
+    // nagging the customer" problem.
     const cutoff24h  = new Date(Date.now() - 24 * 60 * 60 * 1000);
     const activeOrders = await Order.find({
       customerPhone,
       tenantId,
       $or: [
-        // All non-terminal statuses
-        { status: { $in: ['pending', 'payment_pending_verification', 'confirmed', 'preparing', 'ready', 'out_for_delivery'] } },
+        // [AUDIT-FIX-2] 'pending' bounded to last 24h — abandoned carts age out.
+        { status: 'pending', createdAt: { $gte: cutoff24h } },
+        // Genuinely in-progress statuses — no age bound.
+        { status: { $in: ['payment_pending_verification', 'confirmed', 'preparing', 'ready', 'out_for_delivery'] } },
         // Delivered within the context window
         { status: 'delivered', updatedAt: { $gte: new Date(Date.now() - DELIVERED_CONTEXT_WINDOW_MS) } },
         // Rejected payments (order.status may be 'pending' after a reject+retry window)
@@ -120,7 +137,22 @@ function _resolveState(order, business, session) {
   const priceStr    = order.totalPrice ? `${currency}${order.totalPrice}` : null;
 
   // Priority 1 — Rejected payment
-  if (paymentStatus === 'rejected') {
+  // [FIX-AOR-REJECT] paymentStatus === 'rejected' is checked for forward-compat,
+  // but no code path in this codebase actually writes that literal value.
+  // adminCommandService.rejectPayment() intentionally writes
+  // { status: 'pending', paymentStatus: 'unpaid', paymentReviewedAt: <Date> } instead —
+  // 'unpaid' is required so paymentService.receiveProof() will accept the customer's
+  // retry screenshot (it specifically queries paymentStatus:'unpaid'). That means this
+  // branch — and the "Payment Not Approved" card with the rejection reason and
+  // RESEND_PROOF button — was unreachable through the real rejection flow: a customer
+  // whose session expired (TTL) after a rejection and returned later got silently routed
+  // to NO_ACTIVE_ORDER instead, losing all context including rejectedNote. paymentReviewedAt
+  // is only ever set by confirmPayment (which moves status/paymentStatus away from
+  // pending/unpaid) and rejectPayment, so `pending + unpaid + paymentReviewedAt set` is an
+  // unambiguous signal that this specific order was administratively rejected and is
+  // awaiting a retry.
+  const wasAdminRejected = status === 'pending' && paymentStatus === 'unpaid' && !!order.paymentReviewedAt;
+  if (paymentStatus === 'rejected' || wasAdminRejected) {
     const reason = order.rejectedNote || null;
     return {
       order, orders: [order],
@@ -319,7 +351,11 @@ function _multipleOrders(orders, business) {
     uiResponse: {
       type: 'list',
       body: `📦 You have *${orders.length} active orders*.${overflowNote}\n\nWhich one would you like to check?`,
-      buttonText: 'View My Orders',
+      // [FIX-AOR-BTNLABEL] Was 'buttonText' — the dispatcher's list builder only reads
+      // ui.button / ui.buttonLabel (see core/whatsapp/dispatcher.js), so this custom
+      // label was silently ignored and every multiple-orders list rendered with the
+      // generic 'Choose option' fallback instead of 'View My Orders'.
+      button: 'View My Orders',
       sections: [
         {
           title: 'Active Orders',

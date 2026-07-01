@@ -73,8 +73,19 @@ import Booking          from '../models/Booking.js';
 import UserProfile      from '../models/UserProfile.js';
 import Analytics        from '../models/Analytics.js';
 import ProcessedMessage from '../models/ProcessedMessage.js';
+import WhatsAppConnectionRequest from '../models/WhatsAppConnectionRequest.js';
 import crypto           from 'crypto';
 import logger           from '../config/logger.js';
+
+// [AUDIT-FIX-9] Same fix as dashboardController.getCustomers — listTenants'
+// ?name= search was interpolated directly into a $regex filter. An unescaped
+// metacharacter (e.g. a name search containing "+", "(", or "*") either
+// throws a MongoDB regex-compile error or risks a catastrophic-backtracking
+// pattern. Escape before building the filter so the search behaves as a
+// literal case-insensitive substring match.
+function escapeRegex(str) {
+  return String(str).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
 
 // ─── Token Encryption Utilities (AES-256-GCM) ────────────────────────────────
 
@@ -281,15 +292,31 @@ export async function createTenant(req, res) {
 }
 
 // ─── listTenants ──────────────────────────────────────────────────────────────
+// [IMPROVE-PAGINATION] Added optional ?page=&limit= pagination, same pattern used
+// elsewhere in the app (Math.min/Math.max guarded, capped at 100). Existing callers
+// that don't send page/limit still get a working response — defaults to page 1,
+// limit 100 (comfortably above current tenant counts), and the response still
+// includes the original `tenants` + `count` keys so nothing that already reads
+// this endpoint breaks. New `total`, `page`, `pages`, `limit` keys are additive.
 export async function listTenants(req, res) {
   try {
     const filter = {};
-    if (req.query.name)   filter.name   = { $regex: req.query.name, $options: 'i' };
+    if (req.query.name)   filter.name   = { $regex: escapeRegex(req.query.name), $options: 'i' };
     if (req.query.status) filter.status = req.query.status;
 
-    const tenants = await Tenant.find(filter)
-      .select('name status createdAt email adminPhone plan onboardingStep whatsapp.phoneNumberId whatsapp.connected whatsapp.phone')
-      .lean();
+    const safeLimit = Math.min(Math.max(Number(req.query.limit) || 100, 1), 200);
+    const safePage  = Math.max(Number(req.query.page) || 1, 1);
+    const skip      = (safePage - 1) * safeLimit;
+
+    const [tenants, total] = await Promise.all([
+      Tenant.find(filter)
+        .select('name status createdAt email adminPhone plan onboardingStep whatsapp.phoneNumberId whatsapp.connected whatsapp.phone')
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(safeLimit)
+        .lean(),
+      Tenant.countDocuments(filter),
+    ]);
 
     if (tenants.length > 0) {
       const ids     = tenants.map(t => String(t._id));
@@ -301,9 +328,70 @@ export async function listTenants(req, res) {
       for (const t of tenants) t.businessMode = modeMap[String(t._id)] || null;
     }
 
-    res.json({ tenants, count: tenants.length });
+    res.json({
+      tenants,
+      count: tenants.length,
+      total,
+      page:  safePage,
+      pages: Math.ceil(total / safeLimit),
+      limit: safeLimit,
+    });
   } catch (err) {
     logger.error('[Tenant] listTenants failed', { err: err.message });
+    res.status(500).json({ error: err.message });
+  }
+}
+
+// ─── getPlatformStats — GET /admin/tenants/stats ─────────────────────────────
+// [IMPROVE-STATS] New endpoint so the super-admin dashboard doesn't have to
+// fetch and aggregate the entire tenant table client-side (which the frontend
+// was doing before this existed — fine at a handful of tenants, wasteful and
+// slow once the platform has dozens/hundreds). Single aggregation query per
+// collection, all run in parallel.
+export async function getPlatformStats(req, res) {
+  try {
+    const [
+      totalTenants,
+      statusCounts,
+      waConfiguredCount,
+      waConnectedCount,
+      pendingRequestsCount,
+      requestStatusCounts,
+    ] = await Promise.all([
+      Tenant.countDocuments({}),
+      Tenant.aggregate([{ $group: { _id: '$status', count: { $sum: 1 } } }]),
+      Tenant.countDocuments({ 'whatsapp.accessToken': { $ne: null } }),
+      Tenant.countDocuments({ 'whatsapp.connected': true }),
+      WhatsAppConnectionRequest.countDocuments({ status: 'pending' }),
+      WhatsAppConnectionRequest.aggregate([{ $group: { _id: '$status', count: { $sum: 1 } } }]),
+    ]);
+
+    const byStatus = { ACTIVE: 0, PENDING: 0, SUSPENDED: 0, INACTIVE: 0 };
+    for (const row of statusCounts) {
+      if (row._id in byStatus) byStatus[row._id] = row.count;
+    }
+
+    const requestsByStatus = { pending: 0, contacted: 0, connecting: 0, connected: 0, rejected: 0 };
+    for (const row of requestStatusCounts) {
+      if (row._id in requestsByStatus) requestsByStatus[row._id] = row.count;
+    }
+
+    res.json({
+      tenants: {
+        total: totalTenants,
+        byStatus,
+      },
+      whatsapp: {
+        credentialsSaved: waConfiguredCount,
+        fullyConnected:   waConnectedCount,
+      },
+      connectionRequests: {
+        pending: pendingRequestsCount,
+        byStatus: requestsByStatus,
+      },
+    });
+  } catch (err) {
+    logger.error('[Tenant] getPlatformStats failed', { err: err.message });
     res.status(500).json({ error: err.message });
   }
 }

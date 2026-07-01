@@ -161,7 +161,13 @@ export const EMOJI_MAP = {
   '🛍️': 'ORDER', '🧁': 'ORDER', '💄': 'ORDER', '📱': 'ORDER',
   '📅': 'BOOKING', '📆': 'BOOKING', '🗓': 'BOOKING', '💇': 'BOOKING',
   '❓': 'QUESTION', '🤔': 'QUESTION', '💬': 'QUESTION',
-  '🚶': 'WALKIN', '🚶‍♂️': 'WALKIN', '💈': 'START_BOOKING',
+  '🚶': 'WALKIN', '🚶‍♂️': 'WALKIN',
+  // [FIX-EMOJI-BARBER] Was 'START_BOOKING' (an action string), not a raw intent.
+  // Every other EMOJI_MAP entry maps to a raw intent that gets passed through
+  // intentToAction(); 'START_BOOKING' isn't a key in that map, so it silently
+  // fell through to 'FALLBACK' instead of starting the booking flow — a
+  // customer texting only 💈 got no response that resembled booking at all.
+  '💈': 'BOOKING',
   '💳': 'PAYMENT', '💰': 'PAYMENT',
   '🏠': 'SHOW_MENU', '🔄': 'SHOW_MENU',
   // [FIX-ACK-EMOJI] Acknowledgement emoji — normalise() strips these to '' so

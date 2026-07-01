@@ -41,13 +41,20 @@ export async function getOrCreate(phone, tenantId) {
   }
 }
 
-export async function recordOrderItem(phone, tenantId, itemName) {
+export async function recordOrderItem(phone, tenantId, itemName, { countOrder = true } = {}) {
   if (!phone || !tenantId || !itemName) return;
   try {
     const updated = await UserProfile.findOneAndUpdate(
       { phone, tenantId: toOid(tenantId), 'preferences.favoriteItems.name': itemName },
       {
-        $inc: { 'preferences.favoriteItems.$.count': 1, 'stats.totalOrders': 1 },
+        // [FIX-MEM-DOUBLECOUNT] countOrder lets callers track the favourite-item tag
+        // without also bumping stats.totalOrders. orderService.saveOrder() needs the
+        // former (so recommendations work immediately) but NOT the latter — totalOrders
+        // is the dedicated responsibility of recordConfirmedOrder(), called only on actual
+        // admin payment confirmation (see adminCommandService.confirmPayment / MEM-FIX-1).
+        $inc: countOrder
+          ? { 'preferences.favoriteItems.$.count': 1, 'stats.totalOrders': 1 }
+          : { 'preferences.favoriteItems.$.count': 1 },
         $set: { 'activity.lastSeen': new Date() },
       },
       { new: true }
@@ -57,7 +64,7 @@ export async function recordOrderItem(phone, tenantId, itemName) {
         { phone, tenantId: toOid(tenantId) },
         {
           $push: { 'preferences.favoriteItems': { name: itemName, count: 1 } },
-          $inc:  { 'stats.totalOrders': 1 },
+          $inc:  countOrder ? { 'stats.totalOrders': 1 } : {},
           $set:  { 'activity.lastSeen': new Date() },
         },
         { upsert: true }

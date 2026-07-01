@@ -20,7 +20,7 @@ import { getAIReply }     from '../../../core/ai/providers/aiRouter.js';
 import { findBestMatch }  from '../../../utils/matchEngine.js';
 import { saveOrder }      from '../../../services/orderService.js';
 import { parseQuantity }  from '../../../utils/parseQuantity.js';
-import { trackOrderAnalytics, recordRevenue } from '../../../core/analytics/analyticsService.js';
+import { trackOrderAnalytics } from '../../../core/analytics/analyticsService.js';
 import logger             from '../../../config/logger.js';
 
 // ── Config ────────────────────────────────────────────────────────────────────
@@ -116,7 +116,7 @@ export async function handleRetailOrder({ session, message, business, tenant, is
             data: { ...data, item },
             menuViewed: true,
           });
-          return _buildItemDetail(item);
+          return _buildItemDetail(item, business); // [FIX-RETAIL-BUSINESS-SCOPE]
         }
         // Low confidence — show all products
         await updateSession(session.customerPhone, session.tenantId, { step: 'SELECT_ITEM', menuViewed: true });
@@ -181,7 +181,7 @@ export async function handleRetailOrder({ session, message, business, tenant, is
         data: { ...data, item },
         menuViewed: true,
       });
-      return _buildItemDetail(item);
+      return _buildItemDetail(item, business); // [FIX-RETAIL-BUSINESS-SCOPE]
     }
 
     // ── SELECT_VARIANT ────────────────────────────────────────────────────────
@@ -360,27 +360,34 @@ export async function handleRetailOrder({ session, message, business, tenant, is
           // every retail order had totalPrice=undefined in the DB, breaking payment
           // amount display in admin alerts and the receiveProof order lookup.
           totalPrice:    totalPrice || undefined,
+          // [FIX-RETAIL-3] businessId was missing — every other module's saveOrder()
+          // call passes business._id; retail omitted it, leaving Order.businessId null
+          // for every retail order and breaking business-scoped admin views/reports.
+          businessId:    business._id,
         });
 
-        if (totalPrice) {
-          // [FIX-RETAIL-2] recordRevenue was called as recordRevenue(tenantId, amount)
-          // but the function signature is recordRevenue({ item, quantity, revenue, tenantId,
-          // customerPhone, phoneNumberId }). The positional call silently discarded all
-          // data — no revenue analytics were ever written for retail orders.
-          recordRevenue({
-            item:          itemLabel,
-            quantity:      qty,
-            revenue:       totalPrice,
-            tenantId:      session.tenantId,
-            customerPhone: session.customerPhone,
-          }).catch(() => {});
-        }
+        // [AUDIT-FIX-4] recordRevenue() moved to adminCommandService.confirmPayment() —
+        // recording it here at placement time counted unconfirmed/later-rejected orders
+        // as revenue. See adminCommandService.js AUDIT-FIX-4 for full rationale.
         // [FIX-RETAIL-3] trackOrderAnalytics called as (tenantId, 'retail_order') but
         // correct signature is (item, phoneNumberId, quantity, revenue, tenantId).
         // Positional mismatch meant item=tenantId and all other fields were undefined.
         trackOrderAnalytics(itemLabel, null, qty, totalPrice || 0, session.tenantId).catch(() => {});
       } catch (err) {
         logger.error('[Retail] saveOrder error:', err.message);
+        // [FIX-SAVE-ERR-RETAIL] Don't proceed to payment/admin-confirm for an order
+        // that wasn't saved. Clear flow and let the customer retry.
+        await updateSession(session.customerPhone, session.tenantId, {
+          currentFlow: null, step: null, data: {},
+        });
+        return {
+          type:    'buttons',
+          body:    `⚠️ *Something went wrong saving your order.*\n\nPlease try again — tap below to start over.`,
+          buttons: [
+            { id: 'ORDER',    title: '🛒 Try Again'   },
+            { id: 'SUPPORT',  title: '💬 Contact Us'  },
+          ],
+        };
       }
 
       // [FIX-BUG4-RETAIL] Payment flow — was completely absent. If tenant has
@@ -557,7 +564,7 @@ function _buildProductList(items, business, category = null) {
   };
 }
 
-function _buildItemDetail(item) {
+function _buildItemDetail(item, business) { // [FIX-RETAIL-BUSINESS-SCOPE] business now passed in to avoid ReferenceError
   const price    = item.price    ? `💰 *Price:* ${item.currency || business?.payment?.currency || 'D'}${item.price}\n` : '';
   const desc     = item.description ? `\n_${item.description}_\n` : '';
   const variants = item.variants && item.variants.length > 0

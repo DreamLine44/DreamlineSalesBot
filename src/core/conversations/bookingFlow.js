@@ -107,6 +107,22 @@ export function tryParseDate(dateStr, tz) {
     // Strip ordinal suffixes: "15th" → "15", "1st" → "1"
     const stripped = dateStr.replace(/(\d+)(st|nd|rd|th)\b/gi, '$1');
 
+    // [FIX-TZ-3] Native Date parsing of a non-ISO string like "30 June" is
+    // interpreted in the SERVER PROCESS's local timezone (not UTC, not the
+    // business's timezone). Every other branch in this function (today/
+    // tomorrow/next X) explicitly builds a UTC-midnight Date via Date.UTC().
+    // On a server not running with TZ=UTC, a typed date like "30 June" would
+    // come back as a Date that does NOT equal the UTC-midnight Date returned
+    // for the literal word "today" — even when they're the same calendar day.
+    // That silently broke the same-day comparison in validateTime() (used to
+    // reject booking a past time slot today), since bookingIsToday would
+    // incorrectly evaluate to false for any typed-out date. This helper
+    // re-anchors a native-parsed Date to UTC-midnight using its own calendar
+    // fields (year/month/date as interpreted by the parser), so the returned
+    // value is always directly comparable to the rest of this file regardless
+    // of what timezone the Node process itself happens to be running in.
+    const toUtcMidnight = (d) => new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()));
+
     // Native parse on stripped string
     const parsed = new Date(stripped);
     if (!isNaN(parsed.getTime())) {
@@ -120,22 +136,22 @@ export function tryParseDate(dateStr, tz) {
           // (e.g. "15 March" typed in June → March 2026). validateDate will reject it
           // with a proper formatted "March 15, 2026 has already passed" message rather
           // than the opaque "invalid date" message caused by returning the 1901 original.
-          return p2;
+          return toUtcMidnight(p2);
         }
       }
       // [FIX-6] Correct implausible far-future year (engine quirk on ambiguous formats)
       if (yr > now.getUTCFullYear() + 2) {
         const withYear = `${stripped} ${now.getUTCFullYear()}`;
         const p2 = new Date(withYear);
-        if (!isNaN(p2.getTime())) return p2;
+        if (!isNaN(p2.getTime())) return toUtcMidnight(p2);
       }
-      return parsed;
+      return toUtcMidnight(parsed);
     }
 
     // Last resort: add current year
     const withYear = `${stripped} ${now.getUTCFullYear()}`;
     const parsed2  = new Date(withYear);
-    if (!isNaN(parsed2.getTime())) return parsed2;
+    if (!isNaN(parsed2.getTime())) return toUtcMidnight(parsed2);
 
     return null;
   } catch { return null; }
@@ -640,8 +656,10 @@ export async function handleBookingFlow({ session, message, business, tenant, is
       // [v14-DUPLICATE] Double-booking guard: check for an existing pending/confirmed
       // booking on the same date BEFORE saving. Prevents duplicate appointments for
       // the same customer at the same salon on the same day.
-      // The helper is defined in salon/flows/index.js and imported dynamically to
-      // avoid circular imports (bookingFlow → salonFlows → bookingFlow).
+      // [AUDIT-NOTE] This query is inline here, not delegated to a helper. An earlier
+      // comment claimed it called a helper in salon/flows/index.js — that helper
+      // (_hasConflictingBooking) existed but was dead code (never invoked); it has been
+      // removed. This inline check is the actual, only enforced duplicate-booking guard.
       if (isSalonMode && date) {
         try {
           const { default: _BookingModel } = await import('../../models/Booking.js');
@@ -674,9 +692,18 @@ export async function handleBookingFlow({ session, message, business, tenant, is
       // session.data (lean MongoDB read) as an ISO string. Coerce explicitly
       // so saveBooking always receives a real Date or null — never a string.
       const rawParsedDate = data.parsedDate;
+      // [AUDIT-FIX-BOOK-1] Fallback re-parse was missing the `tz` argument that every
+      // other tryParseDate() call site in this file passes. data.parsedDate is only
+      // absent here when the DATE step's own tryParseDate() call returned null (an
+      // edge case where looksLikeDate() matched but the stricter parser didn't), so
+      // this fallback re-parse path is rare but real. Without `tz`, getLocalNow()
+      // inside tryParseDate() defaults to UTC, so "today"/"tomorrow"/ordinal-year
+      // corrections would resolve against the server's UTC calendar day instead of
+      // the business's configured timezone — the same class of bug [FIX-TZ-2] fixed
+      // for the rest of this file.
       const parsedDate = rawParsedDate
         ? (rawParsedDate instanceof Date ? rawParsedDate : new Date(rawParsedDate))
-        : tryParseDate(date);
+        : tryParseDate(date, tz);
 
       let savedBooking = null;
       try {

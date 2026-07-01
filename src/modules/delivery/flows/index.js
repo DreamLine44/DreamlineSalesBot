@@ -10,8 +10,13 @@
  *   - Rider dispatch notification to admin
  *
  * Flows:
- *   ORDER   — item → quantity → address → slot → confirm
- *   TRACKING — check order status
+ *   ORDER — item → quantity → address → slot → confirm
+ *
+ * [DOC-FIX] Header previously listed a "TRACKING — check order status" flow that
+ * does not exist in this module. TRACK_ORDER is a global action handled centrally
+ * via ACTION_REGISTRY (see core/shared/moduleRegistry.js registerAction('TRACK_ORDER', ...)
+ * and core/conversations/moduleRouter.js case 'TRACK_ORDER') — it is not module-specific
+ * and has no handler here. Comment corrected to avoid implying a missing implementation.
  */
 
 import { updateSession }  from '../../../core/sessions/sessionService.js';
@@ -23,7 +28,7 @@ import { getAIReply }     from '../../../core/ai/providers/aiRouter.js';
 import { findBestMatch }  from '../../../utils/matchEngine.js';
 import { saveOrder }      from '../../../services/orderService.js';
 import { parseQuantity }  from '../../../utils/parseQuantity.js';
-import { trackOrderAnalytics, recordRevenue } from '../../../core/analytics/analyticsService.js';
+import { trackOrderAnalytics } from '../../../core/analytics/analyticsService.js';
 import logger             from '../../../config/logger.js';
 
 // ── Config ────────────────────────────────────────────────────────────────────
@@ -470,22 +475,34 @@ export async function handleDeliveryOrder({ session, message, business, tenant, 
           status:        'pending',
           // [FIX-DELIVERY-1] totalAmount → totalPrice (same bug as retail — see retail fix)
           totalPrice:    totalPrice || undefined,
+          // [FIX-DELIVERY-4] businessId was missing here — every other module's saveOrder()
+          // call passes business._id, but delivery omitted it. Order.businessId stayed null
+          // for every delivery order, breaking any business-scoped admin view/report that
+          // filters orders by businessId (cosmetics, electronics, bakery, restaurant, salon,
+          // fashion all already pass it correctly).
+          businessId:    business._id,
         });
 
-        if (totalPrice) {
-          // [FIX-DELIVERY-2] recordRevenue wrong positional call — same bug as retail
-          recordRevenue({
-            item:          item?.name,
-            quantity:      qty,
-            revenue:       totalPrice,
-            tenantId:      session.tenantId,
-            customerPhone: session.customerPhone,
-          }).catch(() => {});
-        }
+        // [AUDIT-FIX-4] recordRevenue() moved to adminCommandService.confirmPayment() —
+        // recording it here at placement time counted unconfirmed/later-rejected orders
+        // as revenue. See adminCommandService.js AUDIT-FIX-4 for full rationale.
         // [FIX-DELIVERY-3] trackOrderAnalytics wrong positional call — same bug as retail
         trackOrderAnalytics(item?.name, null, qty, totalPrice || 0, session.tenantId).catch(() => {});
       } catch (err) {
         logger.error('[Delivery] saveOrder error:', err.message);
+        // [FIX-SAVE-ERR-DELIVERY] Don't proceed to payment/admin-confirm for an order
+        // that wasn't saved. Clear flow and let the customer retry.
+        await updateSession(session.customerPhone, session.tenantId, {
+          currentFlow: null, step: null, data: {},
+        });
+        return {
+          type:    'buttons',
+          body:    `⚠️ *Something went wrong saving your order.*\n\nPlease try again — tap below to start over.`,
+          buttons: [
+            { id: 'ORDER',    title: '🛒 Try Again'   },
+            { id: 'SUPPORT',  title: '💬 Contact Us'  },
+          ],
+        };
       }
 
       // [FIX-BUG4-DELIVERY] Payment flow — was completely absent. If tenant has

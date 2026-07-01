@@ -272,7 +272,11 @@ r.get('/sessions/:tenantId', overviewLimiter, async (req, res) => {
   const { tenantId } = req.params;
   if (!assertTenant(req, res, tenantId)) return;
   try {
-    const limit  = Math.min(Number(req.query.limit)  || 50, 200); // cap at 200
+    // [AUDIT-FIX-10] Added Math.max(...,1) lower bound — this was the one remaining
+    // paginated endpoint without it (dashboardController's equivalent endpoints were
+    // already fixed). ?limit=-5 or ?limit=0 would otherwise pass straight through to
+    // Mongoose's .limit() unguarded.
+    const limit  = Math.min(Math.max(Number(req.query.limit) || 50, 1), 200); // cap at 200
     const page   = Math.max(Number(req.query.page)   || 1, 1);
     const skip   = (page - 1) * limit;
     const filter = { tenantId };

@@ -7,7 +7,7 @@ import { getAIReply }     from '../../../core/ai/providers/aiRouter.js';
 import { findBestMatch }  from '../../../utils/matchEngine.js';
 import { saveOrder }      from '../../../services/orderService.js';
 import { parseQuantity }  from '../../../utils/parseQuantity.js';
-import { trackOrderAnalytics, recordRevenue } from '../../../core/analytics/analyticsService.js';
+import { trackOrderAnalytics } from '../../../core/analytics/analyticsService.js';
 import logger             from '../../../config/logger.js';
 
 export const FASHION_CONFIG = {
@@ -257,7 +257,22 @@ export async function handleFashionOrder({ session, message, business, tenant, i
           quantity: data.quantity, totalPrice: data.totalPrice,
           customerName: session.customerName || null, // [FIX-SAVE-2]
           customerPhone: session.customerPhone, tenantId: session.tenantId, businessId: business._id });
-      } catch (err) { logger.error('[FashionModule] saveOrder failed', { err: err.message }); }
+      } catch (err) {
+        logger.error('[FashionModule] saveOrder failed', { err: err.message });
+        // [FIX-SAVE-ERR-FASHION] Don't proceed to payment/admin-confirm for an order
+        // that wasn't saved. Clear flow and let the customer retry.
+        await updateSession(session.customerPhone, session.tenantId, {
+          currentFlow: null, step: null, data: {},
+        });
+        return {
+          type:    'buttons',
+          body:    `⚠️ *Something went wrong saving your order.*\n\nPlease try again — tap below to start over.`,
+          buttons: [
+            { id: 'ORDER',    title: '🛒 Try Again'   },
+            { id: 'SUPPORT',  title: '💬 Contact Us'  },
+          ],
+        };
+      }
 
       // [FIX-5] Payment flow — fashion was skipping payment even when payment.enabled=true
       const payment = business?.payment;
@@ -308,18 +323,14 @@ export async function handleFashionOrder({ session, message, business, tenant, i
         }
       } catch {}
 
-      // Track analytics + revenue BEFORE parking session
+      // Track analytics BEFORE parking session
       trackOrderAnalytics(
         `${data.item?.name}${data.size ? ` (${data.size})` : ''}`,
         null, data.quantity, data.totalPrice || 0, session.tenantId
       ).catch(() => {});
-      if (data.totalPrice) {
-        recordRevenue({
-          item: data.item?.name, quantity: data.quantity,
-          revenue: data.totalPrice, tenantId: session.tenantId,
-          customerPhone: session.customerPhone,
-        }).catch(() => {});
-      }
+      // [AUDIT-FIX-4] recordRevenue() moved to adminCommandService.confirmPayment() —
+      // recording it here at placement time counted unconfirmed/later-rejected orders
+      // as revenue. See adminCommandService.js AUDIT-FIX-4 for full rationale.
 
       // Park session at AWAIT_ADMIN_CONFIRM so stale buttons don't restart the flow
       await updateSession(session.customerPhone, session.tenantId, {

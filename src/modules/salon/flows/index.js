@@ -127,7 +127,7 @@ import { findBestMatch }     from '../../../utils/matchEngine.js';
 import { parseQuantity }     from '../../../utils/parseQuantity.js';
 import { saveOrder }         from '../../../services/orderService.js';
 import { saveBooking }       from '../../../services/bookingService.js';
-import { trackOrderAnalytics, recordRevenue } from '../../../core/analytics/analyticsService.js';
+import { trackOrderAnalytics } from '../../../core/analytics/analyticsService.js';
 import logger                from '../../../config/logger.js';
 
 // ── Salon Config ───────────────────────────────────────────────────────────────
@@ -304,23 +304,14 @@ function _getPrepTip(serviceName, business) {
 }
 
 /**
- * [v14-DUPLICATE] Check for an existing booking that conflicts with the proposed slot.
- * Returns true if a conflicting booking exists.
+ * [v14-DUPLICATE] NOTE: an earlier version of this double-booking guard lived here as
+ * _hasConflictingBooking(), but it was never actually called from anywhere in this file —
+ * handleSalonBooking() delegates the DATE/TIME/CONFIRM steps to the shared handleBookingFlow()
+ * in core/conversations/bookingFlow.js, and *that* file has its own inline duplicate-booking
+ * check (see the [v14-DUPLICATE] comment there) that performs the same query. This dead,
+ * unreachable copy was removed during audit to avoid the two implementations silently
+ * drifting apart — bookingFlow.js's inline check is the one actually enforced.
  */
-async function _hasConflictingBooking(phone, tenantId, date, time) {
-  if (!date || !time) return false;
-  try {
-    const { default: Booking } = await import('../../../models/Booking.js');
-    const existing = await Booking.findOne({
-      customerPhone: phone,
-      tenantId,
-      date,
-      status: { $in: ['pending', 'confirmed'] },
-      bookingType: { $ne: 'walkin' },
-    }).lean().catch(() => null);
-    return !!existing;
-  } catch { return false; }
-}
 
 /**
  * [v14-BUG-7] Should 'Any available' option be shown?
@@ -476,6 +467,19 @@ export async function handleSalonWalkIn({ session, message, business, tenant, is
         });
       } catch (err) {
         logger.error('[SalonWalkIn] saveBooking failed', { err: err.message });
+        // [FIX-SAVE-ERR-SALON-WALKIN] Don't tell the customer they're in the queue
+        // when nothing was saved and admin was never notified. Clear flow, let retry.
+        await updateSession(session.customerPhone, session.tenantId, {
+          currentFlow: null, step: null, data: {},
+        });
+        return {
+          type:    'buttons',
+          body:    `⚠️ *Something went wrong joining the queue.*\n\nPlease try again — tap below to start over.`,
+          buttons: [
+            { id: 'BOOK',     title: '📅 Try Again'   },
+            { id: 'SUPPORT',  title: '💬 Contact Us'  },
+          ],
+        };
       }
 
       // Notify admin with confirm/reject buttons
@@ -811,9 +815,15 @@ export async function handleSalonProductOrder({ session, message, business, tena
 
       if (!['CONFIRM', 'YES'].includes(raw.toUpperCase())) {
         const currency = data.item?.currency || business?.payment?.currency || 'D';
+        const total = data.totalPrice || (data.item?.price || 0) * (data.quantity || 1);
         return {
           type: 'buttons',
-          body: `${emoji} Ready to place your order?`,
+          // [FIX-SALON-CONFIRM-REPROMPT] previously dropped item/total summary on invalid input; currency was computed but unused
+          body:
+            `🧾 *Order Summary*\n\n` +
+            `🛍 *${data.quantity || 1}× ${data.item?.name}*\n` +
+            (total ? `💰 *Total:* ${currency}${total}\n` : '') +
+            `\n${emoji} Ready to place your order?`,
           buttons: [
             { id: 'CONFIRM',        title: '✅ Confirm Order' },
             { id: 'CANCEL_BOOKING', title: '❌ Cancel'         },
@@ -834,6 +844,19 @@ export async function handleSalonProductOrder({ session, message, business, tena
         });
       } catch (err) {
         logger.error('[SalonProduct] saveOrder failed', { err: err.message });
+        // [FIX-SAVE-ERR-SALON-PRODUCT] Don't proceed to payment/admin-confirm for an
+        // order that wasn't saved. Clear flow and let the customer retry.
+        await updateSession(session.customerPhone, session.tenantId, {
+          currentFlow: null, step: null, data: {},
+        });
+        return {
+          type:    'buttons',
+          body:    `⚠️ *Something went wrong saving your order.*\n\nPlease try again — tap below to start over.`,
+          buttons: [
+            { id: 'ORDER',    title: '🛒 Try Again'   },
+            { id: 'SUPPORT',  title: '💬 Contact Us'  },
+          ],
+        };
       }
 
       // Payment flow
@@ -886,13 +909,9 @@ export async function handleSalonProductOrder({ session, message, business, tena
       } catch {}
 
       trackOrderAnalytics(data.item?.name, null, data.quantity, data.totalPrice || 0, session.tenantId).catch(() => {});
-      if (data.totalPrice) {
-        recordRevenue({
-          item: data.item?.name, quantity: data.quantity,
-          revenue: data.totalPrice, tenantId: session.tenantId,
-          customerPhone: session.customerPhone,
-        }).catch(() => {});
-      }
+      // [AUDIT-FIX-4] recordRevenue() moved to adminCommandService.confirmPayment() —
+      // recording it here at placement time counted unconfirmed/later-rejected orders
+      // as revenue. See adminCommandService.js AUDIT-FIX-4 for full rationale.
 
       await updateSession(session.customerPhone, session.tenantId, {
         step: 'AWAIT_ADMIN_CONFIRM', currentFlow: 'ORDER',

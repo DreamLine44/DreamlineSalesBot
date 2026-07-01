@@ -229,6 +229,13 @@ function isFlowPassthroughId(id) {
     /^SVC_[A-Z0-9_]+$/.test(upper)  ||  // service rows — numeric (SVC_0) or named (SVC_CONSULT)
     /^COLOR_[A-Z_]+$/.test(upper)   ||  // dynamic colour buttons
     /^SIZE_[A-Z0-9_]+$/.test(upper) ||  // dynamic size/variant buttons
+    // [FIX-SHADE] cosmetics/flows/orderFlow.js _buildShadeUI() generates SHADE_<name>
+    // button IDs (e.g. SHADE_DEEP_TAN, SHADE_IVORY) for the SELECT_SHADE step — both the
+    // ≤3-shade button variant and the >3-shade list variant. This regex was missing even
+    // though the analogous SIZE_/COLOR_/VAR_/STYLIST_ patterns were all already covered.
+    // Without it, every shade-selection tap fell through to intent detection → FALLBACK,
+    // leaving the customer stuck unable to pick a shade for any multi-shade product.
+    /^SHADE_[A-Z0-9_]+$/.test(upper) ||  // cosmetics shade selection (SHADE_<name>)
     /^CAT_[A-Z0-9_]+$/.test(upper)  ||  // electronics category picker (CAT_PHONES, CAT_LAPTOPS…)
     /^PICK_[AB]_/.test(upper)       ||  // electronics compare pick (PICK_A_<id>, PICK_B_<id>)
     /^COLLECTED_[A-Z0-9]+$/.test(upper) || // order-collected confirmation (COLLECTED_<shortId>)
@@ -390,7 +397,9 @@ const FLOW_PASSTHROUGH_IDS = new Set([
 ]);
 
 // ── [FIX-BUG3] Hours enforcement ─────────────────────────────────────────────
-function isWithinBusinessHours(hours) {
+// Exported (additive only — no behavior change) so it can be covered by a
+// direct regression test instead of only indirectly through the webhook flow.
+export function isWithinBusinessHours(hours) {
   // [FIX-ENV-2] DISABLE_WORKING_HOURS=true lets operators bypass hours checks
   // without touching BusinessConfig — useful for testing or temporary overrides.
   // Was exported from env.js but never read here, making the env var a no-op.
@@ -401,7 +410,25 @@ function isWithinBusinessHours(hours) {
     const tz  = hours.timezone || 'UTC';
     // Day-specific override
     const dayNames = ['sunday','monday','tuesday','wednesday','thursday','friday','saturday'];
-    const dayKey   = dayNames[now.getDay()];
+    // [FIX-TZ-4] Was `now.getDay()`, which reads the *server process's* local
+    // timezone, while the open/close hour check below is resolved in the
+    // *business's* timezone via Intl.DateTimeFormat. Near midnight, whenever
+    // the server's TZ differs from the business's TZ, those two could disagree
+    // on what "today" is — e.g. server at Tue 00:30 UTC is still Mon 16:30 in
+    // America/Los_Angeles, so a Monday-open business would incorrectly be
+    // checked against Tuesday's hours (or vice versa). Resolve the weekday in
+    // the business timezone too, so day and hour always agree.
+    let dayKey;
+    if (tz !== 'UTC') {
+      try {
+        const weekday = new Intl.DateTimeFormat('en', { timeZone: tz, weekday: 'long' }).format(now);
+        dayKey = weekday.toLowerCase();
+      } catch {
+        dayKey = dayNames[now.getUTCDay()];
+      }
+    } else {
+      dayKey = dayNames[now.getUTCDay()];
+    }
 
     // [FIX-WH-3] Normalise hours.days to a plain object regardless of whether the
     // schema stored it as a Mongoose Map (has .get()) or a plain object (bracket
@@ -439,6 +466,17 @@ function isWithinBusinessHours(hours) {
           currentDecimalHour = h + m / 60;
         }
       } catch { /* fall back to UTC decimal */ }
+    }
+    // [AUDIT-FIX-8] Overnight wraparound — businesses that close after midnight
+    // (e.g. open=18, close=2 for an 18:00–02:00 bar/restaurant) were never
+    // supported: closeHr < openHr made `currentDecimalHour >= openHr &&
+    // currentDecimalHour < closeHr` impossible to satisfy at any hour of the
+    // day, so the business appeared permanently closed. hours.open/close are
+    // schema-bounded to 0–24 (BusinessConfig), so a closing time past midnight
+    // can only be expressed as a smaller number than the opening time — this
+    // case must be detected and handled with OR logic instead of AND.
+    if (closeHr <= openHr) {
+      return currentDecimalHour >= openHr || currentDecimalHour < closeHr;
     }
     return currentDecimalHour >= openHr && currentDecimalHour < closeHr;
   } catch {
@@ -1059,7 +1097,12 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
       // [FIX-IMPORT-2] Order now a top-level import — removed redundant dynamic import
       await Order.findOneAndUpdate(
         { customerPhone: from, tenantId, paymentStatus: { $in: ['unpaid', 'proof_received'] } },
-        { $set: { status: 'cancelled', paymentStatus: 'cancelled' } },
+        // [AUDIT-FIX-7] cancelledBy/cancelledAt were missing here — every other
+        // customer-initiated cancel path (moduleRouter CANCEL, flowEngine.cancelFlow,
+        // postFlowHandler SWITCH_YES) writes these audit fields, but this PAYMENT_PROOF
+        // step cancel only set status/paymentStatus, silently losing the who/when trail
+        // for cancellations made while awaiting a payment screenshot.
+        { $set: { status: 'cancelled', paymentStatus: 'cancelled', cancelledBy: 'customer', cancelledAt: new Date() } },
         { sort: { createdAt: -1 } }
       ).catch(() => {});
       await updateSession(from, tenantId, { currentFlow: null, step: null, data: {} });
@@ -1117,9 +1160,20 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
     // Allow explicit cancel only
     if (upper === 'CANCEL' || upper === 'CANCEL_ORDER') {
       // [FIX-IMPORT-2] Order now a top-level import — removed redundant dynamic import
+      // [FIX-AAC-CANCEL-1] Was only setting status:'cancelled' here, leaving paymentStatus
+      // untouched (e.g. still 'unpaid'/'proof_received'). Every other cancel path in this
+      // file (PAYMENT_PROOF step 10.5, PENDING ORDER LOCK step 11.7) sets BOTH fields, and
+      // the cross-system cancellation audit standardised on paymentStatus:'cancelled' /
+      // { $nin: ['cancelled', ...] } filters everywhere (activeOrderResolver, AI context
+      // queries, admin views) to keep cancelled orders excluded. Without paymentStatus also
+      // set here, a cancelled AWAIT_ADMIN_CONFIRM order could still surface as "pending
+      // payment" in those other paymentStatus-based queries.
       await Order.findOneAndUpdate(
         { customerPhone: from, tenantId, status: 'pending' },
-        { $set: { status: 'cancelled' } },
+        // [AUDIT-FIX-7] Add cancelledBy/cancelledAt — same gap as the PAYMENT_PROOF
+        // cancel path above; this cash/delivery AWAIT_ADMIN_CONFIRM cancel was also
+        // dropping the audit trail.
+        { $set: { status: 'cancelled', paymentStatus: 'cancelled', cancelledBy: 'customer', cancelledAt: new Date() } },
         { sort: { createdAt: -1 } }
       ).catch(() => {});
       await updateSession(from, tenantId, { currentFlow: null, step: null, data: {} });
@@ -1196,7 +1250,10 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
       if (isEscPOL) {
         await Order.findOneAndUpdate(
           { _id: pendingOrder._id },
-          { $set: { status: 'cancelled', paymentStatus: 'cancelled' } }
+          // [AUDIT-FIX-7] Add cancelledBy/cancelledAt — same gap as the other inline
+          // cancel paths in this file; the PENDING ORDER LOCK cancel escape was also
+          // dropping the audit trail.
+          { $set: { status: 'cancelled', paymentStatus: 'cancelled', cancelledBy: 'customer', cancelledAt: new Date() } }
         ).catch(() => {});
         await updateSession(from, tenantId, { currentFlow: null, step: null, data: {} });
         const cfgPOL = getModeConfig(business);
@@ -1332,7 +1389,23 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
   // ── 14. postFlowAck state machine ─────────────────────────────────────────
   // [PFH-1] Extracted to services/postFlowHandler.js for testability and maintainability.
   // Previously ~600 lines of inline logic; now a single delegating call.
-  if (session.postFlowAck && messageText) {
+  //
+  // [FIX-MFQ-DBLTAP] MFQ_RESUME_FLOW / MFQ_SWITCH_YES / MFQ_SWITCH_NO button taps must
+  // be exempted here. When postFlowAck === 'MFQ_RESUME', handlePostFlowMessage's
+  // MFQ_RESUME case unconditionally re-sends the "Hope that helped! Continue?" prompt —
+  // it has no special handling for the MFQ_RESUME_FLOW button id because the actual
+  // resume logic lives in step 15.1b further down. Without this guard, the customer's
+  // FIRST tap of "↩️ Continue" was swallowed here (re-showing the same prompt and
+  // clearing postFlowAck) and only a SECOND tap would actually resume the flow —
+  // step 15.1b never saw the first tap at all. Computed inline since upperMsg is not
+  // declared until later in this function.
+  const _step14UpperMsg = (messageText || '').trim().toUpperCase();
+  const _isMfqButtonTap = isInteractive && (
+    _step14UpperMsg === 'MFQ_RESUME_FLOW' ||
+    _step14UpperMsg === 'MFQ_SWITCH_YES'  ||
+    _step14UpperMsg === 'MFQ_SWITCH_NO'
+  );
+  if (session.postFlowAck && messageText && !_isMfqButtonTap) {
     const { getCustomerContext } = await import('../core/memory/customerMemory.js');
     const custCtxPFA = await getCustomerContext(from, tenantId).catch(() => ({
       name: null, topItem: null, lastItem: null, lastOrderAt: null, orderCount: 0, isReturning: false,
@@ -1424,10 +1497,17 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
   // can upload a new screenshot. Without this handler the button tap falls through
   // to intent detection → FALLBACK, leaving the customer stuck.
   if (isInteractive && messageText.trim().toUpperCase() === 'RESEND_PROOF') {
+    // [FIX-AOR-REJECT] Was querying paymentStatus:'rejected', a value no code path in
+    // this codebase ever writes — adminCommandService.rejectPayment() intentionally
+    // writes status:'pending'/paymentStatus:'unpaid' instead (see activeOrderResolver.js
+    // for the full explanation). This button is shown by the AOR "Payment Not Approved"
+    // card, which now uses the same real-state detection — match it here too, or the
+    // button silently does nothing (rejectedOrder always null) when tapped.
     const rejectedOrder = await Order.findOne({
       customerPhone: from, tenantId,
-      paymentStatus: 'rejected',
-      status: { $nin: ['cancelled', 'completed'] },
+      status: 'pending',
+      paymentStatus: 'unpaid',
+      paymentReviewedAt: { $ne: null },
     }).select('_id item quantity totalPrice shortId paymentReference').sort({ createdAt: -1 }).lean().catch(() => null);
 
     if (rejectedOrder) {
@@ -1734,9 +1814,25 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
       }
     }
 
+    // [FIX-FRESH-1] Fetch the latest session once here — used both by the
+    // isInteractive passthrough path below AND by the final advance() call at the
+    // bottom of the active-flow block. Previously freshSession was declared INSIDE
+    // the isInteractive block, so the final advance() call (outside that block)
+    // hit a ReferenceError on every non-passthrough, non-escape in-flow tap,
+    // causing the bot to go completely silent for typed messages inside active flows.
+    const freshSession = await getSession(from, tenantId) || session;
+
+    // [FIX-MFQ-BTN] MFQ response buttons (MFQ_SWITCH_YES, MFQ_SWITCH_NO, MFQ_RESUME_FLOW)
+    // were listed in FLOW_PASSTHROUGH_IDS which caused them to be routed to advance()
+    // BEFORE the MFQ intercept block at 15.1a could handle them. The flow engine
+    // (e.g. restaurant SELECT_ITEM) received "MFQ_SWITCH_YES" as a menu item name,
+    // producing "I couldn't find MFQ_SWITCH_YES on our menu." Fix: intercept MFQ
+    // button responses HERE, before the passthrough block, so they always reach 15.1a.
+    if (isInteractive && (upperMsg === 'MFQ_SWITCH_YES' || upperMsg === 'MFQ_SWITCH_NO' || upperMsg === 'MFQ_RESUME_FLOW')) {
+      // Falls through to the 15.1a / 15.1b handlers below — do NOT call advance()
+    } else
     // [FIX-BUG9] Flow-internal button IDs — bypass intent detection entirely
     if (isInteractive && isFlowPassthroughId(upperMsg)) {
-      const freshSession = await getSession(from, tenantId) || session;
       const reply = await advance({ session: freshSession, message: messageText, business, tenant: tenantDoc, isInteractive });
       if (reply) {
         // reply can be an array (e.g. [image, buttons]) — dispatch each in order
@@ -1756,6 +1852,20 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
     // inside an active flow fell through to advance(), which passes the raw button ID
     // string as messageText — flow handlers don't recognise it and the customer gets
     // stuck. Now matches the same cancelFlow path as CANCEL and CANCEL_BOOKING.
+    //
+    // [FIX-CANCEL-4] A previous edit (FIX-CANCEL-2) here got corrupted: the comment
+    // line above ended with a literal "\n" (backslash-n text) instead of an actual
+    // newline character, which merged the guarding `if (upperMsg === 'CANCEL' || ...) {`
+    // into the comment itself. That made the if-guard non-executable, so the block
+    // below ran UNCONDITIONALLY for every message reaching this point in an active
+    // flow — not just CANCEL taps — silently cancelling the flow and returning early
+    // before code further down (MFQ question handling, SHOW_MENU, etc.) ever ran.
+    // The leftover unmatched closing brace also shifted bracket nesting for the rest
+    // of the function. Restored as a real, properly-closed if-statement below.
+    //
+    // The Booking-cancel DB write that used to live inline here has been moved into
+    // cancelFlow() itself (core/conversations/flowEngine.js) so every caller gets it,
+    // not just this one call site — see [FIX-CANCEL-3].
     if (upperMsg === 'CANCEL' || upperMsg === 'CANCEL_BOOKING' || upperMsg === 'CANCEL_ORDER') {
       const { cancelFlow } = await import('../core/conversations/flowEngine.js');
       const reply = await cancelFlow(session, business);

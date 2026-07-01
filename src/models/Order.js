@@ -177,6 +177,15 @@ const orderSchema = new mongoose.Schema({
   // Last 6 hex chars of _id, stored at creation time for O(1) admin lookups.
   // Admin commands like "APPROVE ABC123" resolve against this field via an index
   // instead of an unindexed $expr/$regexMatch scan on the ObjectId string.
+  // [AUDIT-FIX-1] cancelledBy / cancelledAt — written by moduleRouter.js's CANCEL
+  // handler and flowEngine.js's cancelFlow() whenever a customer cancels an order,
+  // but previously absent from this schema. Mongoose strict mode silently dropped
+  // both fields on every cancel $set — status:'cancelled' saved correctly, but the
+  // who/when audit trail was always lost. Admin dashboards and support tooling that
+  // expect to see who cancelled an order and when got null/undefined forever.
+  cancelledBy: { type: String, default: null }, // 'customer' | admin phone
+  cancelledAt: { type: Date,   default: null },
+
   shortId: { type: String, index: true, default: null },
 
 }, { timestamps: true });

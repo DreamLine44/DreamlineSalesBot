@@ -68,7 +68,9 @@ function sanitise(str = '', maxLen = 600) {
 }
 
 // ── Build the system prompt ────────────────────────────────────────────────────
-function buildSystemPrompt({ business, intent, faqContext, orderContext, sessionContext = null }) {
+// Exported (additive only — no behavior change) so it can be covered by a
+// direct regression test instead of only indirectly through a live Groq call.
+export function buildSystemPrompt({ business, intent, faqContext, orderContext, sessionContext = null }) {
   const mode    = (business?.businessMode || 'RETAIL').toUpperCase();
   const name    = sanitise(business?.name || 'our business');
   const desc    = sanitise(business?.description || '');
@@ -87,12 +89,40 @@ function buildSystemPrompt({ business, intent, faqContext, orderContext, session
     .join('\n');
 
   // [GROQ-OPT-1] Business hours
+  // [FIX-GROQ-HOURS] Was reading cfg.openTime/cfg.closeTime — fields that don't exist
+  // anywhere in the BusinessConfig schema (hours.days stores decimal open/close NUMBERS,
+  // e.g. 8.5 = 08:30, plus a `closed` boolean — see models/BusinessConfig.js). Every
+  // business with hours.enabled=true and per-day hours configured had this render as
+  // literal "monday: undefined–undefined" and get injected straight into the AI's system
+  // prompt verbatim. Also fixed: `cfg?.open ? ... : 'Closed'` treated a midnight opening
+  // (open: 0) as falsy and mislabeled it "Closed"; now checks the actual `closed` flag.
+  // Also normalises hours.days when it's a live Mongoose Map (Object.entries on a Map
+  // instance returns nothing — only .lean()'d docs auto-convert it to a plain object),
+  // matching the same normalisation already done in webhookController's isWithinBusinessHours.
   const hoursLines = (() => {
     const hours = business?.hours;
     if (!hours?.enabled) return '';
-    const days = hours.days || {};
+    const daysRaw = hours.days;
+    const days = (daysRaw instanceof Map) ? Object.fromEntries(daysRaw) : (daysRaw || {});
+
+    const formatHour = (h) => {
+      if (h === undefined || h === null || Number.isNaN(h)) return null;
+      const hh = Math.floor(h);
+      const mm = Math.round((h - hh) * 60);
+      const period = hh >= 12 ? 'PM' : 'AM';
+      const hour12 = hh % 12 === 0 ? 12 : hh % 12;
+      return mm > 0 ? `${hour12}:${String(mm).padStart(2, '0')}${period}` : `${hour12}${period}`;
+    };
+
     const lines = Object.entries(days)
-      .map(([day, cfg]) => cfg?.open ? `${day}: ${cfg.openTime}–${cfg.closeTime}` : `${day}: Closed`)
+      .map(([day, cfg]) => {
+        if (cfg?.closed) return `${day}: Closed`;
+        const openStr  = formatHour(cfg?.open  ?? hours.open);
+        const closeStr = formatHour(cfg?.close ?? hours.close);
+        if (openStr === null || closeStr === null) return null;
+        return `${day}: ${openStr}–${closeStr}`;
+      })
+      .filter(Boolean)
       .join(', ');
     return lines ? `\nBusiness hours: ${lines}` : '';
   })();

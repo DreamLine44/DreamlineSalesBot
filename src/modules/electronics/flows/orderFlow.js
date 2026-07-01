@@ -50,7 +50,7 @@ import { getAIReply }     from '../../../core/ai/providers/aiRouter.js';
 import { findBestMatch }  from '../../../utils/matchEngine.js';
 import { saveOrder }      from '../../../services/orderService.js';
 import { parseQuantity }  from '../../../utils/parseQuantity.js';
-import { trackOrderAnalytics, recordRevenue } from '../../../core/analytics/analyticsService.js';
+import { trackOrderAnalytics } from '../../../core/analytics/analyticsService.js';
 import { buildPaymentInstructionsUI } from '../../../services/paymentService.js';
 import { dispatchMessage } from '../../../core/whatsapp/dispatcher.js';
 import Order from '../../../models/Order.js';
@@ -428,7 +428,21 @@ export async function handleElectronicsOrder({
           item:          data.item?.name,
           quantity:      data.quantity,
           totalPrice:    data.totalPrice,
-          fulfilment:    data.fulfilment,
+          // [AUDIT-FIX-ELEC-1] orderService.saveOrder() destructures a fixed set of
+          // fields ({ item, quantity, totalPrice, addOns, notes, customerName,
+          // customerPhone, tenantId, businessId, status }) — `fulfilment` is not one
+          // of them, and the Order schema itself has no `fulfilment` column. Passing
+          // fulfilment: data.fulfilment here was silently dropped at the destructuring
+          // step before it ever reached Mongoose, so every electronics order's
+          // pickup/delivery choice was visible in the live WhatsApp admin alert but
+          // permanently lost from the database — the dashboard order list and any
+          // later lookup (e.g. after the chat alert scrolled away) showed nothing.
+          // Every other module that captures fulfilment (bakery, retail, delivery)
+          // persists it by folding it into the free-text `notes` field, which IS in
+          // both the saveOrder() signature and the Order schema. Match that pattern.
+          notes:         data.fulfilment
+            ? `Fulfilment: ${data.fulfilment === 'DELIVERY' ? 'Delivery' : 'In-store pick-up'}`
+            : null,
           customerName:  session.customerName || null, // [FIX-SAVE-2]
           customerPhone: session.customerPhone,
           tenantId:      session.tenantId,
@@ -442,19 +456,24 @@ export async function handleElectronicsOrder({
           data.totalPrice || 0,
           session.tenantId
         ).catch(() => {});
-
-        if (data.totalPrice) {
-          recordRevenue({
-            item:          data.item?.name,
-            quantity:      data.quantity,
-            revenue:       data.totalPrice,
-            tenantId:      session.tenantId,
-            customerPhone: session.customerPhone,
-            phoneNumberId: business.phoneNumberId || null,
-          }).catch(() => {});
-        }
+        // [AUDIT-FIX-4] recordRevenue() moved to adminCommandService.confirmPayment() —
+        // recording it here at placement time counted unconfirmed/later-rejected orders
+        // as revenue. See adminCommandService.js AUDIT-FIX-4 for full rationale.
       } catch (err) {
         logger.error('[ElectronicsOrder] saveOrder failed', { err: err.message });
+        // [FIX-SAVE-ERR-ELECTRONICS] Don't fall through to payment/admin-confirm for an
+        // order that was never persisted. Clear flow and let the customer retry.
+        await updateSession(session.customerPhone, session.tenantId, {
+          currentFlow: null, step: null, data: {},
+        });
+        return {
+          type:    'buttons',
+          body:    `⚠️ *Something went wrong saving your order.*\n\nPlease try again — tap below to start over.`,
+          buttons: [
+            { id: 'ORDER',    title: '🛒 Try Again'   },
+            { id: 'SUPPORT',  title: '💬 Contact Us'  },
+          ],
+        };
       }
 
       // ── Payment configured? ───────────────────────────────────────────────

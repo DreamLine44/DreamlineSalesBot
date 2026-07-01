@@ -111,3 +111,68 @@ export async function getAnalyticsSummary(tenantId, days = 30) {
     return { orders: 0, bookings: 0, revenue: 0, days };
   }
 }
+
+// [IMPROVE-TIMESERIES] Frontend dashboards need a real chart-shaped response —
+// getAnalyticsSummary only ever returned 3 flat numbers, nothing a chart library
+// could plot. This adds a day-by-day revenue/order breakdown plus a top-items
+// list, without changing getAnalyticsSummary's existing shape (additive, not a
+// replacement — anything already calling getAnalyticsSummary is unaffected).
+export async function getAnalyticsTimeseries(tenantId, days = 30) {
+  const since = new Date(Date.now() - days * 86400000);
+  const tid   = toOid(tenantId);
+  const empty = { days, daily: [], topItems: [] };
+  if (!tid) return empty;
+
+  try {
+    const [dailyRevenue, dailyOrders, dailyBookings, topItems] = await Promise.all([
+      Analytics.aggregate([
+        { $match: { type: 'REVENUE', tenantId: tid, createdAt: { $gte: since } } },
+        { $group: {
+            _id: { $dateToString: { format: '%Y-%m-%d', date: '$createdAt' } },
+            revenue: { $sum: '$revenue' },
+        } },
+        { $sort: { _id: 1 } },
+      ]),
+      Analytics.aggregate([
+        { $match: { type: 'ORDER', tenantId: tid, createdAt: { $gte: since } } },
+        { $group: {
+            _id: { $dateToString: { format: '%Y-%m-%d', date: '$createdAt' } },
+            orders: { $sum: 1 },
+        } },
+        { $sort: { _id: 1 } },
+      ]),
+      Analytics.aggregate([
+        { $match: { type: 'BOOKING', tenantId: tid, createdAt: { $gte: since } } },
+        { $group: {
+            _id: { $dateToString: { format: '%Y-%m-%d', date: '$createdAt' } },
+            bookings: { $sum: 1 },
+        } },
+        { $sort: { _id: 1 } },
+      ]),
+      Analytics.aggregate([
+        { $match: { type: 'ORDER', tenantId: tid, createdAt: { $gte: since }, item: { $ne: null } } },
+        { $group: { _id: '$item', quantity: { $sum: '$quantity' }, orders: { $sum: 1 } } },
+        { $sort: { quantity: -1 } },
+        { $limit: 10 },
+      ]),
+    ]);
+
+    // Merge the three per-day aggregates into one row per date so the frontend
+    // gets a single array to plot rather than three separately-shaped ones.
+    const byDate = {};
+    for (const row of dailyRevenue)  (byDate[row._id] ??= { date: row._id, revenue: 0, orders: 0, bookings: 0 }).revenue  = row.revenue;
+    for (const row of dailyOrders)   (byDate[row._id] ??= { date: row._id, revenue: 0, orders: 0, bookings: 0 }).orders   = row.orders;
+    for (const row of dailyBookings) (byDate[row._id] ??= { date: row._id, revenue: 0, orders: 0, bookings: 0 }).bookings = row.bookings;
+
+    const daily = Object.values(byDate).sort((a, b) => a.date.localeCompare(b.date));
+
+    return {
+      days,
+      daily,
+      topItems: topItems.map(t => ({ item: t._id, quantity: t.quantity, orders: t.orders })),
+    };
+  } catch (err) {
+    logger.error('[Analytics] getAnalyticsTimeseries failed', { err: err.message });
+    return empty;
+  }
+}

@@ -102,9 +102,13 @@ export async function route({ action, intent, session, message, business, tenant
             // be relevant. Always append CANCEL as a contextual action since the customer
             // has an active order.
             const cfgAck = getModeConfig(business);
+            // [FIX-ACK-THROTTLE-2-COMPLETE] cfgAck was computed but never applied — the buttons
+            // stayed hardcoded to QUESTION/CANCEL, contradicting the comment above. Now uses the
+            // mode's welcome buttons (e.g. "Book a Table" / "Browse Products") plus CANCEL.
+            const modeButtons = (cfgAck.ui?.welcomeButtons || []).filter(b => b.id !== 'CANCEL');
             const throttledBtns = [
-              { id: 'QUESTION', title: '❓ Ask a Question' },
-              { id: 'CANCEL',   title: '❌ Cancel Order'   },
+              ...(modeButtons.length ? modeButtons.slice(0, 2) : [{ id: 'QUESTION', title: '❓ Ask a Question' }]),
+              { id: 'CANCEL', title: '❌ Cancel Order' },
             ];
             return {
               type:    'buttons',
@@ -403,6 +407,108 @@ export async function route({ action, intent, session, message, business, tenant
     }
 
     case 'CANCEL': {
+      // [FIX-CANCEL-1] CANCEL_BOOKING button maps here via patterns.js BUTTON_ID_MAP.
+      // cancelFlow() only clears the session — it never updates the Booking or Order
+      // document in the DB. This meant:
+      //   - Customer taps "❌ Cancel Booking" → session cleared, booking still 'pending'
+      //   - Next message → activeOrderResolver/BOOKING_CONFIRMED ack shows booking AGAIN
+      //   - Customer tap "❌ Cancel Order" → same issue for orders at non-flow states
+      // Fix: before calling cancelFlow(), cancel any active Booking and/or pending Order
+      // for this customer. Only cancel 'pending' bookings (not already confirmed ones
+      // which the admin controls), and only 'pending'/'confirmed' orders that haven't
+      // been paid and prepared yet.
+      let _bookingCancelled = false;
+      let _orderCancelled   = false;
+
+      try {
+        const { default: _CancelBooking } = await import('../../models/Booking.js');
+        const _bookingResult = await _CancelBooking.findOneAndUpdate(
+          {
+            customerPhone: session.customerPhone,
+            tenantId:      session.tenantId,
+            status:        { $in: ['pending', 'confirmed'] },
+          },
+          {
+            $set: {
+              status:      'cancelled',
+              cancelledBy: 'customer',
+              cancelledAt: new Date(),
+            },
+          },
+          { sort: { createdAt: -1 } }
+        ).catch(() => null);
+        _bookingCancelled = !!_bookingResult;
+      } catch (_) { /* non-fatal */ }
+
+      // [FIX-CANCEL-FALSE-POSITIVE] Both findOneAndUpdate results below were
+      // previously discarded (.catch(() => {}) with no success check), and
+      // cancelFlow() ran unconditionally afterwards — always replying "✅ No
+      // problem!" regardless of whether anything was actually cancelled.
+      // The Order query intentionally excludes paymentStatus 'confirmed'/'paid'
+      // (protecting orders the customer has already paid for from accidental
+      // self-cancellation), but a customer can still reach this case by TYPING
+      // "cancel my order" / "cancel it" (patterns.js CANCEL_ORDER) even when
+      // their order is already paid and in 'preparing'/'ready' status — no
+      // CANCEL button is ever shown for those states, but typed cancel phrases
+      // aren't gated by what buttons are visible. The result: the order stays
+      // active in the kitchen while the customer is falsely told it was
+      // cancelled. Track whether the write actually matched a document so we
+      // can give an honest reply instead.
+      let _uncancellableOrder = null;
+      try {
+        const { default: _CancelOrder } = await import('../../models/Order.js');
+        const _orderResult = await _CancelOrder.findOneAndUpdate(
+          {
+            customerPhone: session.customerPhone,
+            tenantId:      session.tenantId,
+            status:        { $in: ['pending', 'confirmed'] },
+            // [FIX-CANCEL-REJECTED] 'rejected' was previously in this $nin exclusion list,
+            // meaning a customer whose payment was rejected — the EXACT scenario where
+            // activeOrderResolver shows a "Payment Not Approved" card with a CANCEL button —
+            // could never actually cancel that order via this query. cancelFlow() would still
+            // reply "No problem!" (the DB write silently matched nothing), so the Order stayed
+            // status:'pending'/paymentStatus:'rejected' forever and activeOrderResolver kept
+            // re-intercepting every subsequent message with the same rejected-payment card.
+            // A rejected payment is precisely the state that SHOULD be cancellable — only
+            // already-confirmed/paid payments need protecting from accidental cancellation.
+            paymentStatus: { $nin: ['cancelled', 'confirmed', 'paid'] },
+          },
+          {
+            $set: {
+              status:        'cancelled',
+              paymentStatus: 'cancelled',
+              cancelledAt:   new Date(),
+              cancelledBy:   'customer',
+            },
+          },
+          { sort: { createdAt: -1 } }
+        ).catch(() => null);
+        _orderCancelled = !!_orderResult;
+
+        // [FIX-CANCEL-FALSE-POSITIVE] Nothing was cancelled above — check whether
+        // there's an active order that simply couldn't be self-cancelled (already
+        // paid/confirmed/preparing/ready) so we can tell the customer the truth
+        // instead of a blanket "No problem!".
+        if (!_orderCancelled) {
+          _uncancellableOrder = await _CancelOrder.findOne({
+            customerPhone: session.customerPhone,
+            tenantId:      session.tenantId,
+            status:        { $nin: ['cancelled', 'completed', 'rejected'] },
+          }).sort({ createdAt: -1 }).select('shortId status paymentStatus').lean().catch(() => null);
+        }
+      } catch (_) { /* non-fatal */ }
+
+      if (!_bookingCancelled && !_orderCancelled && _uncancellableOrder) {
+        return {
+          type: 'buttons',
+          body:
+            `⚠️ Order *#${_uncancellableOrder.shortId}* has already been confirmed and is being prepared, ` +
+            `so it can't be self-cancelled at this stage.\n\n` +
+            `Please contact us directly if you still need to cancel.`,
+          buttons: [{ id: 'SUPPORT', title: '💬 Contact Support' }],
+        };
+      }
+
       return cancelFlow(session, business);
     }
 
@@ -417,7 +523,10 @@ export async function route({ action, intent, session, message, business, tenant
             customerPhone: session.customerPhone,
             tenantId:      session.tenantId,
             status:        { $in: ['pending', 'confirmed', 'preparing'] },
-            paymentStatus: { $nin: ['cancelled', 'rejected', 'refunded'] },
+            // [FIX-CANCEL-REJECTED] Same fix as the single-order CANCEL case above —
+            // 'rejected' must not be excluded, or rejected-payment orders can never be
+            // bulk-cancelled either and keep re-appearing in the MULTIPLE_ACTIVE_ORDERS list.
+            paymentStatus: { $nin: ['cancelled', 'refunded'] },
           },
           {
             $set: {

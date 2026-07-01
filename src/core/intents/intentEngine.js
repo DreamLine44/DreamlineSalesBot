@@ -331,6 +331,14 @@ function intentToAction(intent, business) {
     // salon context. "Are you available Friday?" or "Is Maria free?" now reaches the
     // AI-powered salon Q&A handler which can answer with proper business context.
     AVAILABILITY_CHECK: 'QUESTION',
+    // [AUDIT-FIX-2] AFTERCARE is listed in getValidIntents()'s SALON/BARBERSHOP extra
+    // set, so the AI classifier is explicitly allowed to return it — but it was absent
+    // from this map, so intentToAction() fell through to 'FALLBACK'. A customer asking
+    // "how do I maintain my new hair colour?" on a fresh conversation (no currentFlow)
+    // would get the generic fallback menu instead of being routed to the salon/barbershop
+    // QUESTION handler, which already has its own aftercare-detection regex and AI context.
+    // Mapped to 'QUESTION' for the same reason AVAILABILITY_CHECK is above.
+    AFTERCARE:          'QUESTION',
     SKINCARE_ADVICE:    'SKINCARE_ADVICE',
     SIZE_GUIDE:         'ENQUIRY',
     // [FIX-5] These were listed as valid AI intents but absent from this map —

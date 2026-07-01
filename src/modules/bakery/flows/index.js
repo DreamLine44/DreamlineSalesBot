@@ -171,6 +171,19 @@ export async function handleCakeCustomization({ session, message, business, tena
         });
       } catch (err) {
         logger.error('[BakeryModule] saveCakeOrder failed', { err: err.message });
+        // [FIX-SAVE-ERR-CAKE] Don't tell the customer the cake order was placed when
+        // nothing was persisted and admin was never notified. Clear flow, let retry.
+        await updateSession(session.customerPhone, session.tenantId, {
+          currentFlow: null, step: null, data: {},
+        });
+        return {
+          type:    'buttons',
+          body:    `⚠️ *Something went wrong saving your cake order.*\n\nPlease try again — tap below to start over.`,
+          buttons: [
+            { id: 'ORDER',    title: '🎂 Try Again'   },
+            { id: 'SUPPORT',  title: '💬 Contact Us'  },
+          ],
+        };
       }
 
       // [FIX-9] Notify admin — bakery cake orders were placed silently with no alert

@@ -24,7 +24,14 @@ export async function saveOrder({ item, quantity, totalPrice, addOns, notes, cus
   });
 
   // [FIX-BUG5] Update customer memory — fire-and-forget, never blocks order completion
-  recordOrderItem(customerPhone, String(tenantId), item).catch(err =>
+  // [FIX-MEM-DOUBLECOUNT] countOrder:false — this fires on EVERY saveOrder() call,
+  // including orders that are later rejected/cancelled/abandoned. stats.totalOrders
+  // must only reflect confirmed orders, which recordConfirmedOrder() (called from
+  // adminCommandService.confirmPayment on actual admin approval) already handles.
+  // Without this flag, every approved order was counted twice — once here at save
+  // time, once again at confirmation — corrupting VIP-threshold detection and the
+  // "welcome back" returning-customer greeting logic in moduleRouter.js.
+  recordOrderItem(customerPhone, String(tenantId), item, { countOrder: false }).catch(err =>
     logger.debug('[OrderService] recordOrderItem failed (non-fatal)', { err: err.message })
   );
 

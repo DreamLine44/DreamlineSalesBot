@@ -11,6 +11,7 @@ import {
   getOrders, updateOrderStatus, getCustomerOrderHistory, notifyOrderReady,
   getBookings, updateBookingStatus,
   getAnalytics,
+  getAnalyticsTimeseriesHandler,
   getConversations, setHumanMode,
   getCustomers,
   getBusinessSettings, updateBusinessSettings,
@@ -59,6 +60,7 @@ r.patch('/:tenantId/bookings/:bookingId/status',      enforceTenantScope, update
 
 // ── Analytics ─────────────────────────────────────────────────────────────────
 r.get('/:tenantId/analytics',                         enforceTenantScope, getAnalytics);
+r.get('/:tenantId/analytics/timeseries',               enforceTenantScope, getAnalyticsTimeseriesHandler);
 
 // ── Conversations ─────────────────────────────────────────────────────────────
 r.get('/:tenantId/conversations',                     enforceTenantScope, getConversations);

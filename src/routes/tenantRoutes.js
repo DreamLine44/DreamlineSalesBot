@@ -11,7 +11,7 @@
  */
 import { Router } from 'express';
 import {
-  createTenant, listTenants, getTenant,
+  createTenant, listTenants, getTenant, getPlatformStats,
   updateTenant, updateTenantStatus, deleteTenant,
   verifyWhatsApp, rotateApiKey,
 } from '../controllers/tenantController.js';
@@ -19,6 +19,11 @@ import {
 const r = Router();
 r.post('/',                        createTenant);
 r.get('/',                         listTenants);
+// [IMPROVE-STATS] Must be registered BEFORE GET /:id — otherwise Express would
+// match "stats" as the :id param and route it into getTenant instead, the same
+// route-ordering trap already fixed elsewhere in this codebase (see
+// dashboardRoutes.js FIX-BUG13 for the customer/:orderId precedent).
+r.get('/stats',                    getPlatformStats);
 r.get('/:id',                      getTenant);
 r.patch('/:id',                    updateTenant);        // [FIX #7] update credentials / metadata
 r.put('/:id',                      updateTenant);        // [FIX-PUT] PUT alias — same handler as PATCH

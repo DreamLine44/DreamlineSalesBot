@@ -206,9 +206,32 @@ export const updateSession = async (customerPhone, tenantId, updates = {}, inc =
   // humanMode=true uses a 24h TTL so the session doesn't expire mid-conversation.
   // humanMode=false returns to the standard session TTL.
   const humanModeChanging = updates.humanMode !== undefined;
-  if (updates.step !== undefined || updates.currentFlow !== undefined || stepHint || humanModeChanging) {
-    const effectiveStep    = updates.step || stepHint;
-    const effectiveHuman   = humanModeChanging ? updates.humanMode : undefined;
+  const ttlNeedsRecompute = updates.step !== undefined || updates.currentFlow !== undefined || stepHint || humanModeChanging;
+
+  if (ttlNeedsRecompute) {
+    const effectiveStep = updates.step || stepHint;
+    let effectiveHuman;
+    if (humanModeChanging) {
+      effectiveHuman = updates.humanMode;
+    } else {
+      // [FIX-SES-8] This update changes step/currentFlow but does NOT mention
+      // humanMode — e.g. adminCommandService confirming/rejecting an order or
+      // booking, which always sets `currentFlow: null, step: null` regardless
+      // of the customer's current humanMode state. Previously this branch left
+      // effectiveHuman as `undefined`, so resolveTTL() silently fell back to the
+      // 30-minute default — even when the session's *existing* humanMode was
+      // true. That meant any admin action touching step/currentFlow on a
+      // customer the admin had manually taken over would quietly collapse the
+      // 24h human-mode TTL back to 30 minutes, defeating [FIX-HM-2] (the bot
+      // could "wake up" and respond again mid-conversation without the admin
+      // ever typing RESUME BOT). Look up the session's current humanMode so
+      // the TTL is computed against the real state, not just this patch.
+      const existing = await Session.findOne(
+        { phone: key, tenantId: String(tenantId) },
+        { humanMode: 1 }
+      ).lean().catch(() => null);
+      effectiveHuman = existing?.humanMode === true;
+    }
     patch.expiresAt = new Date(Date.now() + resolveTTL(effectiveStep, effectiveHuman));
   }
 

@@ -70,6 +70,21 @@ if (!isProduction) {
   allowedOrigins.push('http://localhost:3000', 'http://localhost:5000');
 }
 
+// [IMPROVE-CORS-WARN] A missing CORS_ORIGIN in production doesn't throw or crash —
+// it just makes every browser request from the real frontend fail with a CORS
+// error that never even reaches this app's error handler (the browser blocks it
+// client-side). That failure mode is invisible in server logs, so surface it loudly
+// at boot instead of only discovering it via a confused "the frontend is broken"
+// report later.
+if (isProduction && allowedOrigins.length === 0) {
+  logger.warn(
+    '[CORS] CORS_ORIGIN is not set in production — every browser request from the ' +
+    'frontend will be silently rejected by the browser (not by this server, so it ' +
+    'will not appear in these logs). Set CORS_ORIGIN to the frontend\'s deployed ' +
+    'domain(s), comma-separated, e.g. CORS_ORIGIN=https://what-sales.vercel.app'
+  );
+}
+
 app.use(cors({
   origin: (origin, cb) => {
     // Allow requests with no origin (server-to-server, curl, Postman)
@@ -177,6 +192,23 @@ async function start() {
   logger.info('[AI] Mock:  always available (deterministic fallback)');
   if (!ai.groq.ok && isProduction) {
     logger.warn('[AI] WARNING: No live AI provider in production — mock/deterministic fallback active');
+  }
+
+  // [IMPROVE-ENCRYPTION-WARN] tenantController's encryptToken() silently falls
+  // back to storing WhatsApp accessToken/verifyToken/webhookSecret/meta.appSecret
+  // as PLAINTEXT if ENCRYPTION_KEY is unset — with only a per-call debug-level log
+  // line, easy to miss entirely in normal operation. Surface this once, loudly, at
+  // boot, since these are real tenant secrets (each tenant's own dedicated Meta
+  // app credentials), not placeholder data.
+  if (!process.env.ENCRYPTION_KEY) {
+    logger.warn(
+      '[SECURITY] ENCRYPTION_KEY is not set — WhatsApp access tokens, verify tokens, ' +
+      'webhook secrets, and Meta app secrets will be stored in PLAINTEXT in MongoDB ' +
+      'for every tenant. Set ENCRYPTION_KEY (any non-empty string — it is SHA-256 ' +
+      'hashed internally) in your Railway environment, then re-save each existing ' +
+      "tenant's WhatsApp credentials once to encrypt values that were saved before " +
+      'this was set (existing plaintext values do not retroactively encrypt themselves).'
+    );
   }
 
   startScheduler();

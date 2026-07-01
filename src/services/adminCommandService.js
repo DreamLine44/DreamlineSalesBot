@@ -251,16 +251,41 @@ export async function handleAdminTextCommand(text, tenantId, adminPhone, tenantD
           .limit(10)
           .lean()
           .catch(() => []);
-        const phoneList = remainingSessions
-          .map(s => `  \u2022 \`RESUME BOT ${s.customerPhone}\``)
-          .join('\n');
-        return (
+        // [FIX-RESUME-NOPHONE-BTN] Previously this returned a plain-text list of
+        // backtick `RESUME BOT <phone>` commands the admin had to read and re-type —
+        // the exact copy-paste UX the single-customer RESUME_BOT_<phone> button (set
+        // in moduleRouter's SUPPORT escalation) was built to avoid. Now matches that
+        // same one-tap pattern: ≤3 remaining customers get inline buttons, more than
+        // that get a tappable list (WhatsApp's interactive caps), each row resolving
+        // straight to resumeBot() via the existing RESUME_BOT_ admin-button guard in
+        // webhookController — no typing required either way.
+        const introText =
           resumeReply +
           `\n\n⚠️ *${remaining} other customer${remaining > 1 ? 's are' : ' is'} still in human-mode.*\n` +
-          (phoneList
-            ? `Resume them individually:\n${phoneList}`
-            : `Use \`RESUME BOT <phone>\` to resume them individually.`)
-        );
+          `Tap a customer below to resume them:`;
+        if (remainingSessions.length <= 3) {
+          return {
+            type:    'buttons',
+            body:    introText,
+            buttons: remainingSessions.map(s => ({
+              id:    `RESUME_BOT_${s.customerPhone.replace(/[^0-9+]/g, '')}`,
+              title: `▶️ ${s.customerPhone}`.slice(0, 20),
+            })),
+          };
+        }
+        return {
+          type:   'list',
+          body:   introText,
+          button: 'Resume a customer',
+          sections: [{
+            title: 'Human-mode customers',
+            rows:  remainingSessions.map(s => ({
+              id:          `RESUME_BOT_${s.customerPhone.replace(/[^0-9+]/g, '')}`,
+              title:       s.customerPhone.slice(0, 24),
+              description: 'Tap to resume the bot for this customer',
+            })),
+          }],
+        };
       }
       return resumeReply;
     }
@@ -362,9 +387,7 @@ async function confirmPayment(shortId, tenantId, adminPhone, tenantDoc, business
     // [FIX-ETA] Use business.settings.estimatedDeliveryMinutes if configured (mirrors postFlowHandler
     // [PFH-3]). Previously hardcoded "20–30 minutes" — wrong for bakeries, salons, retail etc.
     const etaMins = business?.settings?.estimatedDeliveryMinutes;
-    const etaLine = etaMins
-      ? `⏱️  Estimated time: ${etaMins} minutes.\n\n`
-      : `⏱️  Estimated time: 20–30 minutes.\n\n`;
+    // [CLEANUP] etaLine removed — superseded by etaLineToShow below (FIX-SALON-18), was dead code.
     // [FIX-SALON-18] Mode-aware order confirmation message. Previously hardcoded
     // "🍳 Our kitchen is now preparing your order" for ALL business modes — wrong
     // for salon/barbershop/retail where there is no kitchen. Now uses a generic
@@ -422,6 +445,31 @@ async function confirmPayment(shortId, tenantId, adminPhone, tenantDoc, business
     import('../core/memory/customerMemory.js')
       .then(m => m.recordConfirmedOrder(order.customerPhone, String(tenantId), order.item))
       .catch(() => {});
+
+    // [AUDIT-FIX-4] recordRevenue() was previously called by every module at the moment
+    // saveOrder() succeeded — i.e. before any payment was verified. An order that was
+    // later rejected by the admin or self-cancelled by the customer had already been
+    // counted as revenue, permanently inflating the dashboard's "last30Days.revenue"
+    // figure with money that was never actually received. This mirrors the exact
+    // double-counting class already fixed for stats.totalOrders (see MEM-FIX-1 above) —
+    // recordOrderItem() there was split into "placed" vs "confirmed" counting so
+    // totalOrders only reflects real completed orders, but the analogous fix was never
+    // applied to revenue. Moving the single recordRevenue() call here — the one place
+    // that runs only once, only on an admin-approved payment (proof-verified or cash
+    // self-confirm both funnel through this function) — makes revenue reflect money
+    // actually confirmed, consistent with how totalOrders is already counted.
+    if (order.totalPrice) {
+      import('../core/analytics/analyticsService.js')
+        .then(m => m.recordRevenue({
+          item:          order.item,
+          quantity:      order.quantity,
+          revenue:       order.totalPrice,
+          tenantId,
+          customerPhone: order.customerPhone,
+          phoneNumberId: business?.phoneNumberId || null,
+        }))
+        .catch(() => {});
+    }
 
     logger.info('[AdminCmd] Payment confirmed', { shortId, adminPhone });
     // [FIX-READY-BTN] Return a button message to the admin instead of plain text.

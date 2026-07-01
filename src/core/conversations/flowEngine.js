@@ -127,8 +127,42 @@ export async function startFlow({ flowName, session, business, tenant }) {
 /**
  * cancelFlow(session, business)
  * Cleanly cancels the active flow.
+ *
+ * [FIX-CANCEL-3] Previously this function only cleared the in-memory session
+ * (currentFlow/step/data) and never touched the actual Booking document in
+ * MongoDB. That meant a customer tapping "Cancel Booking" got a friendly
+ * "No problem!" reply, but the Booking record stayed status:'confirmed' (or
+ * 'pending') in the DB. The very next message ("hi") would re-trigger the
+ * active-booking lookup in moduleRouter.js, find that still-confirmed
+ * booking, and show it to the customer again as if nothing happened.
+ *
+ * A fix for this (FIX-CANCEL-2) was previously written directly in
+ * webhookController.js's global-escape CANCEL_BOOKING branch, but a botched
+ * edit merged that branch's guarding `if (...)  {` into a comment via a
+ * literal "\n" instead of a real newline, so the fix never actually ran.
+ *
+ * Moving the DB-cancel here means every caller of cancelFlow() — the global
+ * escape handler in webhookController.js, and the CANCEL_BOOKING branches in
+ * postFlowHandler.js's handleBookingConfirmed() and handleWalkInQueueAck() —
+ * gets the real cancellation for free, instead of each call site needing to
+ * remember to do it themselves.
  */
 export async function cancelFlow(session, business) {
+  // [FIX-CANCEL-3] Cancel the customer's most recent active Booking (if any)
+  // before clearing the session. Scoped to pending/confirmed so completed or
+  // already-cancelled bookings are left untouched. Non-fatal: a booking-cancel
+  // failure should never block the session reset / reply to the customer.
+  try {
+    const { default: Booking } = await import('../../models/Booking.js');
+    await Booking.findOneAndUpdate(
+      { customerPhone: session.customerPhone, tenantId: session.tenantId, status: { $in: ['pending', 'confirmed'] } },
+      { $set: { status: 'cancelled', cancelledBy: 'customer', cancelledAt: new Date() } },
+      { sort: { createdAt: -1 } }
+    );
+  } catch (err) {
+    logger.debug('[FlowEngine] cancelFlow: booking cancel skipped (non-fatal)', { err: err.message });
+  }
+
   await updateSession(session.customerPhone, session.tenantId, {
     currentFlow: null, step: null, data: {}, postFlowAck: null,
   });

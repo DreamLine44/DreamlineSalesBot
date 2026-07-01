@@ -234,9 +234,25 @@ export async function handleGeneralEnquiry({ session, message, business, tenant 
           quantity:      1,
           notes:         data.description,
           status:        'pending',
+          // [FIX-GENERAL-1] businessId was missing — without it this enquiry record has
+          // no link back to the BusinessConfig, breaking business-scoped admin views.
+          businessId:    business._id,
         });
       } catch (err) {
         logger.warn('[General] saveOrder failed for enquiry:', err.message);
+        // [FIX-SAVE-ERR-GENERAL] Don't confirm an enquiry that was never persisted —
+        // the admin alert below would also be misleading since there's no DB record.
+        await updateSession(session.customerPhone, session.tenantId, {
+          currentFlow: null, step: null, data: {},
+        });
+        return {
+          type:    'buttons',
+          body:    `⚠️ *Something went wrong submitting your enquiry.*\n\nPlease try again — tap below to start over.`,
+          buttons: [
+            { id: 'ENQUIRY', title: '📝 Try Again'   },
+            { id: 'SUPPORT', title: '💬 Contact Us'  },
+          ],
+        };
       }
 
       const adminPhone = business?.adminPhone;

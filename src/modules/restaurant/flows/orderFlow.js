@@ -29,7 +29,7 @@ import { findBestMatch }    from '../../../utils/matchEngine.js';
 import { buildMenuUI, buildOrderSummary, buildOrderSuccess } from '../handlers/uiBuilders.js';
 import { parseQuantity }    from '../../../utils/parseQuantity.js';
 import { saveOrder }        from '../../../services/orderService.js';
-import { recordRevenue, trackOrderAnalytics } from '../../../core/analytics/analyticsService.js';
+import { trackOrderAnalytics } from '../../../core/analytics/analyticsService.js';
 import { dispatchText }     from '../../../core/whatsapp/dispatcher.js';
 import { buildPaymentInstructionsUI } from '../../../services/paymentService.js';
 import { buildWhatsAppImageUrl }       from '../../../config/cloudinary.js';
@@ -291,17 +291,9 @@ export async function handleOrderFlow({ session, message, business, tenant, isIn
           data.totalPrice || 0,
           session.tenantId
         ).catch(() => {});
-
-        if (data.totalPrice) {
-          recordRevenue({
-            item:          data.item?.name,
-            quantity:      data.quantity,
-            revenue:       data.totalPrice,
-            tenantId:      session.tenantId,
-            customerPhone: session.customerPhone,
-            phoneNumberId: business.phoneNumberId || null,
-          }).catch(() => {});
-        }
+        // [AUDIT-FIX-4] recordRevenue() moved to adminCommandService.confirmPayment() —
+        // recording it here at placement time counted unconfirmed/later-rejected orders
+        // as revenue. See adminCommandService.js AUDIT-FIX-4 for full rationale.
       } catch (err) {
         logger.error('[OrderFlow] saveOrder failed', { err: err.message });
         // [FIX-SAVE-ERR] If we couldn't persist the order, do NOT proceed to payment

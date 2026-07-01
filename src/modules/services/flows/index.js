@@ -76,14 +76,18 @@ export async function handleEnquiryFlow({ session, message, business, tenant }) 
     });
 
     const serviceTypes = _getServiceTypes(business);
+    // [FIX-SERVICES-LIST-CAP] WhatsApp interactive lists hard-cap at 10 rows; tenant-configured
+    // service lists could silently exceed that and fail to send. Cap + notify via footer.
     return {
       type: 'list',
       body: '📋 *Get a Quote*\n\nWhat type of service are you looking for?\n\n_(Tap one below or type your answer)_',
       sections: [{
         title: 'Service Types',
-        rows: serviceTypes.map(s => ({ id: `SVC_${s.toUpperCase().replace(/\s+/g, '_')}`, title: s })),
+        rows: serviceTypes.slice(0, 10).map(s => ({ id: `SVC_${s.toUpperCase().replace(/\s+/g, '_')}`, title: s })),
       }],
-      footer: 'Tap a service or type your own',
+      footer: serviceTypes.length > 10
+        ? `Showing 10 of ${serviceTypes.length} — type your service if not listed`
+        : 'Tap a service or type your own',
     };
   }
 
@@ -223,9 +227,25 @@ export async function handleEnquiryFlow({ session, message, business, tenant }) 
           quantity:      1,
           notes:         `Desc: ${data.description} | Budget: ${data.budget} | Timeline: ${data.timeline}`,
           status:        'pending',
+          // [FIX-SERVICES-1] businessId was missing — without it this quote-request record
+          // has no link back to the BusinessConfig, breaking business-scoped admin views.
+          businessId:    business._id,
         });
       } catch (err) {
         logger.warn('[Services] saveOrder failed for enquiry:', err.message);
+        // [FIX-SAVE-ERR-SERVICES] Don't confirm a quote request that was never
+        // persisted — the admin alert below would also be misleading.
+        await updateSession(session.customerPhone, session.tenantId, {
+          currentFlow: null, step: null, data: {},
+        });
+        return {
+          type:    'buttons',
+          body:    `⚠️ *Something went wrong submitting your quote request.*\n\nPlease try again — tap below to start over.`,
+          buttons: [
+            { id: 'ENQUIRY', title: '📋 Try Again'   },
+            { id: 'SUPPORT', title: '💬 Contact Us'  },
+          ],
+        };
       }
 
       const adminPhone = business?.adminPhone;
@@ -343,13 +363,16 @@ function _getServiceTypes(business) {
 
 function _askServiceType(business) {
   const serviceTypes = _getServiceTypes(business);
+  // [FIX-SERVICES-LIST-CAP] same 10-row hard cap fix as INIT handler above.
   return {
     type: 'list',
     body: '📋 *Get a Quote*\n\nWhat type of service are you looking for?',
     sections: [{
       title: 'Service Types',
-      rows: serviceTypes.map(s => ({ id: `SVC_${s.toUpperCase().replace(/\s+/g, '_')}`, title: s })),
+      rows: serviceTypes.slice(0, 10).map(s => ({ id: `SVC_${s.toUpperCase().replace(/\s+/g, '_')}`, title: s })),
     }],
-    footer: 'Tap a service or type your own',
+    footer: serviceTypes.length > 10
+      ? `Showing 10 of ${serviceTypes.length} — type your service if not listed`
+      : 'Tap a service or type your own',
   };
 }
