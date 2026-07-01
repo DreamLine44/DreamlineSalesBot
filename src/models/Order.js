@@ -201,6 +201,18 @@ orderSchema.index({ tenantId: 1, customerPhone: 1, idempotencyKey: 1 }, { unique
 // Covers the (tenantId, paymentStatus, shortId) triple used in adminPaymentHandler.
 orderSchema.index({ tenantId: 1, paymentStatus: 1, shortId: 1 });
 
+// [AUDIT-FIX-TRACE-7] Compound index for customer-facing status lookups —
+// activeOrderResolver.resolveActiveOrder(), the TRACK_ORDER action handler, and the
+// step-14.6 quick STATUS command in webhookController all query
+// Order.find/findOne({ customerPhone, tenantId, status: ... }).sort({ createdAt: -1 }).
+// Without this index those queries fall back to the (tenantId, customerPhone,
+// idempotencyKey) unique index, which does not cover a createdAt sort — Mongo
+// would do an in-memory sort per lookup. This mirrors the equivalent index already
+// present on the Booking model (bookingSchema.index({ tenantId, customerPhone,
+// createdAt: -1 })) so both collections are indexed the same way for the same
+// "does this customer have anything active?" access pattern.
+orderSchema.index({ tenantId: 1, customerPhone: 1, createdAt: -1 });
+
 // Populate shortId (last 6 hex chars of _id) before the first save so admin commands
 // like "APPROVE ABC123" can resolve via a simple indexed findOne({ shortId }) instead
 // of an unindexed $expr/$regexMatch scan across the _id string.

@@ -124,6 +124,7 @@
 
 import { getSession, createSession, updateSession } from '../core/sessions/sessionService.js';
 import { detectIntent, extractCustomerName }         from '../core/intents/intentEngine.js';
+import { INTENT_PATTERNS }                           from '../core/intents/patterns.js';
 import { updateName as persistCustomerName }         from '../core/memory/customerMemory.js';
 import { advance }                                   from '../core/conversations/flowEngine.js';
 import { route }                                     from '../core/conversations/moduleRouter.js';
@@ -291,7 +292,11 @@ const FLOW_PASSTHROUGH_IDS = new Set([
   // ── Delivery address ─────────────────────────────────────────────────────
   'USE_SAVED_ADDRESS','NEW_ADDRESS',
   // ── Retail fulfilment ─────────────────────────────────────────────────────
-  'PICKUP','DELIVERY',
+  // [FIX-BAKERY-COLLECT] 'COLLECT' is bakery's fulfilment button ID (every other
+  // module uses 'PICKUP' for the equivalent option). Without it here, tapping
+  // "🏪 Collect In-Store" mid-flow failed the stale-button validation below and
+  // showed "that option is no longer available" for the exact button just shown.
+  'PICKUP','DELIVERY','COLLECT',
   // ── Services module: budget + timeline ───────────────────────────────────
   'BUDGET_DISCUSS','BUDGET_SMALL','BUDGET_MED','BUDGET_LARGE',
   'TL_ASAP','TL_WEEK','TL_MONTH','TL_FLEX',
@@ -599,6 +604,13 @@ const MFQ_DATE_TIME_STEPS = new Set([
   'BOOKING_DATE', 'BOOKING_TIME', 'PICKUP_TIME', 'CUSTOM_TIME',
 ]);
 
+// ── Quick STATUS command — single source of truth ─────────────────────────
+// Used both by the no-flow fast path (step 14.6 below) and by the mid-flow
+// STATUS escape (_detectMidFlowStatusRequest above). Hoisted to module scope
+// so both call sites always agree on exactly which phrases count as a status
+// request — see [AUDIT-FIX-TRACE-1] / [AUDIT-FIX-TRACE-6] for the history.
+const STATUS_CMD_RE = /^(status|order status|my order|my orders|where is my order|check order|track my order|track|check my order|my booking|my bookings|booking status|where is my booking|check booking|check my booking|track my booking|my appointment|check my appointment|appointment status|my reservation|check my reservation|reservation status|my activities|my activity|active orders?|active bookings?|do i have any active orders?|do i have any active bookings?|do i have an active order|do i have an active booking|any active orders?|any active bookings?|any active order or booking|do i have any orders?|do i have any bookings?)$/i;
+
 // Explicit question-intent keywords/phrases (lowercase, normalised)
 // IMPORTANT: these must be SPECIFIC enough that they never match valid flow answers.
 // "how much" is safe — it's a price question, never a valid item name or quantity.
@@ -626,6 +638,65 @@ const MFQ_QUESTION_KEYWORDS = new Set([
 
 // Regex for classic question forms: starts with wh-/how/can/is/are/do/does/would/could
 const MFQ_QUESTION_RE = /^(wh(at|o|y|en|ere|ich)|how|can|is|are|do|does|would|could|will|shall|may|might)\b/i;
+
+// ── [FIX-SUPPORT-ESCAPE] Mid-Flow Support/Admin Escalation detector ──────────
+//
+// PROBLEM: a customer mid-flow (e.g. at the BOOKING step "How many guests will
+// be dining?") types "want to talk to the admin". This is not question-shaped
+// (doesn't start with a wh-word, no "?"), so _detectMidFlowQuestion never fires.
+// Only CANCEL/CANCEL_BOOKING/CANCEL_ORDER and SHOW_MENU/0/MENU/HOME were treated
+// as "global escape intents" for active flows — every other typed message,
+// including an explicit request for a human, fell straight through to advance(),
+// which silently re-displayed the current flow prompt in an infinite loop.
+//
+// FIX: mirror the CANCEL/SHOW_MENU escape check with a SUPPORT escape check, run
+// BEFORE the MFQ question intercept so an explicit "talk to admin" always wins.
+// Uses the same SUPPORT keyword list as top-level intent detection (single source
+// of truth in core/intents/patterns.js) so adding a new admin phrase there also
+// fixes mid-flow escalation with no other code change needed.
+function _detectMidFlowSupportRequest(text, session) {
+  const step  = (session.step || '').toUpperCase();
+  const clean = text.toLowerCase().replace(/[^\w\s]/g, ' ').replace(/\s+/g, ' ').trim();
+
+  // Never intercept genuinely free-text fields where a keyword could appear
+  // incidentally as part of a real answer (e.g. an address or note).
+  if (MFQ_FREE_TEXT_STEPS.has(step) || MFQ_DATE_TIME_STEPS.has(step)) return false;
+  if (step === 'PAYMENT_PROOF') return false;
+  if (!clean || clean.length < 3) return false;
+
+  const words = clean.split(' ');
+  for (const kw of (INTENT_PATTERNS.SUPPORT || [])) {
+    if (kw.includes(' ')) {
+      if (clean === kw || clean.startsWith(kw + ' ') || clean.includes(' ' + kw)) return true;
+    } else if (words.includes(kw)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+// ── [AUDIT-FIX-TRACE-6] Mid-Flow Order/Booking-Status Escape detector ────────
+//
+// PROBLEM: the "works from any state" quick STATUS command (step 14.6, see
+// STATUS_CMD_RE below) only runs when `!session.currentFlow` — so a customer who
+// is mid-flow (e.g. halfway through a NEW booking) and types "my booking" or
+// "active orders" to check on something OLDER never reaches it. That message
+// falls through to advance(), which silently re-displays the current flow step
+// — the exact same infinite-loop shape as the SUPPORT and MFQ-question gaps
+// above, just for status questions. This matters most for the "lost my phone /
+// chat history" case this feature exists for: that customer has no way to know
+// they're mid-flow, so they just type their status question wherever they land.
+//
+// FIX: same tier as the SUPPORT escape — exact-phrase match only (reusing
+// STATUS_CMD_RE, the single source of truth already used by the no-flow fast
+// path) so it never hijacks a genuine free-text flow answer.
+function _detectMidFlowStatusRequest(text, session) {
+  const step = (session.step || '').toUpperCase();
+  if (MFQ_FREE_TEXT_STEPS.has(step) || MFQ_DATE_TIME_STEPS.has(step)) return false;
+  if (step === 'PAYMENT_PROOF') return false;
+  if (!text) return false;
+  return STATUS_CMD_RE.test(text.trim());
+}
 
 function _detectMidFlowQuestion(text, session) {
   const step  = (session.step  || '').toUpperCase();
@@ -1544,8 +1615,17 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
   if (isInteractive && messageText && /^ORDER_STATUS_[A-Z0-9]+$/i.test(messageText.trim().toUpperCase())) {
     const pickedShortId = messageText.trim().toUpperCase().replace('ORDER_STATUS_', '');
     if (pickedShortId) {
+      // [AUDIT-FIX-TRACE-4] This query was missing `customerPhone: from` — every other
+      // order lookup in this file (pendingOrder, rejectedOrder, COLLECTED_* handler)
+      // scopes to the requesting customer's own phone number in addition to tenantId.
+      // Without it, this handler would return full order details (item, price, status,
+      // payment state) for ANY order belonging to the tenant, to whoever supplied a
+      // matching shortId — not just the order's owner. In normal use the shortId always
+      // belongs to the tapping customer because activeOrderResolver._multipleOrders()
+      // only ever builds this button from that customer's own phone-scoped order list,
+      // but the query itself should not rely on that being the only way to reach here.
       const pickedOrder = await Order.findOne({
-        shortId: pickedShortId, tenantId,
+        shortId: pickedShortId, tenantId, customerPhone: from,
         status: { $nin: ['cancelled', 'completed'] },
       }).select('item quantity shortId status paymentStatus totalPrice').lean().catch(() => null);
 
@@ -1590,8 +1670,14 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
     const shortIdCollect = messageText.trim().toUpperCase().replace('COLLECTED_', '');
     if (shortIdCollect) {
       // [FIX-IMPORT-2] Order now a top-level import — removed redundant dynamic import
+      // [AUDIT-FIX-TRACE-5] Was missing `customerPhone: from` — without it, any customer
+      // who learned another customer's order shortId (e.g. by observing a receipt or
+      // guessing) could tap/replay a COLLECTED_<shortId> id and mark THAT customer's
+      // order as completed, even though it wasn't theirs. Scoped to match the same
+      // customerPhone + tenantId pattern used by every other customer-triggered
+      // order write in this file.
       await Order.findOneAndUpdate(
-        { shortId: shortIdCollect, tenantId, status: { $in: ['ready', 'confirmed'] } },
+        { shortId: shortIdCollect, tenantId, customerPhone: from, status: { $in: ['ready', 'confirmed'] } },
         { $set: { status: 'completed', completedAt: new Date() } }
       ).catch(() => {});
     }
@@ -1612,44 +1698,96 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
   // ── 14.6. Quick STATUS command — works from any state, no flow required ─────
   // [QSC-1] Customers in The Gambia often message simple words like "status", "update",
   // "my order" at any point in a conversation. This intercept handles those before
-  // intent detection so they always get an instant, accurate order summary regardless
-  // of session state — no button navigation required.
-  const STATUS_CMD_RE = /^(status|order status|my order|where is my order|check order|track my order|track|check my order)$/i;
+  // intent detection so they always get an instant, accurate order/booking summary
+  // regardless of session state — no button navigation required. Since the lookup is
+  // keyed on customerPhone (not session), it also covers a customer who lost their
+  // WhatsApp chat history and is asking cold "what's the status of my stuff?" — the
+  // DB, not the chat, is the source of truth here.
+  //
+  // [AUDIT-FIX-TRACE-1] STATUS_CMD_RE only recognised order-flavoured phrasing
+  // ("my order", "track my order", "check order") — a SALON/BARBERSHOP/SERVICES
+  // customer typing "my booking", "booking status" or "check my appointment" never
+  // matched, so this fast path silently skipped them. Worse: even when it DID match
+  // (e.g. bare "status"), the handler only ever queried the Order collection — a
+  // customer with an active booking but no order got "No recent order — fall through"
+  // instead of their booking info. This is the same "order OR booking" gap already
+  // fixed for the TRACK_ORDER action (see AUDIT-FIX-14 in core/shared/moduleRegistry.js)
+  // but that fix never touched this separate, earlier-running quick-command path.
+  // Fixed by (1) adding booking phrasing to the regex and (2) always checking both
+  // Order and Booking, reporting on whichever actually exist.
+  // (STATUS_CMD_RE is now declared once at module scope — see above — so this
+  // no-flow fast path and the mid-flow STATUS escape share one definition.)
   if (messageText && STATUS_CMD_RE.test(messageText.trim()) && !session.currentFlow) {
     try {
-      const recentOrder = await Order.findOne({
-        customerPhone: from,
-        tenantId,
-        status: { $nin: ['cancelled'] },
-      }).select('item quantity shortId status paymentStatus createdAt').sort({ createdAt: -1 }).lean();
+      const { getActiveBooking } = await import('../services/bookingService.js');
+      const [recentOrder, activeBooking] = await Promise.all([
+        Order.findOne({
+          customerPhone: from,
+          tenantId,
+          status: { $nin: ['cancelled'] },
+        }).select('item quantity shortId status paymentStatus createdAt').sort({ createdAt: -1 }).lean(),
+        getActiveBooking(from, tenantId).catch(() => null),
+      ]);
 
-      if (recentOrder) {
-        const statusMap = {
-          pending:   '⏳ Waiting for our team to confirm',
-          confirmed: '🍳 Being prepared',
-          ready:     '✅ Ready for collection!',
-          completed: '✅ Completed — thank you!',
-        };
-        const payMap = {
-          unpaid:         '💳 Awaiting payment',
-          proof_received: '📸 Payment screenshot received — verifying',
-          verified:       '✅ Payment verified',
-          paid:           '✅ Paid',
-          confirmed:      '✅ Payment confirmed',
-          rejected:       '❌ Payment rejected — please resubmit',
-        };
-        await dispatchMessage(from, {
-          type: 'text',
-          body:
+      if (recentOrder || activeBooking) {
+        const parts = [];
+
+        if (recentOrder) {
+          // [AUDIT-FIX-TRACE-2] statusMap was missing several real Order.status values
+          // ('preparing', 'out_for_delivery', 'delivered', 'payment_pending_verification'),
+          // so a customer whose order was in one of those states saw the raw internal
+          // status string (e.g. "payment_pending_verification") instead of a readable
+          // label. Filled in to match the labels activeOrderResolver.js already uses
+          // elsewhere, so the same status always reads the same way to the customer.
+          const statusMap = {
+            pending:                      '⏳ Waiting for our team to confirm',
+            payment_pending_verification: '⏳ Awaiting payment verification',
+            confirmed:                    '🍳 Being prepared',
+            preparing:                    '👨‍🍳 Being prepared',
+            ready:                        '✅ Ready for collection!',
+            out_for_delivery:             '🚚 Out for delivery',
+            delivered:                    '✅ Delivered',
+            completed:                    '✅ Completed — thank you!',
+          };
+          const payMap = {
+            unpaid:         '💳 Awaiting payment',
+            proof_received: '📸 Payment screenshot received — verifying',
+            verified:       '✅ Payment verified',
+            paid:           '✅ Paid',
+            confirmed:      '✅ Payment confirmed',
+            rejected:       '❌ Payment rejected — please resubmit',
+          };
+          parts.push(
             `📦 *Order Update*\n\n` +
             `• Item: *${recentOrder.item}* × ${recentOrder.quantity}\n` +
             `• Ref: *#${recentOrder.shortId}*\n` +
             `• Status: ${statusMap[recentOrder.status] || recentOrder.status}\n` +
-            `• Payment: ${payMap[recentOrder.paymentStatus] || recentOrder.paymentStatus}`,
+            `• Payment: ${payMap[recentOrder.paymentStatus] || recentOrder.paymentStatus}`
+          );
+        }
+
+        if (activeBooking) {
+          const bookingStatusMap = {
+            pending:   '⏳ Awaiting confirmation',
+            confirmed: '✅ Confirmed',
+          };
+          const when = [activeBooking.date, activeBooking.time].filter(Boolean).join(' at ');
+          parts.push(
+            `📅 *Booking Update*\n\n` +
+            (activeBooking.service ? `• Service: *${activeBooking.service}*\n` : '') +
+            (when ? `• When: *${when}*\n` : '') +
+            `• Ref: *#${activeBooking.shortId}*\n` +
+            `• Status: ${bookingStatusMap[activeBooking.status] || activeBooking.status}`
+          );
+        }
+
+        await dispatchMessage(from, {
+          type: 'text',
+          body: parts.join('\n\n'),
         }, tenantDoc);
         return;
       }
-      // No recent order — fall through to intent detection
+      // No recent order and no active booking — fall through to intent detection
     } catch (err) {
       logger.debug('[Webhook] STATUS command lookup failed (non-fatal)', { err: err.message });
       // Non-fatal — fall through to intent detection
@@ -1884,6 +2022,39 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
       return;
     }
 
+    // [FIX-SUPPORT-ESCAPE] SUPPORT is now a global escape intent, same tier as
+    // CANCEL/SHOW_MENU above. Covers both a direct button tap (e.g. "Contact
+    // Support" shown outside its normally-validated steps) and typed requests
+    // for a human/admin — see _detectMidFlowSupportRequest for the matching rules.
+    if (
+      (isInteractive && upperMsg === 'SUPPORT') ||
+      (!isInteractive && _detectMidFlowSupportRequest(messageText, session))
+    ) {
+      const reply = await route({
+        action: 'SUPPORT', intent: 'SUPPORT', session, message: messageText,
+        business, tenant: tenantDoc, isInteractive,
+      });
+      if (reply) await dispatchMessage(from, reply, tenantDoc);
+      return;
+    }
+
+    // [AUDIT-FIX-TRACE-6] ORDER/BOOKING-STATUS is also a global escape intent —
+    // same loop bug as SUPPORT above, applied to "my booking" / "active orders"
+    // style status questions typed mid-flow. A customer who lost their chat
+    // history and comes back cold has no way to know they're mid-flow — they'll
+    // just type their status question wherever they land, so this must work
+    // from inside a flow too, not only from the step 14.6 no-flow fast path.
+    // Exact-phrase match only (STATUS_CMD_RE), deliberately conservative so a
+    // genuine free-text flow answer is never hijacked.
+    if (!isInteractive && _detectMidFlowStatusRequest(messageText, session)) {
+      const reply = await route({
+        action: 'TRACK_ORDER', intent: 'TRACK_ORDER', session, message: messageText,
+        business, tenant: tenantDoc, isInteractive,
+      });
+      if (reply) await dispatchMessage(from, reply, tenantDoc);
+      return;
+    }
+
     // ── 15.1. [MFQ] Mid-Flow Question Intercept ───────────────────────────
     // CONTEXT: The customer is inside an active flow (booking, order, etc.) and has
     // sent a free-text message that looks like a question or question intent.
@@ -1939,13 +2110,43 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
         // If the customer already typed their question (captured in _mfqPendingQuestion),
         // answer it immediately. Otherwise ask them to type it.
         if (pendingQ && pendingQ.length >= 4) {
-          // Answer the pending question directly
-          const { getAIReply } = await import('../core/ai/providers/aiRouter.js');
-          const aiText = await getAIReply({ customerMessage: pendingQ, business, session, intent: 'QUESTION' }).catch(() => null);
+          // [AUDIT-FIX-12] Previously this ALWAYS answered the pending question with a
+          // bare getAIReply() call forced to intent:'QUESTION' — a pure LLM Q&A prompt
+          // with no access to the customer's actual order/booking records. That meant a
+          // genuinely answerable question like "do I have any active order or booking?"
+          // asked mid-flow got the generic groqProvider fallback line ("I'll need to
+          // check that — please contact us directly") instead of the real answer, even
+          // though the exact same question typed OUTSIDE a flow correctly routes through
+          // detectIntent -> TRACK_ORDER and returns live order/booking data.
+          //
+          // Fix: classify the pending question the same way any top-level message would
+          // be (detectIntent), using a flow-less session snapshot so it's judged on its
+          // own merits. If it resolves with real confidence to a known DATA-BACKED action
+          // (currently just TRACK_ORDER — deliberately a narrow whitelist of read-only,
+          // side-effect-free lookups; we do NOT want e.g. ORDER/BOOKING starting flows
+          // here), route it through the real handler so the reply reflects live data.
+          // The card is sent first, followed by a short separate resume prompt — this
+          // avoids fighting over WhatsApp's 3-button-per-message limit with whatever
+          // buttons the data handler itself returns (e.g. "New Order"/"Contact Support").
+          // Anything else falls back to the general AI Q&A reply, same as before.
+          const DATA_BACKED_MFQ_ACTIONS = new Set(['TRACK_ORDER']);
+          const flowlessSession = { ...session, currentFlow: null, step: null, data: {} };
 
-          const resumeHint = resumeFlow
-            ? `\n\n_When you're done, tap below to continue where you left off._`
-            : '';
+          let dataReply = null;
+          try {
+            const pqResult = await detectIntent({
+              message: pendingQ, isInteractive: false, session: flowlessSession, business,
+            });
+            if (DATA_BACKED_MFQ_ACTIONS.has(pqResult.action) && pqResult.confidence !== 'LOW') {
+              dataReply = await route({
+                action: pqResult.action, intent: pqResult.intent, session: flowlessSession,
+                message: pendingQ, business, tenant: tenantDoc, isInteractive: false,
+                suggestion: pqResult.suggestion,
+              }).catch(() => null);
+            }
+          } catch (err) {
+            logger.warn('[MFQ] pending-question data routing failed', { err: err.message });
+          }
 
           const resumeButtons = resumeFlow
             ? [
@@ -1957,6 +2158,27 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
                 { id: 'QUESTION',  title: '❓ Ask Another' },
                 { id: 'SHOW_MENU', title: '🔄 Main Menu'   },
               ];
+
+          if (dataReply) {
+            const dataPayloads = Array.isArray(dataReply) ? dataReply : [dataReply];
+            for (const dp of dataPayloads) await dispatchMessage(from, dp, tenantDoc);
+            await dispatchMessage(from, {
+              type:    'buttons',
+              body:    resumeFlow
+                ? `_When you're ready, tap below to continue where you left off._`
+                : `👇 Anything else?`,
+              buttons: resumeButtons,
+            }, tenantDoc);
+            return;
+          }
+
+          // No data-backed handler matched — fall back to the general AI Q&A reply.
+          const { getAIReply } = await import('../core/ai/providers/aiRouter.js');
+          const aiText = await getAIReply({ customerMessage: pendingQ, business, session, intent: 'QUESTION' }).catch(() => null);
+
+          const resumeHint = resumeFlow
+            ? `\n\n_When you're done, tap below to continue where you left off._`
+            : '';
 
           await dispatchMessage(from, {
             type:    'buttons',

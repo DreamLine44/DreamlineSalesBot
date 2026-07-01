@@ -227,8 +227,27 @@ export async function handlePostFlowMessage({
       }
 
       if (upper === 'RESCHEDULE') {
+        // [AUDIT-FIX-15b] Was setting step: 'SELECT_SERVICE' with data: {} while the
+        // message below asks "What date works best for you?" — a genuine step/prompt
+        // mismatch. handleSalonBooking's SELECT_SERVICE case expects the customer's
+        // NEXT message to be a service name; a typed date ("tomorrow", "25 June")
+        // never matches one, so it silently re-showed the service picker instead of
+        // accepting the date, and the original service (flowData.service) was lost
+        // entirely since data was reset to {}. Fixed to land on 'DATE' (which
+        // handleBookingFlow's shared DATE step genuinely does accept free-text dates
+        // for — see core/conversations/bookingFlow.js) with the customer's existing
+        // service/stylist carried over from flowData, matching the "for your *X*"
+        // wording already in the message body below and the same
+        // step:'DATE' + pre-populated data pattern already used elsewhere in
+        // handleSalonBooking (SELECT_SERVICE / SELECT_STYLIST cases) when skipping
+        // straight to date selection.
         await updateSession(from, tenantId, {
-          currentFlow: 'BOOKING', step: 'SELECT_SERVICE', data: {}, postFlowAck: null,
+          currentFlow: 'BOOKING', step: 'DATE', postFlowAck: null,
+          data: {
+            service:         flowData?.service || null,
+            selectedService: flowData?.service || null,
+            stylist:         flowData?.staff    || null,
+          },
         });
         await dispatchMessage(from, {
           type: 'text',
@@ -440,8 +459,112 @@ export async function handlePostFlowMessage({
     // Set when the customer paused a flow (booking/order) to ask a question.
     // The question has been answered. Now offer to take them back to the flow.
     case 'MFQ_RESUME': {
+      // [AUDIT-FIX-13] The MFQ_SWITCH_YES answer screen (webhookController step 15.1a)
+      // offers THREE buttons — "↩️ Continue", "❓ Ask Another", "🔄 Main Menu" — and sets
+      // postFlowAck='MFQ_RESUME' so a plain typed follow-up gets this "Hope that helped!"
+      // prompt. But webhookController's postFlowAck guard only exempted the "Continue"
+      // button id (MFQ_RESUME_FLOW) from being intercepted here — NOT "Ask Another"
+      // (button id 'QUESTION') or "Main Menu" (button id 'SHOW_MENU'). So tapping either
+      // of those two buttons was swallowed by this case and just re-showed "Hope that
+      // helped! Would you like to continue with your booking?" instead of doing what the
+      // button said — opening a new question, or going to the main menu. Root-caused via
+      // the WhatsApp Web screenshots: tapping "❓ Ask Another" produced the resume prompt
+      // instead of a fresh "what would you like to know?" screen.
+      //
+      // Fix: if the incoming message IS one of those two button taps, don't show the
+      // resume prompt at all — return false (postFlowAck was already cleared by [PFH-2]
+      // above) so the caller falls through to normal button/intent routing, which sends
+      // 'QUESTION' to the real Ask-a-Question flow and 'SHOW_MENU' to the real main menu.
+      if (isInteractive && (upper === 'QUESTION' || upper === 'SHOW_MENU')) {
+        return false;
+      }
+
       const resumeFlow = flowData?.resumeFlow || null;
       const resumeStep = flowData?.resumeStep || null;
+
+      // [AUDIT-FIX-15] This case previously ignored the CONTENT of the customer's
+      // message entirely — isAck/isCompliment/isComplaint/isQuestion are computed at
+      // the top of this function for every other ackCtx case, but MFQ_RESUME never
+      // looked at them. That meant: after the bot answered one mid-flow question and
+      // showed "Hope that helped! Continue?", if the customer typed ANOTHER question
+      // directly (instead of tapping "❓ Ask Another" first), that question text was
+      // silently discarded — the bot just re-showed the same generic prompt, never
+      // answering it. Only a SINGLE mid-flow question could ever be asked; any further
+      // typed follow-up broke the "questioning system" entirely.
+      //
+      // Fix: only show the plain "did that help" prompt for genuine acknowledgements
+      // or compliments. Complaints escalate to support (consistent with the QUESTION
+      // ackCtx case above). Anything else is treated as a NEW question and answered
+      // using the same data-backed (TRACK_ORDER etc.) -> AI fallback pipeline used for
+      // the original mid-flow question, then postFlowAck is re-armed so the customer
+      // can keep asking further questions or resume the paused flow at any point.
+      if (isComplaint) {
+        const { getAIReply: _mfqComplaintAI } = await import('../core/ai/providers/aiRouter.js');
+        const _r = await _mfqComplaintAI({ customerMessage: msg, business, intent: 'COMPLAINT' }).catch(() => null);
+        await dispatchMessage(from, {
+          type:    'buttons',
+          body:    _r || `We're sorry to hear that${custName}. 😔 Please speak to our team directly.`,
+          buttons: [{ id: 'SUPPORT', title: '💬 Speak to Team' }],
+        }, tenantDoc);
+        if (resumeFlow) await updateSession(from, tenantId, { postFlowAck: 'MFQ_RESUME', postFlowData: flowData });
+        return true;
+      }
+
+      if (!isAck && !isCompliment) {
+        const DATA_BACKED_MFQ_ACTIONS = new Set(['TRACK_ORDER']);
+        const flowlessSession = { ...session, currentFlow: null, step: null, data: {} };
+
+        const resumeButtons = resumeFlow
+          ? [
+              { id: 'MFQ_RESUME_FLOW', title: '↩️ Continue'    },
+              { id: 'QUESTION',        title: '❓ Ask Another'   },
+              { id: 'SHOW_MENU',       title: '🔄 Main Menu'     },
+            ]
+          : [
+              { id: 'QUESTION',  title: '❓ Ask Another' },
+              { id: 'SHOW_MENU', title: '🔄 Main Menu'   },
+            ];
+
+        let dataReply = null;
+        try {
+          const { detectIntent } = await import('../core/intents/intentEngine.js');
+          const { route }        = await import('../core/conversations/moduleRouter.js');
+          const pqResult = await detectIntent({
+            message: msg, isInteractive: false, session: flowlessSession, business,
+          });
+          if (DATA_BACKED_MFQ_ACTIONS.has(pqResult.action) && pqResult.confidence !== 'LOW') {
+            dataReply = await route({
+              action: pqResult.action, intent: pqResult.intent, session: flowlessSession,
+              message: msg, business, tenant: tenantDoc, isInteractive: false,
+              suggestion: pqResult.suggestion,
+            }).catch(() => null);
+          }
+        } catch (err) {
+          logger.warn('[MFQ_RESUME] follow-up question data routing failed', { err: err.message });
+        }
+
+        if (dataReply) {
+          const payloads = Array.isArray(dataReply) ? dataReply : [dataReply];
+          for (const p of payloads) await dispatchMessage(from, p, tenantDoc);
+          await dispatchMessage(from, {
+            type:    'buttons',
+            body:    resumeFlow ? `_Tap below to continue where you left off, or ask another question._` : `👇 Anything else?`,
+            buttons: resumeButtons,
+          }, tenantDoc);
+        } else {
+          const { getAIReply: _mfqFollowUpAI } = await import('../core/ai/providers/aiRouter.js');
+          const aiText = await _mfqFollowUpAI({ customerMessage: msg, business, session, intent: 'QUESTION' }).catch(() => null);
+          await dispatchMessage(from, {
+            type:    'buttons',
+            body:    aiText || 'Let me check that for you! 😊',
+            buttons: resumeButtons,
+          }, tenantDoc);
+        }
+
+        // Re-arm postFlowAck so further typed questions or the resume tap keep working.
+        if (resumeFlow) await updateSession(from, tenantId, { postFlowAck: 'MFQ_RESUME', postFlowData: flowData });
+        return true;
+      }
 
       if (resumeFlow) {
         const flowLabel = {
@@ -538,8 +661,14 @@ async function handleOrderConfirmed({
   if (upper === 'SWITCH_YES') {
     const cancelShortId = session.data?.cancelShortId || flowData.shortId;
     if (cancelShortId) {
+      // [AUDIT-FIX-TRACE-5] Was missing `customerPhone: from` — the [AUDIT-FIX-7] comment
+      // above already notes that "other inline cancel paths in this file" include the
+      // audit fields; those other paths (and webhookController.js's equivalents) also
+      // scope by customerPhone, which this one didn't. cancelShortId is always this
+      // customer's own order in normal flow, but the query itself shouldn't be the only
+      // thing standing between one customer's session and another customer's order.
       await Order.findOneAndUpdate(
-        { shortId: cancelShortId, tenantId, status: { $nin: ['cancelled', 'completed'] } },
+        { shortId: cancelShortId, tenantId, customerPhone: from, status: { $nin: ['cancelled', 'completed'] } },
         // [AUDIT-FIX-7] Add cancelledBy/cancelledAt — this SWITCH_YES post-flow cancel
         // path was also dropping the audit trail (same gap as the inline cancel paths
         // in webhookController.js).
@@ -748,8 +877,10 @@ async function handleOrderReady({
     const { default: Order } = await import('../models/Order.js');
     const shortIdRef = flowData.shortId || upper.replace('COLLECTED_', '');
     if (shortIdRef) {
+      // [AUDIT-FIX-TRACE-5] Was missing `customerPhone: from` — same gap as the
+      // COLLECTED_* handler in webhookController.js and the SWITCH_YES cancel above.
       await Order.findOneAndUpdate(
-        { shortId: shortIdRef, tenantId, status: 'ready' },
+        { shortId: shortIdRef, tenantId, customerPhone: from, status: 'ready' },
         { $set: { status: 'completed', completedAt: new Date() } }
       ).catch(() => {});
     }
@@ -916,13 +1047,25 @@ async function handleBookingConfirmed({
   if (upper === 'RESCHEDULE') {
     if (flowData?.shortId) {
       const { default: _ReschBooking } = await import('../models/Booking.js');
+      // [AUDIT-FIX-TRACE-5] Was missing `customerPhone: from` — same gap as the order
+      // shortId writes above; this cancels the OLD booking before starting a fresh one,
+      // so it should only ever be able to touch the requesting customer's own booking.
       await _ReschBooking.findOneAndUpdate(
-        { shortId: flowData.shortId, tenantId, status: { $nin: ['cancelled', 'completed'] } },
+        { shortId: flowData.shortId, tenantId, customerPhone: from, status: { $nin: ['cancelled', 'completed'] } },
         { $set: { status: 'cancelled', cancelledBy: 'customer', cancelledAt: new Date() } }
       ).catch(() => {});
     }
+    // [AUDIT-FIX-15b] Same step/prompt mismatch as the APPOINTMENT_REMINDER RESCHEDULE
+    // handler above: step: 'SELECT_SERVICE' with data: {} while the message asks for a
+    // date directly. Land on 'DATE' with the previous service/stylist carried over —
+    // see the APPOINTMENT_REMINDER RESCHEDULE case for the full explanation.
     await updateSession(from, tenantId, {
-      currentFlow: 'BOOKING', step: 'SELECT_SERVICE', data: {}, postFlowAck: null,
+      currentFlow: 'BOOKING', step: 'DATE', postFlowAck: null,
+      data: {
+        service:         flowData?.service || null,
+        selectedService: flowData?.service || null,
+        stylist:         flowData?.staff    || null,
+      },
     });
     await dispatchMessage(from, {
       type: 'text',

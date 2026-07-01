@@ -284,6 +284,34 @@ export const INTENT_PATTERNS = {
     'track order', 'track my order', 'where is my order', 'order status',
     'when is my order', 'order update', 'my order', 'check order',
     'delivery status', 'where is my food', 'how long', 'where my order',
+    // [AUDIT-FIX-TRACE-3] Booking-status phrasing was entirely absent from this list.
+    // The exact-keyword matcher (intentEngine.js step 4) requires a whole-message match
+    // against this array — without these entries, a customer typing "my booking",
+    // "booking status", "check my appointment" etc. skipped straight past the
+    // deterministic keyword match and depended entirely on AI classification (step 7),
+    // which only runs when GROQ_API_KEY is configured and the call succeeds. TRACK_ORDER
+    // already checks both active orders AND active bookings once reached (see
+    // core/shared/moduleRegistry.js AUDIT-FIX-14), so the fix here is purely to make sure
+    // booking-status phrasing reliably reaches that handler the same way order-status
+    // phrasing does, instead of being a step behind it.
+    'track booking', 'track my booking', 'where is my booking', 'booking status',
+    'my booking', 'check booking', 'check my booking', 'my appointment',
+    'check my appointment', 'appointment status', 'my reservation',
+    'check my reservation', 'reservation status', 'my activities', 'my activity',
+    // [AUDIT-FIX-TRACE-6] "active order/booking" phrasing (the exact wording a
+    // customer uses after losing their chat history / phone and coming back cold —
+    // "do I have any active orders or bookings?") had no exact-keyword entry, so it
+    // depended entirely on AI classification. Mirrors the STATUS_CMD_RE vocabulary
+    // in webhookController's quick-command fast path so both the "no active flow"
+    // fast path and the deterministic keyword matcher agree on the same phrasing.
+    // Deliberately limited to "active" phrasing, not "history" — the TRACK_ORDER
+    // handler reports current active order/booking state, not a full past log, so
+    // keywords here should only promise what it actually answers.
+    'active order', 'active orders', 'active booking', 'active bookings',
+    'do i have any active orders', 'do i have any active bookings',
+    'do i have an active order', 'do i have an active booking',
+    'any active orders', 'any active bookings', 'any active order or booking',
+    'do i have any orders', 'do i have any bookings',
   ],
 
   PAYMENT: [
@@ -302,6 +330,18 @@ export const INTENT_PATTERNS = {
     'speak to human', 'speak to agent', 'speak to someone', 'real person',
     'live agent', 'manager', 'customer service', 'not happy', 'unhappy',
     'refund', 'i have a problem', 'i have an issue',
+    // [FIX-SUPPORT-ADMIN] "admin" phrases were entirely absent — a customer typing
+    // "want to talk to the admin" or "speak to admin" matched no SUPPORT keyword
+    // (exact-match only) and fell through to AI classify / FALLBACK instead of
+    // escalating to a human. See also the mid-flow escape check in webhookController.
+    'admin', 'talk to admin', 'talk to the admin', 'want to talk to admin',
+    'want to talk to the admin', 'speak to admin', 'speak to the admin',
+    'speak with admin', 'contact admin', 'contact the admin', 'get me the admin',
+    'connect me to admin', 'connect me with admin', 'call the admin',
+    'need the admin', 'need admin', 'talk to a human', 'talk to human',
+    'talk to a person', 'talk to a real person', 'human please', 'human agent',
+    'talk to owner', 'talk to the owner', 'speak to owner', 'speak to the owner',
+    'talk to staff', 'talk to someone else',
   ],
 
   SHOW_MENU: [

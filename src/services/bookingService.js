@@ -36,3 +36,16 @@ export async function saveBooking({ customerPhone, customerName, date, time, ser
 export async function getBookingByShortId(shortId, tenantId) {
   return Booking.findOne({ shortId: shortId.toUpperCase(), tenantId }).lean();
 }
+
+// [AUDIT-FIX-14] Added — no equivalent of orderService.getRecentOrders() existed for
+// bookings, so nothing in the codebase could answer "do I have a booking?" with real
+// data. Booking.status enum is ['pending','confirmed','completed','cancelled']; a
+// booking is "active" (still relevant to the customer) while it's pending admin
+// confirmation or already confirmed — completed/cancelled bookings are history, not
+// something to surface as "you have an active booking".
+export async function getActiveBooking(customerPhone, tenantId) {
+  return Booking.findOne({
+    customerPhone, tenantId,
+    status: { $in: ['pending', 'confirmed'] },
+  }).sort({ createdAt: -1 }).lean();
+}
