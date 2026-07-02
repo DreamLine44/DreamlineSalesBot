@@ -284,6 +284,28 @@ export async function handlePostFlowMessage({
         return true;
       }
 
+      // [FIX-REMINDER-Q] isQuestion (computed once for the whole function, same as
+      // ORDER_READY/handleWalkInQueueAck below) was never checked in this case — a
+      // customer replying to an appointment reminder with a genuine question ("what
+      // should I bring?", "do I need to pay in advance?") fell straight through to
+      // the generic "What would you like to do?" default below, which doesn't answer
+      // anything and just re-shows the same three buttons. This is the exact
+      // "questioning system silently breaks" shape already fixed for MFQ_RESUME
+      // (AUDIT-FIX-15) — same fix here: answer via AI, then re-arm postFlowAck so a
+      // further typed question or a button tap both keep working afterwards.
+      if (isQuestion) {
+        const { getAIReply: _reminderQA } = await import('../core/ai/providers/aiRouter.js');
+        const aiReply = await _reminderQA({ customerMessage: msg, business, intent: 'QUESTION' }).catch(() => null);
+        await dispatchMessage(from, {
+          type:    'buttons',
+          body:    (aiReply || `Happy to help${custName}! 😊`)
+                 + `\n\n_Just a reminder: your appointment${serviceStr}${whenStr} is coming up._`,
+          buttons: reminderBtns,
+        }, tenantDoc);
+        await updateSession(from, tenantId, { postFlowAck: 'APPOINTMENT_REMINDER', postFlowData: flowData });
+        return true;
+      }
+
       // Default — show options
       await dispatchMessage(from, {
         type:    'buttons',

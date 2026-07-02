@@ -12,18 +12,56 @@
  * [FIX-BIZ-3] updateBusinessConfig now strips protected fields (_id, tenantId, __v)
  *             AND rejects a completely empty body with a 400 instead of silently
  *             no-opping.
+ * [AUDIT-FIX-17] getBusinessConfig now also returns a `tenantStatus` block sourced
+ *             from req.tenant (attached by requireApiKey — see authMiddleware.js).
+ *             Previously this endpoint ONLY returned the BusinessConfig document,
+ *             which has no status/onboardingStep/whatsapp.connected fields — those
+ *             live exclusively on the Tenant document, which no tenant-accessible
+ *             route ever returned. The tenant dashboard was forced to *guess* setup
+ *             progress from BusinessConfig.phoneNumberId alone (see frontend
+ *             AuthContext.buildUserFromResponse), so an admin-onboarded tenant could
+ *             never actually reach "Bot Activated" client-side even after the admin
+ *             fully activated it server-side.
+ *             req.tenant comes from a `.lean()` query, so Mongoose's toJSON
+ *             transform (which strips accessToken/verifyToken/webhookSecret/
+ *             apiKeyHash/meta.appSecret) does NOT run on it automatically — do not
+ *             spread req.tenant directly into a response. Build tenantStatus as an
+ *             explicit whitelist instead.
  */
 import BusinessConfig from '../models/BusinessConfig.js';
 import { getModeConfig, getSupportedModes } from '../config/modes.js';
 import logger from '../config/logger.js';
 import { uploadMenuImage, deleteMenuImage, CLOUDINARY_ENABLED } from '../config/cloudinary.js';
 
+// [AUDIT-FIX-17] Explicit whitelist — req.tenant is a lean object (no toJSON
+// stripping), so never spread it wholesale into a tenant-facing response.
+function safeTenantStatus(tenant) {
+  if (!tenant) return null;
+  return {
+    status:         tenant.status,
+    onboardingStep: tenant.onboardingStep,
+    plan:           tenant.plan,
+    whatsapp: {
+      connected:      !!tenant.whatsapp?.connected,
+      phone:          tenant.whatsapp?.phone || null,
+      phoneNumberId:  tenant.whatsapp?.phoneNumberId || null,
+      wabaId:         tenant.whatsapp?.wabaId || null,
+      connectedAt:    tenant.whatsapp?.connectedAt || null,
+      lastVerifiedAt: tenant.whatsapp?.lastVerifiedAt || null,
+      // accessToken / verifyToken / webhookSecret intentionally omitted
+    },
+  };
+}
+
 export async function getBusinessConfig(req, res) {
   try {
     const { tenantId } = req.params;
     const biz = await BusinessConfig.findOne({ tenantId }).lean();
     if (!biz) return res.status(404).json({ error: 'Not found' });
-    res.json({ business: biz });
+    // [AUDIT-FIX-17] Super-admin callers hit this route with req.params.tenantId
+    // but no req.tenant (that's only set for tenant-key auth) — tenantStatus will
+    // be null in that case, which is fine; the admin UI reads /admin/tenants/:id.
+    res.json({ business: biz, tenantStatus: safeTenantStatus(req.tenant) });
   } catch (err) {
     logger.error('[Business] getBusinessConfig failed', { err: err.message });
     res.status(500).json({ error: err.message });
