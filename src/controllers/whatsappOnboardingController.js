@@ -113,6 +113,24 @@ export async function submitConnectionRequest(req, res, next) {
 /**
  * getTenantRequestStatus
  * GET /api/whatsapp/request/status
+ *
+ * [AUDIT-FIX-18a] `request` now also includes businessCategory, contactPerson,
+ *   contactEmail, and createdAt. Previously this handler only returned
+ *   { id, businessName, whatsappNumber, status, submittedAt, lastUpdated } —
+ *   WhatsAppConnectionPage.jsx (WhatsAppStatusCard) reads request.businessCategory,
+ *   request.contactPerson, request.contactEmail, and request.createdAt, so all four
+ *   fields silently rendered as "—" for every tenant even though the data existed
+ *   in the DB (the admin-facing endpoints already return the full document).
+ *   submittedAt/lastUpdated are kept for backward compatibility with any existing
+ *   caller, alongside the now-added createdAt.
+ *
+ * [AUDIT-FIX-18b] Response now also includes `tenantStatus` (the Tenant.status
+ *   enum, e.g. 'ACTIVE'). This is a separate signal from `whatsappConnected`:
+ *   a tenant can be force-activated (status: 'ACTIVE') via PATCH
+ *   /admin/tenants/:id/status with force:true without whatsapp.connected being
+ *   true yet. Exposing both lets the frontend distinguish "activated, bot live"
+ *   from "activated, still finishing WhatsApp setup" instead of collapsing both
+ *   into a single boolean.
  */
 export async function getTenantRequestStatus(req, res, next) {
   try {
@@ -137,15 +155,20 @@ export async function getTenantRequestStatus(req, res, next) {
 
     return res.json({
       request: {
-        id:             String(request._id),
-        businessName:   request.businessName,
-        whatsappNumber: request.whatsappNumber,
-        status:         request.status,
-        submittedAt:    request.createdAt,
-        lastUpdated:    request.updatedAt,
+        id:               String(request._id),
+        businessName:     request.businessName,
+        businessCategory: request.businessCategory,
+        whatsappNumber:   request.whatsappNumber,
+        contactPerson:    request.contactPerson,
+        contactEmail:     request.contactEmail,
+        status:           request.status,
+        createdAt:        request.createdAt,
+        submittedAt:      request.createdAt,
+        lastUpdated:      request.updatedAt,
       },
       whatsappConnected: tenant?.whatsapp?.connected  ?? false,
       connectedAt:       tenant?.whatsapp?.connectedAt ?? null,
+      tenantStatus:      tenant?.status ?? null,
     });
 
   } catch (err) {
