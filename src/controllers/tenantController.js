@@ -285,7 +285,19 @@ export async function createTenant(req, res) {
   } catch (err) {
     logger.error('[Tenant] createTenant failed', { err: err.message });
     if (err.code === 11000) {
-      return res.status(409).json({ error: 'A tenant with that phone number or email already exists' });
+      // [FIX-DUP-KEY-MSG] err.code 11000 only tells us it was A duplicate key,
+      // not WHICH field — the old message always said "phone number or email"
+      // even when adminPhone isn't indexed at all and couldn't have been the
+      // cause. err.keyPattern names the actual unique index that was violated
+      // (e.g. "email", "whatsapp.phoneNumberId", "apiKeyHash"), so surface that
+      // instead of guessing.
+      const field = Object.keys(err.keyPattern || {})[0] || 'field';
+      const value = err.keyValue?.[field];
+      return res.status(409).json({
+        error: `A tenant with that ${field} already exists`,
+        field,
+        ...(value !== undefined ? { value } : {}),
+      });
     }
     res.status(500).json({ error: err.message });
   }
