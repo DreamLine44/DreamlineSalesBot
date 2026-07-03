@@ -106,9 +106,27 @@ function buildPayload(to, ui) {
         rows:  (sec.rows || []).slice(0, 10).map(normalizeRow),
       })).filter(sec => sec.rows.length > 0);
     } else {
-      // Flat rows format (legacy — single unlabelled section)
-      const rows = (ui.rows || []).slice(0, 10).map(normalizeRow);
-      sections = [{ rows }];
+      // [FIX-LIST-TRUNC] Flat rows format (legacy — single unlabelled section).
+      // Previously this did `(ui.rows || []).slice(0, 10)`, which silently
+      // dropped every row past the 10th with no warning to the customer or
+      // the tenant — any menu/catalog/service list with more than 10
+      // available items (restaurant, salon, retail, bakery, cosmetics,
+      // electronics, fashion, delivery, services, general — every module
+      // that builds a flat `rows` list) got truncated in the same way.
+      // WhatsApp's actual limit is 10 ROWS PER SECTION, with up to 10
+      // SECTIONS (100 rows total) — not 10 rows overall. Chunk the flat
+      // list into sections of ≤10 so nothing beyond the first 10 items
+      // gets dropped, up to that real 100-row ceiling.
+      const allRows = (ui.rows || []).map(normalizeRow);
+      sections = [];
+      for (let i = 0; i < allRows.length && sections.length < 10; i += 10) {
+        sections.push({ rows: allRows.slice(i, i + 10) });
+      }
+      if (allRows.length > 100) {
+        logger.warn('[Dispatch] List truncated at WhatsApp\'s 100-row ceiling (10 sections × 10 rows)', {
+          to, totalRows: allRows.length,
+        });
+      }
     }
 
     if (!sections.length || !sections[0].rows.length) return null;
