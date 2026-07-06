@@ -198,13 +198,8 @@ export async function handleElectronicsOrder({
       }
 
       // Numeric selection from list
-      // [AUDIT-FIX-PARSEINT-2] Same bug class as bakery/retail/etc: parseInt("2 usb
-      // cables", 10) = 2, not NaN, so mixed input silently resolved to listMenu[1]
-      // instead of reaching findBestMatch() below. Only trust the parsed index when
-      // raw is purely numeric or the tap came from an interactive list/button.
-      const isPureNumeric = /^\d+$/.test(raw.trim());
       const numIdx = parseInt(raw, 10) - 1;
-      let item = (isInteractive || isPureNumeric) && !isNaN(numIdx) && listMenu[numIdx] ? listMenu[numIdx] : null;
+      let item = (!isNaN(numIdx) && listMenu[numIdx]) ? listMenu[numIdx] : null;
 
       if (!item) {
         const { item: matched, confidenceLevel } = findBestMatch(listMenu, clean);
@@ -644,13 +639,7 @@ export async function handleSpecRequest({ session, message, business, tenant }) 
   // FLOW_PASSTHROUGH_IDS, so it will still re-enter this handler and re-trigger
   // startFlow('SPEC_REQUEST') — that path works correctly without completeFlow.
   // completeFlow clears currentFlow/step so ORDER and SHOW_MENU can route correctly.
-  // [FIX-ELEC-CF-3] completeFlow's return value was being discarded here — every
-  // other module (services, general, salon, restaurant, retail, bakery) captures it
-  // and returns it when truthy, since a non-null return means lead capture kicked in
-  // and its UI (e.g. "can we get your name/email?") should replace the normal reply.
-  // This was the one handler in the codebase silently dropping that override.
-  const _lcRspec = await completeFlow(session, 'SPEC_REQUEST', business, null);
-  if (_lcRspec) return _lcRspec;
+  await completeFlow(session, 'SPEC_REQUEST', business, null);
 
   return {
     type: 'buttons',
@@ -825,10 +814,7 @@ export async function handleWarranty({ session, message, business, tenant }) {
   // with the button ID as the customer message, producing nonsensical AI responses.
   // completeFlow clears the flow state and sets postFlowAck so follow-up messages
   // (thanks, ok) get a warm reply instead of falling through to a stale flow handler.
-  // [FIX-ELEC-CF-3] Same discarded-return-value bug as SPEC_REQUEST above — capture
-  // and return completeFlow's result when truthy (lead-capture override).
-  const _lcRwar = await completeFlow(session, 'WARRANTY', business, null);
-  if (_lcRwar) return _lcRwar;
+  await completeFlow(session, 'WARRANTY', business, null);
 
   return {
     type: 'buttons',

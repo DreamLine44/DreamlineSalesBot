@@ -124,15 +124,9 @@
 
 import { getSession, createSession, updateSession } from '../core/sessions/sessionService.js';
 import { detectIntent, extractCustomerName }         from '../core/intents/intentEngine.js';
-// [FIX-FSI] Reuse the exact same direct-order/direct-booking matching rules the
-// no-flow path uses (core/intents/intentEngine.js), so the mid-flow switch
-// intercept below never drifts out of sync with what "order food" / "book a
-// table" mean pre-flow. Single source of truth — see [FIX-FSI-EXPORT] there.
-import { ORDER_DIRECT_RE, BOOKING_DIRECT_RE, DIRECT_INTENT_EXCLUDE_RE, normalise as normaliseFsi } from '../core/intents/intentEngine.js';
-import { findBestMatch }                             from '../utils/matchEngine.js';
 import { INTENT_PATTERNS }                           from '../core/intents/patterns.js';
 import { updateName as persistCustomerName }         from '../core/memory/customerMemory.js';
-import { advance, startFlow }                        from '../core/conversations/flowEngine.js';
+import { advance }                                   from '../core/conversations/flowEngine.js';
 import { route }                                     from '../core/conversations/moduleRouter.js';
 import { dispatchMessage }                           from '../core/whatsapp/dispatcher.js';
 import { getModeConfig }                             from '../config/modes.js';
@@ -405,14 +399,6 @@ const FLOW_PASSTHROUGH_IDS = new Set([
   // back into the paused flow. Must bypass intent detection so it reaches the
   // MFQ_RESUME_FLOW handler at step 15.1b, not GREET or FALLBACK.
   'MFQ_RESUME_FLOW',
-  // ── [FSI] Mid-Flow Order/Booking-Switch intercept response buttons ───────
-  // Mirrors the MFQ_SWITCH_YES/NO pattern above: when a customer mid-flow types
-  // something that clearly asks for the OTHER flow (e.g. "I want to order food"
-  // while mid-booking), the bot pauses and offers to switch or continue. These
-  // button IDs are the customer's response and must reach the FSI handler
-  // (step 15.1d) without going through intent detection.
-  'FSI_SWITCH_YES',
-  'FSI_SWITCH_NO',
 ]);
 
 // ── [FIX-BUG3] Hours enforcement ─────────────────────────────────────────────
@@ -710,93 +696,6 @@ function _detectMidFlowStatusRequest(text, session) {
   if (step === 'PAYMENT_PROOF') return false;
   if (!text) return false;
   return STATUS_CMD_RE.test(text.trim());
-}
-
-// ── [FSI] Mid-Flow Order/Booking-Switch detector ──────────────────────────────
-//
-// PROBLEM: a customer mid-flow (e.g. answering "How many guests?" inside an
-// active BOOKING) types "I want to order food" — a clear request for the OTHER
-// flow, not an answer to the current step. Before this fix, that message had no
-// escape path: it isn't CANCEL/SHOW_MENU, isn't a question (MFQ), isn't SUPPORT
-// or STATUS, so it fell straight through to advance(), which handed the raw
-// text to the current step's handler. That handler couldn't match it to a
-// service/quantity/etc., so it silently re-displayed the same prompt — the
-// customer's actual request was dropped with no acknowledgement, and no way
-// forward except discovering CANCEL on their own.
-//
-// FIX: mirror the existing MFQ (Mid-Flow Question) pattern. Detect when typed
-// text unambiguously names the OTHER flow, pause, and offer "Switch" vs
-// "Continue" — exactly like the question intercept already does for questions.
-//
-// Reuses ORDER_DIRECT_RE / BOOKING_DIRECT_RE / DIRECT_INTENT_EXCLUDE_RE from
-// intentEngine.js (the same rules that already correctly gate the no-flow
-// direct-intent path) so "book a table" vs "I don't want to book" behave
-// identically whether or not a flow happens to be active.
-//
-// Returns the target flow name ('ORDER' | 'BOOKING') to switch TO, or null if
-// no switch should be offered. Deliberately returns null (no intercept) when:
-//   - the current step is a free-text/date-time field (an address, a note, a
-//     typed date — must never be hijacked by an incidental word match)
-//   - the message is excluded by DIRECT_INTENT_EXCLUDE_RE (negation, "don't
-//     want", cancellation, order/booking-status tracking phrases — same guard
-//     the no-flow path already relies on)
-//   - the detected target flow is the SAME as the flow already active (e.g. a
-//     restaurant customer mid-BOOKING typing "party of 4" contains "party of",
-//     which matches BOOKING_DIRECT_RE, but since they're already in BOOKING
-//     this must fall through as a normal answer, not trigger a pointless
-//     "switch to booking?" prompt on top of an active booking)
-function _detectMidFlowSwitchRequest(text, session, business) {
-  const step = (session.step || '').toUpperCase();
-  const flow = (session.currentFlow || '').toUpperCase();
-
-  // Never intercept genuinely free-text fields or date/time entry — a word
-  // like "order" or "book" could appear incidentally in a real answer there.
-  if (MFQ_FREE_TEXT_STEPS.has(step) || MFQ_DATE_TIME_STEPS.has(step)) return null;
-  if (step === 'PAYMENT_PROOF') return null;
-
-  const raw = String(text || '').trim();
-  if (raw.length < 4 || /^\d+$/.test(raw)) return null;
-
-  const clean = normaliseFsi(raw);
-  if (DIRECT_INTENT_EXCLUDE_RE.test(clean)) return null;
-
-  // BOOKING checked before ORDER — same precedence as the no-flow path, so a
-  // phrase like "I want to book a table" (which also contains "i want") is
-  // never misread as an ORDER request. See [AUDIT-FIX-DIRECT-INTENT-4].
-  let targetFlow = null;
-  if (BOOKING_DIRECT_RE.test(clean)) targetFlow = 'BOOKING';
-  else if (ORDER_DIRECT_RE.test(clean)) targetFlow = 'ORDER';
-
-  if (!targetFlow || targetFlow === flow) return null;
-
-  // Only ORDER and BOOKING flows are switch targets today — CAKE_CUSTOMIZATION,
-  // WALKIN, ENQUIRY, LEAD_CAPTURE etc. are left alone; a false-positive switch
-  // prompt on a niche flow is a worse outcome than silently doing nothing.
-  if (flow !== 'ORDER' && flow !== 'BOOKING') return null;
-
-  // [FIX-FSI-1] Item-name collision guard — bail out on a HIGH-confidence
-  // match against the CURRENT flow's own catalog (menuItems for ORDER,
-  // services for BOOKING), before ever offering a switch. Reuses the exact
-  // same matcher (findBestMatch) every order/booking flow handler already
-  // calls on this text, so the two paths can never disagree about what
-  // counts as a real item. Closes the "Coloring Book" / "Reserve Cabernet"
-  // false-positive: an exact/near-exact catalog item name must always win.
-  const catalog = flow === 'ORDER'
-    ? (business?.menuItems || [])
-    : (business?.services  || []);
-  if (catalog.length) {
-    const { confidenceLevel } = findBestMatch(catalog, clean);
-    if (confidenceLevel === 'HIGH') return null;
-  }
-
-  // [FIX-FSI-2] Capability gate — never offer a switch into a flow this
-  // business's vertical doesn't actually support (e.g. Retail/Fashion/
-  // Electronics/Delivery customers routed into a generic BOOKING flow that
-  // was never meant to exist for them).
-  const supportedFlows = getModeConfig(business)?.flows || [];
-  if (!supportedFlows.includes(targetFlow)) return null;
-
-  return targetFlow;
 }
 
 function _detectMidFlowQuestion(text, session) {
@@ -2034,21 +1933,6 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
       BOOKING_CONFIRM:     new Set(['CONFIRM', 'CANCEL', 'CANCEL_BOOKING']),
       // SELECT_SERVICE and SELECT_STYLIST use dynamic SVC_* / STYLIST_* IDs covered by
       // isFlowPassthroughId() regex — no static set needed. Omitting them is correct.
-      // [FIX-STALE-BTN-2] These four confirm-style steps present real buttons
-      // but were missing from this map entirely — the same gap v14-BUG-1 fixed
-      // for BOOKING_CONFIRM. Each handler already degrades safely on
-      // unrecognized input (re-prompts rather than mis-acting), so this was
-      // never a crash risk, but a stale generic 'CONFIRM' tap left over from
-      // an unrelated screen (e.g. an old SELECT_ITEM message) could silently
-      // advance one of these steps instead of being rejected. CONTACT_CONFIRM
-      // is used by BOTH modules/services and modules/general with two
-      // DIFFERENT real button ids ('ENQUIRY_CONFIRM' vs 'ENQUIRY_SEND') for
-      // the same step name — both are included since this map isn't
-      // mode-scoped.
-      CAKE_CONFIRM:        new Set(['CONFIRM', 'CANCEL']),
-      CONTACT_CONFIRM:     new Set(['ENQUIRY_CONFIRM', 'ENQUIRY_SEND', 'CANCEL']),
-      DATE_CONFIRM:        new Set(['CONFIRM', 'DATE_BACK']),
-      TIME_CONFIRM:        new Set(['CONFIRM', 'TIME_BACK']),
     };
     const upperMsg = messageText.trim().toUpperCase();
     const currentStep = session.step;
@@ -2082,12 +1966,8 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
     // (e.g. restaurant SELECT_ITEM) received "MFQ_SWITCH_YES" as a menu item name,
     // producing "I couldn't find MFQ_SWITCH_YES on our menu." Fix: intercept MFQ
     // button responses HERE, before the passthrough block, so they always reach 15.1a.
-    if (
-      isInteractive &&
-      (upperMsg === 'MFQ_SWITCH_YES' || upperMsg === 'MFQ_SWITCH_NO' || upperMsg === 'MFQ_RESUME_FLOW' ||
-       upperMsg === 'FSI_SWITCH_YES' || upperMsg === 'FSI_SWITCH_NO')
-    ) {
-      // Falls through to the 15.1a / 15.1b / 15.1d handlers below — do NOT call advance()
+    if (isInteractive && (upperMsg === 'MFQ_SWITCH_YES' || upperMsg === 'MFQ_SWITCH_NO' || upperMsg === 'MFQ_RESUME_FLOW')) {
+      // Falls through to the 15.1a / 15.1b handlers below — do NOT call advance()
     } else
     // [FIX-BUG9] Flow-internal button IDs — bypass intent detection entirely
     if (isInteractive && isFlowPassthroughId(upperMsg)) {
@@ -2362,73 +2242,6 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
         }
         return;
       }
-
-      // ── [FSI] Handle FSI_SWITCH_YES / FSI_SWITCH_NO (mirrors MFQ_SWITCH above) ──
-      if (upperMsg === 'FSI_SWITCH_YES') {
-        // Customer confirmed they want the OTHER flow. Start it fresh — the old
-        // flow's partial answers are intentionally dropped (they've moved on),
-        // exactly like tapping "Order Food" or "Book a Table" from the welcome
-        // menu would. No DB record exists yet at this point in either flow (both
-        // ORDER and BOOKING only write to the database at their CONFIRM step),
-        // so there is nothing to cancel — a plain startFlow() is correct here.
-        const targetFlow = session.data?._fsiTargetFlow;
-        if (targetFlow === 'ORDER' || targetFlow === 'BOOKING') {
-          const freshSess = await getSession(from, tenantId) || session;
-          const switchReply = await startFlow({
-            flowName: targetFlow, session: freshSess, business, tenant: tenantDoc,
-          });
-          if (switchReply) {
-            const sPayloads = Array.isArray(switchReply) ? switchReply : [switchReply];
-            for (const sp of sPayloads) await dispatchMessage(from, sp, tenantDoc);
-          }
-          return;
-        }
-        // Missing/corrupt target (shouldn't happen) — fall back to the main menu
-        // rather than silently doing nothing.
-        await updateSession(from, tenantId, { currentFlow: null, step: null, data: {} });
-        const cfgFsiFallback = getModeConfig(business);
-        await dispatchMessage(from, {
-          type:    'buttons',
-          body:    '👇 What would you like to do?',
-          buttons: cfgFsiFallback.ui?.welcomeButtons || [],
-        }, tenantDoc);
-        return;
-      }
-
-      if (upperMsg === 'FSI_SWITCH_NO') {
-        // Customer wants to continue their original flow — restore it exactly
-        // like MFQ_SWITCH_NO does, and re-send the current step's prompt.
-        const resumeFlow = session.data?._fsiResumeFlow || session.currentFlow;
-        const resumeStep = session.data?._fsiResumeStep || session.step;
-        const resumeData = session.data?._fsiResumeData || {};
-
-        await updateSession(from, tenantId, {
-          currentFlow: resumeFlow,
-          step:        resumeStep,
-          data:        resumeData,
-        });
-
-        const freshSessFsi = await getSession(from, tenantId) || session;
-        const resumeReplyFsi = await advance({
-          session:       { ...freshSessFsi, currentFlow: resumeFlow, step: resumeStep, data: resumeData },
-          message:       '',
-          business,
-          tenant:        tenantDoc,
-          isInteractive: false,
-        });
-
-        if (resumeReplyFsi) {
-          const rPayloadsFsi = Array.isArray(resumeReplyFsi) ? resumeReplyFsi : [resumeReplyFsi];
-          for (const rp of rPayloadsFsi) await dispatchMessage(from, rp, tenantDoc);
-        } else {
-          const stepLabelFsi = _mfqStepLabel(resumeFlow, resumeStep);
-          await dispatchMessage(from, {
-            type: 'text',
-            body: `👍 No problem! Let's continue — ${stepLabelFsi}`,
-          }, tenantDoc);
-        }
-        return;
-      }
     }
 
     // ── 15.1b: Handle MFQ_RESUME_FLOW button (re-enter the flow after question answered)
@@ -2523,79 +2336,6 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
           buttons: [
             { id: 'MFQ_SWITCH_YES', title: '❓ Answer My Question' },
             { id: 'MFQ_SWITCH_NO',  title: '↩️ Continue'          },
-          ],
-        }, tenantDoc);
-        return;
-      }
-    }
-
-    // ── 15.1d: [FSI] Detect order/booking-switch intent in typed free-text mid-flow ──
-    // Same guards as 15.1c above (non-interactive, real length, not a bare number),
-    // checked AFTER the question intercept so an ambiguous message that somehow
-    // reads as both is treated as a question first — questions are the more
-    // conservative interpretation and this ordering matches how MFQ was already
-    // prioritized relative to SUPPORT/STATUS above it.
-    if (
-      !isInteractive &&
-      messageText.length >= 4 &&
-      !/^\d+$/.test(messageText.trim()) &&
-      session.currentFlow &&
-      session.step
-    ) {
-      const _fsiTargetFlow = _detectMidFlowSwitchRequest(messageText, session, business);
-      if (_fsiTargetFlow) {
-        const stepLabelFsi   = _mfqStepLabel(session.currentFlow, session.step);
-        const switchFlow     = session.currentFlow;
-        const switchStep     = session.step;
-        const switchData     = { ...(session.data || {}) };
-
-        // Sanitise internal FSI/MFQ keys from the snapshot so they don't persist recursively
-        delete switchData._fsiTargetFlow;
-        delete switchData._fsiResumeFlow;
-        delete switchData._fsiResumeStep;
-        delete switchData._fsiResumeData;
-        delete switchData._mfqPendingQuestion;
-        delete switchData._mfqResumeFlow;
-        delete switchData._mfqResumeStep;
-        delete switchData._mfqResumeData;
-
-        await updateSession(from, tenantId, {
-          // Keep the flow active so FSI_SWITCH_NO can restore it correctly
-          data: {
-            ...switchData,
-            _fsiTargetFlow: _fsiTargetFlow,
-            _fsiResumeFlow: switchFlow,
-            _fsiResumeStep: switchStep,
-            _fsiResumeData: switchData,
-          },
-        });
-
-        // [AUDIT-FIX-9] This was hardcoded to 'order food' / 'book a table' —
-        // correct for restaurant, but wrong for every other vertical that can
-        // reach this branch (the [FIX-FSI-2] capability gate allows any mode
-        // whose getModeConfig().flows includes the target flow, e.g. salon,
-        // bakery, cosmetics — a salon customer mid-booking who asks to buy a
-        // product would see "Looks like you'd like to book a table!"). Reuse
-        // the same per-mode welcomeButtons title already shown on this
-        // business's own welcome screen for ORDER/BOOK, so the wording always
-        // matches the vertical; fall back to generic phrasing if a mode has
-        // no matching welcome button (e.g. salon has no top-level ORDER button
-        // even though product ORDER is a valid flow for it).
-        const cfgFsi        = getModeConfig(business);
-        const targetBtnId   = _fsiTargetFlow === 'ORDER' ? 'ORDER' : 'BOOK';
-        const targetBtn     = (cfgFsi.ui?.welcomeButtons || []).find(b => b.id === targetBtnId);
-        const targetTitle   = targetBtn?.title || (_fsiTargetFlow === 'ORDER' ? '🛒 Place an Order' : '📅 Make a Booking');
-        const targetLabel   = targetTitle.replace(/^\S+\s*/, '').toLowerCase();
-
-        await dispatchMessage(from, {
-          type:    'buttons',
-          body:
-            `💡 *Looks like you'd like to ${targetLabel}!*\n\n` +
-            `You're currently ${stepLabelFsi}.\n\n` +
-            `Would you like to *switch over*, or *continue* where you left off?`,
-          buttons: [
-            { id: 'FSI_SWITCH_YES', title: targetTitle },
-            { id: 'FSI_SWITCH_NO',  title: '↩️ Continue' },
           ],
         }, tenantDoc);
         return;

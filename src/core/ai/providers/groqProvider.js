@@ -443,7 +443,7 @@ export async function getReply({ customerMessage, business, intent = 'FALLBACK',
  * [GROQ-OPT-4] Returns { text, source } object.
  * [GROQ-V3-3] Uses fast 8b model — short output, speed matters more than depth for greetings.
  */
-export async function generateGreeting({ business, customerName, lastOrder, orderCount = 0, vipThreshold = 5 }) {
+export async function generateGreeting({ business, customerName, lastOrder }) {
   const name     = sanitise(business?.name || 'us');
   const custName = customerName ? `, ${customerName}` : '';
   const lastStr  = lastOrder ? ` Last time they ordered *${sanitise(lastOrder, 40)}*.` : '';
@@ -462,15 +462,7 @@ export async function generateGreeting({ business, customerName, lastOrder, orde
   };
 
   const hint = modeHints[mode] || 'Keep it warm and friendly.';
-  // [FIX-VIP-LANG] Loyalty phrasing ("valued regular", "loyal customer", etc.)
-  // is only appropriate once someone has actually ordered enough times to be
-  // one — the model previously had zero visibility into order count and would
-  // freely call a 1st-or-2nd-time returner a "regular", which reads as
-  // insincere. Give it the real number and an explicit instruction either way.
-  const loyaltyLine = orderCount >= vipThreshold
-    ? ` They've ordered from you ${orderCount} times — it's genuinely fine to acknowledge them as a loyal/regular customer.`
-    : ` They've only ordered ${orderCount} time(s) so far — do NOT call them a "regular", "loyal customer", or "valued customer"; just be warm and welcoming, like greeting anyone you're happy to see again.`;
-  const prompt = `You are a warm ${getPersona(mode)} for ${name}. Write ONE casual, friendly sentence welcoming a returning customer${custName} back.${lastStr}${loyaltyLine} ${hint} Keep it under 20 words. Use one relevant emoji. Do not start with "Hi" or "Hello".`;
+  const prompt = `You are a warm ${getPersona(mode)} for ${name}. Write ONE casual, friendly sentence welcoming a returning customer${custName} back.${lastStr} ${hint} Keep it under 20 words. Use one relevant emoji. Do not start with "Hi" or "Hello".`;
 
   try {
     // [GROQ-V3-3] Fast 8b model for greetings — speed over depth

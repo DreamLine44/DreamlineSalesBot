@@ -57,15 +57,8 @@ export async function handleBakeryOrderFlow({ session, message, business, tenant
       }
       if (clean.length < 2) return _buildBakeryMenu(menu, business);
 
-      // [AUDIT-FIX-PARSEINT-1] parseInt("2 croissants", 10) returns 2, NOT NaN —
-      // mixed alphanumeric input silently resolved to menu[numIdx], completely
-      // bypassing findBestMatch() below. Gating only on isInteractive/menuViewed
-      // (as before) doesn't help: menuViewed is true in the normal post-menu case,
-      // so "2 croissants" still short-circuited into the WRONG item. The numeric
-      // index must only be trusted when raw is a bare number or came from a tap.
-      const isPureNumeric = /^\d+$/.test(raw.trim());
       const numIdx = parseInt(raw, 10) - 1;
-      let item = (isInteractive || isPureNumeric) && !isNaN(numIdx) && numIdx >= 0 && menu[numIdx] ? menu[numIdx] : null;
+      let item = (!isNaN(numIdx) && numIdx >= 0 && menu[numIdx]) ? menu[numIdx] : null;
 
       if (!item) {
         const { item: matched, confidenceLevel } = findBestMatch(menu, clean);
@@ -408,13 +401,7 @@ function _buildBakeryMenu(menu, business) {
       buttons: [{ id: 'SUPPORT', title: '💬 Contact Us' }],
     };
   }
-  // [AUDIT-FIX-1] Was menu.slice(0, 10) here, which silently dropped every
-  // item past the 10th BEFORE the row array ever reached dispatcher.js's
-  // chunking logic (see dispatcher.js [FIX-LIST-TRUNC]) — that fix only
-  // helps if it receives the FULL row list, so pre-slicing here defeated it.
-  // Build rows from the full menu; dispatcher chunks into ≤10-row sections
-  // (up to 100 total) so items 11+ are no longer unreachable.
-  const rows = menu.map((item, i) => ({
+  const rows = menu.slice(0, 10).map((item, i) => ({
     id:          String(i + 1),
     title:       item.name.slice(0, 24),
     description: [
@@ -428,6 +415,7 @@ function _buildBakeryMenu(menu, business) {
     body:   'Fresh baked daily — what would you like?',
     button: 'View Menu',
     rows,
+    footer: menu.length > 10 ? `Showing ${rows.length} of ${menu.length} items` : undefined,
   };
 }
 
