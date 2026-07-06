@@ -628,7 +628,13 @@ export async function handleBookingFlow({ session, message, business, tenant, is
         return cancelFlow(session, business);
       }
 
-      if (!/^(yes|y|confirm|ok|okay|sure)$/i.test(clean) && clean !== 'confirm') {
+      // [AUDIT-FIX-CONFIRM-1] This regex was missing 'yeah'/'yep', even though the
+      // DATE_CONFIRM and TIME_CONFIRM steps earlier in this same flow both accept them.
+      // Since BOOKING_CONFIRM is the step that actually SAVES the booking, a customer
+      // who naturally typed "yeah" here got the booking summary re-displayed instead
+      // of their booking saved — for restaurants (table bookings), salons, and every
+      // other module that shares this flow.
+      if (!/^(yes|y|yep|yeah|confirm|ok|okay|sure)$/i.test(clean) && clean !== 'confirm') {
         const { date, time, service, partySize, stylist, staff } = data;
         const staffDisplay2 = stylist || staff || null;
         const isBarbershopReprompt = (business?.businessMode || '').toUpperCase() === 'BARBERSHOP';

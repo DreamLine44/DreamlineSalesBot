@@ -401,7 +401,13 @@ function _buildBakeryMenu(menu, business) {
       buttons: [{ id: 'SUPPORT', title: '💬 Contact Us' }],
     };
   }
-  const rows = menu.slice(0, 10).map((item, i) => ({
+  // [AUDIT-FIX-1] Was menu.slice(0, 10) here, which silently dropped every
+  // item past the 10th BEFORE the row array ever reached dispatcher.js's
+  // chunking logic (see dispatcher.js [FIX-LIST-TRUNC]) — that fix only
+  // helps if it receives the FULL row list, so pre-slicing here defeated it.
+  // Build rows from the full menu; dispatcher chunks into ≤10-row sections
+  // (up to 100 total) so items 11+ are no longer unreachable.
+  const rows = menu.map((item, i) => ({
     id:          String(i + 1),
     title:       item.name.slice(0, 24),
     description: [
@@ -415,7 +421,6 @@ function _buildBakeryMenu(menu, business) {
     body:   'Fresh baked daily — what would you like?',
     button: 'View Menu',
     rows,
-    footer: menu.length > 10 ? `Showing ${rows.length} of ${menu.length} items` : undefined,
   };
 }
 

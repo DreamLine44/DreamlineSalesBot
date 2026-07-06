@@ -639,7 +639,13 @@ export async function handleSpecRequest({ session, message, business, tenant }) 
   // FLOW_PASSTHROUGH_IDS, so it will still re-enter this handler and re-trigger
   // startFlow('SPEC_REQUEST') — that path works correctly without completeFlow.
   // completeFlow clears currentFlow/step so ORDER and SHOW_MENU can route correctly.
-  await completeFlow(session, 'SPEC_REQUEST', business, null);
+  // [FIX-ELEC-CF-3] completeFlow's return value was being discarded here — every
+  // other module (services, general, salon, restaurant, retail, bakery) captures it
+  // and returns it when truthy, since a non-null return means lead capture kicked in
+  // and its UI (e.g. "can we get your name/email?") should replace the normal reply.
+  // This was the one handler in the codebase silently dropping that override.
+  const _lcRspec = await completeFlow(session, 'SPEC_REQUEST', business, null);
+  if (_lcRspec) return _lcRspec;
 
   return {
     type: 'buttons',
@@ -814,7 +820,10 @@ export async function handleWarranty({ session, message, business, tenant }) {
   // with the button ID as the customer message, producing nonsensical AI responses.
   // completeFlow clears the flow state and sets postFlowAck so follow-up messages
   // (thanks, ok) get a warm reply instead of falling through to a stale flow handler.
-  await completeFlow(session, 'WARRANTY', business, null);
+  // [FIX-ELEC-CF-3] Same discarded-return-value bug as SPEC_REQUEST above — capture
+  // and return completeFlow's result when truthy (lead-capture override).
+  const _lcRwar = await completeFlow(session, 'WARRANTY', business, null);
+  if (_lcRwar) return _lcRwar;
 
   return {
     type: 'buttons',

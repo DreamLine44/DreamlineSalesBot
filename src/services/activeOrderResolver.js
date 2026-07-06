@@ -130,7 +130,8 @@ function _resolveState(order, business, session) {
   const { paymentStatus, status, updatedAt } = order;
 
   const currency    = business?.payment?.currency || 'D';
-  const adminPhone  = business?.adminPhone || null;
+  // [AUDIT-FLOWS-9] Removed a dead `adminPhone` variable — none of the customer-facing
+  // status cards built below surface the admin's phone number.
   const custName    = session?.customerName ? `, ${session.customerName}` : '';
   const shortId     = order.shortId || '???';
   const itemSummary = `*${order.item}* × ${order.quantity}`;
@@ -200,9 +201,22 @@ function _resolveState(order, business, session) {
     };
   }
 
-  // Priority 3 — Payment confirmed, order being processed
-  const isPaymentVerified = ['confirmed', 'self_confirmed', 'paid'].includes(paymentStatus);
-  if (isPaymentVerified && status === 'confirmed') {
+  // Priority 3 — Order confirmed (accepted), regardless of how payment was settled.
+  // [AUDIT-AOR-CONFIRMED] Previously gated on `isPaymentVerified && status === 'confirmed'`,
+  // where isPaymentVerified required paymentStatus to be one of
+  // ['confirmed','self_confirmed','paid']. That excluded orders that are genuinely
+  // confirmed-and-in-progress but never touch those paymentStatus values:
+  //   - Cash orders accepted via AWAIT_ADMIN_CONFIRM (paymentStatus stays 'unpaid' —
+  //     see adminCommandService.markOrderReady's FIX-MARK-READY-GUARD comment, which
+  //     explicitly documents this state as reachable)
+  //   - Orders confirmed via the dashboard PATCH endpoint (dashboardController
+  //     updateOrderStatus), which sets status:'confirmed' without touching paymentStatus
+  // Those orders matched the DB query above (status:'confirmed' is in the $in list) but
+  // then fell through every priority branch here and resolved to NO_ACTIVE_ORDER —
+  // silently disabling interception for a real in-progress order. status === 'confirmed'
+  // is itself the authoritative "order accepted" signal; paymentStatus only changes which
+  // wording the resolver would otherwise pick, not whether the order is active.
+  if (status === 'confirmed') {
     return {
       order, orders: [order],
       state: ACTIVE_ORDER_STATES.PAYMENT_VERIFIED,

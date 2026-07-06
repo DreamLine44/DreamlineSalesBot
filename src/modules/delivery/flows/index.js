@@ -107,11 +107,24 @@ export async function handleDeliveryOrder({ session, message, business, tenant, 
       const numIdx = parseInt(raw, 10) - 1;
       let item = (!isNaN(numIdx) && menu[numIdx]) ? menu[numIdx] : null;
 
+      // [AUDIT-FIX-FUZZY-CONFIRM] Same bug class fixed in retail/fashion/salon: a
+      // customer tapping "Yes" on the "Did you mean X?" prompt below re-entered
+      // this case with raw='CONFIRM' and no record of what X was — the candidate
+      // was never persisted to session data, so findBestMatch(menu, "confirm")
+      // found nothing and the confirmation was silently lost. Check for a pending
+      // candidate from a prior LOW-confidence prompt first.
+      if (!item && data._pendingMatchName && ['CONFIRM', 'YES'].includes(raw.toUpperCase())) {
+        item = menu.find(i => i.name === data._pendingMatchName) || null;
+      }
+
       if (!item) {
         const { item: m, confidenceLevel } = findBestMatch(menu, clean);
         if (confidenceLevel === 'HIGH') {
           item = m;
         } else if (confidenceLevel === 'LOW' && m) {
+          await updateSession(session.customerPhone, session.tenantId, {
+            data: { ...data, _pendingMatchName: m.name },
+          });
           return {
             type: 'buttons',
             body: `Did you mean *${m.name}*?`,
@@ -140,9 +153,10 @@ export async function handleDeliveryOrder({ session, message, business, tenant, 
         };
       }
 
+      const { _pendingMatchName: _pmDelivery, ...cleanDeliveryData } = data;
       await updateSession(session.customerPhone, session.tenantId, {
         step: 'QUANTITY',
-        data: { ...data, item },
+        data: { ...cleanDeliveryData, item },
         menuViewed: true,
       });
 
@@ -382,8 +396,11 @@ export async function handleDeliveryOrder({ session, message, business, tenant, 
         const timeMatch = raw.match(/(\d{1,2})(:\d{2})?\s*(am|pm)/i) ||
                           raw.match(/\b([01]?\d|2[0-3]):[0-5]\d\b/);
         if (timeMatch && parsedSlotDate) {
-          const { validateTime: _vt } = await import('../../../core/conversations/bookingFlow.js').catch(() => ({ validateTime: null }));
-          // validateTime is not exported — inline a lightweight check
+          // [AUDIT-FLOWS-8] Removed a dead dynamic import of `validateTime` from
+          // bookingFlow.js — that export doesn't exist there (bookingFlow.js has no such
+          // named export), so this `await import(...).catch(...)` always resolved to
+          // { validateTime: null } and the destructured value was never read anyway.
+          // The lightweight inline check below (already the real implementation) is unaffected.
           const safeZone = (() => { try { Intl.DateTimeFormat(undefined, { timeZone: tz }); return tz; } catch { return 'UTC'; } })();
           const parts = new Intl.DateTimeFormat('en-CA', { timeZone: safeZone, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false }).formatToParts(new Date());
           const get = (type) => parseInt(parts.find(p => p.type === type)?.value || '0', 10);

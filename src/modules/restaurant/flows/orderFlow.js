@@ -259,7 +259,13 @@ export async function handleOrderFlow({ session, message, business, tenant, isIn
 
     // ────────────────────────────────────────────────────────────────────────
     case 'CONFIRM': {
-      const isConfirm = /^(yes|y|confirm|ok|okay|sure|place|confirmed)$/i.test(clean);
+      // [AUDIT-FIX-CONFIRM-1] This regex was missing 'yeah'/'yep', even though every
+      // other confirmation step in this same file (SUGGESTION_CONFIRM, UPSELL) — and
+      // every confirmation step in the shared bookingFlow.js — accepts them. Since this
+      // is the step that actually SAVES the order, a customer who naturally typed
+      // "yeah" here got the order summary re-displayed instead of their order placed,
+      // with no visible error explaining why nothing happened.
+      const isConfirm = /^(yes|y|yep|yeah|confirm|ok|okay|sure|place|confirmed)$/i.test(clean);
       if (!isConfirm) {
         return buildOrderSummary({ item: data.item, qty: data.quantity, total: data.totalPrice, business });
       }
@@ -436,13 +442,26 @@ export async function handleOrderFlow({ session, message, business, tenant, isIn
 
 // ── Select item helper ────────────────────────────────────────────────────────
 async function _selectItem(item, session, business, data) {
+  const addOns = business?.addOns || [];
+
+  // [AUDIT-FIX-ADDON-1] Pin the upsell add-on HERE, at selection time, instead of
+  // letting the QUANTITY step pick a random one later. Previously this teaser line
+  // always named addOns[0] ("Soft Drink pairs well with this") while the QUANTITY
+  // step's upsell prompt picked a DIFFERENT random add-on (e.g. "Would you like to
+  // add Dessert?") — the customer was told one thing and offered another. Picking
+  // and storing pendingAddOn now means the name mentioned here is guaranteed to be
+  // the same one actually offered at checkout. QUANTITY already prefers
+  // `data.pendingAddOn` over re-rolling, so this pin is respected end-to-end.
+  const pendingAddOn = addOns.length
+    ? addOns[Math.floor(Math.random() * addOns.length)]
+    : null;
+
   await updateSession(session.customerPhone, session.tenantId, {
-    step: 'QUANTITY', data: { ...data, item }, menuViewed: true,
+    step: 'QUANTITY', data: { ...data, item, pendingAddOn }, menuViewed: true,
   });
 
-  const addOns    = business?.addOns || [];
-  const addOnText = addOns.length
-    ? `\n\n💡 *${addOns[0].name}* pairs well with this — we'll ask at checkout!`
+  const addOnText = pendingAddOn
+    ? `\n\n💡 *${pendingAddOn.name}* pairs well with this — we'll ask at checkout!`
     : '';
 
   // ── Send item image if available and showImageOnSelect is not disabled ────

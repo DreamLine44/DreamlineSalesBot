@@ -90,7 +90,17 @@ export const BUTTON_ID_MAP = {
   'WALKIN_NOW':         'WALKIN',           // [FIX] Join Now variant button
   'JOIN_QUEUE':         'WALKIN',
   // [v14-PATTERNS] Salon/barbershop new button IDs
-  'RESCHEDULE':         'START_BOOKING',   // reschedule taps re-enter the booking flow
+  // [AUDIT-FLOWS-RESCHEDULE] Was 'START_BOOKING'. That mapping reset the session and
+  // started a completely fresh booking flow WITHOUT touching the customer's existing
+  // pending/confirmed appointment — so tapping "📅 Reschedule" from the greeting-gate
+  // screen (moduleRouter.js GREET case) left the OLD booking live in the DB and created
+  // a second, separate one from the new flow. This contradicted the documented behavior
+  // ("cancel the old one atomically" — see [v14-RESCHEDULE] in salon/flows/index.js) and
+  // silently duplicated admin alerts/reminders. postFlowHandler.js's own RESCHEDULE
+  // handling (used from postFlowAck contexts) already cancels-then-restarts correctly;
+  // routing here to a dedicated 'RESCHEDULE' action lets moduleRouter.js do the same for
+  // the greeting-gate entry point instead of falling through to the bare START_BOOKING reset.
+  'RESCHEDULE':         'RESCHEDULE',
   'CONSULTATION':       'QUESTION',        // consultation taps go to the QUESTION/AI flow
 
   // Payment

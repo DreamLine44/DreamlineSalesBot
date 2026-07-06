@@ -38,7 +38,7 @@
 import { startFlow, cancelFlow } from './flowEngine.js';
 import { updateSession }         from '../sessions/sessionService.js';
 import { generateGreeting }      from '../ai/providers/aiRouter.js';
-import { dispatchText, dispatchMessage }          from '../whatsapp/dispatcher.js';
+import { dispatchMessage }          from '../whatsapp/dispatcher.js';
 import { getModeConfig }         from '../../config/modes.js';
 import logger from '../../config/logger.js';
 
@@ -203,7 +203,8 @@ export async function route({ action, intent, session, message, business, tenant
             // "You have a table booking for ? guests" was nonsensical for hair appointments.
             const serviceGreetStr = activeBooking.service ? `*${activeBooking.service}*` : 'your appointment';
             const staffGreetStr   = activeBooking.staff   ? ` with *${activeBooking.staff}*` : '';
-            const staffLabel      = greetMode === 'BARBERSHOP' ? 'barber' : 'stylist';
+            // [AUDIT-FLOWS-10] Removed a dead `staffLabel` variable — staff name is
+            // interpolated directly via staffGreetStr above; no separate role label is used.
 
             if (isWalkInGreet) {
               bookingBody =
@@ -337,7 +338,8 @@ export async function route({ action, intent, session, message, business, tenant
       if (isReturning && hoursSinceLastOrder > 4) {
         // Genuine returning customer (not seen in 4+ hours) — use Groq for personalised greeting
         try {
-          const g = await generateGreeting({ business, customerName: existingName, lastOrder });
+          const vipThreshold = business?.settings?.vipThreshold || 5;
+          const g = await generateGreeting({ business, customerName: existingName, lastOrder, orderCount, vipThreshold });
           body = g;
         } catch { /* non-fatal — fall through to static welcome */ }
       } else if (isReturning && existingName) {
@@ -551,7 +553,8 @@ export async function route({ action, intent, session, message, business, tenant
         };
       } catch (err) {
         logger.error('[Router] CANCEL_ALL failed', { err: err.message });
-        const cfgCancelAllErr = getModeConfig(business);
+        // [AUDIT-FLOWS-2] Removed a dead `const cfgCancelAllErr = getModeConfig(business)` —
+        // never read; the buttons below are hardcoded, not mode-derived.
         return {
           type:    'buttons',
           body:    '⚠️ Something went wrong cancelling your orders. Please contact support.',
@@ -669,6 +672,22 @@ export async function route({ action, intent, session, message, business, tenant
       const SPAM_RE = /^[^aeiou\s]{5,}$/i;             // consonant-only spam
       const isOffTopic = OFF_TOPIC_RE.test(cleanMsg) || GIBBERISH_RE.test(cleanMsg) || SPAM_RE.test(cleanMsg);
 
+      // [FIX-DECLINE-1] "No thanks" / "not now" / etc. is a decline of whatever
+      // was just suggested (e.g. "shall we do that again?"), NOT a request to
+      // reset the whole conversation. Previously this had no dedicated
+      // handling, so it fell through to the AI as an unrecognized message,
+      // which produced a generic "Welcome to X — is there something I can
+      // help you with?" reply and re-showed the same 3 buttons the customer
+      // had just declined — reading as if the bot didn't understand them at
+      // all. Catch it explicitly and acknowledge the decline instead.
+      const DECLINE_RE = /^(no+\s*(thanks?|thank\s*you)?|nah+|nope+|not\s*(now|really|interested|today)|i'?m\s*good|im\s*good|all\s*good|maybe\s*later|not\s*at\s*the\s*moment)[.!]?$/i;
+      if (DECLINE_RE.test(cleanMsg)) {
+        return {
+          type: 'text',
+          body: `No problem 😊 I'm here whenever you're ready — just message me anytime and say *order*, *table*, or *menu*.`,
+        };
+      }
+
       if (isOffTopic) {
         return {
           type:    'buttons',
@@ -734,6 +753,54 @@ export async function route({ action, intent, session, message, business, tenant
       return startFlow({ flowName: 'ENQUIRY', session, business, tenant });
     }
 
+    case 'RESCHEDULE': {
+      // [AUDIT-FLOWS-RESCHEDULE] Previously the "📅 Reschedule" button (shown on the
+      // greeting-gate booking-status screen, see the GREET case above) mapped straight
+      // to START_BOOKING via patterns.js BUTTON_ID_MAP. That reset the session and began
+      // an entirely new booking WITHOUT cancelling the customer's existing pending/
+      // confirmed appointment — leaving two live bookings for the same customer, with
+      // the admin alerted twice and the old one never resolved. Fix mirrors the
+      // already-correct RESCHEDULE handling in postFlowHandler.js (used when the
+      // customer replies to a postFlowAck context): cancel the most recent active,
+      // non-walk-in booking first, then land the customer on the DATE step with their
+      // previous service/stylist carried over so they don't have to re-select them.
+      let _previousBooking = null;
+      try {
+        const { default: _RescheduleBooking } = await import('../../models/Booking.js');
+        _previousBooking = await _RescheduleBooking.findOneAndUpdate(
+          {
+            customerPhone: session.customerPhone,
+            tenantId:      session.tenantId,
+            status:        { $in: ['pending', 'confirmed'] },
+            bookingType:   { $ne: 'walkin' },
+          },
+          { $set: { status: 'cancelled', cancelledBy: 'customer', cancelledAt: new Date() } },
+          { sort: { createdAt: -1 } }
+        ).lean();
+      } catch (err) {
+        logger.warn('[Router] RESCHEDULE: previous booking cancel failed (non-fatal)', { err: err.message });
+      }
+
+      await updateSession(session.customerPhone, session.tenantId, {
+        currentFlow: 'BOOKING', step: 'DATE', postFlowAck: null,
+        data: {
+          service:         _previousBooking?.service || null,
+          selectedService: _previousBooking?.service || null,
+          stylist:         _previousBooking?.staff    || null,
+        },
+      });
+
+      const _custNameResched = session.customerName ? `, *${session.customerName}*` : '';
+      return {
+        type: 'text',
+        body:
+          `📅 *Reschedule Appointment*\n\n` +
+          `No problem${_custNameResched}! Let's find a new time` +
+          `${_previousBooking?.service ? ` for your *${_previousBooking.service}*` : ''}.\n\n` +
+          `What date works best for you?`,
+      };
+    }
+
     case 'DONE': {
       // [FIX-BUG10] Return welcome buttons instead of dead-end plain text
       const cfg = getModeConfig(business);
@@ -765,7 +832,8 @@ export async function route({ action, intent, session, message, business, tenant
           await _us(session.customerPhone, session.tenantId, {
             currentFlow: 'ORDER', step: 'PAYMENT_PROOF',
           });
-          const cfg = getModeConfig(business);
+          // [AUDIT-FLOWS-1] Removed a dead `const cfg = getModeConfig(business)` that was
+          // computed but never read anywhere below — pure wasted work on this hot path.
           const currency = business?.payment?.currency || 'D';
           return {
             type:    'buttons',

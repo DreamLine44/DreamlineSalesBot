@@ -24,6 +24,18 @@
  * [PFH-6] AI calls from ORDER_CONFIRMED context now pass orderContext so the AI system
  *         prompt includes the active order details.
  * [PFH-7] Payment rejection with reason: reads flowData.rejectReason if present.
+ * [PFH-8] Sentiment classification: regex (ACK_RE/COMPLIMENT_RE/COMPLAINT_RE/QUESTION_RE)
+ *         is the fast, free, zero-latency path and handles the vast majority of messages
+ *         with a single unambiguous signal. When a message matches NONE of the four
+ *         patterns (e.g. "not bad", "nothing wrong") or matches MORE THAN ONE at once
+ *         (e.g. "not bad, quite good actually" hits both COMPLIMENT_RE and COMPLAINT_RE),
+ *         regex alone can't be trusted — classifyPostFlowSentiment() falls back to
+ *         groqProvider.classifyIntent(), the same lean one-word/20-token/temp-0.1
+ *         classifier intentEngine.js already uses for general intent detection. This
+ *         keeps the AI's role strictly to picking ONE label out of five — it never
+ *         writes customer-facing wording here (that still happens per-branch below,
+ *         same as before) and never touches flow state directly, consistent with
+ *         aiRouter.js's "AI ROLE" contract at the top of that file.
  */
 
 import { updateSession }  from '../core/sessions/sessionService.js';
@@ -61,6 +73,62 @@ const ACK_RE        = /^(ok|okay|k|kk|thanks?|thank\s*you|thank\s*u|thx|ty|tq|gr
 const COMPLIMENT_RE = /\b(amazing|excellent|fantastic|love|best|delicious|enjoyed|happy|pleased|satisfied|impressed|recommend|5\s*star|five\s*star|well\s*done|great\s*job|keep\s*it\s*up|good\s*job|wonderful|superb|outstanding|top\s*notch|quality)\b/i;
 const COMPLAINT_RE  = /\b(bad|terrible|awful|horrible|disappoint|not\s*good|wrong|cold|late|missing|never|complain|refund|cheat|fraud|angry|upset|poor|issue|problem|unsatisfied|unhappy|rubbish|disgusting|unacceptable|worst)\b/i;
 const QUESTION_RE   = /[?]|^(how|when|where|what|why|can\s*you|do\s*you|is\s*there|will\s*you|could\s*you)\b/i;
+
+// [PFH-8] The five labels classifyPostFlowSentiment can return. UNRELATED covers both
+// "genuinely off-topic" and "AI unavailable/failed" — same safe default the rest of
+// this file already uses (see [PFH-2]'s unknown-ackCtx fallback).
+const SENTIMENT_LABELS = ['ACK', 'COMPLIMENT', 'COMPLAINT', 'QUESTION', 'UNRELATED'];
+
+/**
+ * classifyPostFlowSentiment — decides which of the five sentiment buckets a
+ * post-flow customer message belongs to.
+ *
+ * Fast path (no AI call): if exactly one of the four regexes fires, trust it —
+ * this is the overwhelming majority of real traffic ("thanks", "terrible",
+ * "when will it be ready?") and stays instant + free.
+ *
+ * Fallback (AI tiebreaker): if zero regexes fire (message doesn't look like
+ * any of the four — often negation/sarcasm the regex can't parse, e.g. "not
+ * bad", "no complaints") or more than one fires at once (conflicting signal,
+ * e.g. "not bad, quite good actually" matches both COMPLIMENT_RE and
+ * COMPLAINT_RE), ask groqProvider.classifyIntent() to pick exactly one label.
+ * That function already returns a single bare word (max 20 tokens, temp 0.1)
+ * and already defaults to a safe fallback on any failure — no new AI-reply
+ * wording is introduced here, only a routing decision.
+ *
+ * @param {string} msg      — trimmed customer message
+ * @param {object} business — BusinessConfig (for mode context in the AI prompt)
+ * @returns {Promise<'ACK'|'COMPLIMENT'|'COMPLAINT'|'QUESTION'|'UNRELATED'>}
+ */
+async function classifyPostFlowSentiment(msg, business) {
+  const rawAck        = ACK_RE.test(msg);
+  const rawCompliment = COMPLIMENT_RE.test(msg);
+  const rawComplaint  = COMPLAINT_RE.test(msg);
+  const rawQuestion   = QUESTION_RE.test(msg);
+
+  const matches = [
+    rawAck        && 'ACK',
+    rawCompliment && 'COMPLIMENT',
+    rawComplaint  && 'COMPLAINT',
+    rawQuestion   && 'QUESTION',
+  ].filter(Boolean);
+
+  // Exactly one confident regex signal — skip AI entirely.
+  if (matches.length === 1) return matches[0];
+
+  // Zero or conflicting signals — ask the AI to break the tie.
+  try {
+    const { classifyIntent } = await import('../core/ai/providers/groqProvider.js');
+    const mode   = (business?.businessMode || 'RETAIL').toUpperCase();
+    const result = await classifyIntent({ message: msg, validIntents: SENTIMENT_LABELS, mode });
+    if (SENTIMENT_LABELS.includes(result)) return result;
+  } catch (err) {
+    logger.warn('[PostFlow] AI sentiment tiebreak failed, defaulting to UNRELATED', { err: err.message });
+  }
+
+  // AI unavailable, errored, or returned something unrecognised — safe neutral default.
+  return 'UNRELATED';
+}
 
 /**
  * handlePostFlowMessage — main entry point called from webhookController.
@@ -101,10 +169,13 @@ export async function handlePostFlowMessage({
   const msg   = messageText.trim();
   const upper = msg.toUpperCase();
 
-  const isAck        = ACK_RE.test(msg);
-  const isCompliment = !isAck && COMPLIMENT_RE.test(msg);
-  const isComplaint  = COMPLAINT_RE.test(msg);
-  const isQuestion   = !isComplaint && !isCompliment && !isAck && QUESTION_RE.test(msg);
+  // [PFH-8] Regex handles clean single-signal cases instantly; ambiguous/negated/
+  // conflicting messages get an AI tiebreak. See classifyPostFlowSentiment() above.
+  const sentiment     = await classifyPostFlowSentiment(msg, business);
+  const isAck         = sentiment === 'ACK';
+  const isCompliment  = sentiment === 'COMPLIMENT';
+  const isComplaint   = sentiment === 'COMPLAINT';
+  const isQuestion    = sentiment === 'QUESTION';
 
   // [PFH-2] Clear postFlowAck first — consumed regardless of path taken below.
   // Each handler that needs to KEEP the ack context restores it explicitly.
@@ -200,7 +271,8 @@ export async function handlePostFlowMessage({
     // options instead of routing to generic intent detection.
     case 'APPOINTMENT_REMINDER': {
       const mode       = (business?.businessMode || '').toUpperCase();
-      const isSalon    = mode === 'SALON' || mode === 'BARBERSHOP';
+      // [AUDIT-FLOWS-5] Removed a dead `isSalon` variable — this reminder card is worded
+      // identically for restaurant and salon/barbershop; only the emoji varies (by BARBERSHOP).
       const emoji      = mode === 'BARBERSHOP' ? '✂️' : '💇';
       const serviceStr = flowData?.service ? ` for *${flowData.service}*` : '';
       const whenStr    = flowData?.date
@@ -378,10 +450,10 @@ export async function handlePostFlowMessage({
         }, tenantDoc);
         return true;
       }
-      // Any other message — show welcome menu
+      // Any other message (including a returning signal like "back again") — warm welcome
       await dispatchMessage(from, {
         type:    'buttons',
-        body:    `😊 What would you like to do next${custName}?`,
+        body:    `😊 Great to see you again${custName}! How can I help today?`,
         buttons: welcomeBtns,
       }, tenantDoc);
       return true;
@@ -502,7 +574,10 @@ export async function handlePostFlowMessage({
       }
 
       const resumeFlow = flowData?.resumeFlow || null;
-      const resumeStep = flowData?.resumeStep || null;
+      // [AUDIT-FLOWS-6] Removed a dead `resumeStep` local — this case only branches on
+      // whether a flow is resumable (resumeFlow) to choose which buttons to show; the
+      // actual step restoration happens later, reading resumeStep straight off
+      // session.postFlowData in webhookController.js's MFQ_RESUME_FLOW handler.
 
       // [AUDIT-FIX-15] This case previously ignored the CONTENT of the customer's
       // message entirely — isAck/isCompliment/isComplaint/isQuestion are computed at
@@ -620,6 +695,53 @@ export async function handlePostFlowMessage({
       await dispatchMessage(from, {
         type:    'buttons',
         body:    `😊 Hope that helped! What would you like to do next?`,
+        buttons: welcomeBtns,
+      }, tenantDoc);
+      return true;
+    }
+
+    // [AUDIT-FIX-SPEC-WARRANTY] SPEC_REQUEST / WARRANTY postFlowAck — set by
+    // completeFlow('SPEC_REQUEST') and completeFlow('WARRANTY') in
+    // modules/electronics/flows/orderFlow.js after answering a product spec or
+    // warranty question. These two states had no matching case here, unlike their
+    // ENQUIRY/QUOTE_FOLLOW/ABOUT siblings which were fixed under [FIX-26]. Every
+    // customer follow-up ("thanks", another question) after an electronics spec
+    // or warranty answer fell through to the `default` branch below, which both
+    // showed a generic reply AND logged a spurious "Unknown ackCtx" warning for a
+    // perfectly legitimate, expected state — polluting logs on every occurrence.
+    case 'SPEC_REQUEST': {
+      if (isAck || isCompliment) {
+        await dispatchMessage(from, {
+          type:    'buttons',
+          body:    `You're welcome${custName}! 😊 Let me know if you have any more questions.`,
+          buttons: welcomeBtns,
+        }, tenantDoc);
+        return true;
+      }
+      const { getAIReply: _specAI } = await import('../core/ai/providers/aiRouter.js');
+      const _specReply = await _specAI({ customerMessage: msg, business, intent: 'QUESTION' }).catch(() => null);
+      await dispatchMessage(from, {
+        type:    'buttons',
+        body:    _specReply || `Happy to help${custName}! 😊`,
+        buttons: welcomeBtns,
+      }, tenantDoc);
+      return true;
+    }
+
+    case 'WARRANTY': {
+      if (isAck || isCompliment) {
+        await dispatchMessage(from, {
+          type:    'buttons',
+          body:    `You're welcome${custName}! 😊 Let us know if anything else comes up.`,
+          buttons: welcomeBtns,
+        }, tenantDoc);
+        return true;
+      }
+      const { getAIReply: _warAI } = await import('../core/ai/providers/aiRouter.js');
+      const _warReply = await _warAI({ customerMessage: msg, business, intent: 'QUESTION' }).catch(() => null);
+      await dispatchMessage(from, {
+        type:    'buttons',
+        body:    _warReply || `Happy to help${custName}! 😊`,
         buttons: welcomeBtns,
       }, tenantDoc);
       return true;
