@@ -139,14 +139,32 @@ export async function handleRetailOrder({ session, message, business, tenant, is
       }
       if (clean.length < 2) return _buildProductList(menu, business);
 
+      // [AUDIT-FIX-PARSEINT-8] Same bug class as bakery/fashion/etc: parseInt("2
+      // red shirts", 10) = 2, not NaN, so mixed input silently resolved to menu[1]
+      // instead of reaching findBestMatch() below. Only trust the parsed index
+      // when raw is purely numeric or the tap came from an interactive list/button.
+      const isPureNumeric = /^\d+$/.test(raw.trim());
       const numIdx = parseInt(raw, 10) - 1;
-      let item = (!isNaN(numIdx) && menu[numIdx]) ? menu[numIdx] : null;
+      let item = (isInteractive || isPureNumeric) && !isNaN(numIdx) && menu[numIdx] ? menu[numIdx] : null;
+
+      // [AUDIT-FIX-FUZZY-CONFIRM] A customer tapping "Yes" on a "Did you mean X?"
+      // prompt previously re-entered this same case with raw='CONFIRM' and no
+      // memory of what X was — the candidate was never persisted to session data,
+      // so findBestMatch(menu, "confirm") found nothing and the customer's
+      // confirmation silently fell through to the AI product-query fallback.
+      // Check for a pending candidate from a prior LOW-confidence prompt first.
+      if (!item && data._pendingMatchName && ['CONFIRM', 'YES'].includes(raw.toUpperCase())) {
+        item = menu.find(i => i.name === data._pendingMatchName) || null;
+      }
 
       if (!item) {
         const { item: m, confidenceLevel } = findBestMatch(menu, clean);
         if (confidenceLevel === 'HIGH') {
           item = m;
         } else if (confidenceLevel === 'LOW') {
+          await updateSession(session.customerPhone, session.tenantId, {
+            data: { ...data, _pendingMatchName: m?.name || null },
+          });
           return {
             type: 'buttons',
             body: `Did you mean *${m?.name}*?`,
@@ -176,9 +194,10 @@ export async function handleRetailOrder({ session, message, business, tenant, is
         };
       }
 
+      const { _pendingMatchName, ...cleanData } = data;
       await updateSession(session.customerPhone, session.tenantId, {
         step: 'SELECT_VARIANT',
-        data: { ...data, item },
+        data: { ...cleanData, item },
         menuViewed: true,
       });
       return _buildItemDetail(item, business); // [FIX-RETAIL-BUSINESS-SCOPE]
@@ -236,14 +255,41 @@ export async function handleRetailOrder({ session, message, business, tenant, is
         };
       }
 
-      // Show variant picker
+      // Show variant picker.
+      // [AUDIT-FIX-RETAIL-VARIANT] Was `variantKeys.slice(0, 3).map(...).concat([CANCEL]).slice(0, 3)`
+      // — two bugs in one line. First, slicing to 3 BEFORE appending CANCEL meant any
+      // item with 3+ variants only ever offered its first 3 as tappable buttons, with
+      // no list fallback; customers could only reach a 4th+ variant by typing its exact
+      // name. This is the same truncation bug class already fixed for fashion sizes
+      // ([AUDIT-FIX-FASHION-SIZE]), salon services/products, bakery, cosmetics, and
+      // electronics — retail's variant picker was the one instance that was missed.
+      // Second, concatenating CANCEL onto an already-3-item array then re-slicing to 3
+      // silently dropped CANCEL itself whenever there were 3+ variants, leaving no
+      // button escape from the picker at all (a customer had to know to type "cancel").
+      // Now mirrors fashion's exact pattern: ≤3 variants get a button UI (with CANCEL
+      // preserved), 4+ get a flat `rows` list — dispatcher.js chunks that into ≤10-row
+      // sections (up to 100 total) so nothing is lost.
+      if (variantKeys.length > 3) {
+        return {
+          type: 'list',
+          body: `🛍 *${item.name}*\n\nWhich option would you like?`,
+          button: 'Choose option',
+          rows: variantKeys.map(v => ({
+            id:    `VAR_${v.toUpperCase().replace(/\s+/g, '_')}`,
+            title: v,
+          })),
+        };
+      }
       return {
         type: 'buttons',
         body: `🛍 *${item.name}*\n\nWhich option would you like?`,
-        buttons: variantKeys.slice(0, 3).map(v => ({
-          id: `VAR_${v.toUpperCase().replace(/\s+/g, '_')}`,
-          title: v,
-        })).concat([{ id: 'CANCEL', title: '❌ Cancel' }]).slice(0, 3),
+        buttons: [
+          ...variantKeys.map(v => ({
+            id:    `VAR_${v.toUpperCase().replace(/\s+/g, '_')}`,
+            title: v,
+          })),
+          { id: 'CANCEL', title: '❌ Cancel' },
+        ].slice(0, 3),
       };
     }
 
@@ -515,12 +561,22 @@ function _getCategories(menu) {
 }
 
 function _buildCategoryUI(categories, business) {
+  // [FIX-CAT-LIST-CAP] WhatsApp interactive lists hard-cap at 10 rows total. The
+  // trailing "Browse All" row was appended unconditionally with no cap on categories
+  // itself, so a tenant with 10+ categories would push the total past 10 rows and
+  // have the extra rows (including possibly "Browse All") silently dropped by the
+  // dispatcher's row-slicing, with no notice to the customer. Cap categories to 9 so
+  // the appended "Browse All" row always fits within the 10-row ceiling.
+  const shown = categories.slice(0, 9);
+  const overflowNote = categories.length > 9
+    ? `\n\n_(Showing 9 of ${categories.length} categories — tap "Browse All" to see everything)_`
+    : '';
   return {
     type: 'list',
-    body: `🛍 *${business?.name || 'Our Store'}*\n\nWhat are you shopping for today?`,
+    body: `🛍 *${business?.name || 'Our Store'}*\n\nWhat are you shopping for today?` + overflowNote,
     sections: [{
       title: 'Categories',
-      rows: categories.map(c => ({
+      rows: shown.map(c => ({
         id:    `CAT_${c.toUpperCase().replace(/\s+/g, '_')}`,
         title: c,
       })).concat([{ id: 'SHOW_MENU', title: '📋 Browse All' }]),
@@ -545,7 +601,11 @@ function _buildProductList(items, business, category = null) {
     };
   }
 
-  const rows = items.slice(0, 10).map((item, idx) => ({
+  // [AUDIT-FIX-3] Was items.slice(0, 10) here, which silently dropped every
+  // product past the 10th before dispatcher.js's row-chunking logic ever saw
+  // them. Build rows from the full catalog; dispatcher chunks into ≤10-row
+  // sections (up to 100 total) so nothing beyond the first page is lost.
+  const rows = items.map((item, idx) => ({
     id:          String(idx + 1),
     title:       item.name.slice(0, 24),
     description: [
@@ -560,7 +620,6 @@ function _buildProductList(items, business, category = null) {
     body:   'Tap a product to select it, or type what you\'re looking for:',
     button: 'View Products',
     rows,
-    footer: items.length > 10 ? `Showing ${rows.length} of ${items.length} — type a name to search` : undefined,
   };
 }
 

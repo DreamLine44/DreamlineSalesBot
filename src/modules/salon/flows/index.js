@@ -330,7 +330,8 @@ export async function handleSalonWalkIn({ session, message, business, tenant, is
   const data      = session.data || {};
   const isBarbershop = _isBarbershop(business);
   const emoji     = isBarbershop ? '✂️' : '💇';
-  const staffRole = isBarbershop ? 'barber' : 'stylist';
+  // [AUDIT-FLOWS-3] Removed a dead `staffRole` variable — the stylist/barber label used
+  // below (`isBarbershop ? 'Barber' : 'Stylist'`) is built inline where it's needed instead.
 
   // ── INIT ──────────────────────────────────────────────────────────────────
   if (message === null) {
@@ -709,14 +710,29 @@ export async function handleSalonProductOrder({ session, message, business, tena
     // ── SELECT_ITEM ────────────────────────────────────────────────────────
     case 'SELECT_ITEM': {
       // [v14-BUG-9] List row IDs are 1-based numeric strings; resolve them first
+      // [AUDIT-FIX-PARSEINT-4] Same bug class as bakery/retail/etc: parseInt("2
+      // shampoos", 10) = 2, not NaN, so mixed input silently resolved to menu[1]
+      // instead of reaching findBestMatch() below. Only trust the parsed index
+      // when raw is purely numeric or the tap came from an interactive list/button.
+      const isPureNumeric = /^\d+$/.test(raw.trim());
       const numIdx = parseInt(raw, 10) - 1;
-      let item = (!isNaN(numIdx) && numIdx >= 0 && menu[numIdx]) ? menu[numIdx] : null;
+      let item = (isInteractive || isPureNumeric) && !isNaN(numIdx) && numIdx >= 0 && menu[numIdx] ? menu[numIdx] : null;
 
       if (!item && !isInteractive && !session.menuViewed && /^\d+$/.test(raw)) {
         await updateSession(session.customerPhone, session.tenantId, { menuViewed: true });
         return _buildProductMenu(menu, business, isBarbershop);
       }
       if (!item && clean.length < 2) return _buildProductMenu(menu, business, isBarbershop);
+
+      // [AUDIT-FIX-FUZZY-CONFIRM] Same bug class fixed in retail/fashion: a
+      // customer tapping "Yes" on the "Did you mean X?" prompt below was caught
+      // by the SYSTEM_IDS check (CONFIRM is a generic system id) and sent straight
+      // back to the product menu — the candidate item was never persisted, so the
+      // confirmation was silently discarded. Resolve a pending candidate first,
+      // before the generic SYSTEM_IDS short-circuit.
+      if (!item && data._pendingMatchName && ['CONFIRM', 'YES'].includes(raw.toUpperCase())) {
+        item = menu.find(i => i.name === data._pendingMatchName) || null;
+      }
 
       if (!item) {
         const SYSTEM_IDS = new Set(['CANCEL', 'SHOW_MENU', 'CONFIRM', 'SUPPORT', 'BOOK', 'WALKIN', 'QUESTION', 'CANCEL_BOOKING']);
@@ -727,6 +743,9 @@ export async function handleSalonProductOrder({ session, message, business, tena
         if (confidenceLevel === 'HIGH') {
           item = matched;
         } else if (confidenceLevel === 'LOW' && matched) {
+          await updateSession(session.customerPhone, session.tenantId, {
+            data: { ...data, _pendingMatchName: matched.name },
+          });
           return {
             type: 'buttons',
             body: `Did you mean *${matched.name}*?`,
@@ -740,8 +759,9 @@ export async function handleSalonProductOrder({ session, message, business, tena
 
       if (!item) return _buildProductMenu(menu, business, isBarbershop);
 
+      const { _pendingMatchName: _pmSalon, ...cleanSalonData } = data;
       await updateSession(session.customerPhone, session.tenantId, {
-        step: 'QUANTITY', data: { ...data, item }, menuViewed: true,
+        step: 'QUANTITY', data: { ...cleanSalonData, item }, menuViewed: true,
       });
 
       const currency = item.currency || business?.payment?.currency || 'D';
@@ -948,7 +968,8 @@ export async function handleSalonProductOrder({ session, message, business, tena
 
 export async function handleSalonQuestion({ session, message, business, tenant }) {
   const isBarbershop = _isBarbershop(business);
-  const step         = session.step || 'AWAITING_QUESTION';
+  // [AUDIT-FLOWS-4] Removed a dead `step` variable — this handler has only one logical
+  // stage (AWAITING_QUESTION) and never branches on session.step.
 
   // ── INIT ────────────────────────────────────────────────────────────────
   if (message === null) {
@@ -1057,24 +1078,28 @@ function _buildServiceMenu(business, mode = 'booking') {
     };
   }
 
+  // [AUDIT-FIX-7] Was a single hardcoded `sections: [{ title: 'Our Services', rows:
+  // services.slice(0, 10)... }]` — dispatcher.js's chunking logic (see
+  // [FIX-LIST-TRUNC]) only chunks the flat `rows` format; a single pre-built
+  // section with its own internal slice(0, 10) bypassed it entirely, so a
+  // business with 11+ services silently lost anything past #10. Tenant service
+  // lists are admin-editable and unbounded. Switched to flat `rows` so
+  // dispatcher chunks into ≤10-row sections (up to 100 total).
   return {
     type:   'list',
     body:   heading,
     button: 'Choose service',
-    sections: [{
-      title: 'Our Services',
-      rows: services.slice(0, 10).map(s => {
-        const pricePart    = toPrice(s, business);
-        const durationPart = toDuration(s);
-        // [v14-BUG-6] Description ≤72 chars with price + duration info
-        const descParts = [pricePart, durationPart].filter(Boolean);
-        return {
-          id:          `SVC_${toName(s).toUpperCase().replace(/\s+/g, '_')}`,
-          title:       toName(s).slice(0, 24),
-          description: descParts.length ? descParts.join(' · ').slice(0, 72) : undefined,
-        };
-      }),
-    }],
+    rows: services.map(s => {
+      const pricePart    = toPrice(s, business);
+      const durationPart = toDuration(s);
+      // [v14-BUG-6] Description ≤72 chars with price + duration info
+      const descParts = [pricePart, durationPart].filter(Boolean);
+      return {
+        id:          `SVC_${toName(s).toUpperCase().replace(/\s+/g, '_')}`,
+        title:       toName(s).slice(0, 24),
+        description: descParts.length ? descParts.join(' · ').slice(0, 72) : undefined,
+      };
+    }),
     footer: 'Tap a service or type its name',
   };
 }
@@ -1106,18 +1131,18 @@ function _buildStylistMenu(staffList, business, isBarbershop, errorMsg = null) {
     };
   }
 
+  // [AUDIT-FIX-7] Same fix as _buildServiceMenu above — flat `rows` instead of
+  // a single pre-sliced `sections` entry, so dispatcher.js can chunk staff
+  // lists past 10 instead of silently dropping them.
   return {
     type:   'list',
     body:   heading,
     button: `Choose ${role}`,
-    sections: [{
-      title: `Our ${isBarbershop ? 'Barbers' : 'Stylists'}`,
-      rows: options.slice(0, 10).map(o => ({
-        id:          o.name === 'Any available' ? 'STYLIST_ANY' : `STYLIST_${o.name.toUpperCase().replace(/\s+/g, '_')}`,
-        title:       o.name.slice(0, 24),
-        description: (o.specialty || (o.name === 'Any available' ? `Next available ${role}` : undefined))?.slice(0, 72),
-      })),
-    }],
+    rows: options.map(o => ({
+      id:          o.name === 'Any available' ? 'STYLIST_ANY' : `STYLIST_${o.name.toUpperCase().replace(/\s+/g, '_')}`,
+      title:       o.name.slice(0, 24),
+      description: (o.specialty || (o.name === 'Any available' ? `Next available ${role}` : undefined))?.slice(0, 72),
+    })),
     footer: `Tap a name or type it`,
   };
 }
@@ -1137,7 +1162,11 @@ function _buildProductMenu(items, business, isBarbershop) {
   const currency = business?.payment?.currency || 'D';
 
   // [v14-BUG-9] Row IDs are 1-based numeric strings to match numIdx parsing
-  const rows = items.slice(0, 10).map((item, i) => ({
+  // [AUDIT-FIX-4] Was items.slice(0, 10), which silently dropped every
+  // product past the 10th before dispatcher.js's row-chunking logic ever saw
+  // them. Build rows from the full catalog; dispatcher chunks into ≤10-row
+  // sections (up to 100 total) so nothing beyond the first page is lost.
+  const rows = items.map((item, i) => ({
     id:          String(i + 1),
     title:       item.name.slice(0, 24),
     description: [
@@ -1146,6 +1175,18 @@ function _buildProductMenu(items, business, isBarbershop) {
     ].filter(Boolean).join(' — ').slice(0, 72) || undefined,
   }));
 
+  // [AUDIT-FIX-SALON-PRODUCT-CHUNK] The previous version wrapped `rows` inside a
+  // single `sections: [{ title: ..., rows }]` entry. dispatcher.js's row-chunking
+  // logic ([FIX-LIST-TRUNC]) only splits the FLAT `ui.rows` format into ≤10-row
+  // sections; when `ui.sections` is already present, it trusts the caller to have
+  // pre-chunked and just slices each given section to 10 rows. A single section
+  // holding all N products therefore still silently dropped everything past the
+  // 10th — the exact bug this function's own [AUDIT-FIX-4] comment above claims to
+  // have already fixed. That fix removed the build-time `items.slice(0, 10)` but
+  // never switched the return shape, so it never actually took effect. This file's
+  // own sibling functions (_buildServiceMenu, _buildStylistMenu) — and retail's
+  // equivalent _buildProductList — use the flat top-level `rows` format precisely
+  // so dispatcher can chunk them; matching that here.
   return {
     type:   'list',
     header: `${emoji} *${name}*`,
@@ -1153,11 +1194,7 @@ function _buildProductMenu(items, business, isBarbershop) {
       ? 'Our grooming products — tap to select:'
       : 'Our hair & beauty products — tap to select:',
     button: 'View Products',
-    sections: [{
-      title: isBarbershop ? 'Grooming Products' : 'Beauty Products',
-      rows,
-    }],
-    footer: items.length > 10 ? `Showing ${rows.length} of ${items.length} products` : undefined,
+    rows,
   };
 }
 

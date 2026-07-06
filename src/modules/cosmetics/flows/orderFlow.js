@@ -79,7 +79,13 @@ export async function handleCosmeticsOrderFlow({ session, message, business, ten
         'SKIP_SKIN':   null,
       };
 
-      const skinType = SKIN_MAP.hasOwnProperty(raw.toUpperCase())
+      // [AUDIT-LINT-1] Call hasOwnProperty via Object.prototype rather than directly on
+      // SKIN_MAP. Direct .hasOwnProperty() would throw if a future refactor ever built
+      // this map dynamically from a source that could produce an object with no
+      // prototype (e.g. Object.create(null)) or a key literally named "hasOwnProperty".
+      // Harmless today since SKIN_MAP is a static literal, but the direct-call form is a
+      // latent footgun for any object whose shape isn't fully controlled at this call site.
+      const skinType = Object.prototype.hasOwnProperty.call(SKIN_MAP, raw.toUpperCase())
         ? SKIN_MAP[raw.toUpperCase()]
         : (clean.length >= 2 ? clean : null);
 
@@ -109,8 +115,13 @@ export async function handleCosmeticsOrderFlow({ session, message, business, ten
       }
       if (clean.length < 2) return _buildCosmeticsMenu(menu, business, data.skinType || null);
 
+      // [AUDIT-FIX-PARSEINT-5] Same bug class as bakery/retail/etc: parseInt("2
+      // moisturisers", 10) = 2, not NaN, so mixed input silently resolved to
+      // menu[1] instead of reaching findBestMatch() below. Only trust the parsed
+      // index when raw is purely numeric or the tap came from an interactive list/button.
+      const isPureNumeric = /^\d+$/.test(raw.trim());
       const numIdx = parseInt(raw, 10) - 1;
-      let item = (!isNaN(numIdx) && numIdx >= 0 && menu[numIdx]) ? menu[numIdx] : null;
+      let item = (isInteractive || isPureNumeric) && !isNaN(numIdx) && numIdx >= 0 && menu[numIdx] ? menu[numIdx] : null;
 
       if (!item) {
         const { item: matched, confidenceLevel } = findBestMatch(menu, clean);
@@ -398,7 +409,11 @@ function _buildCosmeticsMenu(items, business, skinType = null) {
     };
   }
 
-  const rows = items.slice(0, 10).map((item, i) => ({
+  // [AUDIT-FIX-2] Was items.slice(0, 10) here, which silently dropped every
+  // product past the 10th before dispatcher.js's row-chunking logic ever saw
+  // them. Build rows from the full catalog; dispatcher chunks into ≤10-row
+  // sections (up to 100 total) so nothing beyond the first page is lost.
+  const rows = items.map((item, i) => ({
     id:          String(i + 1),
     title:       item.name.slice(0, 24),
     description: [
@@ -430,17 +445,18 @@ function _buildShadeUI(item) {
       })),
     };
   }
+  // [AUDIT-FIX-8] Same class of bug as _buildProductMenu above — a hardcoded
+  // `sections` entry with its own slice(0, 10) bypasses dispatcher.js's row
+  // chunking. Some shade ranges (e.g. foundation lines) legitimately exceed
+  // 10. Switched to flat `rows`.
   return {
     type:   'list',
     body:   `💄 *${item.name}*\n\nWhich shade would you like?`,
     button: 'Choose shade',
-    sections: [{
-      title: 'Available Shades',
-      rows: shades.slice(0, 10).map(s => ({
-        id:    `SHADE_${String(s).toUpperCase().replace(/\s+/g, '_')}`,
-        title: String(s),
-      })),
-    }],
+    rows: shades.map(s => ({
+      id:    `SHADE_${String(s).toUpperCase().replace(/\s+/g, '_')}`,
+      title: String(s),
+    })),
     footer: 'Or type your preferred shade',
   };
 }
