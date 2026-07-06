@@ -184,7 +184,7 @@ export async function handlePostFlowMessage({
   switch (ackCtx) {
     case 'ORDER_CONFIRMED':
       return handleOrderConfirmed({
-        msg, upper, isAck, isCompliment, isComplaint, isQuestion,
+        msg, upper, isAck, isCompliment, isComplaint, isQuestion, isInteractive,
         flowData, session, business, tenantDoc, from, tenantId,
         cfg, bizName, mode, welcomeBtns, custName, isVIP,
       });
@@ -244,8 +244,8 @@ export async function handlePostFlowMessage({
 
     case 'BOOKING_CONFIRMED':
       return handleBookingConfirmed({
-        msg, upper, isAck, isCompliment, isComplaint,
-        flowData, business, tenantDoc, from, tenantId,
+        msg, upper, isAck, isCompliment, isComplaint, isInteractive,
+        flowData, session, business, tenantDoc, from, tenantId,
         custName,
       });
 
@@ -432,7 +432,25 @@ export async function handlePostFlowMessage({
     // farewell reply instead of going to AI → SUPPORT escalation.
     case 'ORDER_COLLECTED': {
       const itemStr = flowData.item ? ` *${flowData.item}*` : '';
-      if (isCompliment || isAck) {
+
+      // [AUDIT-FIX-N3] Grace window: once an order is fully completed (collected/
+      // picked up), the bot may still warmly engage with BUSINESS-relevant emotion —
+      // a compliment, a complaint, or a question about that completed order — but
+      // only for the first couple of follow-up messages. Beyond that, or for anything
+      // that isn't a reaction to the business itself, the completed order is forgotten
+      // entirely: a new activity (a new order, a booking, etc.) must never be blocked,
+      // delayed, or answered with old-order chatter instead of what the customer
+      // actually asked for. (Explicitly revisiting a past order — "what was my last
+      // order?" — is handled separately by the TRACK_ORDER intent, not here.)
+      const GRACE_LIMIT   = 2;
+      const followUpCount = (flowData.ackFollowUpCount || 0) + 1;
+      const withinGrace   = followUpCount <= GRACE_LIMIT;
+
+      if (withinGrace && (isCompliment || isAck)) {
+        await updateSession(from, tenantId, {
+          postFlowAck:  'ORDER_COLLECTED',
+          postFlowData: { ...flowData, ackFollowUpCount: followUpCount },
+        }).catch(() => {});
         await dispatchMessage(from, {
           type:    'buttons',
           body:    `You're so welcome${custName}! 😊 Glad you enjoyed your${itemStr}. Hope to see you again soon! 🙏`,
@@ -440,7 +458,12 @@ export async function handlePostFlowMessage({
         }, tenantDoc);
         return true;
       }
-      if (isComplaint) {
+
+      if (withinGrace && isComplaint) {
+        await updateSession(from, tenantId, {
+          postFlowAck:  'ORDER_COLLECTED',
+          postFlowData: { ...flowData, ackFollowUpCount: followUpCount },
+        }).catch(() => {});
         const { getAIReply } = await import('../core/ai/providers/aiRouter.js');
         const aiReply = await getAIReply({ customerMessage: msg, business, session, intent: 'COMPLAINT' });
         await dispatchMessage(from, {
@@ -450,12 +473,50 @@ export async function handlePostFlowMessage({
         }, tenantDoc);
         return true;
       }
-      // Any other message (including a returning signal like "back again") — warm welcome
-      await dispatchMessage(from, {
-        type:    'buttons',
-        body:    `😊 Great to see you again${custName}! How can I help today?`,
-        buttons: welcomeBtns,
-      }, tenantDoc);
+
+      if (withinGrace && isQuestion) {
+        await updateSession(from, tenantId, {
+          postFlowAck:  'ORDER_COLLECTED',
+          postFlowData: { ...flowData, ackFollowUpCount: followUpCount },
+        }).catch(() => {});
+        const { getAIReply } = await import('../core/ai/providers/aiRouter.js');
+        const orderContext = flowData.item ? { item: flowData.item, shortId: flowData.shortId } : null;
+        const aiReply = await getAIReply({ customerMessage: msg, business, session, intent: 'QUESTION', orderContext });
+        await dispatchMessage(from, {
+          type:    'buttons',
+          body:    aiReply || `Happy to help${custName}! 😊`,
+          buttons: welcomeBtns,
+        }, tenantDoc);
+        return true;
+      }
+
+      // Grace window spent, or the message isn't a business-relevant emotional
+      // reaction at all (this is exactly where "I'll have another one" used to land
+      // and get swallowed by a generic "Great to see you again!" reply). The completed
+      // order is now fully forgotten — route the message through the SAME fresh
+      // intent-detection → module-router pipeline normal messages use (see step 16
+      // in webhookController.js), so a new order/booking starts immediately on this
+      // very message instead of costing the customer an extra round-trip.
+      const { detectIntent } = await import('../core/intents/intentEngine.js');
+      const { route }        = await import('../core/conversations/moduleRouter.js');
+      const { action, intent, suggestion } = await detectIntent({
+        message: msg, isInteractive, session, business,
+      }).catch(() => ({ action: 'FALLBACK', intent: 'FALLBACK' }));
+      const freshReply = await route({
+        action, intent, session, message: msg, business,
+        tenant: tenantDoc, isInteractive, suggestion,
+      }).catch(() => null);
+
+      if (freshReply) {
+        const payloads = Array.isArray(freshReply) ? freshReply : [freshReply];
+        for (const payload of payloads) await dispatchMessage(from, payload, tenantDoc);
+      } else {
+        await dispatchMessage(from, {
+          type:    'buttons',
+          body:    `😊 How can I help you today${custName}?`,
+          buttons: welcomeBtns,
+        }, tenantDoc);
+      }
       return true;
     }
 
@@ -765,7 +826,7 @@ export async function handlePostFlowMessage({
 
 // ── ORDER_CONFIRMED ──────────────────────────────────────────────────────────
 async function handleOrderConfirmed({
-  msg, upper, isAck, isCompliment, isComplaint, isQuestion,
+  msg, upper, isAck, isCompliment, isComplaint, isQuestion, isInteractive,
   flowData, session, business, tenantDoc, from, tenantId,
   cfg, bizName, mode, welcomeBtns, custName, isVIP,
 }) {
@@ -774,7 +835,28 @@ async function handleOrderConfirmed({
 
   // [SPEC-4H] Cancel intent — show confirmation prompt before doing anything
   const CANCEL_RE = /^(cancel|cancel\s*(my\s*)?order|stop|nevermind|never\s*mind|abort)$/i;
-  if (CANCEL_RE.test(msg) || upper === 'CANCEL' || upper === 'CANCEL_ORDER') {
+  const isCancelTyped = CANCEL_RE.test(msg) || upper === 'CANCEL' || upper === 'CANCEL_ORDER';
+
+  // [AUDIT-FIX-N1] Detect an attempt to start a DIFFERENT/new activity (a new order,
+  // a booking, a walk-in, etc.) while THIS order is still being prepared. Product
+  // policy: stay strict on the current order until the customer explicitly cancels
+  // it — but that choice must be surfaced clearly, not silently blocked (previous
+  // food-mode behaviour: "I can only help with your current order") nor silently
+  // looped on non-functional browse buttons (previous retail-mode behaviour: tapping
+  // "Place an Order" again just re-showed the same "still being prepared" message).
+  // Reuses the same SWITCH_YES/SWITCH_NO buttons/handlers already below — the only
+  // difference is the wording of the prompt and how we got here.
+  let isNewActivityAttempt = false;
+  if (!isCancelTyped) {
+    const { detectIntent } = await import('../core/intents/intentEngine.js');
+    const NEW_ACTIVITY_ACTIONS = new Set([
+      'START_ORDER', 'START_BOOKING', 'WALKIN', 'CAKE_CUSTOMIZATION', 'COLLECTION_SCHEDULE', 'REPEAT_ORDER',
+    ]);
+    const _detected = await detectIntent({ message: msg, isInteractive, session, business }).catch(() => ({ action: 'FALLBACK' }));
+    isNewActivityAttempt = NEW_ACTIVITY_ACTIONS.has(_detected.action);
+  }
+
+  if (isCancelTyped || isNewActivityAttempt) {
     const activeOrd = await Order.findOne({
       customerPhone: from, tenantId,
       status: { $in: ['confirmed', 'pending'] },
@@ -790,14 +872,20 @@ async function handleOrderConfirmed({
     }).catch(() => {});
     await dispatchMessage(from, {
       type:    'buttons',
-      body:
-        `Are you sure you want to cancel order *#${shortRef}*?` +
-        itemLine +
-        `\n\n⚠️ Cancellations at this stage may be subject to our refund policy.`,
-      buttons: [
-        { id: 'SWITCH_YES', title: '✅ Yes, Cancel'       },
-        { id: 'SWITCH_NO',  title: '❌ No, Keep My Order' },
-      ],
+      body: isNewActivityAttempt
+        ? `I hear you${custName}! 😊 But you currently have an order in progress${itemLine}.\n\nWould you like to cancel it to start something new, or keep waiting for it?`
+        : `Are you sure you want to cancel order *#${shortRef}*?` +
+          itemLine +
+          `\n\n⚠️ Cancellations at this stage may be subject to our refund policy.`,
+      buttons: isNewActivityAttempt
+        ? [
+            { id: 'SWITCH_YES', title: '✅ Cancel & Start New' },
+            { id: 'SWITCH_NO',  title: '⏳ Keep My Order'      },
+          ]
+        : [
+            { id: 'SWITCH_YES', title: '✅ Yes, Cancel'       },
+            { id: 'SWITCH_NO',  title: '❌ No, Keep My Order' },
+          ],
     }, tenantDoc);
     return true;
   }
@@ -1147,8 +1235,8 @@ async function handleWalkInQueueAck({
 
 // ── BOOKING_CONFIRMED ────────────────────────────────────────────────────────
 async function handleBookingConfirmed({
-  msg, upper, isAck, isCompliment, isComplaint,
-  flowData, business, tenantDoc, from, tenantId,
+  msg, upper, isAck, isCompliment, isComplaint, isInteractive,
+  flowData, session, business, tenantDoc, from, tenantId,
   custName,
 }) {
   const { getAIReply } = await import('../core/ai/providers/aiRouter.js');
@@ -1185,6 +1273,30 @@ async function handleBookingConfirmed({
     const reply = await cancelFlow({ customerPhone: from, tenantId }, business);
     await dispatchMessage(from, reply, tenantDoc);
     return true;
+  }
+
+  // [AUDIT-FIX-N2] Detect an attempt to start a DIFFERENT/new activity (a new order,
+  // another booking, a walk-in, etc.) while THIS booking is confirmed but not yet
+  // fulfilled. Same strict-but-explicit policy as ORDER_CONFIRMED's equivalent fix:
+  // previously this fell straight through to the generic AI Q&A reply at the bottom
+  // of this function, silently swallowing the customer's actual request for one
+  // message before it worked normally on their next try. Now it's surfaced as an
+  // explicit cancel-or-keep choice on the very first message.
+  if (upper !== 'RESCHEDULE') {
+    const { detectIntent } = await import('../core/intents/intentEngine.js');
+    const NEW_ACTIVITY_ACTIONS = new Set([
+      'START_ORDER', 'START_BOOKING', 'WALKIN', 'CAKE_CUSTOMIZATION', 'COLLECTION_SCHEDULE', 'REPEAT_ORDER',
+    ]);
+    const _detected = await detectIntent({ message: msg, isInteractive, session, business }).catch(() => ({ action: 'FALLBACK' }));
+    if (NEW_ACTIVITY_ACTIONS.has(_detected.action)) {
+      const serviceStr = flowData?.service ? ` for *${flowData.service}*` : '';
+      await dispatchMessage(from, {
+        type:    'buttons',
+        body:    `I hear you${custName}! 😊 But you already have a booking${serviceStr}${whenStr}${staffStr} confirmed.\n\nIf you'd like to cancel it and book something new, tap below — otherwise your booking stays as is.`,
+        buttons: _salonConfirmBtns,
+      }, tenantDoc);
+      return true;
+    }
   }
 
   // [v15-RESCHEDULE] RESCHEDULE button: cancel old appointment and start a fresh booking.

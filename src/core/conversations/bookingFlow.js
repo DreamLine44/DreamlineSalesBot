@@ -365,7 +365,13 @@ export async function handleBookingFlow({ session, message, business, tenant, is
   switch (step) {
 
     case 'SELECT_SERVICE': {
-      const idx = parseInt(raw, 10) - 1;
+      // [AUDIT-FIX-PARSEINT-9] parseInt("2 haircuts please", 10) = 2, not NaN, so
+      // mixed input silently resolved to services[1] below, bypassing the name-match
+      // fallback (services.find(...includes(clean))) entirely. Interactive list taps
+      // for this step already arrive as SVC_-prefixed IDs (handled above), so a plain
+      // digit-string is the only case that should ever trust a numeric index here.
+      const isPureNumeric = /^\d+$/.test(raw.trim());
+      const idx = isPureNumeric ? parseInt(raw, 10) - 1 : NaN;
       // Handle SVC_ button ID prefixes from list responses
       let service = null;
 

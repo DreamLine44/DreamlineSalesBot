@@ -57,8 +57,15 @@ export async function handleBakeryOrderFlow({ session, message, business, tenant
       }
       if (clean.length < 2) return _buildBakeryMenu(menu, business);
 
+      // [AUDIT-FIX-PARSEINT-1] parseInt("2 croissants", 10) returns 2, NOT NaN —
+      // mixed alphanumeric input silently resolved to menu[numIdx], completely
+      // bypassing findBestMatch() below. Gating only on isInteractive/menuViewed
+      // (as before) doesn't help: menuViewed is true in the normal post-menu case,
+      // so "2 croissants" still short-circuited into the WRONG item. The numeric
+      // index must only be trusted when raw is a bare number or came from a tap.
+      const isPureNumeric = /^\d+$/.test(raw.trim());
       const numIdx = parseInt(raw, 10) - 1;
-      let item = (!isNaN(numIdx) && numIdx >= 0 && menu[numIdx]) ? menu[numIdx] : null;
+      let item = (isInteractive || isPureNumeric) && !isNaN(numIdx) && numIdx >= 0 && menu[numIdx] ? menu[numIdx] : null;
 
       if (!item) {
         const { item: matched, confidenceLevel } = findBestMatch(menu, clean);

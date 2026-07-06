@@ -104,8 +104,13 @@ export async function handleDeliveryOrder({ session, message, business, tenant, 
       }
       if (clean.length < 2) return _buildMenuUI(menu, business);
 
+      // [AUDIT-FIX-PARSEINT-3] Same bug class as bakery/retail/etc: parseInt("2
+      // burritos", 10) = 2, not NaN, so mixed input silently resolved to menu[1]
+      // instead of reaching findBestMatch() below. Only trust the parsed index
+      // when raw is purely numeric or the tap came from an interactive list/button.
+      const isPureNumeric = /^\d+$/.test(raw.trim());
       const numIdx = parseInt(raw, 10) - 1;
-      let item = (!isNaN(numIdx) && menu[numIdx]) ? menu[numIdx] : null;
+      let item = (isInteractive || isPureNumeric) && !isNaN(numIdx) && menu[numIdx] ? menu[numIdx] : null;
 
       // [AUDIT-FIX-FUZZY-CONFIRM] Same bug class fixed in retail/fashion/salon: a
       // customer tapping "Yes" on the "Did you mean X?" prompt below re-entered

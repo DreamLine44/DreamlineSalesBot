@@ -198,8 +198,13 @@ export async function handleElectronicsOrder({
       }
 
       // Numeric selection from list
+      // [AUDIT-FIX-PARSEINT-2] Same bug class as bakery/retail/etc: parseInt("2 usb
+      // cables", 10) = 2, not NaN, so mixed input silently resolved to listMenu[1]
+      // instead of reaching findBestMatch() below. Only trust the parsed index when
+      // raw is purely numeric or the tap came from an interactive list/button.
+      const isPureNumeric = /^\d+$/.test(raw.trim());
       const numIdx = parseInt(raw, 10) - 1;
-      let item = (!isNaN(numIdx) && listMenu[numIdx]) ? listMenu[numIdx] : null;
+      let item = (isInteractive || isPureNumeric) && !isNaN(numIdx) && listMenu[numIdx] ? listMenu[numIdx] : null;
 
       if (!item) {
         const { item: matched, confidenceLevel } = findBestMatch(listMenu, clean);

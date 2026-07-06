@@ -88,7 +88,17 @@ export async function handleOrderFlow({ session, message, business, tenant, isIn
     // ────────────────────────────────────────────────────────────────────────
     case 'SELECT_ITEM': {
       // [FIX-2] 0-indexed WORD_NUMS: WORD_NUMS['one']=0 → menu[0] ✓
-      const numIndex = WORD_NUMS[clean] ?? (parseInt(raw, 10) - 1);
+      // [AUDIT-FIX-PARSEINT-6] WORD_NUMS[clean] only matches an EXACT word ("two"),
+      // so it correctly misses on mixed input — but the parseInt fallback did not:
+      // parseInt("2 pizzas", 10) = 2, not NaN, so mixed input still silently resolved
+      // to menu[1] below without ever reaching the fuzzy-match / off-topic checks
+      // further down. The existing isInteractive||menuViewed gate (trustedPick,
+      // just below) doesn't catch this either, since menuViewed is normally true
+      // once the menu has been shown. Only compute a parseInt-based index when raw
+      // is a bare number — otherwise leave it NaN so this whole branch is skipped
+      // and the message falls through to name matching like any other free text.
+      const isPureNumeric = /^\d+$/.test(raw.trim());
+      const numIndex = WORD_NUMS[clean] ?? (isPureNumeric ? parseInt(raw, 10) - 1 : NaN);
       const isNum    = !isNaN(numIndex) && numIndex >= 0;
 
       if (isNum) {

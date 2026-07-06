@@ -710,8 +710,13 @@ export async function handleSalonProductOrder({ session, message, business, tena
     // ── SELECT_ITEM ────────────────────────────────────────────────────────
     case 'SELECT_ITEM': {
       // [v14-BUG-9] List row IDs are 1-based numeric strings; resolve them first
+      // [AUDIT-FIX-PARSEINT-4] Same bug class as bakery/retail/etc: parseInt("2
+      // shampoos", 10) = 2, not NaN, so mixed input silently resolved to menu[1]
+      // instead of reaching findBestMatch() below. Only trust the parsed index
+      // when raw is purely numeric or the tap came from an interactive list/button.
+      const isPureNumeric = /^\d+$/.test(raw.trim());
       const numIdx = parseInt(raw, 10) - 1;
-      let item = (!isNaN(numIdx) && numIdx >= 0 && menu[numIdx]) ? menu[numIdx] : null;
+      let item = (isInteractive || isPureNumeric) && !isNaN(numIdx) && numIdx >= 0 && menu[numIdx] ? menu[numIdx] : null;
 
       if (!item && !isInteractive && !session.menuViewed && /^\d+$/.test(raw)) {
         await updateSession(session.customerPhone, session.tenantId, { menuViewed: true });
