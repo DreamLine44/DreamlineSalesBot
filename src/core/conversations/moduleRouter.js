@@ -463,7 +463,26 @@ export async function route({ action, intent, session, message, business, tenant
           {
             customerPhone: session.customerPhone,
             tenantId:      session.tenantId,
-            status:        { $in: ['pending', 'confirmed'] },
+            // [AUDIT-FIX-CANCEL-CONFIRMED-GUARD] Only truly 'pending' orders (i.e. an
+            // admin has not yet acted on them at all) are self-cancellable via this
+            // typed-command/button path. 'confirmed' was previously included here,
+            // guarded only by excluding paymentStatus in ['confirmed','paid'] — but
+            // that signal is unreliable for exactly the orders this guard most needs
+            // to protect: a dashboard-confirmed order (dashboardController's
+            // updateOrderStatus sets status:'confirmed' without touching
+            // paymentStatus — see [FIX-DASH-STATUS-MISSING]) or a cash order accepted
+            // via AWAIT_ADMIN_CONFIRM (documented in adminCommandService's
+            // [FIX-MARK-READY-GUARD] as never setting paymentStatus:'confirmed')
+            // both leave paymentStatus at 'unpaid'. Either would have silently passed
+            // the old $nin filter and let the customer cancel an order the admin had
+            // already accepted for prep — directly contradicting the honest
+            // "already confirmed and is being prepared" decline message this same
+            // case already shows when the _uncancellableOrder lookup below finds a
+            // confirmed order. status:'confirmed' is itself the authoritative
+            // "order accepted" signal in this codebase (same reasoning as
+            // activeOrderResolver's [AUDIT-AOR-CONFIRMED]), so it must never be
+            // self-cancellable regardless of what paymentStatus happens to read.
+            status:        'pending',
             // [FIX-CANCEL-REJECTED] 'rejected' was previously in this $nin exclusion list,
             // meaning a customer whose payment was rejected — the EXACT scenario where
             // activeOrderResolver shows a "Payment Not Approved" card with a CANCEL button —
@@ -524,11 +543,19 @@ export async function route({ action, intent, session, message, business, tenant
           {
             customerPhone: session.customerPhone,
             tenantId:      session.tenantId,
-            status:        { $in: ['pending', 'confirmed', 'preparing'] },
-            // [FIX-CANCEL-REJECTED] Same fix as the single-order CANCEL case above —
-            // 'rejected' must not be excluded, or rejected-payment orders can never be
-            // bulk-cancelled either and keep re-appearing in the MULTIPLE_ACTIVE_ORDERS list.
-            paymentStatus: { $nin: ['cancelled', 'refunded'] },
+            // [AUDIT-FIX-CANCEL-ALL-CONFIRMED-GUARD] Same fix as the single-order
+            // CANCEL case above, applied here too — and more urgently, since this
+            // guard was previously even more permissive: it matched 'preparing'
+            // directly (an order already being made), and its paymentStatus
+            // exclusion list below only excluded 'cancelled'/'refunded', not
+            // 'confirmed'/'paid'. That meant a customer could bulk-cancel an
+            // already-paid order that was already in the kitchen with a single
+            // "cancel all" — a strictly worse version of the single-cancel bug,
+            // since it bypassed even the payment-status protection the single-cancel
+            // path had. Only truly 'pending' (not yet admin-touched) orders are
+            // bulk-cancellable now.
+            status:        'pending',
+            paymentStatus: { $nin: ['cancelled', 'refunded', 'confirmed', 'paid'] },
           },
           {
             $set: {

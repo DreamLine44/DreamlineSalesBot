@@ -1170,6 +1170,18 @@ function _buildProductMenu(items, business, isBarbershop) {
     ].filter(Boolean).join(' — ').slice(0, 72) || undefined,
   }));
 
+  // [AUDIT-FIX-SALON-PRODUCT-CHUNK] The previous version wrapped `rows` inside a
+  // single `sections: [{ title: ..., rows }]` entry. dispatcher.js's row-chunking
+  // logic ([FIX-LIST-TRUNC]) only splits the FLAT `ui.rows` format into ≤10-row
+  // sections; when `ui.sections` is already present, it trusts the caller to have
+  // pre-chunked and just slices each given section to 10 rows. A single section
+  // holding all N products therefore still silently dropped everything past the
+  // 10th — the exact bug this function's own [AUDIT-FIX-4] comment above claims to
+  // have already fixed. That fix removed the build-time `items.slice(0, 10)` but
+  // never switched the return shape, so it never actually took effect. This file's
+  // own sibling functions (_buildServiceMenu, _buildStylistMenu) — and retail's
+  // equivalent _buildProductList — use the flat top-level `rows` format precisely
+  // so dispatcher can chunk them; matching that here.
   return {
     type:   'list',
     header: `${emoji} *${name}*`,
@@ -1177,11 +1189,7 @@ function _buildProductMenu(items, business, isBarbershop) {
       ? 'Our grooming products — tap to select:'
       : 'Our hair & beauty products — tap to select:',
     button: 'View Products',
-    sections: [{
-      title: isBarbershop ? 'Grooming Products' : 'Beauty Products',
-      rows,
-    }],
-    footer: items.length > 10 ? `Showing ${rows.length} of ${items.length} products` : undefined,
+    rows,
   };
 }
 

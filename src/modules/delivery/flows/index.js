@@ -620,6 +620,16 @@ export async function handleDeliveryOrder({ session, message, business, tenant, 
 
 // ── UI Helpers ────────────────────────────────────────────────────────────────
 
+// [AUDIT-FIX-DELIVERY-MENU-LIST] Was a plain-text numbered list built from
+// `menu.slice(0, 20)` — the one module still doing this instead of using the
+// interactive list widget every other module (restaurant, retail, salon, bakery,
+// fashion, cosmetics, electronics) already uses. Two problems: items past #20 were
+// silently invisible with no indication anything was cut off (same truncation bug
+// class as [AUDIT-FIX-1]/[AUDIT-FIX-3]/[AUDIT-FIX-4]/[AUDIT-FIX-7] elsewhere, just
+// manifesting as text truncation instead of list-row truncation), and customers had
+// to type a number or name instead of tapping — worse UX than every sibling module.
+// Switched to the same flat top-level `rows` format those fixes established;
+// dispatcher.js chunks it into ≤10-row sections (up to 100 total) so nothing is lost.
 function _buildMenuUI(menu, business) {
   if (!menu.length) {
     return {
@@ -632,18 +642,21 @@ function _buildMenuUI(menu, business) {
     };
   }
 
-  const lines = menu.slice(0, 20).map((item, idx) => {
-    const price = item.price ? ` — ${item.currency || business?.payment?.currency || 'D'}${item.price}` : '';
-    const desc  = item.description ? `\n   _${item.description.slice(0, 60)}_` : '';
-    return `${idx + 1}. *${item.name}*${price}${desc}`;
-  });
+  const rows = menu.map((item, idx) => ({
+    id:          String(idx + 1),
+    title:       item.name.slice(0, 24),
+    description: [
+      item.description?.slice(0, 40),
+      item.price ? `${item.currency || business?.payment?.currency || 'D'}${item.price}` : null,
+    ].filter(Boolean).join(' — ').slice(0, 72) || undefined,
+  }));
 
   return {
-    type: 'buttons',
-    body: `🚚 *${business?.name || 'Delivery Menu'}*\n\n${lines.join('\n\n')}\n\n_Type a number or name to order_`,
-    buttons: [
-      { id: 'TRACK_ORDER', title: '📍 Track Order'    },
-      { id: 'QUESTION',    title: '❓ Ask a Question'  },
-    ],
+    type:   'list',
+    header: `🚚 ${business?.name || 'Delivery'}`,
+    body:   'What would you like to order today?',
+    button: 'View Menu',
+    rows,
+    footer: 'Or type an item name to search',
   };
 }

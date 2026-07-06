@@ -97,6 +97,23 @@ export async function resolveActiveOrder(customerPhone, tenantId, business = nul
         { paymentStatus: 'rejected' },
         // Proof submitted, still awaiting admin decision
         { paymentStatus: { $in: ['proof_received', 'payment_pending_verification'] } },
+        // [AUDIT-FIX-AOR-QUERY-REJECT] Admin-rejected orders (see _resolveState's
+        // `wasAdminRejected` below — status:'pending' + paymentStatus:'unpaid' +
+        // paymentReviewedAt set is the real written signal for a rejection, since
+        // rejectPayment() never writes the literal paymentStatus:'rejected'). The
+        // clause above for the general 'pending' status is bounded to the last 24h
+        // so abandoned carts age out — but that same bound was silently swallowing
+        // rejected orders too: an admin who reviews/rejects an order more than 24h
+        // after it was originally placed (routine — admins don't always respond
+        // same-day) produces exactly this state, yet the order's `createdAt` is
+        // already outside the window, so it never reached _resolveState at all and
+        // a customer whose session expired afterward was routed to NO_ACTIVE_ORDER
+        // instead of the "Payment Not Approved" card — the same bug FIX-AOR-REJECT
+        // fixed downstream, but only for orders less than a day old. A rejection is
+        // an explicit admin action awaiting the customer's retry or cancellation,
+        // not an abandoned cart, so it must not be subject to the abandoned-cart
+        // age bound at all.
+        { status: 'pending', paymentStatus: 'unpaid', paymentReviewedAt: { $ne: null } },
       ],
     })
       .sort({ createdAt: -1 })

@@ -64,14 +64,20 @@ test('electronics/handlers/uiBuilders.js: buildCategoryUI does NOT cap rows at 1
   assert.match(body, /categories\.map\(\(cat,\s*i\)\s*=>/, 'expected buildCategoryUI to map rows directly from the full categories array');
 });
 
-test('fashion/flows/index.js: SELECT_SIZE list branch caps variant rows at 10 and adds an overflow notice', () => {
+test('fashion/flows/index.js: SELECT_SIZE list branch does NOT pre-slice variants — dispatcher.js owns list chunking [AUDIT-FIX-FASHION-SIZE]', () => {
+  // Supersedes the original v18 [FIX-SIZE-LIST-CAP] expectation below. That
+  // fix capped variants at 10 with an overflow notice but, same bug class as
+  // electronics' [AUDIT-FIX-6] and restaurant's [AUDIT-FIX-ROWCAP-REVERT],
+  // pre-slicing here silently dropped every size past the 10th before
+  // dispatcher.js's [FIX-LIST-TRUNC] ever got a chance to chunk them. The fix
+  // now builds a flat `rows` array from the full variant set instead.
   const src = read('../modules/fashion/flows/index.js');
   const marker = 'item.variants.length > 3';
   const idx = src.indexOf(marker);
   assert.ok(idx !== -1, 'SELECT_SIZE variant-list branch not found');
   const body = src.slice(idx, idx + 900);
-  assert.match(body, /item\.variants\.slice\(0,\s*10\)/, 'expected a 10-item slice cap on variants');
-  assert.match(body, /item\.variants\.length > 10/, 'expected an overflow-length check');
+  assert.doesNotMatch(body, /item\.variants\.slice\(0,\s*10\)/, 'SELECT_SIZE must not pre-truncate variants');
+  assert.match(body, /item\.variants\.map\(v\s*=>/, 'expected SELECT_SIZE to map rows directly from the full variants array');
 });
 
 test('retail/flows/index.js: _buildCategoryUI caps categories at 9 (plus the appended Browse All row) with an overflow notice', () => {

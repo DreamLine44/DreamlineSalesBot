@@ -250,14 +250,41 @@ export async function handleRetailOrder({ session, message, business, tenant, is
         };
       }
 
-      // Show variant picker
+      // Show variant picker.
+      // [AUDIT-FIX-RETAIL-VARIANT] Was `variantKeys.slice(0, 3).map(...).concat([CANCEL]).slice(0, 3)`
+      // — two bugs in one line. First, slicing to 3 BEFORE appending CANCEL meant any
+      // item with 3+ variants only ever offered its first 3 as tappable buttons, with
+      // no list fallback; customers could only reach a 4th+ variant by typing its exact
+      // name. This is the same truncation bug class already fixed for fashion sizes
+      // ([AUDIT-FIX-FASHION-SIZE]), salon services/products, bakery, cosmetics, and
+      // electronics — retail's variant picker was the one instance that was missed.
+      // Second, concatenating CANCEL onto an already-3-item array then re-slicing to 3
+      // silently dropped CANCEL itself whenever there were 3+ variants, leaving no
+      // button escape from the picker at all (a customer had to know to type "cancel").
+      // Now mirrors fashion's exact pattern: ≤3 variants get a button UI (with CANCEL
+      // preserved), 4+ get a flat `rows` list — dispatcher.js chunks that into ≤10-row
+      // sections (up to 100 total) so nothing is lost.
+      if (variantKeys.length > 3) {
+        return {
+          type: 'list',
+          body: `🛍 *${item.name}*\n\nWhich option would you like?`,
+          button: 'Choose option',
+          rows: variantKeys.map(v => ({
+            id:    `VAR_${v.toUpperCase().replace(/\s+/g, '_')}`,
+            title: v,
+          })),
+        };
+      }
       return {
         type: 'buttons',
         body: `🛍 *${item.name}*\n\nWhich option would you like?`,
-        buttons: variantKeys.slice(0, 3).map(v => ({
-          id: `VAR_${v.toUpperCase().replace(/\s+/g, '_')}`,
-          title: v,
-        })).concat([{ id: 'CANCEL', title: '❌ Cancel' }]).slice(0, 3),
+        buttons: [
+          ...variantKeys.map(v => ({
+            id:    `VAR_${v.toUpperCase().replace(/\s+/g, '_')}`,
+            title: v,
+          })),
+          { id: 'CANCEL', title: '❌ Cancel' },
+        ].slice(0, 3),
       };
     }
 
