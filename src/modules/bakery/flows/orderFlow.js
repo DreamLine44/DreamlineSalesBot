@@ -51,6 +51,16 @@ export async function handleBakeryOrderFlow({ session, message, business, tenant
 
     // ── SELECT_ITEM ──────────────────────────────────────────────────────────
     case 'SELECT_ITEM': {
+      // [AUDIT-FIX-VIEWMENU] Explicit guard for the 'SHOW_MENU' button id (📋 View
+      // Menu / 🔄 Browse All) — webhookController.js now forwards this id straight
+      // here instead of resetting to the welcome menu (see MENU_BROWSE_STEPS).
+      // Previously relied on the final `if (!item) return _buildBakeryMenu(...)`
+      // fallback below, which only works if findBestMatch() fails to fuzzy-match
+      // "show menu" against a real item — fragile and not guaranteed.
+      if (['SHOW_MENU', 'MENU', 'HOME', '0'].includes(raw.toUpperCase())) {
+        await updateSession(session.customerPhone, session.tenantId, { menuViewed: true });
+        return _buildBakeryMenu(menu, business);
+      }
       if (!isInteractive && !session.menuViewed && /^\d+$/.test(raw)) {
         await updateSession(session.customerPhone, session.tenantId, { menuViewed: true });
         return _buildBakeryMenu(menu, business);

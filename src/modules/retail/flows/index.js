@@ -132,6 +132,15 @@ export async function handleRetailOrder({ session, message, business, tenant, is
 
     // ── SELECT_ITEM ───────────────────────────────────────────────────────────
     case 'SELECT_ITEM': {
+      // [AUDIT-FIX-VIEWMENU] Explicit guard for the 'SHOW_MENU' button id (📋 View
+      // All Products / 🔄 Browse All) — webhookController.js now forwards this id
+      // straight here instead of resetting to the welcome menu (see
+      // MENU_BROWSE_STEPS). Handled first so it can never be mistaken for a
+      // product-name search by findBestMatch() below.
+      if (['SHOW_MENU', 'MENU', 'HOME', '0'].includes(raw.toUpperCase())) {
+        await updateSession(session.customerPhone, session.tenantId, { menuViewed: true });
+        return _buildProductList(menu, business);
+      }
       // Guard: number without viewing catalog
       if (!isInteractive && !session.menuViewed && /^\d+$/.test(raw)) {
         await updateSession(session.customerPhone, session.tenantId, { menuViewed: true });

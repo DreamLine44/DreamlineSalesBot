@@ -98,6 +98,14 @@ export async function handleDeliveryOrder({ session, message, business, tenant, 
 
     // ── SELECT_ITEM ───────────────────────────────────────────────────────────
     case 'SELECT_ITEM': {
+      // [AUDIT-FIX-VIEWMENU] Explicit guard for the 'SHOW_MENU' button id (📋 View
+      // Menu) — webhookController.js now forwards this id straight here instead of
+      // resetting to the welcome menu (see MENU_BROWSE_STEPS). Handled first so it
+      // can never be mistaken for a product-name search by findBestMatch() below.
+      if (['SHOW_MENU', 'MENU', 'HOME', '0'].includes(raw.toUpperCase())) {
+        await updateSession(session.customerPhone, session.tenantId, { menuViewed: true });
+        return _buildMenuUI(menu, business);
+      }
       if (!isInteractive && !session.menuViewed && /^\d+$/.test(raw)) {
         await updateSession(session.customerPhone, session.tenantId, { menuViewed: true });
         return _buildMenuUI(menu, business);

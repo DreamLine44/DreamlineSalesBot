@@ -735,7 +735,11 @@ export async function handleSalonProductOrder({ session, message, business, tena
       }
 
       if (!item) {
-        const SYSTEM_IDS = new Set(['CANCEL', 'SHOW_MENU', 'CONFIRM', 'SUPPORT', 'BOOK', 'WALKIN', 'QUESTION', 'CANCEL_BOOKING']);
+        // [AUDIT-FIX-VIEWMENU] MENU/HOME/0 added alongside SHOW_MENU — webhookController.js's
+        // MENU_BROWSE_STEPS routing now forwards typed "menu"/"home"/"0" here too (not just
+        // the SHOW_MENU button tap), so they need the same short-circuit to avoid an
+        // unnecessary fuzzy-match attempt against real product names.
+        const SYSTEM_IDS = new Set(['CANCEL', 'SHOW_MENU', 'MENU', 'HOME', '0', 'CONFIRM', 'SUPPORT', 'BOOK', 'WALKIN', 'QUESTION', 'CANCEL_BOOKING']);
         if (SYSTEM_IDS.has(raw.toUpperCase())) {
           return _buildProductMenu(menu, business, isBarbershop);
         }

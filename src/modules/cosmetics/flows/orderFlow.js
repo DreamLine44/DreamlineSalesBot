@@ -109,6 +109,15 @@ export async function handleCosmeticsOrderFlow({ session, message, business, ten
 
     // ── SELECT_ITEM ───────────────────────────────────────────────────────────
     case 'SELECT_ITEM': {
+      // [AUDIT-FIX-VIEWMENU] Explicit guard for the 'SHOW_MENU' button id (🛍 Browse
+      // All) — webhookController.js now forwards this id straight here instead of
+      // resetting to the welcome menu (see MENU_BROWSE_STEPS). Without this, "show
+      // menu" could reach findBestMatch() and, on a LOW-confidence match, trigger a
+      // needless paid AI call instead of simply reopening the catalogue.
+      if (['SHOW_MENU', 'MENU', 'HOME', '0'].includes(raw.toUpperCase())) {
+        await updateSession(session.customerPhone, session.tenantId, { menuViewed: true });
+        return _buildCosmeticsMenu(menu, business, data.skinType || null);
+      }
       if (!isInteractive && !session.menuViewed && /^\d+$/.test(raw)) {
         await updateSession(session.customerPhone, session.tenantId, { menuViewed: true });
         return _buildCosmeticsMenu(menu, business, data.skinType || null);

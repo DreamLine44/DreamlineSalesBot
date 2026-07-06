@@ -49,12 +49,23 @@ test('postFlowHandler.js: classifyPostFlowSentiment exists and defines all five 
   );
 });
 
-test('postFlowHandler.js: a single confident regex match skips the AI call (fast path preserved)', () => {
+test('postFlowHandler.js: a single confident regex match skips the AI call (fast path preserved), unless it looks gameable', () => {
   const fn = classifierFnSource();
+  // [AUDIT-FIX-LIVE-3] Updated for the negation/sarcasm fix: a lone regex match still
+  // skips the AI call in the common case (genuine speed win preserved), but a lone
+  // ACK/COMPLIMENT match sitting next to a negation or sarcasm hint ("not amazing",
+  // "wow, real 'impressive' service 👏") is no longer trusted blindly — it's demoted
+  // to the AI tiebreak instead, since that's the exact gap a tone-testing customer
+  // exploits. The instant fast path is preserved for everything else.
   assert.ok(
-    /if\s*\(\s*matches\.length\s*===\s*1\s*\)\s*return\s*matches\[0\]/.test(fn),
-    'Exactly-one-match case must return immediately without calling classifyIntent — ' +
-    'this keeps the overwhelming majority of messages (a clean "thanks" or "terrible") instant and free'
+    /if\s*\(\s*matches\.length\s*===\s*1\s*&&\s*!soleMatchIsGameable\s*\)\s*return\s*matches\[0\]/.test(fn),
+    'Exactly-one-match case must return immediately without calling classifyIntent, UNLESS the match ' +
+    'is a gameable lone ACK/COMPLIMENT next to a negation or sarcasm hint — that case must still reach ' +
+    'the AI tiebreak so negated/sarcastic messages aren\'t misread as positive'
+  );
+  assert.ok(
+    /soleMatchIsGameable\s*=\s*matches\.length\s*===\s*1[\s\S]*hasNegationOrSarcasm/.test(fn),
+    'soleMatchIsGameable must be derived from a lone ACK/COMPLIMENT match plus a negation/sarcasm hint'
   );
 });
 

@@ -2105,6 +2105,56 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
       return;
     }
 
+    // [AUDIT-FIX-VIEWMENU] SHOW_MENU is overloaded with two different meanings:
+    //   1. "Take me back to the main welcome menu" (e.g. postFlowAck follow-ups,
+    //      the top-level 'Start Over' buttons shown outside any active flow).
+    //   2. "Show me the item/product catalog again" — this is what every order
+    //      flow's "📋 View Menu" / "🔄 Browse All" / "🔄 Start Over" button actually
+    //      means when tapped WHILE the customer is mid-flow at SELECT_ITEM,
+    //      SUGGESTION_CONFIRM, SUGGEST_CONFIRM, or ITEM_DETAIL (see the matching
+    //      entries in STEP_VALID_BUTTONS above, which explicitly allow SHOW_MENU
+    //      at exactly these steps).
+    // Previously meaning #2 never reached the flow: the global escape check
+    // below (originally the very next block) intercepted every SHOW_MENU tap
+    // unconditionally, cleared currentFlow/step, and showed the generic welcome
+    // menu instead of the actual food/product menu — so tapping "View Menu"
+    // mid-order silently abandoned the order and showed the wrong screen (the
+    // customer never sees their menu items). Fix: when the tap lands on one of
+    // the menu-browsing steps of an active flow, route it through advance() so
+    // the flow handler's own "show menu/catalog" branch runs, exactly like the
+    // other flow-internal button IDs above. Every other SHOW_MENU tap (no active
+    // flow, or a step that doesn't list SHOW_MENU as valid) keeps the original
+    // reset-to-welcome-menu behaviour.
+    //
+    // [AUDIT-FIX-VIEWMENU-2] Also applies to *typed* 'menu' / 'home' / '0' — not
+    // just the SHOW_MENU button id. restaurant/flows/orderFlow.js's SELECT_ITEM
+    // case already contains `/^(cancel|stop|exit|back|menu|home)$/i` specifically
+    // to handle a customer who TYPES "menu" instead of tapping the button — but
+    // that code was unreachable, because this same global reset used to fire
+    // first for typed 'MENU'/'HOME'/'0' too (it checks upperMsg, not isInteractive),
+    // wiping the order before the flow's own handler ever saw the message. Scoped
+    // to MENU_BROWSE_STEPS only, so free-text steps elsewhere (address, notes,
+    // quantity, etc.) are completely unaffected — a customer typing "home" as
+    // their delivery address, for instance, is never at one of these steps.
+    const MENU_BROWSE_STEPS = new Set(['SELECT_ITEM', 'SUGGESTION_CONFIRM', 'SUGGEST_CONFIRM', 'ITEM_DETAIL']);
+    const MENU_TRIGGER_WORDS = new Set(['SHOW_MENU', 'MENU', 'HOME', '0']);
+    if (
+      MENU_TRIGGER_WORDS.has(upperMsg) &&
+      session.currentFlow && MENU_BROWSE_STEPS.has(currentStep)
+    ) {
+      const reply = await advance({ session: freshSession, message: messageText, business, tenant: tenantDoc, isInteractive });
+      if (reply) {
+        const payloads = Array.isArray(reply) ? reply : [reply];
+        for (const payload of payloads) {
+          await dispatchMessage(from, payload, tenantDoc);
+        }
+        const lastPayload = payloads[payloads.length - 1];
+        const body = typeof lastPayload === 'string' ? lastPayload : lastPayload?.body;
+        if (body) updateSession(from, tenantId, { lastBotMessage: body }).catch(() => {});
+      }
+      return;
+    }
+
     // Global escape intents
     // [FIX-2] CANCEL_ORDER was absent here. Without it, a CANCEL_ORDER button tap
     // inside an active flow fell through to advance(), which passes the raw button ID

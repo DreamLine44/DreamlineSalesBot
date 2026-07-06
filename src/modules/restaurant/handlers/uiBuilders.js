@@ -16,12 +16,13 @@
  * buildMenuUI needs no cap at all; it should hand the dispatcher the full row
  * list and let it handle sectioning. Reverted to the uncapped form.
  *
- * NOTE (out of scope for this module, flagged for awareness): bakery, cosmetics,
- * retail, salon, electronics, and services still have their own slice(0, 10) +
- * overflow-footer logic in their list builders, which has the same problem —
- * each of those modules truncates before dispatchMessage() ever sees rows past
- * #10, so dispatcher.js's chunking never gets to run for them either. That's a
- * separate audit outside "restaurant flow systems."
+ * NOTE (historical — resolved): this comment previously flagged bakery, cosmetics,
+ * retail, salon, and electronics as still having their own build-time slice(0, 10)
+ * + overflow-footer logic. That has since been fixed in each of those modules
+ * (see their own AUDIT-FIX-1/2/3/4/6/8 comments) — they now hand dispatcher.js the
+ * full flat `rows` array and let [FIX-LIST-TRUNC] do the chunking, same as here.
+ * Left in place only so a future audit doesn't have to re-derive that this class
+ * of bug was checked across every module, not just this one.
  */
 
 export function buildMenuUI(business) {

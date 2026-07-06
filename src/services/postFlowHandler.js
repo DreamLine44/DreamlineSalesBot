@@ -74,6 +74,17 @@ const COMPLIMENT_RE = /\b(amazing|excellent|fantastic|love|best|delicious|enjoye
 const COMPLAINT_RE  = /\b(bad|terrible|awful|horrible|disappoint|not\s*good|wrong|cold|late|missing|never|complain|refund|cheat|fraud|angry|upset|poor|issue|problem|unsatisfied|unhappy|rubbish|disgusting|unacceptable|worst)\b/i;
 const QUESTION_RE   = /[?]|^(how|when|where|what|why|can\s*you|do\s*you|is\s*there|will\s*you|could\s*you)\b/i;
 
+// [AUDIT-FIX-LIVE-3] Negation/sarcasm hints. Regex-only sentiment is trivially gamed by
+// anyone who knows the four patterns above exist — negating a compliment word ("not
+// amazing", "wasn't impressed") or sarcastically praising ("wow, real impressive 👏...")
+// still hits exactly ONE regex (COMPLIMENT_RE) and was previously trusted outright,
+// skipping the AI tiebreak entirely. That's the precise gap a customer probing "how weak
+// my bot could be" will find first. These hints don't classify anything themselves —
+// they only strip trust from a lone regex match so the AI tiebreak (now fast, see
+// GROQ_TIMEOUT_CLASSIFY in groqProvider.js) gets a look instead.
+const NEGATION_RE = /\b(not|isn'?t|wasn'?t|aren'?t|weren'?t|no|never|hardly|barely|n't)\b/i;
+const SARCASM_HINT_RE = /(\.{3}|\?!|!\?|🙄|😒|🤡|👏(?!.*\bthank)|"[a-z]+"|'[a-z]+')/i;
+
 // [PFH-8] The five labels classifyPostFlowSentiment can return. UNRELATED covers both
 // "genuinely off-topic" and "AI unavailable/failed" — same safe default the rest of
 // this file already uses (see [PFH-2]'s unknown-ackCtx fallback).
@@ -113,20 +124,46 @@ async function classifyPostFlowSentiment(msg, business) {
     rawQuestion   && 'QUESTION',
   ].filter(Boolean);
 
-  // Exactly one confident regex signal — skip AI entirely.
-  if (matches.length === 1) return matches[0];
+  // [AUDIT-FIX-LIVE-3] A lone COMPLAINT match is never second-guessed — negation or
+  // sarcasm on a genuinely negative word ("not terrible" is vanishingly rare phrasing
+  // in complaints, and even a false trigger here only costs an unnecessary empathetic
+  // reply, never a silently-dropped complaint). But a lone ACK or COMPLIMENT match
+  // sitting next to a negation or sarcasm hint is exactly the gameable case — "not
+  // amazing", "wasn't great tbh", "wow, real 'impressive' service 👏" — so those get
+  // demoted to ambiguous and routed to the AI tiebreak instead of being trusted outright.
+  const hasNegationOrSarcasm = NEGATION_RE.test(msg) || SARCASM_HINT_RE.test(msg);
+  const soleMatchIsGameable = matches.length === 1
+    && (matches[0] === 'ACK' || matches[0] === 'COMPLIMENT')
+    && hasNegationOrSarcasm;
 
-  // Zero or conflicting signals — ask the AI to break the tie.
+  // Exactly one confident regex signal, and it isn't a gameable ACK/COMPLIMENT sitting
+  // next to a negation or sarcasm marker — skip AI entirely, stay instant.
+  if (matches.length === 1 && !soleMatchIsGameable) return matches[0];
+
+  // Zero signals, conflicting signals, or a gameable lone match — ask the AI to break
+  // the tie. classifyIntent now runs on a tight, dedicated timeout budget (see
+  // GROQ_TIMEOUT_CLASSIFY in groqProvider.js), so this stays fast even under load.
   try {
     const { classifyIntent } = await import('../core/ai/providers/groqProvider.js');
     const mode   = (business?.businessMode || 'RETAIL').toUpperCase();
     const result = await classifyIntent({ message: msg, validIntents: SENTIMENT_LABELS, mode });
     if (SENTIMENT_LABELS.includes(result)) return result;
   } catch (err) {
-    logger.warn('[PostFlow] AI sentiment tiebreak failed, defaulting to UNRELATED', { err: err.message });
+    logger.warn('[PostFlow] AI sentiment tiebreak failed, falling back to regex priority', { err: err.message });
   }
 
-  // AI unavailable, errored, or returned something unrecognised — safe neutral default.
+  // [AUDIT-FIX-LIVE-4] AI unavailable, errored, or returned something unrecognised.
+  // Previously this always defaulted to UNRELATED — meaning if Groq happened to be down
+  // at the exact moment a real complaint came in with ambiguous/negated wording, that
+  // complaint silently vanished into the generic bucket with no escalation option shown.
+  // Fall back to a safety-ordered regex priority instead: a complaint signal (even a
+  // conflicting/ambiguous one) is far costlier to miss than a compliment is to
+  // over-detect, so COMPLAINT wins any tie, then QUESTION (still useful to answer),
+  // then COMPLIMENT, then ACK. Only truly signal-free messages fall through to UNRELATED.
+  if (rawComplaint)  return 'COMPLAINT';
+  if (rawQuestion)   return 'QUESTION';
+  if (rawCompliment) return 'COMPLIMENT';
+  if (rawAck)        return 'ACK';
   return 'UNRELATED';
 }
 

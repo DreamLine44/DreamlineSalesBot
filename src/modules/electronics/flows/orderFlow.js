@@ -191,6 +191,19 @@ export async function handleElectronicsOrder({
         : menu;
       const listMenu = filteredMenu.length ? filteredMenu : menu;
 
+      // [AUDIT-FIX-VIEWMENU] 'SHOW_MENU' is the id behind every "📋 Browse Products" /
+      // "🔄 Start Over" button shown at this step (see webhookController.js's
+      // MENU_BROWSE_STEPS passthrough, which now forwards this id here instead of
+      // resetting to the welcome menu). Without this explicit check the tap fell
+      // through every branch below — numeric guard misses, findBestMatch has no
+      // reason to score "SHOW_MENU" against real products — straight into an AI
+      // product-search call with customerMessage='SHOW_MENU', producing a
+      // nonsensical reply instead of the product list the customer tapped for.
+      if (['SHOW_MENU', 'MENU', 'HOME', '0'].includes(raw.toUpperCase())) {
+        await updateSession(session.customerPhone, session.tenantId, { menuViewed: true });
+        return buildProductList(listMenu, business, data.category);
+      }
+
       // Guard: number typed before seeing catalogue
       if (!isInteractive && !session.menuViewed && /^\d+$/.test(raw)) {
         await updateSession(session.customerPhone, session.tenantId, { menuViewed: true });
@@ -287,6 +300,19 @@ export async function handleElectronicsOrder({
       }
       if (raw.toUpperCase() === 'WARRANTY') {
         return startFlow({ flowName: 'WARRANTY', session, business, tenant });
+      }
+      // [AUDIT-FIX-VIEWMENU] 'SHOW_MENU' is the id behind the "🔄 Browse More" button
+      // shown on this card. Without this check it fell into the `raw.length >= 3`
+      // AI-question branch below, sending "SHOW_MENU" to the AI as if it were a
+      // genuine product question instead of returning the customer to the catalogue.
+      if (['SHOW_MENU', 'MENU', 'HOME', '0'].includes(raw.toUpperCase())) {
+        const filteredMenu = data.category
+          ? menu.filter(i => (i.category || 'General').toLowerCase() === data.category.toLowerCase())
+          : menu;
+        await updateSession(session.customerPhone, session.tenantId, {
+          step: 'SELECT_ITEM', data: { ...data, item: undefined }, menuViewed: true,
+        });
+        return buildProductList(filteredMenu.length ? filteredMenu : menu, business, data.category);
       }
       if (/^(confirm_item|order_this|order|yes|y|ok|buy)$/i.test(clean)) {
         const MAX_QTY = business?.settings?.maxOrderQuantity || 10;

@@ -87,6 +87,20 @@ export async function handleOrderFlow({ session, message, business, tenant, isIn
 
     // ────────────────────────────────────────────────────────────────────────
     case 'SELECT_ITEM': {
+      // [AUDIT-FIX-VIEWMENU] Every "📋 View Menu" / "🔄 Start Over" button at this
+      // step uses button id 'SHOW_MENU' (see webhookController.js's
+      // MENU_BROWSE_STEPS passthrough, which forwards this exact id here instead
+      // of resetting to the welcome menu). The cancel/escape keyword check further
+      // below only matches a BARE word ("menu", "home", ...) against the
+      // whitespace-normalised text — norm('SHOW_MENU') is "show menu" (two words),
+      // which never matched, so even after the routing fix a tap here still fell
+      // through to fuzzy name-matching and told the customer "I couldn't find
+      // SHOW_MENU on our menu." Handle the literal button id explicitly, first.
+      if (raw.toUpperCase() === 'SHOW_MENU') {
+        await updateSession(session.customerPhone, session.tenantId, { menuViewed: true });
+        return buildMenuUI(business);
+      }
+
       // [FIX-2] 0-indexed WORD_NUMS: WORD_NUMS['one']=0 → menu[0] ✓
       // [AUDIT-FIX-PARSEINT-6] WORD_NUMS[clean] only matches an EXACT word ("two"),
       // so it correctly misses on mixed input — but the parseInt fallback did not:
