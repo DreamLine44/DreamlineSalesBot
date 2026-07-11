@@ -365,7 +365,13 @@ export async function handleBookingFlow({ session, message, business, tenant, is
   switch (step) {
 
     case 'SELECT_SERVICE': {
-      const idx = parseInt(raw, 10) - 1;
+      // [AUDIT-FIX-PARSEINT-9] parseInt("2 haircuts please", 10) = 2, not NaN, so
+      // mixed input silently resolved to services[1] below, bypassing the name-match
+      // fallback (services.find(...includes(clean))) entirely. Interactive list taps
+      // for this step already arrive as SVC_-prefixed IDs (handled above), so a plain
+      // digit-string is the only case that should ever trust a numeric index here.
+      const isPureNumeric = /^\d+$/.test(raw.trim());
+      const idx = isPureNumeric ? parseInt(raw, 10) - 1 : NaN;
       // Handle SVC_ button ID prefixes from list responses
       let service = null;
 
@@ -628,7 +634,13 @@ export async function handleBookingFlow({ session, message, business, tenant, is
         return cancelFlow(session, business);
       }
 
-      if (!/^(yes|y|confirm|ok|okay|sure)$/i.test(clean) && clean !== 'confirm') {
+      // [AUDIT-FIX-CONFIRM-1] This regex was missing 'yeah'/'yep', even though the
+      // DATE_CONFIRM and TIME_CONFIRM steps earlier in this same flow both accept them.
+      // Since BOOKING_CONFIRM is the step that actually SAVES the booking, a customer
+      // who naturally typed "yeah" here got the booking summary re-displayed instead
+      // of their booking saved — for restaurants (table bookings), salons, and every
+      // other module that shares this flow.
+      if (!/^(yes|y|yep|yeah|confirm|ok|okay|sure)$/i.test(clean) && clean !== 'confirm') {
         const { date, time, service, partySize, stylist, staff } = data;
         const staffDisplay2 = stylist || staff || null;
         const isBarbershopReprompt = (business?.businessMode || '').toUpperCase() === 'BARBERSHOP';

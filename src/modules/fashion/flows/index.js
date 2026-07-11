@@ -62,16 +62,43 @@ export async function handleFashionOrder({ session, message, business, tenant, i
 
   switch (step) {
     case 'SELECT_ITEM': {
+      // [AUDIT-FIX-VIEWMENU] Explicit guard for the 'SHOW_MENU' button id (🔄 Start
+      // Over) — webhookController.js now forwards this id straight here instead of
+      // resetting to the welcome menu (see MENU_BROWSE_STEPS). Handled first so it
+      // can never be mistaken for a product-name search by findBestMatch() below.
+      if (['SHOW_MENU', 'MENU', 'HOME', '0'].includes(raw.toUpperCase())) {
+        await updateSession(session.customerPhone, session.tenantId, { menuViewed: true });
+        return buildCatalogUI(business);
+      }
       if (!isInteractive && !session.menuViewed && /^\d+$/.test(raw)) {
         await updateSession(session.customerPhone, session.tenantId, { menuViewed: true });
         return buildCatalogUI(business);
       }
+      // [AUDIT-FIX-PARSEINT-7] Same bug class as bakery/retail/etc: parseInt("2
+      // dresses", 10) = 2, not NaN, so mixed input silently resolved to menu[1]
+      // instead of reaching findBestMatch() below. Only trust the parsed index
+      // when raw is purely numeric or the tap came from an interactive list/button.
+      const isPureNumeric = /^\d+$/.test(raw.trim());
       const numIdx = parseInt(raw, 10) - 1;
-      let item = (!isNaN(numIdx) && menu[numIdx]) ? menu[numIdx] : null;
+      let item = (isInteractive || isPureNumeric) && !isNaN(numIdx) && menu[numIdx] ? menu[numIdx] : null;
+
+      // [AUDIT-FIX-FUZZY-CONFIRM] Same bug class fixed in retail: a customer
+      // tapping "Yes" on the "Did you mean X?" prompt below re-entered this case
+      // with raw='CONFIRM' and no record of what X was, since the candidate was
+      // never persisted to session data — findBestMatch(menu, "confirm") found
+      // nothing and the confirmation was silently lost. Check for a pending
+      // candidate from a prior LOW-confidence prompt first.
+      if (!item && data._pendingMatchName && ['CONFIRM', 'YES'].includes(raw.toUpperCase())) {
+        item = menu.find(i => i.name === data._pendingMatchName) || null;
+      }
+
       if (!item) {
         const { item: matched, confidenceLevel } = findBestMatch(menu, clean);
         if (confidenceLevel === 'HIGH') item = matched;
         else if (confidenceLevel === 'LOW') {
+          await updateSession(session.customerPhone, session.tenantId, {
+            data: { ...data, _pendingMatchName: matched?.name || null },
+          });
           return { type: 'buttons', body: `Did you mean *${matched.name}*?`,
             buttons: [{ id: 'CONFIRM', title: `✅ Yes, ${matched.name}` }, { id: 'SHOW_MENU', title: '🔄 Start Over' }] };
         }
@@ -79,19 +106,27 @@ export async function handleFashionOrder({ session, message, business, tenant, i
       if (!item) return buildCatalogUI(business);
 
       // Check if item has variants
+      const { _pendingMatchName, ...cleanFashionData } = data;
       if (item.variants?.length) {
-        await updateSession(session.customerPhone, session.tenantId, { step: 'SELECT_SIZE', data: { item } });
+        await updateSession(session.customerPhone, session.tenantId, { step: 'SELECT_SIZE', data: { ...cleanFashionData, item } });
         // Show up to 3 variants as buttons; if more, use a list
         const variantButtons = item.variants.slice(0, 3).map(v => ({
           id: `SIZE_${String(v).toUpperCase().replace(/\s+/g, '_')}`,
           title: String(v),
         }));
         if (item.variants.length > 3) {
+          // [AUDIT-FIX-FASHION-SIZE] Was slicing to 10 and hardcoding a single
+          // `sections` entry, which silently dropped every size past the 10th
+          // before the dispatcher ever saw them (same bug class fixed in bakery,
+          // cosmetics, retail, salon, and electronics). Build a flat `rows` list
+          // from the full variant set instead; dispatcher.js chunks flat rows
+          // into ≤10-row sections (up to 100 rows total across 10 sections), so
+          // nothing beyond the first page is lost.
           return {
             type: 'list',
             body: `✨ *${item.name}*${item.price ? ` — ${business?.payment?.currency || 'D'}${item.price}` : ''}\n\nWhat *size* would you like?`,
             button: 'Choose size',
-            sections: [{ title: 'Available Sizes', rows: item.variants.map(v => ({ id: `SIZE_${String(v).toUpperCase().replace(/\s+/g, '_')}`, title: String(v) })) }],
+            rows: item.variants.map(v => ({ id: `SIZE_${String(v).toUpperCase().replace(/\s+/g, '_')}`, title: String(v) })),
           };
         }
         return {
@@ -128,6 +163,34 @@ export async function handleFashionOrder({ session, message, business, tenant, i
         size = SIZES.find(s => clean.includes(s.toLowerCase())) || raw;
       }
 
+      // [FIX-FASHION-SIZE-BLANK] size fell back to the raw text itself above,
+      // which is '' for blank input (e.g. first render after a WA Catalog
+      // handoff, or a customer sending an empty message) and otherwise any
+      // unrecognised text a customer might type. Neither is a real size —
+      // re-show the size picker instead of silently recording an empty/
+      // garbage size and advancing to SELECT_COLOR.
+      if (!size || !String(size).trim()) {
+        const variantButtons = item?.variants?.length
+          ? item.variants.slice(0, 3).map(v => ({
+              id: `SIZE_${String(v).toUpperCase().replace(/\s+/g, '_')}`,
+              title: String(v),
+            }))
+          : [];
+        if (item?.variants?.length > 3) {
+          return {
+            type: 'list',
+            body: `✨ *${item?.name}*\n\nWhat *size* would you like?`,
+            button: 'Choose size',
+            rows: item.variants.map(v => ({ id: `SIZE_${String(v).toUpperCase().replace(/\s+/g, '_')}`, title: String(v) })),
+          };
+        }
+        return {
+          type: 'buttons',
+          body: `✨ *${item?.name}*\n\nWhat *size* would you like?`,
+          buttons: [...variantButtons, { id: 'CANCEL', title: '❌ Cancel' }].slice(0, 3),
+        };
+      }
+
       // [UX-4] Route to SELECT_COLOR if the item has defined colors, or if the business
       // has a global color list. Skip the step cleanly when neither is present so the
       // flow doesn't stall at a step with no options.
@@ -138,26 +201,28 @@ export async function handleFashionOrder({ session, message, business, tenant, i
 
       if (!skipColor) {
         await updateSession(session.customerPhone, session.tenantId, { step: 'SELECT_COLOR', data: { ...data, size } });
-        const colorButtons = itemColors.slice(0, 9); // WhatsApp list max 10 rows per section
-        if (colorButtons.length > 3) {
+        if (itemColors.length > 3) {
+          // [AUDIT-FIX-FASHION-COLOR] Same list-truncation bug class as the size
+          // step above: colours were sliced to 9 and packed into one hardcoded
+          // `sections` entry, silently dropping anything past the 9th for a
+          // tenant with a large colour list. Build a flat `rows` list from the
+          // full colour set and let dispatcher.js chunk it into ≤10-row sections
+          // (up to 100 rows total) instead.
           return {
             type: 'list',
             body: `Size *${size}* — perfect! ✅\n\nWhat *colour* would you like?`,
             button: 'Choose colour',
-            sections: [{
-              title: 'Available Colours',
-              rows: colorButtons.map(c => ({
-                id:    `COLOR_${String(c).toUpperCase().replace(/\s+/g, '_')}`,
-                title: String(c),
-              })),
-            }],
+            rows: itemColors.map(c => ({
+              id:    `COLOR_${String(c).toUpperCase().replace(/\s+/g, '_')}`,
+              title: String(c),
+            })).concat([{ id: 'COLOR_SKIP', title: '⏭ No preference' }]),
           };
         }
         return {
           type: 'buttons',
           body: `Size *${size}* — perfect! ✅\n\nWhat *colour* would you like?`,
           buttons: [
-            ...colorButtons.slice(0, 2).map(c => ({
+            ...itemColors.slice(0, 2).map(c => ({
               id:    `COLOR_${String(c).toUpperCase().replace(/\s+/g, '_')}`,
               title: String(c),
             })),
@@ -254,6 +319,7 @@ export async function handleFashionOrder({ session, message, business, tenant, i
       let savedOrder = null;
       try {
         savedOrder = await saveOrder({ item: `${data.item?.name}${data.size ? ` (${data.size})` : ''}${data.color ? ` — ${data.color}` : ''}`,
+          menuItemId: data.item?._id, // [CATALOG-STOCK-1] enables stock decrement on order
           quantity: data.quantity, totalPrice: data.totalPrice,
           customerName: session.customerName || null, // [FIX-SAVE-2]
           customerPhone: session.customerPhone, tenantId: session.tenantId, businessId: business._id });

@@ -76,18 +76,24 @@ export async function handleEnquiryFlow({ session, message, business, tenant }) 
     });
 
     const serviceTypes = _getServiceTypes(business);
-    // [FIX-SERVICES-LIST-CAP] WhatsApp interactive lists hard-cap at 10 rows; tenant-configured
-    // service lists could silently exceed that and fail to send. Cap + notify via footer.
+    // [AUDIT-FIX-5] Previously capped serviceTypes at 10 and used a single
+    // hardcoded `sections` entry — dispatcher.js's row-chunking logic only
+    // chunks the flat `rows` format (see [FIX-LIST-TRUNC]), so a
+    // single-section list was never actually protected by that fix despite
+    // the old comment here claiming a cap+notify fix. Tenant-configured
+    // service lists CAN exceed 10 (this is admin-editable, unbounded input).
+    // Switched to flat `rows` so dispatcher chunks into ≤10-row sections
+    // (up to 100 total) instead of silently dropping anything past #10.
     return {
       type: 'list',
       body: '📋 *Get a Quote*\n\nWhat type of service are you looking for?\n\n_(Tap one below or type your answer)_',
-      sections: [{
-        title: 'Service Types',
-        rows: serviceTypes.slice(0, 10).map(s => ({ id: `SVC_${s.toUpperCase().replace(/\s+/g, '_')}`, title: s })),
-      }],
-      footer: serviceTypes.length > 10
-        ? `Showing 10 of ${serviceTypes.length} — type your service if not listed`
-        : 'Tap a service or type your own',
+      // [AUDIT-FIX-BTNLABEL] Missing button field — dispatcher.js falls back to the
+      // generic 'Choose option' label (see [FIX-AOR-BTNLABEL] in activeOrderResolver.js
+      // for the same bug class). Every other list builder in this codebase sets an
+      // explicit button label; this one was missed.
+      button: 'Choose service',
+      rows: serviceTypes.map(s => ({ id: `SVC_${s.toUpperCase().replace(/\s+/g, '_')}`, title: s })),
+      footer: 'Tap a service or type your own',
     };
   }
 
@@ -248,7 +254,7 @@ export async function handleEnquiryFlow({ session, message, business, tenant }) 
         };
       }
 
-      const adminPhone = business?.adminPhone;
+      const adminPhone = business?.adminPhone || tenant?.adminPhone; // [AUDIT-FIX-ADMINPHONE-2] restored fallback
 
       // Notify admin
       if (adminPhone && tenant) {
@@ -300,7 +306,7 @@ export async function handleServicesBooking({ session, message, business, tenant
 // ── Quote Follow-Up ───────────────────────────────────────────────────────────
 
 export async function handleQuoteFollowUp({ session, message, business, tenant }) {
-  const adminPhone = business?.adminPhone;
+  const adminPhone = business?.adminPhone || tenant?.adminPhone; // [AUDIT-FIX-ADMINPHONE-2] restored fallback
   // [FIX-1] Correct completeFlow signature: (session, completedFlow, business, tenant)
   const _lcRqf = await completeFlow(session, 'QUOTE_FOLLOW', business, tenant);
   if (_lcRqf) return _lcRqf;
@@ -363,16 +369,14 @@ function _getServiceTypes(business) {
 
 function _askServiceType(business) {
   const serviceTypes = _getServiceTypes(business);
-  // [FIX-SERVICES-LIST-CAP] same 10-row hard cap fix as INIT handler above.
+  // [AUDIT-FIX-5] Same fix as the INIT handler above — flat `rows` lets
+  // dispatcher.js chunk past the old single-section 10-row hard cap.
   return {
     type: 'list',
     body: '📋 *Get a Quote*\n\nWhat type of service are you looking for?',
-    sections: [{
-      title: 'Service Types',
-      rows: serviceTypes.slice(0, 10).map(s => ({ id: `SVC_${s.toUpperCase().replace(/\s+/g, '_')}`, title: s })),
-    }],
-    footer: serviceTypes.length > 10
-      ? `Showing 10 of ${serviceTypes.length} — type your service if not listed`
-      : 'Tap a service or type your own',
+    // [AUDIT-FIX-BTNLABEL] Same missing-button-field bug as the INIT handler above.
+    button: 'Choose service',
+    rows: serviceTypes.map(s => ({ id: `SVC_${s.toUpperCase().replace(/\s+/g, '_')}`, title: s })),
+    footer: 'Tap a service or type your own',
   };
 }

@@ -98,20 +98,46 @@ export async function handleDeliveryOrder({ session, message, business, tenant, 
 
     // ── SELECT_ITEM ───────────────────────────────────────────────────────────
     case 'SELECT_ITEM': {
+      // [AUDIT-FIX-VIEWMENU] Explicit guard for the 'SHOW_MENU' button id (📋 View
+      // Menu) — webhookController.js now forwards this id straight here instead of
+      // resetting to the welcome menu (see MENU_BROWSE_STEPS). Handled first so it
+      // can never be mistaken for a product-name search by findBestMatch() below.
+      if (['SHOW_MENU', 'MENU', 'HOME', '0'].includes(raw.toUpperCase())) {
+        await updateSession(session.customerPhone, session.tenantId, { menuViewed: true });
+        return _buildMenuUI(menu, business);
+      }
       if (!isInteractive && !session.menuViewed && /^\d+$/.test(raw)) {
         await updateSession(session.customerPhone, session.tenantId, { menuViewed: true });
         return _buildMenuUI(menu, business);
       }
       if (clean.length < 2) return _buildMenuUI(menu, business);
 
+      // [AUDIT-FIX-PARSEINT-3] Same bug class as bakery/retail/etc: parseInt("2
+      // burritos", 10) = 2, not NaN, so mixed input silently resolved to menu[1]
+      // instead of reaching findBestMatch() below. Only trust the parsed index
+      // when raw is purely numeric or the tap came from an interactive list/button.
+      const isPureNumeric = /^\d+$/.test(raw.trim());
       const numIdx = parseInt(raw, 10) - 1;
-      let item = (!isNaN(numIdx) && menu[numIdx]) ? menu[numIdx] : null;
+      let item = (isInteractive || isPureNumeric) && !isNaN(numIdx) && menu[numIdx] ? menu[numIdx] : null;
+
+      // [AUDIT-FIX-FUZZY-CONFIRM] Same bug class fixed in retail/fashion/salon: a
+      // customer tapping "Yes" on the "Did you mean X?" prompt below re-entered
+      // this case with raw='CONFIRM' and no record of what X was — the candidate
+      // was never persisted to session data, so findBestMatch(menu, "confirm")
+      // found nothing and the confirmation was silently lost. Check for a pending
+      // candidate from a prior LOW-confidence prompt first.
+      if (!item && data._pendingMatchName && ['CONFIRM', 'YES'].includes(raw.toUpperCase())) {
+        item = menu.find(i => i.name === data._pendingMatchName) || null;
+      }
 
       if (!item) {
         const { item: m, confidenceLevel } = findBestMatch(menu, clean);
         if (confidenceLevel === 'HIGH') {
           item = m;
         } else if (confidenceLevel === 'LOW' && m) {
+          await updateSession(session.customerPhone, session.tenantId, {
+            data: { ...data, _pendingMatchName: m.name },
+          });
           return {
             type: 'buttons',
             body: `Did you mean *${m.name}*?`,
@@ -140,9 +166,10 @@ export async function handleDeliveryOrder({ session, message, business, tenant, 
         };
       }
 
+      const { _pendingMatchName: _pmDelivery, ...cleanDeliveryData } = data;
       await updateSession(session.customerPhone, session.tenantId, {
         step: 'QUANTITY',
-        data: { ...data, item },
+        data: { ...cleanDeliveryData, item },
         menuViewed: true,
       });
 
@@ -382,8 +409,11 @@ export async function handleDeliveryOrder({ session, message, business, tenant, 
         const timeMatch = raw.match(/(\d{1,2})(:\d{2})?\s*(am|pm)/i) ||
                           raw.match(/\b([01]?\d|2[0-3]):[0-5]\d\b/);
         if (timeMatch && parsedSlotDate) {
-          const { validateTime: _vt } = await import('../../../core/conversations/bookingFlow.js').catch(() => ({ validateTime: null }));
-          // validateTime is not exported — inline a lightweight check
+          // [AUDIT-FLOWS-8] Removed a dead dynamic import of `validateTime` from
+          // bookingFlow.js — that export doesn't exist there (bookingFlow.js has no such
+          // named export), so this `await import(...).catch(...)` always resolved to
+          // { validateTime: null } and the destructured value was never read anyway.
+          // The lightweight inline check below (already the real implementation) is unaffected.
           const safeZone = (() => { try { Intl.DateTimeFormat(undefined, { timeZone: tz }); return tz; } catch { return 'UTC'; } })();
           const parts = new Intl.DateTimeFormat('en-CA', { timeZone: safeZone, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false }).formatToParts(new Date());
           const get = (type) => parseInt(parts.find(p => p.type === type)?.value || '0', 10);
@@ -470,6 +500,7 @@ export async function handleDeliveryOrder({ session, message, business, tenant, 
           customerPhone: session.customerPhone,
           customerName:  session.customerName,
           item:          item?.name,
+          menuItemId:    item?._id, // [CATALOG-STOCK-1] enables stock decrement on order
           quantity:      qty,
           notes:         `Delivery to: ${address} | Slot: ${slot}`,
           status:        'pending',
@@ -525,7 +556,7 @@ export async function handleDeliveryOrder({ session, message, business, tenant, 
         });
 
         try {
-          const adminPhone = business?.adminPhone;
+          const adminPhone = business?.adminPhone || tenant?.adminPhone; // [AUDIT-FIX-ADMINPHONE-2] restored fallback
           if (adminPhone && tenant && savedOrder) {
             const { dispatchMessage } = await import('../../../core/whatsapp/dispatcher.js');
             const currency = payment.currency || 'D';
@@ -551,7 +582,7 @@ export async function handleDeliveryOrder({ session, message, business, tenant, 
       // [FIX-BUG3-DELIVERY] Admin alert: upgraded from dispatchText (no buttons) to
       // dispatchMessage with APPROVE_/REJECT_ buttons. Session parked at AWAIT_ADMIN_CONFIRM.
       try {
-        const adminPhone = business?.adminPhone;
+        const adminPhone = business?.adminPhone || tenant?.adminPhone; // [AUDIT-FIX-ADMINPHONE-2] restored fallback
         if (adminPhone && tenant && savedOrder) {
           const { dispatchMessage } = await import('../../../core/whatsapp/dispatcher.js');
           const currency = payment?.currency || 'D';
@@ -603,6 +634,16 @@ export async function handleDeliveryOrder({ session, message, business, tenant, 
 
 // ── UI Helpers ────────────────────────────────────────────────────────────────
 
+// [AUDIT-FIX-DELIVERY-MENU-LIST] Was a plain-text numbered list built from
+// `menu.slice(0, 20)` — the one module still doing this instead of using the
+// interactive list widget every other module (restaurant, retail, salon, bakery,
+// fashion, cosmetics, electronics) already uses. Two problems: items past #20 were
+// silently invisible with no indication anything was cut off (same truncation bug
+// class as [AUDIT-FIX-1]/[AUDIT-FIX-3]/[AUDIT-FIX-4]/[AUDIT-FIX-7] elsewhere, just
+// manifesting as text truncation instead of list-row truncation), and customers had
+// to type a number or name instead of tapping — worse UX than every sibling module.
+// Switched to the same flat top-level `rows` format those fixes established;
+// dispatcher.js chunks it into ≤10-row sections (up to 100 total) so nothing is lost.
 function _buildMenuUI(menu, business) {
   if (!menu.length) {
     return {
@@ -615,18 +656,21 @@ function _buildMenuUI(menu, business) {
     };
   }
 
-  const lines = menu.slice(0, 20).map((item, idx) => {
-    const price = item.price ? ` — ${item.currency || business?.payment?.currency || 'D'}${item.price}` : '';
-    const desc  = item.description ? `\n   _${item.description.slice(0, 60)}_` : '';
-    return `${idx + 1}. *${item.name}*${price}${desc}`;
-  });
+  const rows = menu.map((item, idx) => ({
+    id:          String(idx + 1),
+    title:       item.name.slice(0, 24),
+    description: [
+      item.description?.slice(0, 40),
+      item.price ? `${item.currency || business?.payment?.currency || 'D'}${item.price}` : null,
+    ].filter(Boolean).join(' — ').slice(0, 72) || undefined,
+  }));
 
   return {
-    type: 'buttons',
-    body: `🚚 *${business?.name || 'Delivery Menu'}*\n\n${lines.join('\n\n')}\n\n_Type a number or name to order_`,
-    buttons: [
-      { id: 'TRACK_ORDER', title: '📍 Track Order'    },
-      { id: 'QUESTION',    title: '❓ Ask a Question'  },
-    ],
+    type:   'list',
+    header: `🚚 ${business?.name || 'Delivery'}`,
+    body:   'What would you like to order today?',
+    button: 'View Menu',
+    rows,
+    footer: 'Or type an item name to search',
   };
 }

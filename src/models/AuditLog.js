@@ -17,6 +17,8 @@
  *   rejection_noted      — admin added/updated a rejection reason
  *   order_cancelled      — order was cancelled by customer or admin
  *   order_completed      — order marked completed/delivered
+ *   customer_frustration_flag — [FEAT-EMOTION-1] pre-flow frustration signal
+ *                          strong/repeated enough to surface for admin follow-up
  */
 
 import mongoose from 'mongoose';
@@ -59,6 +61,9 @@ const auditLogSchema = new mongoose.Schema({
       'rejection_noted',
       'order_cancelled',
       'order_completed',
+      // [FEAT-EMOTION-1] Pre-flow frustration signal strong/repeated enough to
+      // warrant admin attention. Written by webhookController.js's emotion hook.
+      'customer_frustration_flag',
     ],
     required: true,
     index:    true,

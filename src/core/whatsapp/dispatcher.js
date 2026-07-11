@@ -18,6 +18,61 @@ import { decryptToken } from '../../controllers/tenantController.js';
 
 const SIM_MODE = () => process.env.SIMULATION_MODE === 'true';
 
+// ── [AUDIT-FIX-DISPATCH-ALERT] Admin alerting for silent dispatch failures ──
+// dispatchMessage() has always had failure branches (missing/placeholder
+// credentials, Meta API rejection) that only ever logged server-side —
+// meaning a customer-facing send could silently vanish with nothing but a
+// log line as evidence, unless someone was actively tailing logs. This
+// reuses the existing AdminNotification fan-out (see models/AdminNotification.js
+// and routes/adminRoutes.js) to surface the same failures in the super-admin
+// dashboard as TO_ADMIN notifications.
+//
+// Deliberately does NOT attempt a WhatsApp nudge back to the tenant (unlike
+// pingTenantAdmin() in adminRoutes.js) — these failures often mean THIS
+// tenant's own WhatsApp channel is broken, so nudging over that same channel
+// would be pointless at best. The dashboard record is the only reliable
+// surface for this class of failure; the super admin (who manages Meta
+// credentials setup) is the right audience, not the tenant.
+//
+// Dynamically imported to keep this file's role as an isolated transport
+// adapter honest — it still never imports business-logic modules, only a
+// plain data model, and only on the (rare) failure path.
+//
+// Deduped per (tenantId, reason) for 30 minutes so an ongoing outage — every
+// customer message failing the same way — produces one dashboard alert, not
+// hundreds. Best-effort only: never throws, never awaited by callers, and a
+// failure to alert never blocks or delays the dispatch return path itself.
+const DISPATCH_ALERT_DEDUPE_MS = 30 * 60 * 1000;
+const _recentDispatchAlerts = new Map(); // `${tenantId}:${reason}` → timestamp
+
+async function _notifyAdminOfDispatchFailure(tenant, reason, { subject, body, severity = 'warning' }) {
+  try {
+    const tenantId = tenant?._id;
+    if (!tenantId) return; // nothing to attribute the alert to
+
+    const dedupeKey = `${tenantId}:${reason}`;
+    const now = Date.now();
+    const last = _recentDispatchAlerts.get(dedupeKey);
+    if (last && now - last < DISPATCH_ALERT_DEDUPE_MS) return;
+    _recentDispatchAlerts.set(dedupeKey, now);
+
+    const { default: AdminNotification } = await import('../../models/AdminNotification.js');
+    await AdminNotification.create({
+      tenantId,
+      direction: 'TO_ADMIN',
+      fromLabel: 'System',
+      subject,
+      body,
+      severity,
+    });
+  } catch (err) {
+    // Never let alerting failure affect the actual dispatch path.
+    logger.warn('[Dispatch] Failed to create admin alert for dispatch failure (non-fatal)', {
+      err: err.message,
+    });
+  }
+}
+
 // ── Simulation reply store ────────────────────────────────────────────────────
 // userId → { resolve, timer }
 const _simSlots = new Map();
@@ -106,9 +161,27 @@ function buildPayload(to, ui) {
         rows:  (sec.rows || []).slice(0, 10).map(normalizeRow),
       })).filter(sec => sec.rows.length > 0);
     } else {
-      // Flat rows format (legacy — single unlabelled section)
-      const rows = (ui.rows || []).slice(0, 10).map(normalizeRow);
-      sections = [{ rows }];
+      // [FIX-LIST-TRUNC] Flat rows format (legacy — single unlabelled section).
+      // Previously this did `(ui.rows || []).slice(0, 10)`, which silently
+      // dropped every row past the 10th with no warning to the customer or
+      // the tenant — any menu/catalog/service list with more than 10
+      // available items (restaurant, salon, retail, bakery, cosmetics,
+      // electronics, fashion, delivery, services, general — every module
+      // that builds a flat `rows` list) got truncated in the same way.
+      // WhatsApp's actual limit is 10 ROWS PER SECTION, with up to 10
+      // SECTIONS (100 rows total) — not 10 rows overall. Chunk the flat
+      // list into sections of ≤10 so nothing beyond the first 10 items
+      // gets dropped, up to that real 100-row ceiling.
+      const allRows = (ui.rows || []).map(normalizeRow);
+      sections = [];
+      for (let i = 0; i < allRows.length && sections.length < 10; i += 10) {
+        sections.push({ rows: allRows.slice(i, i + 10) });
+      }
+      if (allRows.length > 100) {
+        logger.warn('[Dispatch] List truncated at WhatsApp\'s 100-row ceiling (10 sections × 10 rows)', {
+          to, totalRows: allRows.length,
+        });
+      }
     }
 
     if (!sections.length || !sections[0].rows.length) return null;
@@ -139,6 +212,64 @@ function buildPayload(to, ui) {
       image: {
         link:    String(ui.url),
         ...(ui.caption ? { caption: String(ui.caption).slice(0, 1024) } : {}),
+      },
+    };
+  }
+
+  // ── WA Catalog message ────────────────────────────────────────────────────
+  // [CATALOG-DISPATCH-1] ui.type === 'catalog_message' → the customer taps
+  // "View catalog" and browses the tenant's full Meta Commerce Catalog.
+  // ui.type === 'product_list' → a curated multi-section product picker
+  // (Meta's "Multi-Product Message"), used when the caller wants to show a
+  // specific subset of products rather than the whole catalog.
+  // Both require ui.catalogId — the Meta Commerce Catalog ID configured on
+  // BusinessConfig.waCatalog.catalogId (see src/modules/catalog/). Callers
+  // (waCatalogService.js) never build this payload shape by hand — this is
+  // still the ONLY file that talks to Meta API for outbound messages, exactly
+  // as the header comment above states.
+  if (type === 'catalog_message') {
+    if (!ui.catalogId) return null;
+    return {
+      messaging_product: 'whatsapp', recipient_type: 'individual',
+      to, type: 'interactive',
+      interactive: {
+        type: 'catalog_message',
+        body: { text: String(ui.body || '').slice(0, 1024) },
+        ...(ui.footer ? { footer: { text: String(ui.footer).slice(0, 60) } } : {}),
+        action: {
+          name: 'catalog_message',
+          ...(ui.thumbnailProductRetailerId
+            ? { parameters: { thumbnail_product_retailer_id: String(ui.thumbnailProductRetailerId) } }
+            : {}),
+        },
+      },
+    };
+  }
+
+  if (type === 'product_list') {
+    if (!ui.catalogId || !ui.sections?.length) return null;
+    // Meta caps product_list at 10 sections × 30 product items each.
+    const sections = ui.sections.slice(0, 10).map(sec => ({
+      title:         String(sec.title || 'Products').slice(0, 24),
+      product_items: (sec.productRetailerIds || []).slice(0, 30).map(id => ({
+        product_retailer_id: String(id),
+      })),
+    })).filter(sec => sec.product_items.length > 0);
+
+    if (!sections.length) return null;
+
+    return {
+      messaging_product: 'whatsapp', recipient_type: 'individual',
+      to, type: 'interactive',
+      interactive: {
+        type: 'product_list',
+        ...(ui.header ? { header: { type: 'text', text: String(ui.header).slice(0, 60) } } : {}),
+        body: { text: String(ui.body || '').slice(0, 1024) },
+        ...(ui.footer ? { footer: { text: String(ui.footer).slice(0, 60) } } : {}),
+        action: {
+          catalog_id: String(ui.catalogId),
+          sections,
+        },
       },
     };
   }
@@ -204,6 +335,13 @@ export async function dispatchMessage(to, ui, tenant) {
       hasPhoneId: !!phoneId,
       tip: 'Set whatsapp.accessToken and whatsapp.phoneNumberId on the tenant document',
     });
+    _notifyAdminOfDispatchFailure(tenant, 'missing_credentials', {
+      subject:  '🚨 WhatsApp messages are not sending — missing credentials',
+      body:     `A message to a customer could not be sent because this tenant is missing ${
+        !rawToken ? 'an access token' : 'a phone number ID'
+      } (or both). Customers are not receiving replies until this is fixed. Set whatsapp.accessToken and whatsapp.phoneNumberId on the tenant to resolve.`,
+      severity: 'urgent',
+    }).catch(() => {});
     return;
   }
 
@@ -214,6 +352,11 @@ export async function dispatchMessage(to, ui, tenant) {
       phoneId,
       tip: 'Replace SIM_* phoneNumberId with a real Meta phoneNumberId for this tenant',
     });
+    _notifyAdminOfDispatchFailure(tenant, 'placeholder_phone_id', {
+      subject:  '🚨 WhatsApp messages are not sending — placeholder phone number',
+      body:     `A message to a customer could not be sent because this tenant still has a simulation placeholder (${phoneId}) instead of a real Meta phone number ID. Customers are not receiving replies until onboarding is completed with real credentials.`,
+      severity: 'urgent',
+    }).catch(() => {});
     return;
   }
 
@@ -236,13 +379,46 @@ export async function dispatchMessage(to, ui, tenant) {
         err: err.slice(0, 300),
         tenantId: tenant?._id,
       });
-    } else {
-      logger.debug('[Dispatch] ✓ Message sent via Meta API', {
-        to,
-        type: ui.type,
-        status: resp.status,
-      });
+      // [AUDIT-FIX-DISPATCH-ALERT] 401/403 almost always means an expired or
+      // revoked access token — every subsequent send will fail the same way
+      // until someone reconnects the tenant, so this is 'urgent'. Other
+      // status codes (rate limits, malformed payload, transient 5xx) may be
+      // one-off, so 'warning' rather than paging someone for a single blip.
+      const isAuthFailure = resp.status === 401 || resp.status === 403;
+      _notifyAdminOfDispatchFailure(tenant, 'meta_api_error', {
+        subject:  isAuthFailure
+          ? '🚨 WhatsApp access token rejected by Meta'
+          : `⚠️ WhatsApp message rejected by Meta (HTTP ${resp.status})`,
+        body:     isAuthFailure
+          ? `Meta rejected this tenant's WhatsApp access token (HTTP ${resp.status}). Every message to customers will fail until the token is reconnected/refreshed.`
+          : `A message to a customer was rejected by Meta's API (HTTP ${resp.status}). If this keeps happening, check the tenant's WhatsApp connection.`,
+        severity: isAuthFailure ? 'urgent' : 'warning',
+      }).catch(() => {});
+      // [AUDIT-FIX-DISPATCH-FALSE-SUCCESS] Previously fell through to
+      // `return resp;` unconditionally, so a 4xx/5xx Response object — a
+      // truthy JS object — was indistinguishable from success to any caller
+      // doing a simple truthiness check. waCatalogService.js's
+      // sendCatalogMessage() does exactly that (`return result || null`),
+      // and every caller up the chain (waCatalogFlow.js sendAndArmCatalog(),
+      // used by both offerCatalogOnStartOrder() and browseCatalogExplicit())
+      // treats a truthy return as "catalog message actually sent" — arming
+      // the session for a message the customer never received, and in
+      // moduleRegistry.js's START_ORDER handler, returning null (nothing
+      // further to send) instead of falling back to the normal ORDER flow.
+      // A failed Graph API call was therefore a silent dead end for the
+      // customer, contradicting this codebase's own "WA Catalog must never
+      // become a single point of failure for a sale" guarantee. Returning
+      // null here makes every existing `if (!result)` / `result || null`
+      // fallback check up the call chain correctly treat a failed send as
+      // a failed send. No other caller of dispatchMessage() in this codebase
+      // checks its return value at all, so this is safe everywhere else too.
+      return null;
     }
+    logger.debug('[Dispatch] ✓ Message sent via Meta API', {
+      to,
+      type: ui.type,
+      status: resp.status,
+    });
     return resp;
   } catch (err) {
     logger.error('[Dispatch] ✗ Network error sending to Meta API', {
@@ -250,6 +426,16 @@ export async function dispatchMessage(to, ui, tenant) {
       to,
       tenantId: tenant?._id,
     });
+    // [AUDIT-FIX-DISPATCH-ALERT] Network/timeout errors are usually transient
+    // (Meta hiccup, our own outbound network blip) — 'warning', not 'urgent',
+    // so a single dropped connection doesn't page anyone the way a dead
+    // credential does. Repeated occurrences still surface via the same
+    // dedup window rather than being silently swallowed as before.
+    _notifyAdminOfDispatchFailure(tenant, 'network_error', {
+      subject:  '⚠️ WhatsApp send failed — network/timeout error',
+      body:     `A message to a customer failed to send due to a network error or timeout: ${err.message}. This is often transient, but check again if it recurs.`,
+      severity: 'warning',
+    }).catch(() => {});
   }
 }
 

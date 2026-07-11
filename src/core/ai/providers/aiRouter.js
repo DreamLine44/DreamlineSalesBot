@@ -63,10 +63,10 @@ export async function getAIReply({ customerMessage, business, session, intent = 
  * generateGreeting({ business, customerName, lastOrder })
  * Returns string
  */
-export async function generateGreeting({ business, customerName, lastOrder }) {
+export async function generateGreeting({ business, customerName, lastOrder, orderCount = 0, vipThreshold = 5 }) {
   try {
     const provider = getProvider();
-    const result   = await provider.generateGreeting({ business, customerName, lastOrder });
+    const result   = await provider.generateGreeting({ business, customerName, lastOrder, orderCount, vipThreshold });
     return result?.text || `👋 Welcome back, ${customerName || 'there'}!`;
   } catch {
     return `👋 Welcome back, ${customerName || 'there'}!`;
