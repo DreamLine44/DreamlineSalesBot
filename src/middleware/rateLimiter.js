@@ -73,35 +73,3 @@ export const humanModeLimiter = rateLimit({
   legacyHeaders: false,
   message: { error: 'Too many humanMode toggle requests — please slow down.' },
 });
-
-/**
- * [CATALOG-SYNC-ROUTE-1] Limiter for POST /:tenantId/wacatalog/sync.
- * Each call hits Meta's Catalog Batch API with the tenant's full menuItems
- * list in one request — a legitimate admin re-sync after editing the menu
- * is an occasional action, not a polling endpoint, so 5 req/min (same budget
- * as humanModeLimiter) is generous for real use and blocks accidental or
- * scripted hammering of an external Graph API call that Meta itself rate-limits.
- */
-/**
- * [ADMIN-NOTIFY-1] Limiter for POST /admin/notifications (sending a message
- * or broadcast). Sending is an occasional, human-triggered action, not a
- * polling endpoint — 10 req/min is generous for a real admin composing a
- * few messages in a row while blocking accidental double-submits or a
- * scripted spam loop. A broadcast is one request regardless of how many
- * tenants it fans out to, so this limiter caps *sends*, not recipients.
- */
-export const notificationSendLimiter = rateLimit({
-  windowMs: 60 * 1000,
-  max: 10,
-  standardHeaders: true,
-  legacyHeaders: false,
-  message: { error: 'Too many messages sent — please wait a moment.' },
-});
-
-export const catalogSyncLimiter = rateLimit({
-  windowMs: 60 * 1000,
-  max: 5,
-  standardHeaders: true,
-  legacyHeaders: false,
-  message: { error: 'Too many catalog sync requests — please wait a moment.' },
-});

@@ -87,32 +87,8 @@ export async function handleOrderFlow({ session, message, business, tenant, isIn
 
     // ────────────────────────────────────────────────────────────────────────
     case 'SELECT_ITEM': {
-      // [AUDIT-FIX-VIEWMENU] Every "📋 View Menu" / "🔄 Start Over" button at this
-      // step uses button id 'SHOW_MENU' (see webhookController.js's
-      // MENU_BROWSE_STEPS passthrough, which forwards this exact id here instead
-      // of resetting to the welcome menu). The cancel/escape keyword check further
-      // below only matches a BARE word ("menu", "home", ...) against the
-      // whitespace-normalised text — norm('SHOW_MENU') is "show menu" (two words),
-      // which never matched, so even after the routing fix a tap here still fell
-      // through to fuzzy name-matching and told the customer "I couldn't find
-      // SHOW_MENU on our menu." Handle the literal button id explicitly, first.
-      if (raw.toUpperCase() === 'SHOW_MENU') {
-        await updateSession(session.customerPhone, session.tenantId, { menuViewed: true });
-        return buildMenuUI(business);
-      }
-
       // [FIX-2] 0-indexed WORD_NUMS: WORD_NUMS['one']=0 → menu[0] ✓
-      // [AUDIT-FIX-PARSEINT-6] WORD_NUMS[clean] only matches an EXACT word ("two"),
-      // so it correctly misses on mixed input — but the parseInt fallback did not:
-      // parseInt("2 pizzas", 10) = 2, not NaN, so mixed input still silently resolved
-      // to menu[1] below without ever reaching the fuzzy-match / off-topic checks
-      // further down. The existing isInteractive||menuViewed gate (trustedPick,
-      // just below) doesn't catch this either, since menuViewed is normally true
-      // once the menu has been shown. Only compute a parseInt-based index when raw
-      // is a bare number — otherwise leave it NaN so this whole branch is skipped
-      // and the message falls through to name matching like any other free text.
-      const isPureNumeric = /^\d+$/.test(raw.trim());
-      const numIndex = WORD_NUMS[clean] ?? (isPureNumeric ? parseInt(raw, 10) - 1 : NaN);
+      const numIndex = WORD_NUMS[clean] ?? (parseInt(raw, 10) - 1);
       const isNum    = !isNaN(numIndex) && numIndex >= 0;
 
       if (isNum) {
@@ -283,13 +259,7 @@ export async function handleOrderFlow({ session, message, business, tenant, isIn
 
     // ────────────────────────────────────────────────────────────────────────
     case 'CONFIRM': {
-      // [AUDIT-FIX-CONFIRM-1] This regex was missing 'yeah'/'yep', even though every
-      // other confirmation step in this same file (SUGGESTION_CONFIRM, UPSELL) — and
-      // every confirmation step in the shared bookingFlow.js — accepts them. Since this
-      // is the step that actually SAVES the order, a customer who naturally typed
-      // "yeah" here got the order summary re-displayed instead of their order placed,
-      // with no visible error explaining why nothing happened.
-      const isConfirm = /^(yes|y|yep|yeah|confirm|ok|okay|sure|place|confirmed)$/i.test(clean);
+      const isConfirm = /^(yes|y|confirm|ok|okay|sure|place|confirmed)$/i.test(clean);
       if (!isConfirm) {
         return buildOrderSummary({ item: data.item, qty: data.quantity, total: data.totalPrice, business });
       }
@@ -299,17 +269,6 @@ export async function handleOrderFlow({ session, message, business, tenant, isIn
       try {
         savedOrder = await saveOrder({
           item:          data.item?.name,
-          // [AUDIT-FIX-REST-STOCK-1] Every other catalog-driven module (bakery,
-          // cosmetics, delivery, electronics, fashion, retail, salon) passes
-          // menuItemId to saveOrder() so CATALOG-STOCK-1's stock decrement
-          // (orderService.decrementStockForOrder) actually fires. This module's
-          // `item` is a real business.menuItems subdocument (see `menu =
-          // business.menuItems.filter(...)` above), so data.item._id is always
-          // populated here too — the field was simply never wired up. Without it,
-          // restaurant menuItems.stockCount never decremented on order, so
-          // stock-tracked restaurant items never went out of stock or resynced
-          // to the WhatsApp catalog no matter how many were sold.
-          menuItemId:    data.item?._id,
           quantity:      data.quantity,
           totalPrice:    data.totalPrice,
           addOns:        data.addOns,
@@ -465,19 +424,9 @@ export async function handleOrderFlow({ session, message, business, tenant, isIn
         };
       }
 
-      // [AUDIT-FIX-REST-DEADCODE-1] Unreachable — removed. The two branches above
-      // (`payment?.enabled && data.totalPrice` and its exact complement
-      // `!payment?.enabled || !data.totalPrice`) are exhaustive and both `return`
-      // before this point, so this completeFlow('ORDER', ...)/buildOrderSuccess()
-      // call could never execute. Every other catalog-order module (bakery,
-      // electronics, salon, cosmetics, delivery, retail, fashion) ends its CONFIRM
-      // case the same way: parked at AWAIT_ADMIN_CONFIRM or PAYMENT_PROOF, with the
-      // actual completion (postFlowAck / customer notification) driven later by
-      // adminCommandService on admin approval — not by completeFlow() here. Leaving
-      // dead code that references completeFlow('ORDER', ...) is misleading: it
-      // implies AFTER_ORDER lead-capture fires synchronously on placement for this
-      // module, but it never does (see adminCommandService.confirmPayment, which
-      // sets postFlowAck='ORDER_CONFIRMED' directly instead).
+      const _lcR = await completeFlow(session, 'ORDER', business, tenant);
+      if (_lcR) return _lcR;
+      return buildOrderSuccess({ item: data.item, qty: data.quantity, business });
     }
 
     default:
@@ -487,26 +436,13 @@ export async function handleOrderFlow({ session, message, business, tenant, isIn
 
 // ── Select item helper ────────────────────────────────────────────────────────
 async function _selectItem(item, session, business, data) {
-  const addOns = business?.addOns || [];
-
-  // [AUDIT-FIX-ADDON-1] Pin the upsell add-on HERE, at selection time, instead of
-  // letting the QUANTITY step pick a random one later. Previously this teaser line
-  // always named addOns[0] ("Soft Drink pairs well with this") while the QUANTITY
-  // step's upsell prompt picked a DIFFERENT random add-on (e.g. "Would you like to
-  // add Dessert?") — the customer was told one thing and offered another. Picking
-  // and storing pendingAddOn now means the name mentioned here is guaranteed to be
-  // the same one actually offered at checkout. QUANTITY already prefers
-  // `data.pendingAddOn` over re-rolling, so this pin is respected end-to-end.
-  const pendingAddOn = addOns.length
-    ? addOns[Math.floor(Math.random() * addOns.length)]
-    : null;
-
   await updateSession(session.customerPhone, session.tenantId, {
-    step: 'QUANTITY', data: { ...data, item, pendingAddOn }, menuViewed: true,
+    step: 'QUANTITY', data: { ...data, item }, menuViewed: true,
   });
 
-  const addOnText = pendingAddOn
-    ? `\n\n💡 *${pendingAddOn.name}* pairs well with this — we'll ask at checkout!`
+  const addOns    = business?.addOns || [];
+  const addOnText = addOns.length
+    ? `\n\n💡 *${addOns[0].name}* pairs well with this — we'll ask at checkout!`
     : '';
 
   // ── Send item image if available and showImageOnSelect is not disabled ────

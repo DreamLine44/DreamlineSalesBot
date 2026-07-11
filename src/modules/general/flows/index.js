@@ -255,7 +255,7 @@ export async function handleGeneralEnquiry({ session, message, business, tenant 
         };
       }
 
-      const adminPhone = business?.adminPhone || tenant?.adminPhone; // [AUDIT-FIX-ADMINPHONE-2] restored fallback
+      const adminPhone = business?.adminPhone;
 
       if (adminPhone && tenant) {
         try {

@@ -11,11 +11,6 @@
 export const BUTTON_ID_MAP = {
   // Primary actions
   'ORDER':              'START_ORDER',
-  // [CATALOG-UX-BUTTON] Explicit "🛍 Browse Catalog" welcome-menu button —
-  // see waCatalogConfig.js shouldShowCatalogButton() / moduleRouter.js
-  // GREET+SHOW_MENU cases (button injection) and moduleRegistry.js
-  // (action handler → waCatalogFlow.js browseCatalogExplicit()).
-  'BROWSE_CATALOG':     'BROWSE_CATALOG',
   'BOOK':               'START_BOOKING',
   'BOOK_AGAIN':         'START_BOOKING',   // [FIX] post-appointment rebook button
   'BOOK_NOW':           'START_BOOKING',   // [FIX] alternate booking trigger
@@ -95,17 +90,7 @@ export const BUTTON_ID_MAP = {
   'WALKIN_NOW':         'WALKIN',           // [FIX] Join Now variant button
   'JOIN_QUEUE':         'WALKIN',
   // [v14-PATTERNS] Salon/barbershop new button IDs
-  // [AUDIT-FLOWS-RESCHEDULE] Was 'START_BOOKING'. That mapping reset the session and
-  // started a completely fresh booking flow WITHOUT touching the customer's existing
-  // pending/confirmed appointment — so tapping "📅 Reschedule" from the greeting-gate
-  // screen (moduleRouter.js GREET case) left the OLD booking live in the DB and created
-  // a second, separate one from the new flow. This contradicted the documented behavior
-  // ("cancel the old one atomically" — see [v14-RESCHEDULE] in salon/flows/index.js) and
-  // silently duplicated admin alerts/reminders. postFlowHandler.js's own RESCHEDULE
-  // handling (used from postFlowAck contexts) already cancels-then-restarts correctly;
-  // routing here to a dedicated 'RESCHEDULE' action lets moduleRouter.js do the same for
-  // the greeting-gate entry point instead of falling through to the bare START_BOOKING reset.
-  'RESCHEDULE':         'RESCHEDULE',
+  'RESCHEDULE':         'START_BOOKING',   // reschedule taps re-enter the booking flow
   'CONSULTATION':       'QUESTION',        // consultation taps go to the QUESTION/AI flow
 
   // Payment

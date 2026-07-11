@@ -8,8 +8,8 @@
 import { Router } from 'express';
 import {
   getDashboardOverview,
-  getOrders, updateOrderStatus, getCustomerOrderHistory, notifyOrderReady, exportOrders,
-  getBookings, updateBookingStatus, exportBookings,
+  getOrders, updateOrderStatus, getCustomerOrderHistory, notifyOrderReady,
+  getBookings, updateBookingStatus,
   getAnalytics,
   getAnalyticsTimeseriesHandler,
   getConversations, setHumanMode,
@@ -18,9 +18,6 @@ import {
   getMenu, addMenuItem, updateMenuItem, deleteMenuItem,
   getServices, addService, updateService, deleteService,
   getFaqs, addFaq, updateFaq, deleteFaq,
-  getPromotions, addPromotion, updatePromotion, deletePromotion,
-  getProfileCompleteness,
-  getOnboardingStatus,
 } from '../controllers/dashboardController.js';
 import { uploadSingle } from '../middleware/uploadMiddleware.js';
 import { uploadMenuItemImage, removeMenuItemImage } from '../controllers/menuImageController.js';
@@ -45,15 +42,11 @@ function enforceTenantScope(req, res, next) {
 
 // ── Overview ──────────────────────────────────────────────────────────────────
 r.get('/:tenantId/overview', overviewLimiter, enforceTenantScope, getDashboardOverview);
-r.get('/:tenantId/profile-completeness', enforceTenantScope, getProfileCompleteness);
-r.get('/:tenantId/onboarding-status', enforceTenantScope, getOnboardingStatus);
 
 // ── Orders ────────────────────────────────────────────────────────────────────
 r.get('/:tenantId/orders',                            enforceTenantScope, getOrders);
 // [FIX-BUG13] Literal "customer" segment MUST be registered before /:orderId param
 r.get('/:tenantId/orders/customer/:customerPhone',    enforceTenantScope, getCustomerOrderHistory);
-// [EXPORT-1] Literal "export" segment — same route-specificity rule as above.
-r.get('/:tenantId/orders/export',                     enforceTenantScope, exportOrders);
 r.patch('/:tenantId/orders/:orderId/status',          enforceTenantScope, updateOrderStatus);
 // [FIX-NOTIFY-READY-ENDPOINT] Dedicated endpoint for the dashboard "Notify Customer — Ready"
 // button. Sets status=ready (if not already terminal) and sends the WhatsApp collection
@@ -63,8 +56,6 @@ r.post('/:tenantId/orders/:orderId/notify-ready',     enforceTenantScope, notify
 
 // ── Bookings ──────────────────────────────────────────────────────────────────
 r.get('/:tenantId/bookings',                          enforceTenantScope, getBookings);
-// [EXPORT-1] Literal "export" segment before any /:bookingId param route.
-r.get('/:tenantId/bookings/export',                   enforceTenantScope, exportBookings);
 r.patch('/:tenantId/bookings/:bookingId/status',      enforceTenantScope, updateBookingStatus);
 
 // ── Analytics ─────────────────────────────────────────────────────────────────
@@ -107,11 +98,5 @@ r.get('/:tenantId/faqs',                              enforceTenantScope, getFaq
 r.post('/:tenantId/faqs',                             enforceTenantScope, addFaq);
 r.patch('/:tenantId/faqs/:faqId',                     enforceTenantScope, updateFaq);
 r.delete('/:tenantId/faqs/:faqId',                    enforceTenantScope, deleteFaq);
-
-// ── Promotions / Discount codes CRUD [PROMO-1] ────────────────────────────────
-r.get('/:tenantId/promotions',                        enforceTenantScope, getPromotions);
-r.post('/:tenantId/promotions',                       enforceTenantScope, addPromotion);
-r.patch('/:tenantId/promotions/:promoId',             enforceTenantScope, updatePromotion);
-r.delete('/:tenantId/promotions/:promoId',            enforceTenantScope, deletePromotion);
 
 export default r;
