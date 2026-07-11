@@ -107,30 +107,42 @@ export async function registerAllModules() {
   registerFlow('GENERAL', 'ABOUT',    handleAbout);
 
   // ── Action handlers (module-registered) ───────────────────────────────────
-  // [CATALOG-REG-1] START_ORDER is the single choke point every vertical's
-  // "customer wants to shop" intent already flows through — ORDER, ADD_TO_CART,
-  // CHECKOUT, RECOMMENDATION, and REMOVE_FROM_CART all map here via
-  // intentEngine.js intentToAction(), as does the 'ORDER'/'🛍 Shop Now' button
-  // tap and the '1' numeric shortcut on every welcome screen. Offering WA
-  // Catalog here — rather than duplicating an offer check inside every
-  // vertical module's own ORDER flow file — means zero changes to any file
-  // under src/modules/{restaurant,retail,bakery,...}, and zero behavioural
-  // change for any tenant who hasn't enabled it: offerCatalogOnStartOrder()
-  // returns { offered: false } immediately for them and this falls through
-  // to the exact startFlow() call that ran here before this integration
-  // existed. See src/modules/catalog/waCatalogFlow.js for the decision logic.
+  // [CATALOG-REG-1 / MERGE-FIX-VIEWMENU-1] START_ORDER is the single choke
+  // point every vertical's "customer wants to shop" intent flows through —
+  // ORDER, ADD_TO_CART, CHECKOUT, RECOMMENDATION, and REMOVE_FROM_CART all
+  // map here via intentEngine.js intentToAction(), as does the 'ORDER'/
+  // '🛍 Order Food' button tap, the '1' numeric shortcut on every welcome
+  // screen, AND the direct-phrase matches ("I want to order food", "I'd like
+  // to book a table" — see ORDER_DIRECT_RE/BOOKING_DIRECT_RE in
+  // intentEngine.js). Every one of those must reliably land the customer on
+  // the real, instant product/menu list (buildMenuUI et al.) exactly the way
+  // the reference implementation always has — that reliability is the whole
+  // point of this action.
+  //
+  // [MERGE-FIX-VIEWMENU-1] This handler PREVIOUSLY auto-substituted the WA
+  // (Meta) Commerce Catalog message in place of the normal ORDER flow
+  // whenever a tenant had waCatalog.enabled+catalogId configured (see the old
+  // offerCatalogOnStartOrder() call this replaces). That meant, for any
+  // catalog-configured tenant, tapping "Order Food" — or simply typing "I
+  // want to order food" — silently never produced the text/list View Menu at
+  // all; the customer got the Meta Catalog UI instead, with no way back to
+  // the classic menu from this entry point. That is the exact "client can
+  // directly say order food / book a table but View Menu doesn't appear"
+  // symptom reported during the merge review.
+  //
+  // Fix: START_ORDER now ALWAYS goes straight to the normal ORDER flow —
+  // startFlow() → the module's handleOrderFlow(message:null) →
+  // buildMenuUI(business) — with zero conditions, exactly like the verified
+  // reference behaviour. WA Catalog is not removed; it is demoted from an
+  // automatic substitution to a purely OPT-IN, customer-requested path:
+  // still fully reachable via the explicit "🛍 Browse Catalog" button/
+  // BROWSE_CATALOG action below (shouldShowCatalogButton() /
+  // withCatalogWelcomeOption() in waCatalogConfig.js, wired into the
+  // GREET/SHOW_MENU welcome screens in moduleRouter.js), and via any other
+  // explicit catalog entry point — none of that wiring changed. Only the
+  // silent, automatic swap-out of the plain View Menu was removed.
   registerAction('START_ORDER', async ({ session, message, business, tenant, intent }) => {
     const { startFlow } = await import('../conversations/flowEngine.js');
-
-    if (business?.waCatalog?.enabled) {
-      const { offerCatalogOnStartOrder } = await import('../../modules/catalog/waCatalogFlow.js');
-      const { offered } = await offerCatalogOnStartOrder({ session, business, tenant, intent })
-        .catch(() => ({ offered: false }));
-      // Catalog message was already dispatched via dispatcher.js inside
-      // sendCatalogMessage() — nothing further to return/dispatch here.
-      if (offered) return null;
-    }
-
     return startFlow({ flowName: 'ORDER', session, business, tenant });
   });
 
