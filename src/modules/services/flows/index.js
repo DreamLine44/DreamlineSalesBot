@@ -87,6 +87,11 @@ export async function handleEnquiryFlow({ session, message, business, tenant }) 
     return {
       type: 'list',
       body: '📋 *Get a Quote*\n\nWhat type of service are you looking for?\n\n_(Tap one below or type your answer)_',
+      // [AUDIT-FIX-BTNLABEL] Missing button field — dispatcher.js falls back to the
+      // generic 'Choose option' label (see [FIX-AOR-BTNLABEL] in activeOrderResolver.js
+      // for the same bug class). Every other list builder in this codebase sets an
+      // explicit button label; this one was missed.
+      button: 'Choose service',
       rows: serviceTypes.map(s => ({ id: `SVC_${s.toUpperCase().replace(/\s+/g, '_')}`, title: s })),
       footer: 'Tap a service or type your own',
     };
@@ -249,7 +254,7 @@ export async function handleEnquiryFlow({ session, message, business, tenant }) 
         };
       }
 
-      const adminPhone = business?.adminPhone;
+      const adminPhone = business?.adminPhone || tenant?.adminPhone; // [AUDIT-FIX-ADMINPHONE-2] restored fallback
 
       // Notify admin
       if (adminPhone && tenant) {
@@ -301,7 +306,7 @@ export async function handleServicesBooking({ session, message, business, tenant
 // ── Quote Follow-Up ───────────────────────────────────────────────────────────
 
 export async function handleQuoteFollowUp({ session, message, business, tenant }) {
-  const adminPhone = business?.adminPhone;
+  const adminPhone = business?.adminPhone || tenant?.adminPhone; // [AUDIT-FIX-ADMINPHONE-2] restored fallback
   // [FIX-1] Correct completeFlow signature: (session, completedFlow, business, tenant)
   const _lcRqf = await completeFlow(session, 'QUOTE_FOLLOW', business, tenant);
   if (_lcRqf) return _lcRqf;
@@ -369,6 +374,8 @@ function _askServiceType(business) {
   return {
     type: 'list',
     body: '📋 *Get a Quote*\n\nWhat type of service are you looking for?',
+    // [AUDIT-FIX-BTNLABEL] Same missing-button-field bug as the INIT handler above.
+    button: 'Choose service',
     rows: serviceTypes.map(s => ({ id: `SVC_${s.toUpperCase().replace(/\s+/g, '_')}`, title: s })),
     footer: 'Tap a service or type your own',
   };

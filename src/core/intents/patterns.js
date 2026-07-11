@@ -11,6 +11,11 @@
 export const BUTTON_ID_MAP = {
   // Primary actions
   'ORDER':              'START_ORDER',
+  // [CATALOG-UX-BUTTON] Explicit "🛍 Browse Catalog" welcome-menu button —
+  // see waCatalogConfig.js shouldShowCatalogButton() / moduleRouter.js
+  // GREET+SHOW_MENU cases (button injection) and moduleRegistry.js
+  // (action handler → waCatalogFlow.js browseCatalogExplicit()).
+  'BROWSE_CATALOG':     'BROWSE_CATALOG',
   'BOOK':               'START_BOOKING',
   'BOOK_AGAIN':         'START_BOOKING',   // [FIX] post-appointment rebook button
   'BOOK_NOW':           'START_BOOKING',   // [FIX] alternate booking trigger

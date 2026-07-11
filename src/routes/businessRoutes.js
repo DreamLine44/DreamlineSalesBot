@@ -10,9 +10,11 @@ import {
   getBusinessConfig, updateBusinessConfig,
   getMenu, updateMenu, addMenuItem, deleteMenuItem,
   getModeInfo, listSupportedModes,
+  syncWaCatalog, getWaCatalogHealth,
 } from '../controllers/businessController.js';
 import { CLOUDINARY_ENABLED } from '../config/cloudinary.js';
 import { uploadSingle } from '../middleware/uploadMiddleware.js';
+import { catalogSyncLimiter } from '../middleware/rateLimiter.js';
 
 const r = Router();
 
@@ -46,4 +48,9 @@ r.put('/:tenantId/menu',                     enforceTenantScope, updateMenu);
 r.post('/:tenantId/menu',                    enforceTenantScope, uploadSingle, addMenuItem);
 // [FIX-BIZ-2] Changed :itemName → :itemId for safe, precise deletion by MongoDB _id
 r.delete('/:tenantId/menu/:itemId',          enforceTenantScope, deleteMenuItem);
+// [CATALOG-SYNC-ROUTE-1] Manual "Sync Now" action — pushes menuItems to the
+// tenant's Meta Commerce Catalog. See businessController.js syncWaCatalog().
+r.post('/:tenantId/wacatalog/sync',          enforceTenantScope, catalogSyncLimiter, syncWaCatalog);
+// [CATALOG-HEALTH-1] Read-only status widget data — see getWaCatalogHealth().
+r.get('/:tenantId/wacatalog/health',         enforceTenantScope, getWaCatalogHealth);
 export default r;

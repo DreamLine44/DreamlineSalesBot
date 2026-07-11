@@ -299,6 +299,17 @@ export async function handleOrderFlow({ session, message, business, tenant, isIn
       try {
         savedOrder = await saveOrder({
           item:          data.item?.name,
+          // [AUDIT-FIX-REST-STOCK-1] Every other catalog-driven module (bakery,
+          // cosmetics, delivery, electronics, fashion, retail, salon) passes
+          // menuItemId to saveOrder() so CATALOG-STOCK-1's stock decrement
+          // (orderService.decrementStockForOrder) actually fires. This module's
+          // `item` is a real business.menuItems subdocument (see `menu =
+          // business.menuItems.filter(...)` above), so data.item._id is always
+          // populated here too — the field was simply never wired up. Without it,
+          // restaurant menuItems.stockCount never decremented on order, so
+          // stock-tracked restaurant items never went out of stock or resynced
+          // to the WhatsApp catalog no matter how many were sold.
+          menuItemId:    data.item?._id,
           quantity:      data.quantity,
           totalPrice:    data.totalPrice,
           addOns:        data.addOns,
@@ -454,9 +465,19 @@ export async function handleOrderFlow({ session, message, business, tenant, isIn
         };
       }
 
-      const _lcR = await completeFlow(session, 'ORDER', business, tenant);
-      if (_lcR) return _lcR;
-      return buildOrderSuccess({ item: data.item, qty: data.quantity, business });
+      // [AUDIT-FIX-REST-DEADCODE-1] Unreachable — removed. The two branches above
+      // (`payment?.enabled && data.totalPrice` and its exact complement
+      // `!payment?.enabled || !data.totalPrice`) are exhaustive and both `return`
+      // before this point, so this completeFlow('ORDER', ...)/buildOrderSuccess()
+      // call could never execute. Every other catalog-order module (bakery,
+      // electronics, salon, cosmetics, delivery, retail, fashion) ends its CONFIRM
+      // case the same way: parked at AWAIT_ADMIN_CONFIRM or PAYMENT_PROOF, with the
+      // actual completion (postFlowAck / customer notification) driven later by
+      // adminCommandService on admin approval — not by completeFlow() here. Leaving
+      // dead code that references completeFlow('ORDER', ...) is misleading: it
+      // implies AFTER_ORDER lead-capture fires synchronously on placement for this
+      // module, but it never does (see adminCommandService.confirmPayment, which
+      // sets postFlowAck='ORDER_CONFIRMED' directly instead).
     }
 
     default:

@@ -161,6 +161,64 @@ function buildPayload(to, ui) {
     };
   }
 
+  // ── WA Catalog message ────────────────────────────────────────────────────
+  // [CATALOG-DISPATCH-1] ui.type === 'catalog_message' → the customer taps
+  // "View catalog" and browses the tenant's full Meta Commerce Catalog.
+  // ui.type === 'product_list' → a curated multi-section product picker
+  // (Meta's "Multi-Product Message"), used when the caller wants to show a
+  // specific subset of products rather than the whole catalog.
+  // Both require ui.catalogId — the Meta Commerce Catalog ID configured on
+  // BusinessConfig.waCatalog.catalogId (see src/modules/catalog/). Callers
+  // (waCatalogService.js) never build this payload shape by hand — this is
+  // still the ONLY file that talks to Meta API for outbound messages, exactly
+  // as the header comment above states.
+  if (type === 'catalog_message') {
+    if (!ui.catalogId) return null;
+    return {
+      messaging_product: 'whatsapp', recipient_type: 'individual',
+      to, type: 'interactive',
+      interactive: {
+        type: 'catalog_message',
+        body: { text: String(ui.body || '').slice(0, 1024) },
+        ...(ui.footer ? { footer: { text: String(ui.footer).slice(0, 60) } } : {}),
+        action: {
+          name: 'catalog_message',
+          ...(ui.thumbnailProductRetailerId
+            ? { parameters: { thumbnail_product_retailer_id: String(ui.thumbnailProductRetailerId) } }
+            : {}),
+        },
+      },
+    };
+  }
+
+  if (type === 'product_list') {
+    if (!ui.catalogId || !ui.sections?.length) return null;
+    // Meta caps product_list at 10 sections × 30 product items each.
+    const sections = ui.sections.slice(0, 10).map(sec => ({
+      title:         String(sec.title || 'Products').slice(0, 24),
+      product_items: (sec.productRetailerIds || []).slice(0, 30).map(id => ({
+        product_retailer_id: String(id),
+      })),
+    })).filter(sec => sec.product_items.length > 0);
+
+    if (!sections.length) return null;
+
+    return {
+      messaging_product: 'whatsapp', recipient_type: 'individual',
+      to, type: 'interactive',
+      interactive: {
+        type: 'product_list',
+        ...(ui.header ? { header: { type: 'text', text: String(ui.header).slice(0, 60) } } : {}),
+        body: { text: String(ui.body || '').slice(0, 1024) },
+        ...(ui.footer ? { footer: { text: String(ui.footer).slice(0, 60) } } : {}),
+        action: {
+          catalog_id: String(ui.catalogId),
+          sections,
+        },
+      },
+    };
+  }
+
   // ── Template message ──────────────────────────────────────────────────────
   // ui.type === 'template' → { type: 'template', name: '...', language: '...', components: [...] }
   // Used by schedulerService for 24h+ outbound messages that require pre-approved templates.
@@ -254,13 +312,31 @@ export async function dispatchMessage(to, ui, tenant) {
         err: err.slice(0, 300),
         tenantId: tenant?._id,
       });
-    } else {
-      logger.debug('[Dispatch] ✓ Message sent via Meta API', {
-        to,
-        type: ui.type,
-        status: resp.status,
-      });
+      // [AUDIT-FIX-DISPATCH-FALSE-SUCCESS] Previously fell through to
+      // `return resp;` unconditionally, so a 4xx/5xx Response object — a
+      // truthy JS object — was indistinguishable from success to any caller
+      // doing a simple truthiness check. waCatalogService.js's
+      // sendCatalogMessage() does exactly that (`return result || null`),
+      // and every caller up the chain (waCatalogFlow.js sendAndArmCatalog(),
+      // used by both offerCatalogOnStartOrder() and browseCatalogExplicit())
+      // treats a truthy return as "catalog message actually sent" — arming
+      // the session for a message the customer never received, and in
+      // moduleRegistry.js's START_ORDER handler, returning null (nothing
+      // further to send) instead of falling back to the normal ORDER flow.
+      // A failed Graph API call was therefore a silent dead end for the
+      // customer, contradicting this codebase's own "WA Catalog must never
+      // become a single point of failure for a sale" guarantee. Returning
+      // null here makes every existing `if (!result)` / `result || null`
+      // fallback check up the call chain correctly treat a failed send as
+      // a failed send. No other caller of dispatchMessage() in this codebase
+      // checks its return value at all, so this is safe everywhere else too.
+      return null;
     }
+    logger.debug('[Dispatch] ✓ Message sent via Meta API', {
+      to,
+      type: ui.type,
+      status: resp.status,
+    });
     return resp;
   } catch (err) {
     logger.error('[Dispatch] ✗ Network error sending to Meta API', {

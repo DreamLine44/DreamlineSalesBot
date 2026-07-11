@@ -407,6 +407,7 @@ export async function handleRetailOrder({ session, message, business, tenant, is
           customerPhone: session.customerPhone,
           customerName:  session.customerName,
           item:          itemLabel,
+          menuItemId:    item?._id, // [CATALOG-STOCK-1] enables stock decrement on order
           quantity:      qty,
           notes:         `Fulfilment: ${fulfilment}`,
           status:        'pending',
@@ -466,7 +467,7 @@ export async function handleRetailOrder({ session, message, business, tenant, is
         });
 
         try {
-          const adminPhone = business?.adminPhone;
+          const adminPhone = business?.adminPhone || tenant?.adminPhone; // [AUDIT-FIX-ADMINPHONE-2] restored fallback
           if (adminPhone && tenant && savedOrder) {
             const { dispatchMessage } = await import('../../../core/whatsapp/dispatcher.js');
             const currency = payment.currency || 'D';
@@ -492,7 +493,7 @@ export async function handleRetailOrder({ session, message, business, tenant, is
       // dispatchMessage with APPROVE_/REJECT_ buttons. Session parked at
       // AWAIT_ADMIN_CONFIRM so customer cannot place duplicate orders before admin acts.
       try {
-        const adminPhone = business?.adminPhone;
+        const adminPhone = business?.adminPhone || tenant?.adminPhone; // [AUDIT-FIX-ADMINPHONE-2] restored fallback
         if (adminPhone && tenant && savedOrder) {
           const { dispatchMessage } = await import('../../../core/whatsapp/dispatcher.js');
           const currency = payment?.currency || 'D';
@@ -583,6 +584,9 @@ function _buildCategoryUI(categories, business) {
   return {
     type: 'list',
     body: `🛍 *${business?.name || 'Our Store'}*\n\nWhat are you shopping for today?` + overflowNote,
+    // [AUDIT-FIX-BTNLABEL] Missing button field — same 'Choose option' fallback bug
+    // fixed elsewhere (see [FIX-AOR-BTNLABEL] in activeOrderResolver.js).
+    button: 'Choose category',
     sections: [{
       title: 'Categories',
       rows: shown.map(c => ({

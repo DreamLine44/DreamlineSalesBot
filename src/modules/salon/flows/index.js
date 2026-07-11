@@ -862,6 +862,7 @@ export async function handleSalonProductOrder({ session, message, business, tena
           customerPhone: session.customerPhone,
           customerName:  session.customerName,
           item:          data.item?.name,
+          menuItemId:    data.item?._id, // [CATALOG-STOCK-1] enables stock decrement on order
           quantity:      data.quantity || 1,
           totalPrice:    data.totalPrice || 0,
           businessId:    business._id,

@@ -295,6 +295,7 @@ export async function handleBakeryOrderFlow({ session, message, business, tenant
           customerPhone: session.customerPhone,
           customerName:  session.customerName,
           item:          data.item?.name,
+          menuItemId:    data.item?._id, // [CATALOG-STOCK-1] enables stock decrement on order
           quantity:      data.quantity || 1,
           totalPrice:    data.totalPrice || 0,
           notes:         [

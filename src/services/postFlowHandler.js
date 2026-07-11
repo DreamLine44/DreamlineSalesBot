@@ -218,6 +218,19 @@ export async function handlePostFlowMessage({
   // Each handler that needs to KEEP the ack context restores it explicitly.
   await updateSession(from, tenantId, { postFlowAck: null, postFlowData: null });
 
+  // [CATALOG-QUEUE-1] This branch also covers an order confirmed
+  // asynchronously (e.g. an admin confirming from the dashboard) between the
+  // customer's turns — the ORDER_CONFIRMED ack is only being consumed NOW,
+  // on their next message, so this is the drain point for that case. The
+  // customer's actual message is still processed normally right after (via
+  // handleOrderConfirmed below); this only fires the queued item's own flow
+  // alongside it. Best-effort — never blocks or replaces the ack reply.
+  if (ackCtx === 'ORDER_CONFIRMED' && session?.pendingCatalogQueue?.length) {
+    import('../modules/catalog/waCatalogFlow.js')
+      .then(({ drainCatalogQueue }) => drainCatalogQueue({ session, business, tenant: tenantDoc }))
+      .catch(err => logger.warn('[PostFlow] drainCatalogQueue failed (non-fatal)', { err: err.message, tenantId, from }));
+  }
+
   switch (ackCtx) {
     case 'ORDER_CONFIRMED':
       return handleOrderConfirmed({

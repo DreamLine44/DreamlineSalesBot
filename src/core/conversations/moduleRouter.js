@@ -40,6 +40,7 @@ import { updateSession }         from '../sessions/sessionService.js';
 import { generateGreeting }      from '../ai/providers/aiRouter.js';
 import { dispatchMessage }          from '../whatsapp/dispatcher.js';
 import { getModeConfig }         from '../../config/modes.js';
+import { withCatalogWelcomeOption } from '../../modules/catalog/waCatalogConfig.js';
 import logger from '../../config/logger.js';
 
 const ACTION_REGISTRY = new Map();
@@ -48,7 +49,7 @@ export function registerAction(action, handler) {
   ACTION_REGISTRY.set(action.toUpperCase(), handler);
 }
 
-export async function route({ action, intent, session, message, business, tenant, isInteractive, suggestion }) {
+export async function route({ action, intent, session, message, business, tenant, isInteractive, suggestion, emotion }) {
   const upper = (action || 'FALLBACK').toUpperCase();
   const mode  = (business?.businessMode || 'RETAIL').toUpperCase();
 
@@ -320,6 +321,19 @@ export async function route({ action, intent, session, message, business, tenant
         customerName: existingName || null,
       });
 
+      // [FEAT-EMOTION-1] Urgency shortcut — skip the personalised/AI greeting (which
+      // can add a Groq round-trip) and the VIP badge entirely, and go straight to the
+      // action buttons. Only applies when GREET itself was ambiguous enough to reach
+      // here; a message that already named "order"/"book" explicitly never reaches
+      // GREET at all — it's routed directly to START_ORDER/START_BOOKING by
+      // ORDER_DIRECT_RE/BOOKING_DIRECT_RE in intentEngine.js.
+      if (emotion === 'URGENT') {
+        const _urgentOpts = withCatalogWelcomeOption(cfg.ui?.welcomeButtons || [], business);
+        return _urgentOpts.rows
+          ? { type: 'list', body: "⚡ Let's get you sorted quickly — what do you need?", rows: _urgentOpts.rows, button: 'Menu' }
+          : { type: 'buttons', body: "⚡ Let's get you sorted quickly — what do you need?", buttons: _urgentOpts.buttons };
+      }
+
       let body = null;
 
       // [FIX-GREET-2] Returning customer — personalised AI greeting using real history.
@@ -388,7 +402,10 @@ export async function route({ action, intent, session, message, business, tenant
         body += `\n\n⭐ _You're one of our valued regulars — thank you for your continued support!_`;
       }
 
-      return { type: 'buttons', body, buttons: cfg.ui?.welcomeButtons || [] };
+      const _greetOpts = withCatalogWelcomeOption(cfg.ui?.welcomeButtons || [], business);
+      return _greetOpts.rows
+        ? { type: 'list', body, rows: _greetOpts.rows, button: 'Menu' }
+        : { type: 'buttons', body, buttons: _greetOpts.buttons };
     }
 
     case 'SHOW_MENU': {
@@ -401,11 +418,11 @@ export async function route({ action, intent, session, message, business, tenant
       // again — that's jarring and feels like the bot forgot the conversation.
       // SHOW_MENU shows a short "what else can I help with?" prompt + action buttons.
       // GREET (first message / fresh start) shows the full branded welcome.
-      return {
-        type:    'buttons',
-        body:    cfg.messages?.showMenuPrompt || '👇 What would you like to do?',
-        buttons: cfg.ui?.welcomeButtons || [],
-      };
+      const _menuOpts = withCatalogWelcomeOption(cfg.ui?.welcomeButtons || [], business);
+      const _menuBody = cfg.messages?.showMenuPrompt || '👇 What would you like to do?';
+      return _menuOpts.rows
+        ? { type: 'list', body: _menuBody, rows: _menuOpts.rows, button: 'Menu' }
+        : { type: 'buttons', body: _menuBody, buttons: _menuOpts.buttons };
     }
 
     case 'CANCEL': {

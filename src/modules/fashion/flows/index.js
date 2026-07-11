@@ -163,6 +163,34 @@ export async function handleFashionOrder({ session, message, business, tenant, i
         size = SIZES.find(s => clean.includes(s.toLowerCase())) || raw;
       }
 
+      // [FIX-FASHION-SIZE-BLANK] size fell back to the raw text itself above,
+      // which is '' for blank input (e.g. first render after a WA Catalog
+      // handoff, or a customer sending an empty message) and otherwise any
+      // unrecognised text a customer might type. Neither is a real size —
+      // re-show the size picker instead of silently recording an empty/
+      // garbage size and advancing to SELECT_COLOR.
+      if (!size || !String(size).trim()) {
+        const variantButtons = item?.variants?.length
+          ? item.variants.slice(0, 3).map(v => ({
+              id: `SIZE_${String(v).toUpperCase().replace(/\s+/g, '_')}`,
+              title: String(v),
+            }))
+          : [];
+        if (item?.variants?.length > 3) {
+          return {
+            type: 'list',
+            body: `✨ *${item?.name}*\n\nWhat *size* would you like?`,
+            button: 'Choose size',
+            rows: item.variants.map(v => ({ id: `SIZE_${String(v).toUpperCase().replace(/\s+/g, '_')}`, title: String(v) })),
+          };
+        }
+        return {
+          type: 'buttons',
+          body: `✨ *${item?.name}*\n\nWhat *size* would you like?`,
+          buttons: [...variantButtons, { id: 'CANCEL', title: '❌ Cancel' }].slice(0, 3),
+        };
+      }
+
       // [UX-4] Route to SELECT_COLOR if the item has defined colors, or if the business
       // has a global color list. Skip the step cleanly when neither is present so the
       // flow doesn't stall at a step with no options.
@@ -291,6 +319,7 @@ export async function handleFashionOrder({ session, message, business, tenant, i
       let savedOrder = null;
       try {
         savedOrder = await saveOrder({ item: `${data.item?.name}${data.size ? ` (${data.size})` : ''}${data.color ? ` — ${data.color}` : ''}`,
+          menuItemId: data.item?._id, // [CATALOG-STOCK-1] enables stock decrement on order
           quantity: data.quantity, totalPrice: data.totalPrice,
           customerName: session.customerName || null, // [FIX-SAVE-2]
           customerPhone: session.customerPhone, tenantId: session.tenantId, businessId: business._id });

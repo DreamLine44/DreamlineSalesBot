@@ -457,6 +457,7 @@ export async function handleElectronicsOrder({
       try {
         savedOrder = await saveOrder({
           item:          data.item?.name,
+          menuItemId:    data.item?._id, // [CATALOG-STOCK-1] enables stock decrement on order
           quantity:      data.quantity,
           totalPrice:    data.totalPrice,
           // [AUDIT-FIX-ELEC-1] orderService.saveOrder() destructures a fixed set of

@@ -304,6 +304,7 @@ export async function handleCosmeticsOrderFlow({ session, message, business, ten
           customerPhone: session.customerPhone,
           customerName:  session.customerName,
           item:          `${data.item?.name}${shade}`,
+          menuItemId:    data.item?._id, // [CATALOG-STOCK-1] enables stock decrement on order
           quantity:      data.quantity || 1,
           totalPrice:    data.totalPrice || 0,
           notes:         [skinNote, data.giftNote].filter(Boolean).join(' | ') || undefined,

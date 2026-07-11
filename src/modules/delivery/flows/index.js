@@ -500,6 +500,7 @@ export async function handleDeliveryOrder({ session, message, business, tenant, 
           customerPhone: session.customerPhone,
           customerName:  session.customerName,
           item:          item?.name,
+          menuItemId:    item?._id, // [CATALOG-STOCK-1] enables stock decrement on order
           quantity:      qty,
           notes:         `Delivery to: ${address} | Slot: ${slot}`,
           status:        'pending',
@@ -555,7 +556,7 @@ export async function handleDeliveryOrder({ session, message, business, tenant, 
         });
 
         try {
-          const adminPhone = business?.adminPhone;
+          const adminPhone = business?.adminPhone || tenant?.adminPhone; // [AUDIT-FIX-ADMINPHONE-2] restored fallback
           if (adminPhone && tenant && savedOrder) {
             const { dispatchMessage } = await import('../../../core/whatsapp/dispatcher.js');
             const currency = payment.currency || 'D';
@@ -581,7 +582,7 @@ export async function handleDeliveryOrder({ session, message, business, tenant, 
       // [FIX-BUG3-DELIVERY] Admin alert: upgraded from dispatchText (no buttons) to
       // dispatchMessage with APPROVE_/REJECT_ buttons. Session parked at AWAIT_ADMIN_CONFIRM.
       try {
-        const adminPhone = business?.adminPhone;
+        const adminPhone = business?.adminPhone || tenant?.adminPhone; // [AUDIT-FIX-ADMINPHONE-2] restored fallback
         if (adminPhone && tenant && savedOrder) {
           const { dispatchMessage } = await import('../../../core/whatsapp/dispatcher.js');
           const currency = payment?.currency || 'D';

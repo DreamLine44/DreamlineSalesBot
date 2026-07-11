@@ -11,6 +11,7 @@
  *   5.  Business hours enforcement          [FIX-BUG3 — was never checked]
  *   6.  Admin command guard                 [FIX-HM-7 — moved before humanMode]
  *   7.  Human mode guard
+ *   7.5 WA Catalog order (Meta 'order' message) [CATALOG-1]
  *   8.  Loop prevention                     [FIX-BUG4 — was never enforced]
  *   8.5 Non-payment image guard             [FIX-WH-4 — images outside checkout]
  *   9.  Payment proof (image)
@@ -25,6 +26,15 @@
  *   15. Active flow → flowEngine.advance()
  *   16. Intent detection → module router
  *
+ * [CATALOG-1] WA (Meta) Commerce Catalog checkout arrives as a top-level
+ *             message of type 'order' (msgObj.order.product_items[]) — NOT as
+ *             an interactive.list_reply/button_reply. Confirmed against this
+ *             file's own extractMessage() (which had no 'order' branch at all
+ *             before this change) and Meta's documented Cloud API 'order'
+ *             message schema. Handled at step 7.5, ahead of loop prevention
+ *             since it carries no messageText and loop detection only runs
+ *             when messageText is truthy anyway. See src/modules/catalog/
+ *             for the normalization + flow-handoff this delegates to.
  * [FIX-BUG3]  Hours enforcement: bot now respects business.hours.enabled — replies
  *             with a closed message outside configured hours.
  * [FIX-BUG4]  Loop prevention: loopCount is incremented per session. After 3
@@ -134,6 +144,8 @@ import { INTENT_PATTERNS }                           from '../core/intents/patte
 import { updateName as persistCustomerName }         from '../core/memory/customerMemory.js';
 import { advance, startFlow }                        from '../core/conversations/flowEngine.js';
 import { route }                                     from '../core/conversations/moduleRouter.js';
+import { detectPreFlowEmotion, applyEmotionTone }    from '../core/sentiment/emotionEngine.js'; // [FEAT-EMOTION-1]
+import { logAudit }                                  from '../services/auditService.js'; // [FEAT-EMOTION-1]
 import { dispatchMessage }                           from '../core/whatsapp/dispatcher.js';
 import { getModeConfig }                             from '../config/modes.js';
 import { decryptToken }                              from './tenantController.js';
@@ -148,6 +160,7 @@ import { handlePostFlowMessage }                     from '../services/postFlowH
 // context) instead of the correct context-aware order-state card. This also caused the
 // "Ok/Hello after payment confirmation gets no order-aware response" bug seen in production.
 import { resolveActiveOrder }                        from '../services/activeOrderResolver.js';
+import { incrementTenantUsage }                       from '../services/usageService.js';
 import Tenant           from '../models/Tenant.js';
 import BusinessConfig   from '../models/BusinessConfig.js';
 import ProcessedMessage from '../models/ProcessedMessage.js';
@@ -555,26 +568,37 @@ async function checkAndHandleLoop(session, messageText, tenantId, business) {
 }
 
 // ── Message extraction ────────────────────────────────────────────────────────
+// [CATALOG-1] Base shape now includes isCatalogOrder/catalogOrder (both
+// default false/null) so every existing return path stays byte-for-byte
+// identical for callers that don't check them — additive only.
+const _BASE_EXTRACT = { text: '', imageUrl: null, isInteractive: false, isListReply: false, isCatalogOrder: false, catalogOrder: null };
+
 function extractMessage(msgObj) {
-  if (!msgObj) return { text: '', imageUrl: null, isInteractive: false, isListReply: false };
+  if (!msgObj) return { ..._BASE_EXTRACT };
   const type = msgObj.type;
 
   if (type === 'text')
-    return { text: (msgObj.text?.body || '').trim(), imageUrl: null, isInteractive: false, isListReply: false };
+    return { ..._BASE_EXTRACT, text: (msgObj.text?.body || '').trim() };
 
   if (type === 'interactive') {
     const btn  = msgObj.interactive?.button_reply;
     const list = msgObj.interactive?.list_reply;
-    if (btn)  return { text: (btn.id  || btn.title  || '').trim(), isInteractive: true,  isListReply: false, imageUrl: null };
-    if (list) return { text: (list.id || list.title || '').trim(), isInteractive: true,  isListReply: true,  imageUrl: null };
-    return { text: '', isInteractive: true, isListReply: false, imageUrl: null };
+    if (btn)  return { ..._BASE_EXTRACT, text: (btn.id  || btn.title  || '').trim(), isInteractive: true, isListReply: false };
+    if (list) return { ..._BASE_EXTRACT, text: (list.id || list.title || '').trim(), isInteractive: true, isListReply: true  };
+    return { ..._BASE_EXTRACT, isInteractive: true };
   }
   if (type === 'image')
-    return { text: '', imageUrl: msgObj.image?.id || null, isInteractive: false, isListReply: false };
+    return { ..._BASE_EXTRACT, imageUrl: msgObj.image?.id || null };
   if (type === 'button')
-    return { text: (msgObj.button?.payload || '').trim(), isInteractive: true, isListReply: false, imageUrl: null };
+    return { ..._BASE_EXTRACT, text: (msgObj.button?.payload || '').trim(), isInteractive: true };
 
-  return { text: '', imageUrl: null, isInteractive: false, isListReply: false };
+  // [CATALOG-1] WA Catalog checkout — customer tapped "Review order" after
+  // browsing a catalog_message/product_list. See header changelog entry for
+  // why this is a top-level 'order' type rather than an interactive reply.
+  if (type === 'order' && msgObj.order)
+    return { ..._BASE_EXTRACT, isInteractive: true, isCatalogOrder: true, catalogOrder: msgObj.order };
+
+  return { ..._BASE_EXTRACT };
 }
 
 // ── [MFQ] Mid-Flow Question helpers ──────────────────────────────────────────
@@ -910,7 +934,7 @@ function _mfqStepLabel(flow, step) {
 
 // ── Main handler ──────────────────────────────────────────────────────────────
 export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj, phoneNumberId }) {
-  const { text: messageText, imageUrl, isInteractive, isListReply } = extractMessage(msgObj);
+  const { text: messageText, imageUrl, isInteractive, isListReply, isCatalogOrder, catalogOrder } = extractMessage(msgObj);
   const wamid = msgObj?.id;
 
   logger.debug('[Webhook] handleIncomingMessage', {
@@ -943,8 +967,19 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
     }
   }
 
+  // ── 1.5 Usage tracking ───────────────────────────────────────────────────
+  // [AUDIT-FIX-USAGE-1] Fire-and-forget, non-blocking, errors swallowed inside
+  // the service itself — see services/usageService.js. Placed here (after the
+  // dedup check succeeds, before the empty-message guard) so it counts every
+  // genuine inbound message exactly once, matching the same wamid-based
+  // "is this a real new message" guarantee the dedup block just established —
+  // including image-only and WA Catalog order messages, not just text.
+  incrementTenantUsage(tenantId).catch(() => {});
+
   // ── 2. Empty guard ────────────────────────────────────────────────────────
-  if (!messageText && !imageUrl) {
+  // [CATALOG-1] A WA Catalog 'order' message has no text and no image — it
+  // must NOT be dropped here.
+  if (!messageText && !imageUrl && !isCatalogOrder) {
     logger.debug('[Webhook] Message has no text and no image — skipping', {
       from, tenantId, msgType: msgObj?.type,
     });
@@ -1168,6 +1203,41 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
       tenantId,
       messagePreview: messageText?.slice(0, 60) || '(no text)',
     });
+    return;
+  }
+
+  // ── 7.5. WA Catalog order (Meta Commerce Catalog checkout) ────────────────
+  // [CATALOG-1] See header changelog entry — a WA Catalog checkout arrives as
+  // msgObj.type === 'order', extracted above into isCatalogOrder/catalogOrder.
+  // Placed after the humanMode/admin-command guards (an admin-takeover or
+  // admin-typed command must still win) but before loop prevention/business
+  // logic that assumes ordinary text — mirrors the payment-proof image
+  // handling pattern later in this function.
+  if (isCatalogOrder) {
+    if (!business?.waCatalog?.enabled) {
+      // [CATALOG-1] Defensive: WA Catalog was disabled/unconfigured after a
+      // catalog was already synced to Meta, or the feature was toggled off
+      // mid-conversation. Fail silently rather than erroring — never surface
+      // a broken-feature message to the customer.
+      logger.warn('[Webhook] Received WA Catalog order but waCatalog is not enabled for this tenant — ignoring', {
+        tenantId, from,
+      });
+      return;
+    }
+    const { handleCatalogOrderMessage } = await import('../modules/catalog/waCatalogFlow.js');
+    try {
+      const reply = await handleCatalogOrderMessage({ session, business, tenant: tenantDoc, catalogOrder });
+      if (reply) await dispatchMessage(from, reply, tenantDoc);
+    } catch (err) {
+      // [Failure handling] A WA Catalog order must never become a dead end —
+      // hand the customer a normal way forward instead of erroring silently.
+      logger.error('[Webhook] WA Catalog order normalization failed', { err: err.message, tenantId, from });
+      await dispatchMessage(from, {
+        type:    'buttons',
+        body:    "Thanks for your selection! Let's get your order sorted — what would you like to do?",
+        buttons: [{ id: 'ORDER', title: '🛍 Shop' }, { id: 'SUPPORT', title: '💬 Help' }],
+      }, tenantDoc);
+    }
     return;
   }
 
@@ -2138,6 +2208,25 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
     // their delivery address, for instance, is never at one of these steps.
     const MENU_BROWSE_STEPS = new Set(['SELECT_ITEM', 'SUGGESTION_CONFIRM', 'SUGGEST_CONFIRM', 'ITEM_DETAIL']);
     const MENU_TRIGGER_WORDS = new Set(['SHOW_MENU', 'MENU', 'HOME', '0']);
+    // [DEBUG-VIEWMENU] Temporary diagnostic — logs the exact session state this
+    // decision is made from, plus freshSession's state for comparison, so a live
+    // repro immediately shows WHY the routing did or didn't take this branch
+    // (stale `session` snapshot vs a race-updated `freshSession`, wrong currentFlow
+    // casing, unexpected currentStep, etc.) instead of requiring re-derivation from
+    // code reading alone. Remove once the live issue is confirmed root-caused.
+    logger.info('[DEBUG-VIEWMENU] decision point', {
+      from,
+      upperMsg,
+      isInteractive,
+      isListReply,
+      sessionCurrentFlow:     session.currentFlow,
+      sessionStepAsCurrentStep: currentStep,
+      freshSessionCurrentFlow: freshSession?.currentFlow,
+      freshSessionStep:        freshSession?.step,
+      menuTriggerMatch: MENU_TRIGGER_WORDS.has(upperMsg),
+      stepInBrowseSet:  MENU_BROWSE_STEPS.has(currentStep),
+      willRouteToMenu:  MENU_TRIGGER_WORDS.has(upperMsg) && !!session.currentFlow && MENU_BROWSE_STEPS.has(currentStep),
+    });
     if (
       MENU_TRIGGER_WORDS.has(upperMsg) &&
       session.currentFlow && MENU_BROWSE_STEPS.has(currentStep)
@@ -2702,6 +2791,55 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
     messagePreview: messageText?.slice(0, 60),
   });
 
+  // [FEAT-EMOTION-1] Pre-flow emotion detection — plain regex/heuristic, no AI call,
+  // no added latency (see core/sentiment/emotionEngine.js for full rationale). Skipped
+  // for button/list taps, which carry no free-text emotional signal. This only fires
+  // pre-flow (this code path is only reached when session.currentFlow is empty — see
+  // the "if (session.currentFlow) { ... return; }" block above); post-completion
+  // sentiment is already owned by classifyPostFlowSentiment() in postFlowHandler.js.
+  const { emotion } = (!isInteractive && messageText)
+    ? detectPreFlowEmotion(messageText)
+    : { emotion: 'NEUTRAL' };
+
+  if (emotion === 'FRUSTRATED') {
+    // [AUDIT-FIX-EMOTION-6] This used to `await updateSession(...)` right here,
+    // directly on the customer-facing reply path — every FRUSTRATED message paid
+    // for a full DB round-trip before route()/dispatchMessage() even ran, which
+    // is exactly the added-latency emotionEngine.js's own header comment says
+    // this feature must never cause. Nothing downstream in this request (the
+    // reply itself, applyEmotionTone, route()) reads `_frustrationCount` — it
+    // only gates a background admin audit-log entry — so there is no need to
+    // block the reply on it at all.
+    //
+    // [AUDIT-FIX-EMOTION-4] Atomic increment via $inc, not a local read-then-write,
+    // is kept exactly as before (avoids the same TOCTOU race class the codebase
+    // already fixed once with claimStep() for double-submits) — only the `await`
+    // was removed. updateSession() still returns the post-update document
+    // ({ new: true }), so the count read below is still the authoritative one;
+    // it's just read inside a `.then()` after the reply has already been sent,
+    // instead of being waited on before it.
+    updateSession(
+      from, tenantId,
+      { lastFrustrationAt: new Date().toISOString() },
+      { frustrationCount: 1 },
+    ).then((_updatedSession) => {
+      const _frustrationCount = _updatedSession?.frustrationCount ?? ((session.frustrationCount || 0) + 1);
+
+      // A single frustrated message just softens the bot's tone (applyEmotionTone
+      // below, computed synchronously from `emotion` alone). Only a REPEAT signal
+      // within the session is noisy/costly enough for customers to warrant a
+      // written admin flag, so the audit log stays useful rather than filling up
+      // on every mildly annoyed message.
+      if (_frustrationCount >= 2) {
+        logAudit({
+          tenantId, actor: 'system', actorId: from,
+          action: 'customer_frustration_flag',
+          metadata: { messagePreview: messageText?.slice(0, 120), frustrationCount: _frustrationCount },
+        }); // also fire-and-forget — never awaited, never blocks anything
+      }
+    }).catch(() => {}); // never awaited — a session-write hiccup must never affect the reply
+  }
+
   // [FIX-ENQ-ROUTE] The inline ENQUIRY handler previously intercepted action='ENQUIRY'
   // before route() was called, making the SERVICES and GENERAL mode's dedicated ENQUIRY
   // flows (registered in ACTION_REGISTRY via moduleRegistry) completely unreachable from
@@ -2713,11 +2851,16 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
   // back to the moduleRouter switch cases. moduleRouter now handles ENQUIRY/QUESTION with
   // a generic fallback prompt for modes that have no dedicated flow registered.
 
-  const reply = await route({
+  const routedReply = await route({
     action, intent, session,
     message: messageText, business,
-    tenant: tenantDoc, isInteractive, suggestion,
+    tenant: tenantDoc, isInteractive, suggestion, emotion,
   });
+
+  // [FEAT-EMOTION-1] Prepend a short tone line for FRUSTRATED/CONFUSED/EXCITED only
+  // (URGENT and NEUTRAL are left untouched — see TONE_PREFIX in emotionEngine.js).
+  // Purely additive to the reply body; never changes buttons, flow state, or action.
+  const reply = applyEmotionTone(routedReply, emotion);
 
   if (reply) {
     // reply can be an array (e.g. [imagePayload, buttonsPayload]) — dispatch each in order
@@ -2728,6 +2871,21 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
     const lastPayload = payloads[payloads.length - 1];
     const body = typeof lastPayload === 'string' ? lastPayload : lastPayload?.body;
     if (body) updateSession(from, tenantId, { lastBotMessage: body }).catch(() => {});
+  }
+
+  // [CATALOG-QUEUE-1] If this turn's route() call just confirmed an order
+  // (postFlowAck === 'ORDER_CONFIRMED') and the customer's WA Catalog cart
+  // had other resolvable items queued behind it, auto-advance into the next
+  // one now — see waCatalogFlow.js drainCatalogQueue(). Best-effort: any
+  // failure here must never affect the reply the customer already received.
+  try {
+    const freshSession = await getSession(from, tenantId);
+    if (freshSession?.postFlowAck === 'ORDER_CONFIRMED' && freshSession?.pendingCatalogQueue?.length) {
+      const { drainCatalogQueue } = await import('../modules/catalog/waCatalogFlow.js');
+      await drainCatalogQueue({ session: freshSession, business, tenant: tenantDoc });
+    }
+  } catch (err) {
+    logger.warn('[Webhook] drainCatalogQueue after route() failed (non-fatal)', { err: err.message, tenantId, from });
   }
 }
 
