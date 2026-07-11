@@ -2208,12 +2208,25 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
     // their delivery address, for instance, is never at one of these steps.
     const MENU_BROWSE_STEPS = new Set(['SELECT_ITEM', 'SUGGESTION_CONFIRM', 'SUGGEST_CONFIRM', 'ITEM_DETAIL']);
     const MENU_TRIGGER_WORDS = new Set(['SHOW_MENU', 'MENU', 'HOME', '0']);
-    // [DEBUG-VIEWMENU] Temporary diagnostic — logs the exact session state this
-    // decision is made from, plus freshSession's state for comparison, so a live
-    // repro immediately shows WHY the routing did or didn't take this branch
-    // (stale `session` snapshot vs a race-updated `freshSession`, wrong currentFlow
-    // casing, unexpected currentStep, etc.) instead of requiring re-derivation from
-    // code reading alone. Remove once the live issue is confirmed root-caused.
+    // [AUDIT-FIX-VIEWMENU-3] Root cause of the live "View Menu doesn't show the menu"
+    // bug: this decision read `session.currentFlow` / `currentStep` (= session.step),
+    // a snapshot fetched once at the very top of the webhook handler (~1,200 lines /
+    // several awaited DB + AI calls earlier). By the time execution reaches this
+    // point, the ACTUAL session in the DB — reflected in `freshSession`, fetched just
+    // above — can already have moved on (e.g. the customer's ORDER tap set
+    // step='SELECT_ITEM' moments ago, or a rapid double-tap/WhatsApp retry raced this
+    // same request). Execution below already correctly uses `freshSession` via
+    // advance() — but the GATE deciding whether to even take this branch was still
+    // keyed off the stale `session` object, so it could evaluate an out-of-date
+    // currentFlow/step, fail the MENU_BROWSE_STEPS check, and fall through to the
+    // generic "reset to welcome menu" escape further down instead of showing the
+    // actual item list. Fixed: gate on freshSession, same object advance() uses.
+    const menuTriggerMatch  = MENU_TRIGGER_WORDS.has(upperMsg);
+    const stepInBrowseSet   = MENU_BROWSE_STEPS.has(freshSession?.step);
+    const willRouteToMenu   = menuTriggerMatch && !!freshSession?.currentFlow && stepInBrowseSet;
+    // [DEBUG-VIEWMENU] Temporary diagnostic — logs both the stale `session` snapshot
+    // and `freshSession` for comparison, so a live repro immediately shows whether
+    // this was in fact a stale-session race. Remove once confirmed fixed in prod.
     logger.info('[DEBUG-VIEWMENU] decision point', {
       from,
       upperMsg,
@@ -2223,14 +2236,11 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
       sessionStepAsCurrentStep: currentStep,
       freshSessionCurrentFlow: freshSession?.currentFlow,
       freshSessionStep:        freshSession?.step,
-      menuTriggerMatch: MENU_TRIGGER_WORDS.has(upperMsg),
-      stepInBrowseSet:  MENU_BROWSE_STEPS.has(currentStep),
-      willRouteToMenu:  MENU_TRIGGER_WORDS.has(upperMsg) && !!session.currentFlow && MENU_BROWSE_STEPS.has(currentStep),
+      menuTriggerMatch,
+      stepInBrowseSet,
+      willRouteToMenu,
     });
-    if (
-      MENU_TRIGGER_WORDS.has(upperMsg) &&
-      session.currentFlow && MENU_BROWSE_STEPS.has(currentStep)
-    ) {
+    if (willRouteToMenu) {
       const reply = await advance({ session: freshSession, message: messageText, business, tenant: tenantDoc, isInteractive });
       if (reply) {
         const payloads = Array.isArray(reply) ? reply : [reply];
