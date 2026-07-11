@@ -81,13 +81,58 @@ export async function validatePromoCode(tenantId, code, subtotal) {
  * acceptable here for the same reason: this is a best-effort usage counter,
  * not a payment-authorization system). Never throws outward — a failed
  * increment must not roll back an order that has already been created.
+ *
+ * [AUDIT-FIX-PROMO-RACE] The docstring above always described a maxUses
+ * guard "at the moment of the write", but the update query used to be a
+ * plain `{ tenantId, 'promotions.code': code }` filter with no maxUses
+ * condition at all — every call unconditionally incremented usedCount.
+ * Two concurrent saveOrder() calls that both call validatePromoCode() while
+ * usedCount is one below maxUses both see `valid: true` (validatePromoCode
+ * is a separate, earlier read) and then both increments land here,
+ * pushing usedCount past maxUses with nothing to stop it. A simple
+ * `usedCount: { $lt: maxUses }` filter can't be expressed against a plain
+ * `$elemMatch` because it needs to compare two fields of the *same* array
+ * element to each other, and maxUses is nullable (unlimited-use codes)
+ * — so this now uses a pipeline update ($map/$cond), which MongoDB
+ * evaluates atomically server-side: only the matching promotions entry
+ * gets its usedCount bumped, and only when maxUses is null/unset or
+ * usedCount is still strictly below it.
  */
 export async function applyPromoUsage(tenantId, code) {
   if (!code) return;
+  const normalizedCode = code.trim().toUpperCase();
   try {
     await BusinessConfig.updateOne(
-      { tenantId, 'promotions.code': code.trim().toUpperCase() },
-      { $inc: { 'promotions.$.usedCount': 1 } },
+      { tenantId, 'promotions.code': normalizedCode },
+      [
+        {
+          $set: {
+            promotions: {
+              $map: {
+                input: '$promotions',
+                as: 'p',
+                in: {
+                  $cond: [
+                    {
+                      $and: [
+                        { $eq: ['$$p.code', normalizedCode] },
+                        {
+                          $or: [
+                            { $eq: ['$$p.maxUses', null] },
+                            { $lt: ['$$p.usedCount', '$$p.maxUses'] },
+                          ],
+                        },
+                      ],
+                    },
+                    { $mergeObjects: ['$$p', { usedCount: { $add: [{ $ifNull: ['$$p.usedCount', 0] }, 1] } }] },
+                    '$$p',
+                  ],
+                },
+              },
+            },
+          },
+        },
+      ],
     );
   } catch (err) {
     logger.warn('[PromoService] applyPromoUsage failed (non-fatal)', { err: err.message, tenantId, code });
