@@ -87,3 +87,32 @@ test('resolveActiveOrder: a confirmed order (paymentReviewedAt set by confirmPay
     assert.equal(result.state, ACTIVE_ORDER_STATES.PAYMENT_VERIFIED);
   });
 });
+
+// [AUDIT-AOR-CONFIRMED] regression: a cash order accepted via AWAIT_ADMIN_CONFIRM, or an
+// order confirmed through the dashboard PATCH endpoint, reaches status:'confirmed' without
+// paymentStatus ever becoming 'confirmed'/'self_confirmed'/'paid' (adminCommandService's
+// markOrderReady FIX-MARK-READY-GUARD comment documents both paths). Before this fix,
+// resolveActiveOrder required paymentStatus to be payment-verified AND status:'confirmed',
+// so these orders — despite matching the "active order" DB query — fell through every
+// priority branch and resolved to NO_ACTIVE_ORDER, silently disabling interception for a
+// real in-progress order.
+test('resolveActiveOrder: a confirmed cash order (paymentStatus unpaid) still intercepts as PAYMENT_VERIFIED', async () => {
+  const fakeOrder = {
+    _id: 'jkl012',
+    customerPhone: '2207000003',
+    tenantId: 'tenant1',
+    status: 'confirmed',
+    paymentStatus: 'unpaid', // cash / AWAIT_ADMIN_CONFIRM order — never touches 'confirmed'
+    item: 'Suya Platter',
+    quantity: 1,
+    shortId: 'ORD126',
+    createdAt: new Date(),
+    updatedAt: new Date(),
+  };
+
+  await withStubbedOrderFind([fakeOrder], async () => {
+    const result = await resolveActiveOrder('2207000003', 'tenant1', { payment: { currency: 'D' } }, null);
+    assert.equal(result.state, ACTIVE_ORDER_STATES.PAYMENT_VERIFIED, `expected PAYMENT_VERIFIED, got ${result.state}`);
+    assert.equal(result.shouldIntercept, true, 'a confirmed cash order must still intercept');
+  });
+});

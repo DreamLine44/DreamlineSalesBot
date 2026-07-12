@@ -4,6 +4,25 @@
  * [FIX-BUG11] buildAdminOrderAlertBody no longer hardcodes "Cash / On delivery".
  *             It now checks payment.enabled to show the correct payment mode.
  * [FIX-BUG14] buildMenuUI returns a Contact Us button on empty menu (not plain text).
+ *
+ * [AUDIT-FIX-ROWCAP-REVERT] v23 briefly added a slice(0, 10) cap + "Showing X of Y"
+ * footer here, copying a pattern seen in bakery/cosmetics/retail/salon/electronics/
+ * services. That was a mistake: core/whatsapp/dispatcher.js's own [FIX-LIST-TRUNC]
+ * already takes a flat `rows` array from any module and chunks it into up to 10
+ * sections × 10 rows (100 rows total) instead of truncating at 10. Capping here
+ * pre-emptively threw away rows 11+ before the dispatcher ever got a chance to
+ * place them in a second section — actively defeating that fix and hiding real
+ * menu items behind a misleading "Showing 10 of 15" message. Restaurant's
+ * buildMenuUI needs no cap at all; it should hand the dispatcher the full row
+ * list and let it handle sectioning. Reverted to the uncapped form.
+ *
+ * NOTE (historical — resolved): this comment previously flagged bakery, cosmetics,
+ * retail, salon, and electronics as still having their own build-time slice(0, 10)
+ * + overflow-footer logic. That has since been fixed in each of those modules
+ * (see their own AUDIT-FIX-1/2/3/4/6/8 comments) — they now hand dispatcher.js the
+ * full flat `rows` array and let [FIX-LIST-TRUNC] do the chunking, same as here.
+ * Left in place only so a future audit doesn't have to re-derive that this class
+ * of bug was checked across every module, not just this one.
  */
 
 export function buildMenuUI(business) {
@@ -16,6 +35,8 @@ export function buildMenuUI(business) {
       buttons: [{ id: 'SUPPORT', title: '💬 Contact Us' }],
     };
   }
+  // No cap here — dispatcher.js's [FIX-LIST-TRUNC] chunks the flat rows array
+  // into WhatsApp-valid sections (≤10 rows/section, ≤10 sections) on its own.
   const rows = items.map((item, i) => ({
     id:          String(i + 1),
     title:       item.name.slice(0, 24),
@@ -47,17 +68,17 @@ export function buildOrderSummary({ item, qty, total, addOns = [], business }) {
 export function buildOrderSuccess({ item, qty, business }) {
   const name     = typeof item === 'object' ? item.name : (item || 'your item');
   const quantity = qty || 1;
-  const canBook  = (business?.services || []).length > 0;
-  const buttons  = [
-    { id: 'ORDER',    title: '🛒 Place New Order' },
-    canBook ? { id: 'BOOK', title: '📅 Book a Table' } : null,
-    { id: 'SHOW_MENU', title: '🔄 Start Over' },
-  ].filter(Boolean).slice(0, 3);
+  const bizName  = business?.name || 'us';
 
+  // [FIX-GOODBYE-1] Previously this bundled "Place New Order / Book a Table /
+  // Start Over" buttons into the SAME message as the thank-you — so the bot
+  // said goodbye and immediately asked "what next?" in one breath, which read
+  // as contradictory. A real goodbye ends the conversation; it only resumes
+  // if and when the customer sends another message (handled by the normal
+  // returning-customer greeting path in moduleRouter.js).
   return {
-    type:    'buttons',
-    body:    `✅ *Order placed!*\n\n🍳 *${quantity}× ${name}* — we're preparing it now.\n\nThank you! 😊`,
-    buttons,
+    type: 'text',
+    body: `✅ *Order placed!*\n\n🍳 *${quantity}× ${name}* — we're preparing it now.\n\nEnjoy your meal! Message us anytime if you need anything. 😊\n— *${bizName}*`,
   };
 }
 

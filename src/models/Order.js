@@ -53,6 +53,39 @@ const orderSchema = new mongoose.Schema({
   // dropped every write. Upsell add-on names were never persisted to the order record.
   addOns: { type: [String], default: [] },
 
+  // [MULTICART-v39] Additive multi-item support. item/quantity/addOns above are
+  // NEVER removed — for every order (single- or multi-item) they always mirror
+  // items[0], so any existing query/dashboard view/analytics aggregation that
+  // reads order.item or order.quantity keeps working with zero changes. items[]
+  // is the source of truth going forward; it's a single-entry array for every
+  // tenant with multiItemCart.enabled=false (the default).
+  items: {
+    type: [
+      {
+        item:       { type: String, required: true },
+        quantity:   { type: Number, required: true, min: 1 },
+        addOns:     { type: [String], default: [] },
+        unitPrice:  { type: Number, default: null },
+        // [FIX-CATALOG-CART-2] menuItemId was produced by every cart-line builder
+        // (waCatalogHelpers.buildCatalogCartItems(), and the CATALOG-STOCK-1
+        // menuItemId passed by each per-vertical orderFlow.js) but was missing from
+        // this subdocument schema — Mongoose strict mode (default) silently drops
+        // any key not declared here, so it was never persisted to Mongo. Currently
+        // masked because orderService.saveOrder()'s stock-decrement path reads
+        // menuItemId off the raw `items` argument before it's ever saved, not off
+        // the persisted document — but any future reader (dashboard order detail,
+        // repeat-order-by-line, analytics) querying order.items[].menuItemId from
+        // the DB would silently get undefined for every order, past and future.
+        // Same recurring class of bug as variants/customerName/notes/addOns/staff
+        // being silently dropped elsewhere in this codebase's history — fixed the
+        // same way: declare the field explicitly.
+        menuItemId: { type: mongoose.Schema.Types.ObjectId, default: null },
+        _id: false,
+      },
+    ],
+    default: undefined, // absent (not []) for pre-v39 orders — keeps old documents untouched
+  },
+
   totalPrice: { type: Number, default: null },
 
   status: {
@@ -187,6 +220,14 @@ const orderSchema = new mongoose.Schema({
   cancelledAt: { type: Date,   default: null },
 
   shortId: { type: String, index: true, default: null },
+
+  // [PROMO-1] Set by orderService.saveOrder() when a valid promoCode is passed
+  // in. discountAmount is already subtracted from totalPrice above — these two
+  // fields exist purely so the dashboard/receipt can show what was applied and
+  // for how much, without having to re-derive it from the promotions config
+  // (which may have since changed or been deleted).
+  promoCode:      { type: String, default: null, trim: true, uppercase: true },
+  discountAmount: { type: Number, default: null, min: 0 },
 
 }, { timestamps: true });
 
