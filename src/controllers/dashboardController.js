@@ -607,8 +607,13 @@ export async function getCustomers(req, res) {
 export async function getBusinessSettings(req, res) {
   try {
     const { tenantId } = req.params;
+    // [SETTINGS-FLATTEN-1] phoneNumberId and multiItemCart were missing from
+    // this projection — any dashboard page reading them back via this
+    // endpoint (e.g. to show current WhatsApp-connected state or the saved
+    // multi-item-cart config) would silently get undefined even though the
+    // fields exist and are populated on the document.
     const business = await BusinessConfig.findOne({ tenantId })
-      .select('name description businessMode adminPhone menuItems services faq payment leadCapture hours customMessages addOns settings waCatalog')
+      .select('name description businessMode adminPhone phoneNumberId menuItems services faq payment leadCapture hours customMessages addOns settings waCatalog multiItemCart')
       .lean();
     if (!business) return res.status(404).json({ error: 'Business not found' });
     res.json({ business });
@@ -630,12 +635,32 @@ export async function updateBusinessSettings(req, res) {
     // "field missing from the accepted set" bug already fixed elsewhere.
     const allowed = ['name', 'description', 'adminPhone', 'payment', 'leadCapture',
                      'customMessages', 'hours', 'settings', 'businessMode', 'addOns',
-                     'waCatalog'];
+                     'waCatalog', 'multiItemCart'];
     const updates = {};
     for (const key of allowed) {
       if (req.body[key] !== undefined) updates[key] = req.body[key];
     }
     if (!Object.keys(updates).length) return res.status(400).json({ error: 'No valid fields to update' });
+
+    // [SETTINGS-FLATTEN-1] Same [CATALOG-BIZ-1] hazard applies to `settings`
+    // and `multiItemCart` — both are plain nested objects (not their own
+    // sub-schema), so a naive $set with a partial object (e.g. tenant only
+    // changing vipThreshold) would silently wipe every sibling field back to
+    // undefined instead of leaving them alone. Flatten to dot-notation the
+    // same way waCatalog already is, so a partial PATCH only ever touches
+    // the keys actually sent.
+    if (updates.settings && typeof updates.settings === 'object') {
+      for (const [k, v] of Object.entries(updates.settings)) {
+        updates[`settings.${k}`] = v;
+      }
+      delete updates.settings;
+    }
+    if (updates.multiItemCart && typeof updates.multiItemCart === 'object') {
+      for (const [k, v] of Object.entries(updates.multiItemCart)) {
+        updates[`multiItemCart.${k}`] = v;
+      }
+      delete updates.multiItemCart;
+    }
 
     // [AUDIT-FIX-CATALOG-TENANT-1] Mirror [CATALOG-BIZ-1] from businessController.js:
     // a plain nested $set REPLACES the whole waCatalog subdocument rather than
@@ -727,7 +752,13 @@ export async function getMenu(req, res) {
 export async function addMenuItem(req, res) {
   try {
     const { tenantId } = req.params;
-    const { name, price, description, available = true, showImageOnSelect = true } = req.body;
+    // [MENU-FIELDS-1] category/stockCount/currency/duration/prep are all
+    // declared on menuItemSchema (see models/BusinessConfig.js) but were never
+    // read from req.body here — the exact same "field exists on the schema
+    // but the controller silently drops it" class of bug already fixed for
+    // `variants` elsewhere in this file. Wiring them through now.
+    const { name, price, description, available = true, showImageOnSelect = true,
+            category, stockCount, currency, duration, prep } = req.body;
     if (!name || !String(name).trim()) return res.status(400).json({ error: 'name required' });
 
     // [AUDIT-FIX-USAGE-1] Tenant.limits.maxMenuItems has existed in the schema
@@ -801,6 +832,12 @@ export async function addMenuItem(req, res) {
       variants,
       showImageOnSelect: showImageOnSelect === 'false' ? false : Boolean(showImageOnSelect),
       image,
+      // [MENU-FIELDS-1] Optional fields — undefined lets the schema default apply
+      ...(category   !== undefined ? { category: category ? String(category).trim() : null } : {}),
+      ...(stockCount !== undefined ? { stockCount: stockCount === '' || stockCount == null ? null : Number(stockCount) } : {}),
+      ...(currency   !== undefined ? { currency: currency ? String(currency).trim() : null } : {}),
+      ...(duration   !== undefined ? { duration: duration === '' || duration == null ? null : Number(duration) } : {}),
+      ...(prep       !== undefined ? { prep: prep ? String(prep).trim() : null } : {}),
     };
 
     const biz = await BusinessConfig.findOneAndUpdate(
@@ -822,13 +859,21 @@ export async function addMenuItem(req, res) {
 export async function updateMenuItem(req, res) {
   try {
     const { tenantId, itemId } = req.params;
-    const { name, price, description, available, showImageOnSelect, removeImage } = req.body;
+    // [MENU-FIELDS-1] Same gap as addMenuItem — these are valid schema fields
+    // that this controller never read from req.body.
+    const { name, price, description, available, showImageOnSelect, removeImage,
+            category, stockCount, currency, duration, prep } = req.body;
     const patch = {};
     if (name              !== undefined) patch['menuItems.$.name']             = name;
     if (price             !== undefined) patch['menuItems.$.price']            = Number(price);
     if (description       !== undefined) patch['menuItems.$.description']      = description;
     if (available         !== undefined) patch['menuItems.$.available']        = available === 'false' ? false : Boolean(available);
     if (showImageOnSelect !== undefined) patch['menuItems.$.showImageOnSelect'] = showImageOnSelect === 'false' ? false : Boolean(showImageOnSelect);
+    if (category          !== undefined) patch['menuItems.$.category']         = category ? String(category).trim() : null;
+    if (stockCount        !== undefined) patch['menuItems.$.stockCount']       = stockCount === '' || stockCount == null ? null : Number(stockCount);
+    if (currency          !== undefined) patch['menuItems.$.currency']         = currency ? String(currency).trim() : null;
+    if (duration          !== undefined) patch['menuItems.$.duration']         = duration === '' || duration == null ? null : Number(duration);
+    if (prep              !== undefined) patch['menuItems.$.prep']             = prep ? String(prep).trim() : null;
 
     // ── Parse array fields sent as JSON strings from multipart/form-data ─────
     let keywords = req.body.keywords;

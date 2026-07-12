@@ -96,7 +96,7 @@ export async function handleGeneralQuestion({ session, message, business, tenant
 export async function handleAbout({ session, message, business, tenant }) {
   const name    = business?.name || business?.businessName || 'us';
   const desc    = business?.description  || null;
-  const phone   = business?.adminPhone   || null;
+  const phone   = business?.adminPhone || tenant?.adminPhone || null; // [AUDIT-FIX-ADMINPHONE-3] same fallback as every other adminPhone read-site
   const address = business?.address      || null;
 
   const lines = [`ℹ️ *About ${name}*\n`];

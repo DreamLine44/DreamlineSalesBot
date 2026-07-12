@@ -2208,25 +2208,12 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
     // their delivery address, for instance, is never at one of these steps.
     const MENU_BROWSE_STEPS = new Set(['SELECT_ITEM', 'SUGGESTION_CONFIRM', 'SUGGEST_CONFIRM', 'ITEM_DETAIL']);
     const MENU_TRIGGER_WORDS = new Set(['SHOW_MENU', 'MENU', 'HOME', '0']);
-    // [AUDIT-FIX-VIEWMENU-3] Root cause of the live "View Menu doesn't show the menu"
-    // bug: this decision read `session.currentFlow` / `currentStep` (= session.step),
-    // a snapshot fetched once at the very top of the webhook handler (~1,200 lines /
-    // several awaited DB + AI calls earlier). By the time execution reaches this
-    // point, the ACTUAL session in the DB — reflected in `freshSession`, fetched just
-    // above — can already have moved on (e.g. the customer's ORDER tap set
-    // step='SELECT_ITEM' moments ago, or a rapid double-tap/WhatsApp retry raced this
-    // same request). Execution below already correctly uses `freshSession` via
-    // advance() — but the GATE deciding whether to even take this branch was still
-    // keyed off the stale `session` object, so it could evaluate an out-of-date
-    // currentFlow/step, fail the MENU_BROWSE_STEPS check, and fall through to the
-    // generic "reset to welcome menu" escape further down instead of showing the
-    // actual item list. Fixed: gate on freshSession, same object advance() uses.
-    const menuTriggerMatch  = MENU_TRIGGER_WORDS.has(upperMsg);
-    const stepInBrowseSet   = MENU_BROWSE_STEPS.has(freshSession?.step);
-    const willRouteToMenu   = menuTriggerMatch && !!freshSession?.currentFlow && stepInBrowseSet;
-    // [DEBUG-VIEWMENU] Temporary diagnostic — logs both the stale `session` snapshot
-    // and `freshSession` for comparison, so a live repro immediately shows whether
-    // this was in fact a stale-session race. Remove once confirmed fixed in prod.
+    // [DEBUG-VIEWMENU] Temporary diagnostic — logs the exact session state this
+    // decision is made from, plus freshSession's state for comparison, so a live
+    // repro immediately shows WHY the routing did or didn't take this branch
+    // (stale `session` snapshot vs a race-updated `freshSession`, wrong currentFlow
+    // casing, unexpected currentStep, etc.) instead of requiring re-derivation from
+    // code reading alone. Remove once the live issue is confirmed root-caused.
     logger.info('[DEBUG-VIEWMENU] decision point', {
       from,
       upperMsg,
@@ -2236,11 +2223,14 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
       sessionStepAsCurrentStep: currentStep,
       freshSessionCurrentFlow: freshSession?.currentFlow,
       freshSessionStep:        freshSession?.step,
-      menuTriggerMatch,
-      stepInBrowseSet,
-      willRouteToMenu,
+      menuTriggerMatch: MENU_TRIGGER_WORDS.has(upperMsg),
+      stepInBrowseSet:  MENU_BROWSE_STEPS.has(currentStep),
+      willRouteToMenu:  MENU_TRIGGER_WORDS.has(upperMsg) && !!session.currentFlow && MENU_BROWSE_STEPS.has(currentStep),
     });
-    if (willRouteToMenu) {
+    if (
+      MENU_TRIGGER_WORDS.has(upperMsg) &&
+      session.currentFlow && MENU_BROWSE_STEPS.has(currentStep)
+    ) {
       const reply = await advance({ session: freshSession, message: messageText, business, tenant: tenantDoc, isInteractive });
       if (reply) {
         const payloads = Array.isArray(reply) ? reply : [reply];
@@ -2630,28 +2620,20 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
     // Only fires for non-interactive (typed) text with no active flow passthrough.
     // Numeric inputs, pure emoji, and very short inputs are excluded — they are
     // almost certainly quantity/date answers, not questions.
-    // [AUDIT-FIX-MFQ-FRESH] Same stale-session class of bug as [AUDIT-FIX-VIEWMENU-3]:
-    // this gate previously read `session.currentFlow`/`session.step` — a snapshot
-    // fetched once at the top of the handler — while the fallback advance() call a
-    // little further down (and MFQ_SWITCH_YES/NO resume logic) already run against
-    // `freshSession`. If the real session moved on in the DB between that initial
-    // fetch and here (another message racing in, WhatsApp retry, etc.), this gate
-    // could fire — or fail to fire — off stale data. Gate on freshSession instead,
-    // consistent with everything downstream that actually acts on the session.
     if (
       !isInteractive &&
       messageText.length >= 4 &&
       !/^\d+$/.test(messageText.trim()) &&
-      freshSession?.currentFlow &&
-      freshSession?.step
+      session.currentFlow &&
+      session.step
     ) {
-      const _mfqIsQuestionLike = _detectMidFlowQuestion(messageText, freshSession);
+      const _mfqIsQuestionLike = _detectMidFlowQuestion(messageText, session);
       if (_mfqIsQuestionLike) {
         // Describe the current step to the customer in plain language
-        const stepLabel    = _mfqStepLabel(freshSession.currentFlow, freshSession.step);
-        const questionFlow = freshSession.currentFlow;
-        const questionStep = freshSession.step;
-        const questionData = { ...(freshSession.data || {}) };
+        const stepLabel    = _mfqStepLabel(session.currentFlow, session.step);
+        const questionFlow = session.currentFlow;
+        const questionStep = session.step;
+        const questionData = { ...(session.data || {}) };
 
         // Sanitise internal MFQ keys from the snapshot so they don't persist recursively
         delete questionData._mfqPendingQuestion;
@@ -2692,22 +2674,19 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
     // reads as both is treated as a question first — questions are the more
     // conservative interpretation and this ordering matches how MFQ was already
     // prioritized relative to SUPPORT/STATUS above it.
-    // [AUDIT-FIX-FSI-FRESH] Same stale-session bug as [AUDIT-FIX-VIEWMENU-3] and
-    // [AUDIT-FIX-MFQ-FRESH] above — gate on freshSession, not the stale top-of-
-    // request session, so this check agrees with what advance() actually acts on.
     if (
       !isInteractive &&
       messageText.length >= 4 &&
       !/^\d+$/.test(messageText.trim()) &&
-      freshSession?.currentFlow &&
-      freshSession?.step
+      session.currentFlow &&
+      session.step
     ) {
-      const _fsiTargetFlow = _detectMidFlowSwitchRequest(messageText, freshSession, business);
+      const _fsiTargetFlow = _detectMidFlowSwitchRequest(messageText, session, business);
       if (_fsiTargetFlow) {
-        const stepLabelFsi   = _mfqStepLabel(freshSession.currentFlow, freshSession.step);
-        const switchFlow     = freshSession.currentFlow;
-        const switchStep     = freshSession.step;
-        const switchData     = { ...(freshSession.data || {}) };
+        const stepLabelFsi   = _mfqStepLabel(session.currentFlow, session.step);
+        const switchFlow     = session.currentFlow;
+        const switchStep     = session.step;
+        const switchData     = { ...(session.data || {}) };
 
         // Sanitise internal FSI/MFQ keys from the snapshot so they don't persist recursively
         delete switchData._fsiTargetFlow;

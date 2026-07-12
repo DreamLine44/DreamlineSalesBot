@@ -265,7 +265,11 @@ export async function handleElectronicsOrder({
     // Customer is confirming or rejecting a fuzzy-matched product suggestion.
     // CONFIRM_SUGGESTION button is in FLOW_PASSTHROUGH_IDS → always reaches here.
     case 'SUGGEST_CONFIRM': {
-      if (/^(yes|y|yep|yeah|confirm|ok|okay|confirm_suggestion)$/i.test(clean)) {
+      // [AUDIT-FIX-SUGGESTCONFIRM-1] Was missing 'sure', unlike every other confirm-style
+      // regex in this codebase (BOOKING_CONFIRM, restaurant SUGGESTION_CONFIRM, etc. — see
+      // [AUDIT-FIX-CONFIRM-1]). A customer replying "sure" to "Did you mean X?" fell through
+      // to the rejected/no-match branch below and silently lost the suggested product.
+      if (/^(yes|y|yep|yeah|confirm|ok|okay|sure|confirm_suggestion)$/i.test(clean)) {
         const item = data.suggestedItem
           || menu.find(i => norm(i.name) === norm(data.suggestion || ''));
         if (item) {

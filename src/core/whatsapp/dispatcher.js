@@ -18,61 +18,6 @@ import { decryptToken } from '../../controllers/tenantController.js';
 
 const SIM_MODE = () => process.env.SIMULATION_MODE === 'true';
 
-// ── [AUDIT-FIX-DISPATCH-ALERT] Admin alerting for silent dispatch failures ──
-// dispatchMessage() has always had failure branches (missing/placeholder
-// credentials, Meta API rejection) that only ever logged server-side —
-// meaning a customer-facing send could silently vanish with nothing but a
-// log line as evidence, unless someone was actively tailing logs. This
-// reuses the existing AdminNotification fan-out (see models/AdminNotification.js
-// and routes/adminRoutes.js) to surface the same failures in the super-admin
-// dashboard as TO_ADMIN notifications.
-//
-// Deliberately does NOT attempt a WhatsApp nudge back to the tenant (unlike
-// pingTenantAdmin() in adminRoutes.js) — these failures often mean THIS
-// tenant's own WhatsApp channel is broken, so nudging over that same channel
-// would be pointless at best. The dashboard record is the only reliable
-// surface for this class of failure; the super admin (who manages Meta
-// credentials setup) is the right audience, not the tenant.
-//
-// Dynamically imported to keep this file's role as an isolated transport
-// adapter honest — it still never imports business-logic modules, only a
-// plain data model, and only on the (rare) failure path.
-//
-// Deduped per (tenantId, reason) for 30 minutes so an ongoing outage — every
-// customer message failing the same way — produces one dashboard alert, not
-// hundreds. Best-effort only: never throws, never awaited by callers, and a
-// failure to alert never blocks or delays the dispatch return path itself.
-const DISPATCH_ALERT_DEDUPE_MS = 30 * 60 * 1000;
-const _recentDispatchAlerts = new Map(); // `${tenantId}:${reason}` → timestamp
-
-async function _notifyAdminOfDispatchFailure(tenant, reason, { subject, body, severity = 'warning' }) {
-  try {
-    const tenantId = tenant?._id;
-    if (!tenantId) return; // nothing to attribute the alert to
-
-    const dedupeKey = `${tenantId}:${reason}`;
-    const now = Date.now();
-    const last = _recentDispatchAlerts.get(dedupeKey);
-    if (last && now - last < DISPATCH_ALERT_DEDUPE_MS) return;
-    _recentDispatchAlerts.set(dedupeKey, now);
-
-    const { default: AdminNotification } = await import('../../models/AdminNotification.js');
-    await AdminNotification.create({
-      tenantId,
-      direction: 'TO_ADMIN',
-      fromLabel: 'System',
-      subject,
-      body,
-      severity,
-    });
-  } catch (err) {
-    // Never let alerting failure affect the actual dispatch path.
-    logger.warn('[Dispatch] Failed to create admin alert for dispatch failure (non-fatal)', {
-      err: err.message,
-    });
-  }
-}
-
 // ── Simulation reply store ────────────────────────────────────────────────────
 // userId → { resolve, timer }
 const _simSlots = new Map();
@@ -335,13 +280,6 @@ export async function dispatchMessage(to, ui, tenant) {
       hasPhoneId: !!phoneId,
       tip: 'Set whatsapp.accessToken and whatsapp.phoneNumberId on the tenant document',
     });
-    _notifyAdminOfDispatchFailure(tenant, 'missing_credentials', {
-      subject:  '🚨 WhatsApp messages are not sending — missing credentials',
-      body:     `A message to a customer could not be sent because this tenant is missing ${
-        !rawToken ? 'an access token' : 'a phone number ID'
-      } (or both). Customers are not receiving replies until this is fixed. Set whatsapp.accessToken and whatsapp.phoneNumberId on the tenant to resolve.`,
-      severity: 'urgent',
-    }).catch(() => {});
     return;
   }
 
@@ -352,11 +290,6 @@ export async function dispatchMessage(to, ui, tenant) {
       phoneId,
       tip: 'Replace SIM_* phoneNumberId with a real Meta phoneNumberId for this tenant',
     });
-    _notifyAdminOfDispatchFailure(tenant, 'placeholder_phone_id', {
-      subject:  '🚨 WhatsApp messages are not sending — placeholder phone number',
-      body:     `A message to a customer could not be sent because this tenant still has a simulation placeholder (${phoneId}) instead of a real Meta phone number ID. Customers are not receiving replies until onboarding is completed with real credentials.`,
-      severity: 'urgent',
-    }).catch(() => {});
     return;
   }
 
@@ -379,21 +312,6 @@ export async function dispatchMessage(to, ui, tenant) {
         err: err.slice(0, 300),
         tenantId: tenant?._id,
       });
-      // [AUDIT-FIX-DISPATCH-ALERT] 401/403 almost always means an expired or
-      // revoked access token — every subsequent send will fail the same way
-      // until someone reconnects the tenant, so this is 'urgent'. Other
-      // status codes (rate limits, malformed payload, transient 5xx) may be
-      // one-off, so 'warning' rather than paging someone for a single blip.
-      const isAuthFailure = resp.status === 401 || resp.status === 403;
-      _notifyAdminOfDispatchFailure(tenant, 'meta_api_error', {
-        subject:  isAuthFailure
-          ? '🚨 WhatsApp access token rejected by Meta'
-          : `⚠️ WhatsApp message rejected by Meta (HTTP ${resp.status})`,
-        body:     isAuthFailure
-          ? `Meta rejected this tenant's WhatsApp access token (HTTP ${resp.status}). Every message to customers will fail until the token is reconnected/refreshed.`
-          : `A message to a customer was rejected by Meta's API (HTTP ${resp.status}). If this keeps happening, check the tenant's WhatsApp connection.`,
-        severity: isAuthFailure ? 'urgent' : 'warning',
-      }).catch(() => {});
       // [AUDIT-FIX-DISPATCH-FALSE-SUCCESS] Previously fell through to
       // `return resp;` unconditionally, so a 4xx/5xx Response object — a
       // truthy JS object — was indistinguishable from success to any caller
@@ -426,16 +344,6 @@ export async function dispatchMessage(to, ui, tenant) {
       to,
       tenantId: tenant?._id,
     });
-    // [AUDIT-FIX-DISPATCH-ALERT] Network/timeout errors are usually transient
-    // (Meta hiccup, our own outbound network blip) — 'warning', not 'urgent',
-    // so a single dropped connection doesn't page anyone the way a dead
-    // credential does. Repeated occurrences still surface via the same
-    // dedup window rather than being silently swallowed as before.
-    _notifyAdminOfDispatchFailure(tenant, 'network_error', {
-      subject:  '⚠️ WhatsApp send failed — network/timeout error',
-      body:     `A message to a customer failed to send due to a network error or timeout: ${err.message}. This is often transient, but check again if it recurs.`,
-      severity: 'warning',
-    }).catch(() => {});
   }
 }
 

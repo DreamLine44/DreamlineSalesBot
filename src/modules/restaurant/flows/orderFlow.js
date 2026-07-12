@@ -196,7 +196,10 @@ export async function handleOrderFlow({ session, message, business, tenant, isIn
 
     // ────────────────────────────────────────────────────────────────────────
     case 'SUGGESTION_CONFIRM': {
-      if (/^(yes|y|yep|yeah|confirm|ok|okay)$/i.test(clean) || clean === 'confirm') {
+      // [AUDIT-FIX-SUGGESTCONFIRM-1] Same bug class as [AUDIT-FIX-CONFIRM-1]: this regex
+      // was missing 'sure', so a customer replying "sure" to "Did you mean X?" fell through
+      // to the no-match branch below and silently lost the suggested item.
+      if (/^(yes|y|yep|yeah|confirm|ok|okay|sure)$/i.test(clean) || clean === 'confirm') {
         const suggestedName = data.suggestion;
         const item = menu.find(i => norm(i.name) === norm(suggestedName));
         if (item) return await _selectItem(item, session, business, data);
