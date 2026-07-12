@@ -72,15 +72,6 @@ const sessionSchema = new mongoose.Schema({
   lastIntent:     { type: String, default: null },
   lastSeen:       { type: Date,   default: null },   // [v11] updated on every message
 
-  // [AUDIT-FIX-SAVEDADDR] Written by modules/delivery/flows/index.js (DELIVERY_ADDRESS
-  // step) so a repeat delivery customer can be offered "Deliver to your usual address?"
-  // instead of retyping it. Was completely absent from this schema — Mongoose's default
-  // strict mode silently dropped every `updateSession(..., { savedAddress: address })`
-  // write, so `session.savedAddress` was always null/undefined on every read and the
-  // "use saved address" prompt never once appeared, even immediately after a customer's
-  // first delivery order in the same session.
-  savedAddress:  { type: String, default: null },
-
   tenantId:      { type: String, default: null, index: true },
 
   isCompleted:          { type: Boolean, default: false },
@@ -123,17 +114,6 @@ const sessionSchema = new mongoose.Schema({
   postFlowAck:  { type: String, default: null },
   postFlowData: { type: Object, default: null }, // context stored after flow completion (item, shortId, etc.)
 
-  // [CATALOG-QUEUE-1] Additional lines from a multi-item WA Catalog checkout
-  // that couldn't be carried through the single-item-at-a-time flow model
-  // immediately — see waCatalogHelpers.js normalizeCatalogSelection() and
-  // waCatalogFlow.js drainCatalogQueue(). Each entry is a plain
-  // { retailerId, quantity } pair (re-resolved against the live menu at drain
-  // time, not a frozen item snapshot) so a queued line always reflects current
-  // price/availability even if the admin edits the menu mid-conversation.
-  // Drained one at a time, automatically, right after the previous queued
-  // item's own ORDER flow reaches ORDER_CONFIRMED.
-  pendingCatalogQueue: { type: [mongoose.Schema.Types.Mixed], default: [] },
-
   // [v11] Payment retry tracking — max 2 proof reminders before suggesting human support
   paymentRetryCount: { type: Number, default: 0 },
 
@@ -147,13 +127,6 @@ const sessionSchema = new mongoose.Schema({
 
   // [FIX-BUG3] Tracks whether we have already sent closed-hours message
   closedMsgSent: { type: Boolean, default: false },
-
-  // [FEAT-EMOTION-1] Pre-flow frustration tracking (see core/sentiment/emotionEngine.js).
-  // Used to decide when a repeat frustration signal should also flag the admin
-  // dashboard, not just soften the bot's tone. Additive fields — default values
-  // mean existing session documents are unaffected.
-  frustrationCount:   { type: Number, default: 0 },
-  lastFrustrationAt:  { type: Date,   default: null },
 
   expiresAt: {
     type: Date,

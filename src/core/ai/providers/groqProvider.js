@@ -54,23 +54,8 @@ const GROQ_URL     = 'https://api.groq.com/openai/v1/chat/completions';
 const GROQ_MODEL_PRIMARY   = 'llama-3.3-70b-versatile';
 // [GROQ-V3-2/3] Fast model retained for classification and greeting generation
 const GROQ_MODEL_FAST      = 'llama-3.1-8b-instant';
-const GROQ_TIMEOUT = 14000; // default timeout for standard 70b replies
-const MAX_RETRIES  = 2;      // default retry budget for standard 70b replies
-
-// [AUDIT-FIX-LIVE-1] Tiered timeout/retry budgets. Previously every Groq call —
-// the single-word 8b sentiment/intent classifier included — inherited the same
-// 14000ms timeout with 2 retries meant for full 70b customer replies. Worst case,
-// a single classifyIntent() call could hang for ~45s (14s + 1000ms backoff + 14s +
-// 2000ms backoff + 14s) before ever falling back, during which the customer sees
-// nothing. That's the opposite of "live" — and it's exactly the gap a customer
-// probing the bot for weaknesses will find. Classification and urgent (complaint/
-// support) replies now get their own tight, fast-fail budgets; only general
-// FAQ/greeting-style replies keep the generous 14s/2-retry budget where depth
-// matters more than speed.
-const GROQ_TIMEOUT_CLASSIFY = 3000;  // 8b single-word classification — should return in <1s normally
-const MAX_RETRIES_CLASSIFY  = 1;
-const GROQ_TIMEOUT_URGENT   = 6000;  // 70b complaint/support replies — must still feel live
-const MAX_RETRIES_URGENT    = 1;
+const GROQ_TIMEOUT = 14000; // slightly longer timeout for 70b
+const MAX_RETRIES  = 2;
 
 // ── Sanitise business-supplied strings to prevent prompt injection ─────────────
 function sanitise(str = '', maxLen = 600) {
@@ -354,19 +339,12 @@ function getPersona(mode) {
 // ── HTTP call ─────────────────────────────────────────────────────────────────
 // [GROQ-V3-1/3-5] model param selects primary (70b) or fast (8b) path.
 // temperature defaults differ by model — 0.5 for factual replies, 0.75 for creative.
-// [AUDIT-FIX-LIVE-1] timeoutMs/maxRetries are now caller-overridable (default to the
-// standard 14000ms/2 budget for backwards compatibility with any existing caller that
-// doesn't pass them). classifyIntent and urgent getReply calls pass their own tighter
-// budgets — see call sites below.
-async function callGroq(messages, {
-  model = GROQ_MODEL_PRIMARY, maxTokens = 350, temperature = 0.5, retryCount = 0,
-  timeoutMs = GROQ_TIMEOUT, maxRetries = MAX_RETRIES,
-} = {}) {
+async function callGroq(messages, { model = GROQ_MODEL_PRIMARY, maxTokens = 350, temperature = 0.5, retryCount = 0 } = {}) {
   const key = process.env.GROQ_API_KEY;
   if (!key) throw new Error('GROQ_API_KEY not set');
 
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  const timer = setTimeout(() => controller.abort(), GROQ_TIMEOUT);
 
   try {
     const response = await fetch(GROQ_URL, {
@@ -380,16 +358,16 @@ async function callGroq(messages, {
 
     if (!response.ok) {
       const errText = await response.text().catch(() => '');
-      if (response.status === 429 && retryCount < maxRetries) {
+      if (response.status === 429 && retryCount < MAX_RETRIES) {
         await new Promise(r => setTimeout(r, 1500 * (retryCount + 1)));
-        return callGroq(messages, { model, maxTokens, temperature, retryCount: retryCount + 1, timeoutMs, maxRetries });
+        return callGroq(messages, { model, maxTokens, temperature, retryCount: retryCount + 1 });
       }
       // [GROQ-V3-1] If 70b model fails with a model-unavailable error, fall back to 8b.
       // Groq occasionally removes or rate-limits specific models; graceful degradation
       // ensures the bot keeps working rather than throwing to the caller.
       if (response.status === 400 && model === GROQ_MODEL_PRIMARY && retryCount === 0) {
         logger.warn('[Groq] Primary model unavailable — falling back to fast model', { model });
-        return callGroq(messages, { model: GROQ_MODEL_FAST, maxTokens, temperature, retryCount: 0, timeoutMs, maxRetries });
+        return callGroq(messages, { model: GROQ_MODEL_FAST, maxTokens, temperature, retryCount: 0 });
       }
       throw new Error(`Groq HTTP ${response.status}: ${errText.slice(0, 120)}`);
     }
@@ -398,9 +376,9 @@ async function callGroq(messages, {
     return data.choices?.[0]?.message?.content?.trim() || null;
   } catch (err) {
     clearTimeout(timer);
-    if (retryCount < maxRetries && err.name !== 'AbortError') {
+    if (retryCount < MAX_RETRIES && err.name !== 'AbortError') {
       await new Promise(r => setTimeout(r, 1000 * (retryCount + 1)));
-      return callGroq(messages, { model, maxTokens, temperature, retryCount: retryCount + 1, timeoutMs, maxRetries });
+      return callGroq(messages, { model, maxTokens, temperature, retryCount: retryCount + 1 });
     }
     throw err;
   }
@@ -455,20 +433,8 @@ export async function getReply({ customerMessage, business, intent = 'FALLBACK',
   ]);
   const temperature = FACTUAL_INTENTS.has((intent || '').toUpperCase()) ? 0.45 : 0.65;
 
-  // [AUDIT-FIX-LIVE-2] Complaint/support replies are the moments a customer is most
-  // actively watching for the bot to feel slow or robotic — this is precisely where
-  // testers "poke" to see how weak the system is. Give these intents a tight urgent
-  // budget (6s, 1 retry) instead of the standard 14s/2-retry budget used for general
-  // FAQ/greeting replies, where a slower-but-richer answer is an acceptable trade-off.
-  // Quality is unaffected — still the 70b model — only the worst-case wait time drops.
-  const URGENT_INTENTS = new Set(['COMPLAINT', 'SUPPORT']);
-  const isUrgent = URGENT_INTENTS.has((intent || '').toUpperCase());
-  const budget = isUrgent
-    ? { timeoutMs: GROQ_TIMEOUT_URGENT, maxRetries: MAX_RETRIES_URGENT }
-    : {};
-
   // [GROQ-V3-1] Use primary 70b model for customer-facing replies
-  const text = await callGroq(messages, { model: GROQ_MODEL_PRIMARY, maxTokens: 350, temperature, ...budget });
+  const text = await callGroq(messages, { model: GROQ_MODEL_PRIMARY, maxTokens: 350, temperature });
   return { text: text || null, source: 'groq' };
 }
 
@@ -477,7 +443,7 @@ export async function getReply({ customerMessage, business, intent = 'FALLBACK',
  * [GROQ-OPT-4] Returns { text, source } object.
  * [GROQ-V3-3] Uses fast 8b model — short output, speed matters more than depth for greetings.
  */
-export async function generateGreeting({ business, customerName, lastOrder, orderCount = 0, vipThreshold = 5 }) {
+export async function generateGreeting({ business, customerName, lastOrder }) {
   const name     = sanitise(business?.name || 'us');
   const custName = customerName ? `, ${customerName}` : '';
   const lastStr  = lastOrder ? ` Last time they ordered *${sanitise(lastOrder, 40)}*.` : '';
@@ -496,15 +462,7 @@ export async function generateGreeting({ business, customerName, lastOrder, orde
   };
 
   const hint = modeHints[mode] || 'Keep it warm and friendly.';
-  // [FIX-VIP-LANG] Loyalty phrasing ("valued regular", "loyal customer", etc.)
-  // is only appropriate once someone has actually ordered enough times to be
-  // one — the model previously had zero visibility into order count and would
-  // freely call a 1st-or-2nd-time returner a "regular", which reads as
-  // insincere. Give it the real number and an explicit instruction either way.
-  const loyaltyLine = orderCount >= vipThreshold
-    ? ` They've ordered from you ${orderCount} times — it's genuinely fine to acknowledge them as a loyal/regular customer.`
-    : ` They've only ordered ${orderCount} time(s) so far — do NOT call them a "regular", "loyal customer", or "valued customer"; just be warm and welcoming, like greeting anyone you're happy to see again.`;
-  const prompt = `You are a warm ${getPersona(mode)} for ${name}. Write ONE casual, friendly sentence welcoming a returning customer${custName} back.${lastStr}${loyaltyLine} ${hint} Keep it under 20 words. Use one relevant emoji. Do not start with "Hi" or "Hello".`;
+  const prompt = `You are a warm ${getPersona(mode)} for ${name}. Write ONE casual, friendly sentence welcoming a returning customer${custName} back.${lastStr} ${hint} Keep it under 20 words. Use one relevant emoji. Do not start with "Hi" or "Hello".`;
 
   try {
     // [GROQ-V3-3] Fast 8b model for greetings — speed over depth
@@ -559,12 +517,6 @@ export async function classifyIntent({ message, validIntents, mode = 'RETAIL' })
     }[mode] || 'a business';
 
     // [GROQ-V3-2] Fast 8b model — classification is short-context, doesn't need 70b
-    // [AUDIT-FIX-LIVE-1] Tight, dedicated timeout/retry budget (3s, 1 retry) instead
-    // of inheriting the 14s/2-retry budget meant for full 70b replies. A single-word
-    // classification on the 8b instant model normally returns in well under a second;
-    // there's no reason a customer should ever wait anywhere near 14s — let alone the
-    // ~45s worst case the shared budget allowed — just to find out which sentiment
-    // bucket their message landed in.
     const result = await callGroq([
       {
         role: 'system',
@@ -574,10 +526,7 @@ export async function classifyIntent({ message, validIntents, mode = 'RETAIL' })
           `Reply with ONLY the intent word — nothing else, no explanation, no punctuation.`,
       },
       { role: 'user', content: String(message || '').slice(0, 200) },
-    ], {
-      model: GROQ_MODEL_FAST, maxTokens: 20, temperature: 0.1,
-      timeoutMs: GROQ_TIMEOUT_CLASSIFY, maxRetries: MAX_RETRIES_CLASSIFY,
-    });
+    ], { model: GROQ_MODEL_FAST, maxTokens: 20, temperature: 0.1 });
 
     // [FIX-CLASSIFY-2] The model sometimes returns a word followed by a period or
     // explanation (e.g. "QUESTION." or "BOOKING — the customer wants...").

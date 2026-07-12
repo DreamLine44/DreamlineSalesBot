@@ -203,41 +203,22 @@ export async function completeFlow(session, completedFlow, business = null, tena
     postFlowAck: completedFlow.toUpperCase(),
   });
 
-  // Lead capture trigger — fire ONLY after a genuine ORDER or BOOKING completion.
+  // Lead capture trigger — fire after ORDER or BOOKING if configured.
   // [FIX-SALON-15] WALKIN uses saveBooking() just like BOOKING, so it should
   // also trigger AFTER_BOOKING lead capture. Previously 'WALKIN' fell to the
   // AFTER_ORDER branch (wrong trigger type) meaning any FIRST_MESSAGE-style
   // lead-capture config would still work, but AFTER_BOOKING-only configs would
   // never fire for walk-in customers.
-  //
-  // [AUDIT-FIX-LEADCAP-1] The comment above this block always said "fire after
-  // ORDER or BOOKING" — but the code implemented that as "BOOKING/WALKIN →
-  // AFTER_BOOKING, else → AFTER_ORDER". That "else" is a catch-all: completeFlow()
-  // is also called with 'QUESTION' (restaurant/salon/services/general/retail),
-  // 'ENQUIRY' and 'ABOUT' (general/services), 'SPEC_REQUEST' and 'WARRANTY'
-  // (electronics), 'SKINCARE_ADVICE' (cosmetics), and 'QUOTE_FOLLOW' (services)
-  // — none of which are an order being placed. Any business with
-  // leadCapture.triggerOn='AFTER_ORDER' would have a lead-capture "what's your
-  // name?" prompt incorrectly interrupt the conversation after simply answering
-  // an FAQ, sending a general enquiry, or asking about warranty/skincare advice.
-  // Only 'ORDER' is ever used for a real order submission (bakery, restaurant);
-  // every other completedFlow value must skip lead capture entirely here.
-  const ORDER_COMPLETING_FLOWS   = new Set(['ORDER']);
-  const BOOKING_COMPLETING_FLOWS = new Set(['BOOKING', 'WALKIN']);
-
   if (business) {
     try {
       const completedUpper = completedFlow.toUpperCase();
-      let trigger = null;
-      if (BOOKING_COMPLETING_FLOWS.has(completedUpper)) trigger = 'AFTER_BOOKING';
-      else if (ORDER_COMPLETING_FLOWS.has(completedUpper)) trigger = 'AFTER_ORDER';
-
-      if (trigger) {
-        const { shouldCaptureLead, startLeadCapture } = await import('../../services/leadCaptureService.js');
-        const freshSession = (await getSession(session.customerPhone, session.tenantId)) || session;
-        if (await shouldCaptureLead(business, freshSession, trigger)) {
-          return await startLeadCapture(freshSession, business);
-        }
+      const trigger = (completedUpper === 'BOOKING' || completedUpper === 'WALKIN')
+        ? 'AFTER_BOOKING'
+        : 'AFTER_ORDER';
+      const { shouldCaptureLead, startLeadCapture } = await import('../../services/leadCaptureService.js');
+      const freshSession = (await getSession(session.customerPhone, session.tenantId)) || session;
+      if (await shouldCaptureLead(business, freshSession, trigger)) {
+        return await startLeadCapture(freshSession, business);
       }
     } catch (err) {
       logger.debug('[FlowEngine] Lead capture check failed (non-fatal)', { err: err.message });

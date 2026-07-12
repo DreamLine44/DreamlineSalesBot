@@ -52,7 +52,6 @@ import dashboardRoutes   from './routes/dashboardRoutes.js';
 import tenantRoutes      from './routes/tenantRoutes.js';
 import adminRoutes                 from './routes/adminRoutes.js';
 import whatsappOnboardingRoutes from './routes/whatsappOnboardingRoutes.js';
-import adminUserRoutes          from './routes/adminUserRoutes.js';
 
 const app        = express();
 const isProduction = process.env.NODE_ENV === 'production';
@@ -97,19 +96,7 @@ app.use(cors({
     return cb(null, true);
   },
   methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-  // [AUDIT-FIX-CORS-1] 'Authorization' was missing from allowedHeaders even though
-  // the whole AdminUser Bearer-session login flow (authMiddleware.js tryBearerAuth,
-  // used by /dashboard/auth/login and every subsequent Bearer-authenticated request)
-  // depends on the browser being allowed to send it. A cross-origin SPA (the
-  // documented deployment shape — see CORS_ORIGIN above) sending
-  // `Authorization: Bearer <token>` triggers a CORS preflight; without 'Authorization'
-  // in Access-Control-Allow-Headers, the browser blocks the preflight and every
-  // Bearer-authenticated request fails client-side before it ever reaches this
-  // server — invisible in server logs, identical failure mode to the missing-
-  // CORS_ORIGIN case warned about above. The legacy x-api-key path was unaffected
-  // (that header was already allowed), which is why this was easy to miss in
-  // testing that only exercised the legacy auth path.
-  allowedHeaders: ['Content-Type', 'Authorization', 'x-api-key', 'x-sim-key'],
+  allowedHeaders: ['Content-Type', 'x-api-key', 'x-sim-key'],
 }));
 
 // ── Body parsing ──────────────────────────────────────────────────────────────
@@ -146,14 +133,6 @@ if (!isProduction && process.env.SIMULATION_MODE === 'true') {
   app.use('/api', createRateLimiter(300), simulateRoutes);
   logger.info('[App] Simulation mode ON — POST /api/message available (dev only)');
 }
-
-// [FEATURE-MULTIADMIN-1] Must be mounted BEFORE the broad '/dashboard' mount
-// below — that mount applies requireApiKey to every path under /dashboard,
-// which would shadow /dashboard/auth/login and /dashboard/auth/accept-invite,
-// both deliberately unauthenticated (they're how a session token is obtained
-// in the first place). Same "specific before catch-all" pattern already used
-// for whatsappOnboardingRoutes vs the broad /admin mount above.
-app.use('/', adminUserRoutes);
 
 // Business management
 app.use('/business', createRateLimiter(120), requireApiKey, businessRoutes);

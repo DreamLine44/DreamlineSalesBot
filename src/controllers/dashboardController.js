@@ -37,10 +37,7 @@ import Session        from '../models/Session.js';
 import UserProfile    from '../models/UserProfile.js';
 import BusinessConfig from '../models/BusinessConfig.js';
 import Tenant         from '../models/Tenant.js';
-import WhatsAppConnectionRequest from '../models/WhatsAppConnectionRequest.js';
 import { getAnalyticsSummary, getAnalyticsTimeseries } from '../core/analytics/analyticsService.js';
-import { scheduleWaCatalogSync } from '../modules/catalog/waCatalogSyncScheduler.js';
-import { getTenantUsageSummary } from '../services/usageService.js';
 import { updateSession }       from '../core/sessions/sessionService.js';
 import { dispatchText, dispatchMessage } from '../core/whatsapp/dispatcher.js';
 import logger from '../config/logger.js';
@@ -72,35 +69,19 @@ export async function getDashboardOverview(req, res) {
     const { tenantId } = req.params;
     const since30 = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
 
-    const [orders, bookings, customers, humanModes, analytics, business, usage, tenantDoc] = await Promise.all([
+    const [orders, bookings, customers, humanModes, analytics, business] = await Promise.all([
       Order.countDocuments({ tenantId, createdAt: { $gte: since30 } }),
       Booking.countDocuments({ tenantId, createdAt: { $gte: since30 } }),
       UserProfile.countDocuments({ tenantId }),
       Session.countDocuments({ tenantId, humanMode: true }),
       getAnalyticsSummary(tenantId, 30),
-      // [PROFILE-COMPLETE-1] Added description/address/payment/faq/customMessages
-      // to the existing select so profile-completeness can be computed here
-      // without an extra DB round-trip.
-      BusinessConfig.findOne({ tenantId }).select('name description address hours payment menuItems faq customMessages businessMode adminPhone').lean(),
-      // [AUDIT-FIX-USAGE-1] Plan/usage was tracked nowhere in the dashboard —
-      // a tenant had no way to see how close they were to their plan's
-      // message or menu-item cap. Standard SaaS-dashboard expectation.
-      getTenantUsageSummary(tenantId),
-      Tenant.findById(tenantId).select('whatsapp.connected').lean(),
+      BusinessConfig.findOne({ tenantId }).select('name businessMode adminPhone').lean(),
     ]);
 
     res.json({
-      business: business ? { ...business, menuItems: undefined, menuItemCount: (business.menuItems || []).length } : business,
+      business,
       last30Days: { orders, bookings, customers, revenue: analytics.revenue },
       activeHumanSessions: humanModes,
-      plan: usage ? {
-        tier:   usage.plan,
-        limits: usage.limits,
-        usage:  usage.usage,
-        menuItemsUsed: (business?.menuItems || []).length,
-      } : null,
-      // [PROFILE-COMPLETE-1] Onboarding checklist for the dashboard home screen.
-      profileCompleteness: business ? computeProfileCompleteness(business, tenantDoc) : null,
     });
   } catch (err) {
     logger.error('[Dashboard] getDashboardOverview failed', { err: err.message });
@@ -179,14 +160,7 @@ export async function updateOrderStatus(req, res) {
     try {
       const tenant = await loadTenant(tenantId);
       if (tenant && order.customerPhone) {
-        // [AUDIT-FIX-BIZNAME] order.businessName and tenant.businessName are not real
-        // fields on either schema (Order has no businessName column; Tenant's only name
-        // field is `name`, not `businessName`) — this always silently fell through to the
-        // 'us' fallback, so every status-change notification below said "Thank you for
-        // choosing *us*!" instead of the tenant's actual business name. Fixed to load
-        // BusinessConfig.name, exactly like the working pattern in notifyOrderReady() below.
-        const biz = await BusinessConfig.findOne({ tenantId }).select('name').lean();
-        const bizName = biz?.name || 'us';
+        const bizName = order.businessName || tenant.businessName || 'us';
 
         if (status === 'preparing') {
           // [FIX-NOTIFY-PREPARING] New notification for the PREPARING state.
@@ -607,13 +581,8 @@ export async function getCustomers(req, res) {
 export async function getBusinessSettings(req, res) {
   try {
     const { tenantId } = req.params;
-    // [SETTINGS-FLATTEN-1] phoneNumberId and multiItemCart were missing from
-    // this projection — any dashboard page reading them back via this
-    // endpoint (e.g. to show current WhatsApp-connected state or the saved
-    // multi-item-cart config) would silently get undefined even though the
-    // fields exist and are populated on the document.
     const business = await BusinessConfig.findOne({ tenantId })
-      .select('name description businessMode adminPhone phoneNumberId menuItems services faq payment leadCapture hours customMessages addOns settings waCatalog multiItemCart')
+      .select('name description businessMode adminPhone menuItems services faq payment leadCapture hours customMessages addOns settings')
       .lean();
     if (!business) return res.status(404).json({ error: 'Business not found' });
     res.json({ business });
@@ -626,87 +595,13 @@ export async function getBusinessSettings(req, res) {
 export async function updateBusinessSettings(req, res) {
   try {
     const { tenantId } = req.params;
-    // [AUDIT-FIX-CATALOG-TENANT-1] Tenants manage their own catalog the same way
-    // they already manage payment channels and hours — through this dashboard
-    // settings endpoint, not through the super-admin-only /admin/tenants routes.
-    // Added 'waCatalog' to the whitelist so PATCH /dashboard/:tenantId/settings
-    // { waCatalog: { enabled: true } } actually reaches BusinessConfig instead
-    // of being silently dropped by this allowlist like every other
-    // "field missing from the accepted set" bug already fixed elsewhere.
     const allowed = ['name', 'description', 'adminPhone', 'payment', 'leadCapture',
-                     'customMessages', 'hours', 'settings', 'businessMode', 'addOns',
-                     'waCatalog', 'multiItemCart'];
+                     'customMessages', 'hours', 'settings', 'businessMode', 'addOns'];
     const updates = {};
     for (const key of allowed) {
       if (req.body[key] !== undefined) updates[key] = req.body[key];
     }
     if (!Object.keys(updates).length) return res.status(400).json({ error: 'No valid fields to update' });
-
-    // [SETTINGS-FLATTEN-1] Same [CATALOG-BIZ-1] hazard applies to `settings`
-    // and `multiItemCart` — both are plain nested objects (not their own
-    // sub-schema), so a naive $set with a partial object (e.g. tenant only
-    // changing vipThreshold) would silently wipe every sibling field back to
-    // undefined instead of leaving them alone. Flatten to dot-notation the
-    // same way waCatalog already is, so a partial PATCH only ever touches
-    // the keys actually sent.
-    if (updates.settings && typeof updates.settings === 'object') {
-      for (const [k, v] of Object.entries(updates.settings)) {
-        updates[`settings.${k}`] = v;
-      }
-      delete updates.settings;
-    }
-    if (updates.multiItemCart && typeof updates.multiItemCart === 'object') {
-      for (const [k, v] of Object.entries(updates.multiItemCart)) {
-        updates[`multiItemCart.${k}`] = v;
-      }
-      delete updates.multiItemCart;
-    }
-
-    // [AUDIT-FIX-CATALOG-TENANT-1] Mirror [CATALOG-BIZ-1] from businessController.js:
-    // a plain nested $set REPLACES the whole waCatalog subdocument rather than
-    // merging, so a tenant flipping the toggle with { waCatalog: { enabled: false } }
-    // would silently wipe their own catalogId/mode/lastSyncedAt history. Flatten to
-    // dot-notation so each sub-field updates independently.
-    if (updates.waCatalog && typeof updates.waCatalog === 'object') {
-      // Guard: refuse to turn catalog ON without a catalogId either already on
-      // file or supplied in this same request. Mirrors isCatalogEnabled() in
-      // waCatalogConfig.js, which already treats enabled:true + no catalogId as
-      // "off" — better to tell the tenant why the toggle didn't do anything than
-      // let them believe it's live when every sync/send call will just no-op.
-      if (updates.waCatalog.enabled === true) {
-        const existing = await BusinessConfig.findOne({ tenantId })
-          .select('waCatalog.catalogId phoneNumberId').lean();
-        const effectiveCatalogId = updates.waCatalog.catalogId !== undefined
-          ? updates.waCatalog.catalogId
-          : existing?.waCatalog?.catalogId;
-        if (!effectiveCatalogId) {
-          return res.status(400).json({
-            error: 'Cannot enable WhatsApp Catalog without a catalogId. '
-                 + 'Include { "waCatalog": { "enabled": true, "catalogId": "..." } } in this request.',
-          });
-        }
-        // [AUDIT-FIX-CATALOG-TENANT-2] Mirrors the same SIM_ placeholder guard
-        // applied at tenant creation ([AUDIT-FIX-CATALOG-CREATE-1]) — a tenant
-        // whose WhatsApp number hasn't been connected yet (still PENDING/
-        // INACTIVE) cannot have a working catalog no matter what they toggle
-        // here, since Meta's Commerce Catalog is tied to a real WABA/phone
-        // number. Tell them why instead of silently accepting a toggle that
-        // wacatalog/health and every sync call will reject anyway.
-        if (!existing?.phoneNumberId || existing.phoneNumberId.startsWith('SIM_')) {
-          return res.status(400).json({
-            // [NO-SELFSERVE-1] WhatsApp connection is provisioned by the platform
-            // admin only — never worded as something the tenant can "complete"
-            // themselves, to avoid implying a self-connect flow that doesn't exist.
-            error: 'Cannot enable WhatsApp Catalog until your WhatsApp number is connected. '
-                 + 'Contact your account admin to get WhatsApp connected, then try again.',
-          });
-        }
-      }
-      for (const [k, v] of Object.entries(updates.waCatalog)) {
-        updates[`waCatalog.${k}`] = v;
-      }
-      delete updates.waCatalog;
-    }
 
     // [FIX-TONE-3] findOneAndUpdate bypasses Mongoose pre('save') hooks — inline
     // tone sync when businessMode changes so tone fields stay consistent.
@@ -752,40 +647,8 @@ export async function getMenu(req, res) {
 export async function addMenuItem(req, res) {
   try {
     const { tenantId } = req.params;
-    // [MENU-FIELDS-1] category/stockCount/currency/duration/prep are all
-    // declared on menuItemSchema (see models/BusinessConfig.js) but were never
-    // read from req.body here — the exact same "field exists on the schema
-    // but the controller silently drops it" class of bug already fixed for
-    // `variants` elsewhere in this file. Wiring them through now.
-    const { name, price, description, available = true, showImageOnSelect = true,
-            category, stockCount, currency, duration, prep } = req.body;
+    const { name, price, description, available = true, showImageOnSelect = true } = req.body;
     if (!name || !String(name).trim()) return res.status(400).json({ error: 'name required' });
-
-    // [AUDIT-FIX-USAGE-1] Tenant.limits.maxMenuItems has existed in the schema
-    // since early in this project but was never checked anywhere — a FREE-plan
-    // tenant (default cap 10) could add unlimited menu items via this endpoint.
-    // Check-then-write has a small race window under concurrent requests, but
-    // menu editing is a low-frequency admin action (not a hot customer-facing
-    // path), so an occasional off-by-one over the cap is an acceptable trade
-    // for not adding transaction overhead here.
-    const [tenantLimits, currentBiz] = await Promise.all([
-      Tenant.findById(tenantId).select('limits.maxMenuItems').lean(),
-      BusinessConfig.findOne({ tenantId }).select('menuItems').lean(),
-    ]);
-    const maxMenuItems = tenantLimits?.limits?.maxMenuItems ?? 10;
-    const currentCount = (currentBiz?.menuItems || []).length;
-    if (currentCount >= maxMenuItems) {
-      return res.status(403).json({
-        // [NO-SELFSERVE-1] No self-serve billing/upgrade exists — only the
-        // platform admin changes a tenant's plan. Worded so the tenant knows
-        // who to ask, not "upgrade your plan" (which implies a button that
-        // isn't there).
-        error: `Menu item limit reached (${currentCount}/${maxMenuItems} on your current plan). `
-             + `Contact your account admin to raise your plan limit, or remove an existing item to add a new one.`,
-        limit: maxMenuItems,
-        current: currentCount,
-      });
-    }
 
     // ── Parse array fields sent as JSON strings from multipart/form-data ─────
     // When using multipart (for image upload), array fields arrive as strings.
@@ -796,14 +659,6 @@ export async function addMenuItem(req, res) {
     let tags = req.body.tags ?? [];
     if (typeof tags === 'string') {
       try { tags = JSON.parse(tags); } catch { tags = tags ? [tags] : []; }
-    }
-    // [FIX-VARIANTS-SCHEMA] Accept variants the same way as keywords/tags —
-    // JSON-string when arriving via multipart/form-data (image upload path),
-    // plain array otherwise. Now that menuItemSchema declares `variants`,
-    // this is the write path that actually persists them.
-    let variants = req.body.variants ?? [];
-    if (typeof variants === 'string') {
-      try { variants = JSON.parse(variants); } catch { variants = variants ? [variants] : []; }
     }
 
     // ── Cloudinary image upload (optional) ────────────────────────────────────
@@ -829,15 +684,8 @@ export async function addMenuItem(req, res) {
       available:        available === 'false' ? false : Boolean(available),
       keywords,
       tags,
-      variants,
       showImageOnSelect: showImageOnSelect === 'false' ? false : Boolean(showImageOnSelect),
       image,
-      // [MENU-FIELDS-1] Optional fields — undefined lets the schema default apply
-      ...(category   !== undefined ? { category: category ? String(category).trim() : null } : {}),
-      ...(stockCount !== undefined ? { stockCount: stockCount === '' || stockCount == null ? null : Number(stockCount) } : {}),
-      ...(currency   !== undefined ? { currency: currency ? String(currency).trim() : null } : {}),
-      ...(duration   !== undefined ? { duration: duration === '' || duration == null ? null : Number(duration) } : {}),
-      ...(prep       !== undefined ? { prep: prep ? String(prep).trim() : null } : {}),
     };
 
     const biz = await BusinessConfig.findOneAndUpdate(
@@ -846,12 +694,6 @@ export async function addMenuItem(req, res) {
       { new: true },
     );
     if (!biz) return res.status(404).json({ error: 'Not found' });
-
-    // [CATALOG-AUTOSYNC-1] Fire-and-forget: debounced, only actually syncs if
-    // this tenant has WA Catalog enabled. Never awaited — must not delay the
-    // response or fail the request if Meta's API has a hiccup later.
-    scheduleWaCatalogSync(tenantId);
-
     res.status(201).json({ menuItems: biz.menuItems });
   } catch (err) { logger.error('[Dashboard] Request failed', { err: err.message }); res.status(500).json({ error: err.message }); }
 }
@@ -859,21 +701,13 @@ export async function addMenuItem(req, res) {
 export async function updateMenuItem(req, res) {
   try {
     const { tenantId, itemId } = req.params;
-    // [MENU-FIELDS-1] Same gap as addMenuItem — these are valid schema fields
-    // that this controller never read from req.body.
-    const { name, price, description, available, showImageOnSelect, removeImage,
-            category, stockCount, currency, duration, prep } = req.body;
+    const { name, price, description, available, showImageOnSelect, removeImage } = req.body;
     const patch = {};
     if (name              !== undefined) patch['menuItems.$.name']             = name;
     if (price             !== undefined) patch['menuItems.$.price']            = Number(price);
     if (description       !== undefined) patch['menuItems.$.description']      = description;
     if (available         !== undefined) patch['menuItems.$.available']        = available === 'false' ? false : Boolean(available);
     if (showImageOnSelect !== undefined) patch['menuItems.$.showImageOnSelect'] = showImageOnSelect === 'false' ? false : Boolean(showImageOnSelect);
-    if (category          !== undefined) patch['menuItems.$.category']         = category ? String(category).trim() : null;
-    if (stockCount        !== undefined) patch['menuItems.$.stockCount']       = stockCount === '' || stockCount == null ? null : Number(stockCount);
-    if (currency          !== undefined) patch['menuItems.$.currency']         = currency ? String(currency).trim() : null;
-    if (duration          !== undefined) patch['menuItems.$.duration']         = duration === '' || duration == null ? null : Number(duration);
-    if (prep              !== undefined) patch['menuItems.$.prep']             = prep ? String(prep).trim() : null;
 
     // ── Parse array fields sent as JSON strings from multipart/form-data ─────
     let keywords = req.body.keywords;
@@ -889,14 +723,6 @@ export async function updateMenuItem(req, res) {
         try { tags = JSON.parse(tags); } catch { tags = tags ? [tags] : []; }
       }
       patch['menuItems.$.tags'] = tags;
-    }
-    // [FIX-VARIANTS-SCHEMA] Same string-or-array handling as keywords/tags above.
-    let variants = req.body.variants;
-    if (variants !== undefined) {
-      if (typeof variants === 'string') {
-        try { variants = JSON.parse(variants); } catch { variants = variants ? [variants] : []; }
-      }
-      patch['menuItems.$.variants'] = variants;
     }
 
     // ── Image logic: upload and remove are mutually exclusive ─────────────────
@@ -940,10 +766,6 @@ export async function updateMenuItem(req, res) {
       { new: true },
     );
     if (!biz) return res.status(404).json({ error: 'Item not found' });
-
-    // [CATALOG-AUTOSYNC-1] See addMenuItem — same fire-and-forget debounce.
-    scheduleWaCatalogSync(tenantId);
-
     res.json({ menuItems: biz.menuItems });
   } catch (err) { logger.error('[Dashboard] Request failed', { err: err.message }); res.status(500).json({ error: err.message }); }
 }
@@ -969,12 +791,6 @@ export async function deleteMenuItem(req, res) {
 
     // Clean up Cloudinary image (non-fatal — item is already removed from DB)
     if (imagePublicId) await deleteMenuImage(imagePublicId);
-
-    // [CATALOG-AUTOSYNC-1] / [CATALOG-CRUD-1] Deleting an item now actually
-    // removes it from Meta's catalog too — syncMenuToCatalog() diffs the
-    // current menu against waCatalog.syncedRetailerIds and sends a DELETE
-    // batch request for anything that dropped out.
-    scheduleWaCatalogSync(tenantId);
 
     res.json({ ok: true });
   } catch (err) { logger.error('[Dashboard] Request failed', { err: err.message }); res.status(500).json({ error: err.message }); }
@@ -1101,308 +917,4 @@ export async function deleteFaq(req, res) {
     if (result.modifiedCount === 0) return res.status(404).json({ error: 'FAQ not found' });
     res.json({ ok: true });
   } catch (err) { logger.error('[Dashboard] Request failed', { err: err.message }); res.status(500).json({ error: err.message }); }
-}
-
-// ── Promotions / Discount codes CRUD [PROMO-1] ────────────────────────────────
-export async function getPromotions(req, res) {
-  try {
-    const biz = await BusinessConfig.findOne({ tenantId: req.params.tenantId })
-      .select('promotions').lean();
-    if (!biz) return res.status(404).json({ error: 'Not found' });
-    res.json({ promotions: biz.promotions || [], count: (biz.promotions || []).length });
-  } catch (err) { logger.error('[Dashboard] Request failed', { err: err.message }); res.status(500).json({ error: err.message }); }
-}
-
-export async function addPromotion(req, res) {
-  try {
-    const { tenantId } = req.params;
-    const { code, type, value, active = true, minOrderValue, maxUses, expiresAt, description } = req.body;
-
-    if (!code || !String(code).trim()) return res.status(400).json({ error: 'code required' });
-    if (!['PERCENT', 'FIXED'].includes(type)) return res.status(400).json({ error: "type must be 'PERCENT' or 'FIXED'" });
-    if (value == null || Number.isNaN(Number(value)) || Number(value) < 0) {
-      return res.status(400).json({ error: 'value must be a non-negative number' });
-    }
-    if (type === 'PERCENT' && Number(value) > 100) {
-      return res.status(400).json({ error: 'PERCENT value cannot exceed 100' });
-    }
-
-    const normalizedCode = String(code).trim().toUpperCase();
-
-    // Codes must be unique per tenant — check before push since Mongoose can't
-    // enforce uniqueness within a single document's array via a schema index.
-    const existing = await BusinessConfig.findOne({ tenantId, 'promotions.code': normalizedCode }).select('_id').lean();
-    if (existing) return res.status(409).json({ error: `A promo code '${normalizedCode}' already exists` });
-
-    const biz = await BusinessConfig.findOneAndUpdate(
-      { tenantId },
-      { $push: { promotions: {
-          code: normalizedCode, type, value: Number(value), active: Boolean(active),
-          minOrderValue: Number(minOrderValue) || 0,
-          maxUses: maxUses != null ? Number(maxUses) : null,
-          expiresAt: expiresAt || null,
-          description: description || '',
-        } } },
-      { new: true, runValidators: true },
-    );
-    if (!biz) return res.status(404).json({ error: 'Not found' });
-    res.status(201).json({ promotions: biz.promotions });
-  } catch (err) { logger.error('[Dashboard] Request failed', { err: err.message }); res.status(500).json({ error: err.message }); }
-}
-
-export async function updatePromotion(req, res) {
-  try {
-    const { tenantId, promoId } = req.params;
-    const { type, value, active, minOrderValue, maxUses, expiresAt, description } = req.body;
-    const patch = {};
-    if (type          !== undefined) {
-      if (!['PERCENT', 'FIXED'].includes(type)) return res.status(400).json({ error: "type must be 'PERCENT' or 'FIXED'" });
-      patch['promotions.$.type'] = type;
-    }
-    if (value         !== undefined) patch['promotions.$.value']         = Number(value);
-    if (active        !== undefined) patch['promotions.$.active']        = Boolean(active);
-    if (minOrderValue !== undefined) patch['promotions.$.minOrderValue'] = Number(minOrderValue);
-    if (maxUses       !== undefined) patch['promotions.$.maxUses']       = maxUses != null ? Number(maxUses) : null;
-    if (expiresAt     !== undefined) patch['promotions.$.expiresAt']     = expiresAt || null;
-    if (description   !== undefined) patch['promotions.$.description']  = description;
-
-    if (!Object.keys(patch).length) return res.status(400).json({ error: 'No fields to update' });
-
-    const biz = await BusinessConfig.findOneAndUpdate(
-      { tenantId, 'promotions._id': promoId },
-      { $set: patch },
-      { new: true, runValidators: true },
-    );
-    if (!biz) return res.status(404).json({ error: 'Promotion not found' });
-    res.json({ promotions: biz.promotions });
-  } catch (err) { logger.error('[Dashboard] Request failed', { err: err.message }); res.status(500).json({ error: err.message }); }
-}
-
-export async function deletePromotion(req, res) {
-  try {
-    const { tenantId, promoId } = req.params;
-    const result = await BusinessConfig.updateOne(
-      { tenantId },
-      { $pull: { promotions: { _id: promoId } } },
-    );
-    if (result.matchedCount === 0) return res.status(404).json({ error: 'Business not found' });
-    if (result.modifiedCount === 0) return res.status(404).json({ error: 'Promotion not found' });
-    res.json({ ok: true });
-  } catch (err) { logger.error('[Dashboard] Request failed', { err: err.message }); res.status(500).json({ error: err.message }); }
-}
-
-// ── CSV Export — orders / bookings ────────────────────────────────────────────
-// [EXPORT-1] Tenants routinely need to pull orders/bookings into a spreadsheet
-// for accounting, supplier reconciliation, or reporting to their own investors —
-// a standard SaaS-dashboard expectation. Read-only, reuses the exact same
-// filter shape as getOrders/getBookings so "export what I'm currently viewing"
-// behaves predictably. Capped at 5000 rows per export to keep the request fast
-// and avoid an accidental multi-year full-table dump timing out.
-const CSV_EXPORT_ROW_CAP = 5000;
-
-function toCsvValue(v) {
-  if (v == null) return '';
-  const s = String(v);
-  // Quote any field containing a comma, quote, or newline; escape embedded quotes.
-  if (/[",\n]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
-  return s;
-}
-
-function rowsToCsv(headers, rows) {
-  const lines = [headers.join(',')];
-  for (const row of rows) {
-    lines.push(headers.map(h => toCsvValue(row[h])).join(','));
-  }
-  return lines.join('\r\n');
-}
-
-export async function exportOrders(req, res) {
-  try {
-    const { tenantId } = req.params;
-    const { status, from, to } = req.query;
-    const filter = { tenantId, ...(status ? { status } : {}) };
-    if (from || to) {
-      filter.createdAt = {};
-      if (from) filter.createdAt.$gte = new Date(from);
-      if (to)   filter.createdAt.$lte = new Date(to);
-    }
-
-    const orders = await Order.find(filter).sort({ createdAt: -1 }).limit(CSV_EXPORT_ROW_CAP).lean();
-
-    const headers = [
-      'shortId', 'createdAt', 'customerName', 'customerPhone', 'item', 'quantity',
-      'totalPrice', 'promoCode', 'discountAmount', 'status', 'paymentMethod',
-      'paymentStatus', 'notes',
-    ];
-    const rows = orders.map(o => ({
-      shortId:        o.shortId,
-      createdAt:      o.createdAt?.toISOString?.() || o.createdAt,
-      customerName:   o.customerName,
-      customerPhone:  o.customerPhone,
-      item:           o.item,
-      quantity:       o.quantity,
-      totalPrice:     o.totalPrice,
-      promoCode:      o.promoCode,
-      discountAmount: o.discountAmount,
-      status:         o.status,
-      paymentMethod:  o.paymentMethod,
-      paymentStatus:  o.paymentStatus,
-      notes:          o.notes,
-    }));
-
-    const csv = rowsToCsv(headers, rows);
-    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
-    res.setHeader('Content-Disposition', `attachment; filename="orders-${tenantId}-${Date.now()}.csv"`);
-    res.send(csv);
-  } catch (err) { logger.error('[Dashboard] exportOrders failed', { err: err.message }); res.status(500).json({ error: err.message }); }
-}
-
-export async function exportBookings(req, res) {
-  try {
-    const { tenantId } = req.params;
-    const { status, from, to } = req.query;
-    const filter = { tenantId, ...(status ? { status } : {}) };
-    if (from || to) {
-      filter.createdAt = {};
-      if (from) filter.createdAt.$gte = new Date(from);
-      if (to)   filter.createdAt.$lte = new Date(to);
-    }
-
-    const bookings = await Booking.find(filter).sort({ createdAt: -1 }).limit(CSV_EXPORT_ROW_CAP).lean();
-
-    const headers = [
-      'shortId', 'createdAt', 'customerName', 'customerPhone', 'date', 'time',
-      'service', 'staff', 'partySize', 'bookingType', 'status', 'notes',
-    ];
-    const rows = bookings.map(b => ({
-      shortId:       b.shortId,
-      createdAt:     b.createdAt?.toISOString?.() || b.createdAt,
-      customerName:  b.customerName,
-      customerPhone: b.customerPhone,
-      date:          b.date,
-      time:          b.time,
-      service:       b.service,
-      staff:         b.staff,
-      partySize:     b.partySize,
-      bookingType:   b.bookingType,
-      status:        b.status,
-      notes:         b.notes,
-    }));
-
-    const csv = rowsToCsv(headers, rows);
-    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
-    res.setHeader('Content-Disposition', `attachment; filename="bookings-${tenantId}-${Date.now()}.csv"`);
-    res.send(csv);
-  } catch (err) { logger.error('[Dashboard] exportBookings failed', { err: err.message }); res.status(500).json({ error: err.message }); }
-}
-
-// ── Business profile completeness [PROFILE-COMPLETE-1] ────────────────────────
-// A tenant landing on an empty dashboard has no signal about what's left to
-// configure before their bot feels "finished." This computes a simple
-// checklist against fields that already exist on BusinessConfig/Tenant —
-// no schema changes, purely derived, read-only.
-//
-// [NO-SELFSERVE-1] Deliberately excludes WhatsApp connection from this
-// checklist. Every item here is something the tenant can genuinely configure
-// themselves through the dashboard (name, hours, payment, menu, FAQ, welcome
-// message). WhatsApp connection is provisioned only by the platform admin —
-// see getOnboardingStatus() below, which reports it separately with
-// "contact your admin" messaging rather than mixing it into a checklist that
-// otherwise implies "things you can go do right now."
-function computeProfileCompleteness(business, tenant) {
-  const checks = [
-    { key: 'name',        label: 'Business name set',        done: !!business?.name && business.name !== 'Our Business' },
-    { key: 'description',  label: 'Business description added', done: !!business?.description?.trim() },
-    { key: 'address',      label: 'Address added',              done: !!business?.address?.trim() },
-    { key: 'hours',        label: 'Business hours configured',  done: !!business?.hours?.enabled },
-    { key: 'payment',      label: 'Payment method added',       done: !!(business?.payment?.enabled && (business?.payment?.channels || []).length) },
-    { key: 'menu',         label: 'At least one menu item added', done: (business?.menuItems || []).length > 0 },
-    { key: 'faq',          label: 'At least one FAQ added',     done: (business?.faq || []).length > 0 },
-    { key: 'welcome',      label: 'Custom welcome message set', done: !!business?.customMessages?.welcomeMessage?.trim() },
-  ];
-  const doneCount = checks.filter(c => c.done).length;
-  return {
-    percent: Math.round((doneCount / checks.length) * 100),
-    completed: doneCount,
-    total: checks.length,
-    checklist: checks,
-  };
-}
-
-export async function getProfileCompleteness(req, res) {
-  try {
-    const { tenantId } = req.params;
-    const [business, tenant] = await Promise.all([
-      BusinessConfig.findOne({ tenantId })
-        .select('name description address hours payment menuItems faq customMessages').lean(),
-      Tenant.findById(tenantId).select('whatsapp.connected').lean(),
-    ]);
-    if (!business) return res.status(404).json({ error: 'Business not found' });
-    res.json(computeProfileCompleteness(business, tenant));
-  } catch (err) { logger.error('[Dashboard] getProfileCompleteness failed', { err: err.message }); res.status(500).json({ error: err.message }); }
-}
-
-// ── Onboarding status [ONBOARDING-STATUS-1] ───────────────────────────────────
-// Purpose-built for the screen a tenant's user sees right after their first
-// login — combines the self-service checklist above with the WhatsApp
-// connection state, kept as two clearly separate sections on purpose.
-//
-// [NO-SELFSERVE-1] There is no self-serve tenant signup or self-serve WhatsApp
-// connect flow in this system, by design: only the platform admin creates a
-// Tenant + BusinessConfig (tenantController.createTenant) and only the
-// platform admin provisions real WhatsApp credentials
-// (whatsappOnboardingController.saveTenantWhatsAppCredentials /
-// testTenantWhatsAppConnection). A tenant's user can submit a connection
-// REQUEST (POST /api/whatsapp/request) for the admin to act on, but cannot
-// connect anything themselves. This endpoint's wording reflects that
-// deliberately: it never tells the tenant to "connect" or "complete setup" —
-// only to submit a request or contact their admin.
-export async function getOnboardingStatus(req, res) {
-  try {
-    const { tenantId } = req.params;
-    const [business, tenant, connectionRequest] = await Promise.all([
-      BusinessConfig.findOne({ tenantId })
-        .select('name description address hours payment menuItems faq customMessages').lean(),
-      Tenant.findById(tenantId).select('status whatsapp.connected whatsapp.connectedAt').lean(),
-      WhatsAppConnectionRequest.findOne({ tenantId }).sort({ createdAt: -1 }).select('status createdAt').lean(),
-    ]);
-    if (!business || !tenant) return res.status(404).json({ error: 'Business not found' });
-
-    const connected = !!tenant.whatsapp?.connected;
-    let whatsappMessage;
-    if (connected) {
-      whatsappMessage = 'Your WhatsApp number is connected and your bot is live.';
-    } else if (connectionRequest && !['rejected'].includes(connectionRequest.status)) {
-      whatsappMessage = `Your WhatsApp connection request is ${connectionRequest.status} — `
-        + `your account admin is setting this up for you.`;
-    } else if (connectionRequest?.status === 'rejected') {
-      whatsappMessage = 'Your previous WhatsApp connection request was not approved. '
-        + 'Contact your account admin to follow up.';
-    } else {
-      whatsappMessage = 'Your WhatsApp number is not connected yet. '
-        + 'Submit a connection request (or contact your account admin directly) and they will set it up for you.';
-    }
-
-    res.json({
-      tenantStatus: tenant.status,
-      whatsapp: {
-        connected,
-        connectedAt: tenant.whatsapp?.connectedAt || null,
-        connectionRequestStatus: connectionRequest?.status || null,
-        message: whatsappMessage,
-      },
-      // Things the tenant genuinely can do themselves, right now, in this dashboard.
-      businessProfile: computeProfileCompleteness(business, tenant),
-      // Things that always route through the admin — never presented as a
-      // self-service action.
-      adminContact: {
-        message: 'For WhatsApp connection, raising your plan limits (menu items, staff logins, '
-          + 'messages/month), or anything account-level, contact your account admin directly — '
-          + 'they handle setup and changes like this for you.',
-      },
-    });
-  } catch (err) {
-    logger.error('[Dashboard] getOnboardingStatus failed', { err: err.message });
-    res.status(500).json({ error: err.message });
-  }
 }

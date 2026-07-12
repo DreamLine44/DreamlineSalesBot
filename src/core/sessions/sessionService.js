@@ -141,23 +141,6 @@ export const createSession = async (customerPhone, tenantId, data = {}) => {
         stepHistory:     [],
         upsellSent:      false,
         pendingAddOn:    null,
-        // [FIX-SES-9] postFlowAck/postFlowData MUST be reset on every createSession call.
-        // createSession() upserts onto the SAME document (matched by the phone+tenantId
-        // composite key) rather than deleting the old doc first — so when a session
-        // naturally expires (TTL) and the customer's NEXT message re-creates it, this
-        // $set previously omitted postFlowAck/postFlowData entirely. Mongo's $set only
-        // touches listed fields, so those two fields silently carried over from the
-        // expired (stale) session into the "new" one.
-        //
-        // Consequence: webhookController's step-14 postFlowAck state machine
-        // (`if (session.postFlowAck && messageText) ...`) reads postFlowAck straight off
-        // the session doc. A customer starting a brand-new conversation — sometimes days
-        // later — could have their first message misrouted through handlePostFlowMessage
-        // using postFlowData referencing a long-gone order/shortId (e.g. a stale
-        // ORDER_CONFIRMED or ORDER_COLLECTED ack), producing a confusing or wrong reply
-        // instead of the normal welcome/menu flow.
-        postFlowAck:  null,
-        postFlowData: null,
         // [SES-3] Preserve name if provided; don't wipe on re-create
         ...(data.customerName ? { customerName: data.customerName } : {}),
         // [FIX-SES-5] When humanMode is explicitly passed (e.g. TTL-restore path in

@@ -42,42 +42,22 @@ export function findBestMatch(items = [], query = '') {
   for (const item of items) {
     const n = norm(item.name);
 
-    // [AUDIT-FIX-KEYWORDS] Menu items carry an optional `keywords` array —
-    // tenant-configured aliases/synonyms for the item (schema: menuItemSchema.keywords,
-    // max 20/item; editable via the dashboard's addMenuItem/updateMenuItem CRUD).
-    // e.g. a tenant sells "Coca-Cola" but wants customers typing "coke" or "soda" to
-    // still find it. Previously this function only ever compared against `item.name`
-    // — `keywords` was written to the DB and returned by every menu API response, but
-    // had ZERO effect on matching anywhere in the codebase, for any of the 8+ modules
-    // that call findBestMatch(). A customer typing a tenant-configured alias got
-    // "I couldn't find that" instead of the item. Fix: score every keyword alongside
-    // the item name and let the best of them win.
-    const candidates = [n];
-    if (Array.isArray(item.keywords)) {
-      for (const kw of item.keywords) {
-        const nkw = norm(String(kw ?? ''));
-        if (nkw) candidates.push(nkw);
-      }
-    }
+    // Exact match → instant HIGH
+    if (n === q) return { item, confidenceLevel: 'HIGH', score: 1 };
 
-    for (const c of candidates) {
-      // Exact match → instant HIGH
-      if (c === q) return { item, confidenceLevel: 'HIGH', score: 1 };
-
-      // Substring match → HIGH
-      if (c.includes(q) || q.includes(c)) {
-        const score = 0.85 + (Math.min(c.length, q.length) / Math.max(c.length, q.length)) * 0.15;
-        if (score > bestScore) { bestScore = score; best = item; }
-        continue;
-      }
-
-      // Trigram similarity
-      const tri = trigramSimilarity(q, c);
-      // Levenshtein — normalised
-      const lev = 1 - levenshtein.get(q, c) / Math.max(q.length, c.length, 1);
-      const score = tri * 0.6 + lev * 0.4;
+    // Substring match → HIGH
+    if (n.includes(q) || q.includes(n)) {
+      const score = 0.85 + (Math.min(n.length, q.length) / Math.max(n.length, q.length)) * 0.15;
       if (score > bestScore) { bestScore = score; best = item; }
+      continue;
     }
+
+    // Trigram similarity
+    const tri = trigramSimilarity(q, n);
+    // Levenshtein — normalised
+    const lev = 1 - levenshtein.get(q, n) / Math.max(q.length, n.length, 1);
+    const score = tri * 0.6 + lev * 0.4;
+    if (score > bestScore) { bestScore = score; best = item; }
   }
 
   if (!best) return { item: null, confidenceLevel: 'NONE', score: 0 };

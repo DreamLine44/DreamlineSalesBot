@@ -107,41 +107,9 @@ export async function registerAllModules() {
   registerFlow('GENERAL', 'ABOUT',    handleAbout);
 
   // ── Action handlers (module-registered) ───────────────────────────────────
-  // [CATALOG-REG-1] START_ORDER is the single choke point every vertical's
-  // "customer wants to shop" intent already flows through — ORDER, ADD_TO_CART,
-  // CHECKOUT, RECOMMENDATION, and REMOVE_FROM_CART all map here via
-  // intentEngine.js intentToAction(), as does the 'ORDER'/'🛍 Shop Now' button
-  // tap and the '1' numeric shortcut on every welcome screen. Offering WA
-  // Catalog here — rather than duplicating an offer check inside every
-  // vertical module's own ORDER flow file — means zero changes to any file
-  // under src/modules/{restaurant,retail,bakery,...}, and zero behavioural
-  // change for any tenant who hasn't enabled it: offerCatalogOnStartOrder()
-  // returns { offered: false } immediately for them and this falls through
-  // to the exact startFlow() call that ran here before this integration
-  // existed. See src/modules/catalog/waCatalogFlow.js for the decision logic.
-  registerAction('START_ORDER', async ({ session, message, business, tenant, intent }) => {
+  registerAction('START_ORDER', async ({ session, message, business, tenant }) => {
     const { startFlow } = await import('../conversations/flowEngine.js');
-
-    if (business?.waCatalog?.enabled) {
-      const { offerCatalogOnStartOrder } = await import('../../modules/catalog/waCatalogFlow.js');
-      const { offered } = await offerCatalogOnStartOrder({ session, business, tenant, intent })
-        .catch(() => ({ offered: false }));
-      // Catalog message was already dispatched via dispatcher.js inside
-      // sendCatalogMessage() — nothing further to return/dispatch here.
-      if (offered) return null;
-    }
-
     return startFlow({ flowName: 'ORDER', session, business, tenant });
-  });
-
-  // [CATALOG-UX-BUTTON] Explicit customer-initiated "🛍 Browse Catalog" tap —
-  // unlike START_ORDER above, this ALWAYS shows WA Catalog when the tenant has
-  // it enabled+configured (see shouldShowCatalogButton() in waCatalogConfig.js),
-  // independent of waCatalog.mode. Falls back to the normal ORDER flow on any
-  // send failure — see browseCatalogExplicit()'s own [Failure handling].
-  registerAction('BROWSE_CATALOG', async ({ session, business, tenant }) => {
-    const { browseCatalogExplicit } = await import('../../modules/catalog/waCatalogFlow.js');
-    return browseCatalogExplicit({ session, business, tenant });
   });
 
   registerAction('START_BOOKING', async ({ session, message, business, tenant }) => {
@@ -262,35 +230,13 @@ export async function registerAllModules() {
 
     const lastItem = await getLastOrderItem(session.customerPhone, session.tenantId).catch(() => null);
     if (lastItem) {
-      // [AUDIT-FIX-REPEAT-1] getLastOrderItem() only returns the stored item NAME
-      // (Order.item is a plain string, not a reference). Previously this handler
-      // wrote `data.item = { name: lastItem }` straight into the session with no
-      // `price` field. The QUANTITY step's `item?.price || 0` then silently priced
-      // every repeated order at 0 — and because the CONFIRM step only shows/collects
-      // payment when `data.totalPrice` is truthy, a totalPrice of 0 also skipped the
-      // payment step entirely for tenants with payment enabled. Customers repeating
-      // an order got it for free and admins were never asked to verify payment.
-      // Fix: re-resolve the full menu item (price, image, description, etc.) from
-      // business.menuItems by name so the repeat flow carries the same data a fresh
-      // SELECT_ITEM pick would. If the item was removed/renamed since the last order,
-      // fall back to the name-only stub but tell the customer their price may differ
-      // rather than silently ordering it for D0.
-      const menu = (business?.menuItems || []).filter(i => i.available !== false);
-      const normName = (s = '') => String(s).toLowerCase().trim();
-      const fullItem = menu.find(i => normName(i.name) === normName(lastItem)) || null;
-
       await updateSession(session.customerPhone, session.tenantId, {
         currentFlow: 'ORDER', step: 'QUANTITY',
-        data: { item: fullItem || { name: lastItem } }, menuViewed: true,
+        data: { item: { name: lastItem } }, menuViewed: true,
       });
-
-      const priceWarning = !fullItem
-        ? `\n\n⚠️ We couldn't confirm the current price for this item — we'll follow up with the total before confirming your order.`
-        : '';
-
       return {
         type: 'buttons',
-        body: `🔁 *Repeat your last order*\n\nYou previously ordered *${lastItem}*.\n\nHow many would you like this time?${priceWarning}\n\n_(Enter a number or word — e.g. *1*, *2*, *three*)_`,
+        body: `🔁 *Repeat your last order*\n\nYou previously ordered *${lastItem}*.\n\nHow many would you like this time?\n\n_(Enter a number or word — e.g. *1*, *2*, *three*)_`,
         buttons: [{ id: 'CANCEL', title: '❌ Cancel' }],
       };
     }

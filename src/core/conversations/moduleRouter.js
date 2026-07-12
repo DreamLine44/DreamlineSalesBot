@@ -38,9 +38,8 @@
 import { startFlow, cancelFlow } from './flowEngine.js';
 import { updateSession }         from '../sessions/sessionService.js';
 import { generateGreeting }      from '../ai/providers/aiRouter.js';
-import { dispatchMessage }          from '../whatsapp/dispatcher.js';
+import { dispatchText, dispatchMessage }          from '../whatsapp/dispatcher.js';
 import { getModeConfig }         from '../../config/modes.js';
-import { withCatalogWelcomeOption } from '../../modules/catalog/waCatalogConfig.js';
 import logger from '../../config/logger.js';
 
 const ACTION_REGISTRY = new Map();
@@ -49,7 +48,7 @@ export function registerAction(action, handler) {
   ACTION_REGISTRY.set(action.toUpperCase(), handler);
 }
 
-export async function route({ action, intent, session, message, business, tenant, isInteractive, suggestion, emotion }) {
+export async function route({ action, intent, session, message, business, tenant, isInteractive, suggestion }) {
   const upper = (action || 'FALLBACK').toUpperCase();
   const mode  = (business?.businessMode || 'RETAIL').toUpperCase();
 
@@ -204,8 +203,7 @@ export async function route({ action, intent, session, message, business, tenant
             // "You have a table booking for ? guests" was nonsensical for hair appointments.
             const serviceGreetStr = activeBooking.service ? `*${activeBooking.service}*` : 'your appointment';
             const staffGreetStr   = activeBooking.staff   ? ` with *${activeBooking.staff}*` : '';
-            // [AUDIT-FLOWS-10] Removed a dead `staffLabel` variable — staff name is
-            // interpolated directly via staffGreetStr above; no separate role label is used.
+            const staffLabel      = greetMode === 'BARBERSHOP' ? 'barber' : 'stylist';
 
             if (isWalkInGreet) {
               bookingBody =
@@ -321,19 +319,6 @@ export async function route({ action, intent, session, message, business, tenant
         customerName: existingName || null,
       });
 
-      // [FEAT-EMOTION-1] Urgency shortcut — skip the personalised/AI greeting (which
-      // can add a Groq round-trip) and the VIP badge entirely, and go straight to the
-      // action buttons. Only applies when GREET itself was ambiguous enough to reach
-      // here; a message that already named "order"/"book" explicitly never reaches
-      // GREET at all — it's routed directly to START_ORDER/START_BOOKING by
-      // ORDER_DIRECT_RE/BOOKING_DIRECT_RE in intentEngine.js.
-      if (emotion === 'URGENT') {
-        const _urgentOpts = withCatalogWelcomeOption(cfg.ui?.welcomeButtons || [], business);
-        return _urgentOpts.rows
-          ? { type: 'list', body: "⚡ Let's get you sorted quickly — what do you need?", rows: _urgentOpts.rows, button: 'Menu' }
-          : { type: 'buttons', body: "⚡ Let's get you sorted quickly — what do you need?", buttons: _urgentOpts.buttons };
-      }
-
       let body = null;
 
       // [FIX-GREET-2] Returning customer — personalised AI greeting using real history.
@@ -352,8 +337,7 @@ export async function route({ action, intent, session, message, business, tenant
       if (isReturning && hoursSinceLastOrder > 4) {
         // Genuine returning customer (not seen in 4+ hours) — use Groq for personalised greeting
         try {
-          const vipThreshold = business?.settings?.vipThreshold || 5;
-          const g = await generateGreeting({ business, customerName: existingName, lastOrder, orderCount, vipThreshold });
+          const g = await generateGreeting({ business, customerName: existingName, lastOrder });
           body = g;
         } catch { /* non-fatal — fall through to static welcome */ }
       } else if (isReturning && existingName) {
@@ -402,10 +386,7 @@ export async function route({ action, intent, session, message, business, tenant
         body += `\n\n⭐ _You're one of our valued regulars — thank you for your continued support!_`;
       }
 
-      const _greetOpts = withCatalogWelcomeOption(cfg.ui?.welcomeButtons || [], business);
-      return _greetOpts.rows
-        ? { type: 'list', body, rows: _greetOpts.rows, button: 'Menu' }
-        : { type: 'buttons', body, buttons: _greetOpts.buttons };
+      return { type: 'buttons', body, buttons: cfg.ui?.welcomeButtons || [] };
     }
 
     case 'SHOW_MENU': {
@@ -418,11 +399,11 @@ export async function route({ action, intent, session, message, business, tenant
       // again — that's jarring and feels like the bot forgot the conversation.
       // SHOW_MENU shows a short "what else can I help with?" prompt + action buttons.
       // GREET (first message / fresh start) shows the full branded welcome.
-      const _menuOpts = withCatalogWelcomeOption(cfg.ui?.welcomeButtons || [], business);
-      const _menuBody = cfg.messages?.showMenuPrompt || '👇 What would you like to do?';
-      return _menuOpts.rows
-        ? { type: 'list', body: _menuBody, rows: _menuOpts.rows, button: 'Menu' }
-        : { type: 'buttons', body: _menuBody, buttons: _menuOpts.buttons };
+      return {
+        type:    'buttons',
+        body:    cfg.messages?.showMenuPrompt || '👇 What would you like to do?',
+        buttons: cfg.ui?.welcomeButtons || [],
+      };
     }
 
     case 'CANCEL': {
@@ -480,26 +461,7 @@ export async function route({ action, intent, session, message, business, tenant
           {
             customerPhone: session.customerPhone,
             tenantId:      session.tenantId,
-            // [AUDIT-FIX-CANCEL-CONFIRMED-GUARD] Only truly 'pending' orders (i.e. an
-            // admin has not yet acted on them at all) are self-cancellable via this
-            // typed-command/button path. 'confirmed' was previously included here,
-            // guarded only by excluding paymentStatus in ['confirmed','paid'] — but
-            // that signal is unreliable for exactly the orders this guard most needs
-            // to protect: a dashboard-confirmed order (dashboardController's
-            // updateOrderStatus sets status:'confirmed' without touching
-            // paymentStatus — see [FIX-DASH-STATUS-MISSING]) or a cash order accepted
-            // via AWAIT_ADMIN_CONFIRM (documented in adminCommandService's
-            // [FIX-MARK-READY-GUARD] as never setting paymentStatus:'confirmed')
-            // both leave paymentStatus at 'unpaid'. Either would have silently passed
-            // the old $nin filter and let the customer cancel an order the admin had
-            // already accepted for prep — directly contradicting the honest
-            // "already confirmed and is being prepared" decline message this same
-            // case already shows when the _uncancellableOrder lookup below finds a
-            // confirmed order. status:'confirmed' is itself the authoritative
-            // "order accepted" signal in this codebase (same reasoning as
-            // activeOrderResolver's [AUDIT-AOR-CONFIRMED]), so it must never be
-            // self-cancellable regardless of what paymentStatus happens to read.
-            status:        'pending',
+            status:        { $in: ['pending', 'confirmed'] },
             // [FIX-CANCEL-REJECTED] 'rejected' was previously in this $nin exclusion list,
             // meaning a customer whose payment was rejected — the EXACT scenario where
             // activeOrderResolver shows a "Payment Not Approved" card with a CANCEL button —
@@ -560,19 +522,11 @@ export async function route({ action, intent, session, message, business, tenant
           {
             customerPhone: session.customerPhone,
             tenantId:      session.tenantId,
-            // [AUDIT-FIX-CANCEL-ALL-CONFIRMED-GUARD] Same fix as the single-order
-            // CANCEL case above, applied here too — and more urgently, since this
-            // guard was previously even more permissive: it matched 'preparing'
-            // directly (an order already being made), and its paymentStatus
-            // exclusion list below only excluded 'cancelled'/'refunded', not
-            // 'confirmed'/'paid'. That meant a customer could bulk-cancel an
-            // already-paid order that was already in the kitchen with a single
-            // "cancel all" — a strictly worse version of the single-cancel bug,
-            // since it bypassed even the payment-status protection the single-cancel
-            // path had. Only truly 'pending' (not yet admin-touched) orders are
-            // bulk-cancellable now.
-            status:        'pending',
-            paymentStatus: { $nin: ['cancelled', 'refunded', 'confirmed', 'paid'] },
+            status:        { $in: ['pending', 'confirmed', 'preparing'] },
+            // [FIX-CANCEL-REJECTED] Same fix as the single-order CANCEL case above —
+            // 'rejected' must not be excluded, or rejected-payment orders can never be
+            // bulk-cancelled either and keep re-appearing in the MULTIPLE_ACTIVE_ORDERS list.
+            paymentStatus: { $nin: ['cancelled', 'refunded'] },
           },
           {
             $set: {
@@ -597,8 +551,7 @@ export async function route({ action, intent, session, message, business, tenant
         };
       } catch (err) {
         logger.error('[Router] CANCEL_ALL failed', { err: err.message });
-        // [AUDIT-FLOWS-2] Removed a dead `const cfgCancelAllErr = getModeConfig(business)` —
-        // never read; the buttons below are hardcoded, not mode-derived.
+        const cfgCancelAllErr = getModeConfig(business);
         return {
           type:    'buttons',
           body:    '⚠️ Something went wrong cancelling your orders. Please contact support.',
@@ -716,22 +669,6 @@ export async function route({ action, intent, session, message, business, tenant
       const SPAM_RE = /^[^aeiou\s]{5,}$/i;             // consonant-only spam
       const isOffTopic = OFF_TOPIC_RE.test(cleanMsg) || GIBBERISH_RE.test(cleanMsg) || SPAM_RE.test(cleanMsg);
 
-      // [FIX-DECLINE-1] "No thanks" / "not now" / etc. is a decline of whatever
-      // was just suggested (e.g. "shall we do that again?"), NOT a request to
-      // reset the whole conversation. Previously this had no dedicated
-      // handling, so it fell through to the AI as an unrecognized message,
-      // which produced a generic "Welcome to X — is there something I can
-      // help you with?" reply and re-showed the same 3 buttons the customer
-      // had just declined — reading as if the bot didn't understand them at
-      // all. Catch it explicitly and acknowledge the decline instead.
-      const DECLINE_RE = /^(no+\s*(thanks?|thank\s*you)?|nah+|nope+|not\s*(now|really|interested|today)|i'?m\s*good|im\s*good|all\s*good|maybe\s*later|not\s*at\s*the\s*moment)[.!]?$/i;
-      if (DECLINE_RE.test(cleanMsg)) {
-        return {
-          type: 'text',
-          body: `No problem 😊 I'm here whenever you're ready — just message me anytime and say *order*, *table*, or *menu*.`,
-        };
-      }
-
       if (isOffTopic) {
         return {
           type:    'buttons',
@@ -797,54 +734,6 @@ export async function route({ action, intent, session, message, business, tenant
       return startFlow({ flowName: 'ENQUIRY', session, business, tenant });
     }
 
-    case 'RESCHEDULE': {
-      // [AUDIT-FLOWS-RESCHEDULE] Previously the "📅 Reschedule" button (shown on the
-      // greeting-gate booking-status screen, see the GREET case above) mapped straight
-      // to START_BOOKING via patterns.js BUTTON_ID_MAP. That reset the session and began
-      // an entirely new booking WITHOUT cancelling the customer's existing pending/
-      // confirmed appointment — leaving two live bookings for the same customer, with
-      // the admin alerted twice and the old one never resolved. Fix mirrors the
-      // already-correct RESCHEDULE handling in postFlowHandler.js (used when the
-      // customer replies to a postFlowAck context): cancel the most recent active,
-      // non-walk-in booking first, then land the customer on the DATE step with their
-      // previous service/stylist carried over so they don't have to re-select them.
-      let _previousBooking = null;
-      try {
-        const { default: _RescheduleBooking } = await import('../../models/Booking.js');
-        _previousBooking = await _RescheduleBooking.findOneAndUpdate(
-          {
-            customerPhone: session.customerPhone,
-            tenantId:      session.tenantId,
-            status:        { $in: ['pending', 'confirmed'] },
-            bookingType:   { $ne: 'walkin' },
-          },
-          { $set: { status: 'cancelled', cancelledBy: 'customer', cancelledAt: new Date() } },
-          { sort: { createdAt: -1 } }
-        ).lean();
-      } catch (err) {
-        logger.warn('[Router] RESCHEDULE: previous booking cancel failed (non-fatal)', { err: err.message });
-      }
-
-      await updateSession(session.customerPhone, session.tenantId, {
-        currentFlow: 'BOOKING', step: 'DATE', postFlowAck: null,
-        data: {
-          service:         _previousBooking?.service || null,
-          selectedService: _previousBooking?.service || null,
-          stylist:         _previousBooking?.staff    || null,
-        },
-      });
-
-      const _custNameResched = session.customerName ? `, *${session.customerName}*` : '';
-      return {
-        type: 'text',
-        body:
-          `📅 *Reschedule Appointment*\n\n` +
-          `No problem${_custNameResched}! Let's find a new time` +
-          `${_previousBooking?.service ? ` for your *${_previousBooking.service}*` : ''}.\n\n` +
-          `What date works best for you?`,
-      };
-    }
-
     case 'DONE': {
       // [FIX-BUG10] Return welcome buttons instead of dead-end plain text
       const cfg = getModeConfig(business);
@@ -876,8 +765,7 @@ export async function route({ action, intent, session, message, business, tenant
           await _us(session.customerPhone, session.tenantId, {
             currentFlow: 'ORDER', step: 'PAYMENT_PROOF',
           });
-          // [AUDIT-FLOWS-1] Removed a dead `const cfg = getModeConfig(business)` that was
-          // computed but never read anywhere below — pure wasted work on this hot path.
+          const cfg = getModeConfig(business);
           const currency = business?.payment?.currency || 'D';
           return {
             type:    'buttons',

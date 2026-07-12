@@ -124,62 +124,6 @@ export function extractCustomerName(raw = '') {
 
 // ── Core detect ───────────────────────────────────────────────────────────────
 
-// ── Direct ORDER / BOOKING phrase detection ────────────────────────────────────
-// [UPGRADE-DIRECT-INTENT] Step 4 below only fires on a whole-message EXACT match
-// against the literal strings in INTENT_PATTERNS.ORDER / .BOOKING ("order food",
-// "i want to order", "book a table"...). Real customers phrase things with extra
-// words around those cores ("I want to order food please", "can I book a table
-// for tonight", "I'd like to order 2 pizzas") which don't match step 4 at all —
-// they used to fall through to Levenshtein (too far in edit-distance for a full
-// sentence) → AI classify (may be unavailable) → FALLBACK, which shows the
-// generic 3-button welcome menu (Order / Book / Question) instead of taking the
-// customer straight into the flow they clearly asked for.
-//
-// Per product requirement: a message that unambiguously asks to order or book
-// must skip that menu entirely, the same way a literal "order food" already does.
-// This is intentionally narrow — a plain "contains the word order/book" check —
-// guarded against cancellation/negation and order-tracking phrasing so it never
-// hijacks CANCEL_ORDER, TRACK_ORDER, or a genuine "no thanks" reply. It only runs
-// pre-flow (session.currentFlow is empty), matching the scope of step 4.
-// [AUDIT-FIX-DIRECT-INTENT-3] "don'?t" alone never matches here. normalise() turns
-// apostrophes into SPACES, not nothing, so "don't" becomes "don t" (two words) by
-// the time it reaches this regex — "don'?t" (which requires "don" and "t" adjacent)
-// silently fails to match it. This is the exact same issue "where s" already exists
-// in this list to solve for "where's" → "where s"; "don't" just never got the same
-// treatment. Net effect before this fix: "I don't want to order anymore" was NOT
-// excluded, and since it still contains the literal word "order", it incorrectly
-// fired START_ORDER — starting the very flow the customer was declining.
-// [FIX-FSI-EXPORT] Exported (additive only — no behavior change to existing callers)
-// so the mid-flow order/booking switch intercept in webhookController.js can reuse
-// the exact same matching rules instead of maintaining a second, drift-prone copy.
-export const DIRECT_INTENT_EXCLUDE_RE = new RegExp(
-  '\\b(' + [
-    'cancel', 'cancle', "don'?t", 'don t', 'do not', 'dont', 'stop',
-    'no longer', 'nevermind', 'never mind', 'nvm', 'not interested',
-    'track', 'status', 'where is', 'where s', 'when is', 'update',
-    'how long', 'refund', 'reject', 'decline',
-  ].join('|') + ')\\b'
-  // [AUDIT-DIRECT-INTENT] "check my order" / "checking on my booking" ask about an
-  // EXISTING order or booking (→ TRACK_ORDER), not a request to place a new one —
-  // without this, they'd match ORDER_DIRECT_RE/BOOKING_DIRECT_RE on "order"/"book"
-  // and incorrectly launch a brand-new flow. \bcheck\w*\b (not \bcheck\b) so it also
-  // catches "checking"/"checked", not just the bare word "check".
-  + '|\\bcheck\\w*\\b'
-);
-// [UPGRADE-DIRECT-INTENT-2] Widened vocabulary — covers common ways customers ask
-// for something without using the literal words "order"/"book". Still a plain
-// word/phrase list, so it's fast and free (no AI call), but catches a lot more
-// of the real-world phrasing than the v1 list did. New entries were chosen to be
-// requests specifically ("i want X", "can i get X", "i'll have X"), not just any
-// mention of food/tables, to keep false-positive risk low.
-// NOTE: `clean` has already gone through normalise(), which strips apostrophes
-// entirely (replaced with a space, not removed) — "i'll have" becomes "i ll have"
-// and "i'd like" becomes "i d like". Patterns must match the POST-normalisation
-// form, not the raw contraction, or they silently never match.
-// [FIX-FSI-EXPORT] Exported for the same reason as DIRECT_INTENT_EXCLUDE_RE above.
-export const ORDER_DIRECT_RE   = /\b(order|buy|purchase|shopping|can i get|can i have|i ll have|i ll take|give me|get me|i want|i d like|craving)\b/;
-export const BOOKING_DIRECT_RE = /\b(book|reserve|reservation|appointment|table for|party of|table at|table tonight|come in|slot for|availability for)\b/;
-
 /**
  * detectIntent({ message, isInteractive, session, business })
  *
@@ -231,27 +175,6 @@ export async function detectIntent({ message, isInteractive = false, session, bu
     }
   }
 
-  // ── 4.5. Direct ORDER / BOOKING phrase match (see constants above) ────────
-  // Only pre-flow — an active flow already owns free text via CONTINUE_FLOW
-  // before detectIntent() is ever reached for it, but this guard keeps intent
-  // identical to step 4's scope regardless of caller.
-  // [AUDIT-FIX-DIRECT-INTENT-4] BOOKING checked BEFORE ORDER here. The widened
-  // ORDER_DIRECT_RE now includes generic phrases ("i want", "i d like") that also
-  // appear naturally in booking requests ("I want to book a table"). Since those
-  // generic phrases carry no order-specific meaning on their own, checking BOOKING
-  // first (whose word list is more specific: book/reserve/table for/etc.) means a
-  // genuine booking request is never misrouted to START_ORDER just because it also
-  // happens to contain "i want". Confirmed regression before this fix: "I want to
-  // book a table" → START_ORDER (wrong). After: → START_BOOKING (correct).
-  if (!session?.currentFlow && !DIRECT_INTENT_EXCLUDE_RE.test(clean)) {
-    if (BOOKING_DIRECT_RE.test(clean)) {
-      return { action: 'START_BOOKING', intent: 'BOOKING', confidence: 'HIGH', source: 'direct-phrase' };
-    }
-    if (ORDER_DIRECT_RE.test(clean)) {
-      return { action: 'START_ORDER', intent: 'ORDER', confidence: 'HIGH', source: 'direct-phrase' };
-    }
-  }
-
   // ── 5. Partial match with Levenshtein (suggest only, never auto-execute) ──
   let suggestion = null;
   let suggIntent = null;
@@ -267,15 +190,8 @@ export async function detectIntent({ message, isInteractive = false, session, bu
   }
 
   // ── 6. Short non-AI inputs → FALLBACK or CONTINUE_FLOW ───────────────────
-  // [UPGRADE-DIRECT-INTENT-2] Threshold lowered from 8 to 4. Below 4 chars
-  // (single words like "hi", "ok", digits) AI classification adds noise more
-  // often than value, so those are still routed without a Groq call. Between
-  // 4–7 chars there are genuine short requests ("buy 2", "book pls", "table?")
-  // that were previously skipped straight to CLARIFY/FALLBACK with no chance
-  // of AI catching them — this only applies pre-flow (session.currentFlow is
-  // empty), since in-flow short replies are already handled as CONTINUE_FLOW
-  // by the numeric/short-circuit checks above and never reach this branch.
-  if (raw.length < 4) {
+  // Don't bother AI with inputs < 8 chars — it's almost always a typo or qty
+  if (raw.length < 8) {
     if (session?.currentFlow) {
       return { action: 'CONTINUE_FLOW', intent: 'CONTINUE_FLOW', confidence: 'HIGH', source: 'short' };
     }
@@ -285,11 +201,7 @@ export async function detectIntent({ message, isInteractive = false, session, bu
         suggestion: suggIntent,
       };
     }
-    logger.info('[IntentEngine] miss', { raw, path: 'short-fallback' });
     return { action: 'FALLBACK', intent: 'FALLBACK', confidence: 'LOW', source: 'fallback' };
-  }
-  if (raw.length < 8 && session?.currentFlow) {
-    return { action: 'CONTINUE_FLOW', intent: 'CONTINUE_FLOW', confidence: 'HIGH', source: 'short' };
   }
 
   // ── 7. AI classify (last resort — multi-word, non-numeric messages only) ──
@@ -310,21 +222,13 @@ export async function detectIntent({ message, isInteractive = false, session, bu
   }
 
   // ── 8. Final fallback ──────────────────────────────────────────────────────
-  // [UPGRADE-DIRECT-INTENT-2] Every message that reaches here got past keyword,
-  // direct-phrase regex, AND AI classify without a confident match. Logging the
-  // raw text (not just "FALLBACK happened") is what makes the audit-and-fix loop
-  // possible — without it, a real missed phrasing is invisible until a customer
-  // complains. This is the single source to review when deciding what to add to
-  // ORDER_DIRECT_RE/BOOKING_DIRECT_RE or INTENT_PATTERNS next.
   if (suggestion) {
-    logger.info('[IntentEngine] miss', { raw, path: 'clarify', suggestion: suggIntent });
     return {
       action: 'CLARIFY', intent: 'CLARIFY', confidence: 'LOW', source: 'levenshtein',
       suggestion: suggIntent,
     };
   }
 
-  logger.info('[IntentEngine] miss', { raw, path: 'final-fallback' });
   return { action: 'FALLBACK', intent: 'FALLBACK', confidence: 'LOW', source: 'fallback' };
 }
 

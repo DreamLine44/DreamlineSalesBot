@@ -79,13 +79,7 @@ export async function handleCosmeticsOrderFlow({ session, message, business, ten
         'SKIP_SKIN':   null,
       };
 
-      // [AUDIT-LINT-1] Call hasOwnProperty via Object.prototype rather than directly on
-      // SKIN_MAP. Direct .hasOwnProperty() would throw if a future refactor ever built
-      // this map dynamically from a source that could produce an object with no
-      // prototype (e.g. Object.create(null)) or a key literally named "hasOwnProperty".
-      // Harmless today since SKIN_MAP is a static literal, but the direct-call form is a
-      // latent footgun for any object whose shape isn't fully controlled at this call site.
-      const skinType = Object.prototype.hasOwnProperty.call(SKIN_MAP, raw.toUpperCase())
+      const skinType = SKIN_MAP.hasOwnProperty(raw.toUpperCase())
         ? SKIN_MAP[raw.toUpperCase()]
         : (clean.length >= 2 ? clean : null);
 
@@ -109,28 +103,14 @@ export async function handleCosmeticsOrderFlow({ session, message, business, ten
 
     // ── SELECT_ITEM ───────────────────────────────────────────────────────────
     case 'SELECT_ITEM': {
-      // [AUDIT-FIX-VIEWMENU] Explicit guard for the 'SHOW_MENU' button id (🛍 Browse
-      // All) — webhookController.js now forwards this id straight here instead of
-      // resetting to the welcome menu (see MENU_BROWSE_STEPS). Without this, "show
-      // menu" could reach findBestMatch() and, on a LOW-confidence match, trigger a
-      // needless paid AI call instead of simply reopening the catalogue.
-      if (['SHOW_MENU', 'MENU', 'HOME', '0'].includes(raw.toUpperCase())) {
-        await updateSession(session.customerPhone, session.tenantId, { menuViewed: true });
-        return _buildCosmeticsMenu(menu, business, data.skinType || null);
-      }
       if (!isInteractive && !session.menuViewed && /^\d+$/.test(raw)) {
         await updateSession(session.customerPhone, session.tenantId, { menuViewed: true });
         return _buildCosmeticsMenu(menu, business, data.skinType || null);
       }
       if (clean.length < 2) return _buildCosmeticsMenu(menu, business, data.skinType || null);
 
-      // [AUDIT-FIX-PARSEINT-5] Same bug class as bakery/retail/etc: parseInt("2
-      // moisturisers", 10) = 2, not NaN, so mixed input silently resolved to
-      // menu[1] instead of reaching findBestMatch() below. Only trust the parsed
-      // index when raw is purely numeric or the tap came from an interactive list/button.
-      const isPureNumeric = /^\d+$/.test(raw.trim());
       const numIdx = parseInt(raw, 10) - 1;
-      let item = (isInteractive || isPureNumeric) && !isNaN(numIdx) && numIdx >= 0 && menu[numIdx] ? menu[numIdx] : null;
+      let item = (!isNaN(numIdx) && numIdx >= 0 && menu[numIdx]) ? menu[numIdx] : null;
 
       if (!item) {
         const { item: matched, confidenceLevel } = findBestMatch(menu, clean);
@@ -304,7 +284,6 @@ export async function handleCosmeticsOrderFlow({ session, message, business, ten
           customerPhone: session.customerPhone,
           customerName:  session.customerName,
           item:          `${data.item?.name}${shade}`,
-          menuItemId:    data.item?._id, // [CATALOG-STOCK-1] enables stock decrement on order
           quantity:      data.quantity || 1,
           totalPrice:    data.totalPrice || 0,
           notes:         [skinNote, data.giftNote].filter(Boolean).join(' | ') || undefined,
@@ -419,11 +398,7 @@ function _buildCosmeticsMenu(items, business, skinType = null) {
     };
   }
 
-  // [AUDIT-FIX-2] Was items.slice(0, 10) here, which silently dropped every
-  // product past the 10th before dispatcher.js's row-chunking logic ever saw
-  // them. Build rows from the full catalog; dispatcher chunks into ≤10-row
-  // sections (up to 100 total) so nothing beyond the first page is lost.
-  const rows = items.map((item, i) => ({
+  const rows = items.slice(0, 10).map((item, i) => ({
     id:          String(i + 1),
     title:       item.name.slice(0, 24),
     description: [
@@ -455,18 +430,17 @@ function _buildShadeUI(item) {
       })),
     };
   }
-  // [AUDIT-FIX-8] Same class of bug as _buildProductMenu above — a hardcoded
-  // `sections` entry with its own slice(0, 10) bypasses dispatcher.js's row
-  // chunking. Some shade ranges (e.g. foundation lines) legitimately exceed
-  // 10. Switched to flat `rows`.
   return {
     type:   'list',
     body:   `💄 *${item.name}*\n\nWhich shade would you like?`,
     button: 'Choose shade',
-    rows: shades.map(s => ({
-      id:    `SHADE_${String(s).toUpperCase().replace(/\s+/g, '_')}`,
-      title: String(s),
-    })),
+    sections: [{
+      title: 'Available Shades',
+      rows: shades.slice(0, 10).map(s => ({
+        id:    `SHADE_${String(s).toUpperCase().replace(/\s+/g, '_')}`,
+        title: String(s),
+      })),
+    }],
     footer: 'Or type your preferred shade',
   };
 }

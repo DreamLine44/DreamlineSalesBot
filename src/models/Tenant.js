@@ -13,18 +13,6 @@ const tenantSchema = new mongoose.Schema({
   // [FIX] email was required:true but tenantController.createTenant and seed.js
   // never supply it — every Tenant.create() threw a Mongoose ValidationError and
   // silently rolled back. Made optional (sparse unique so two tenants can omit it).
-  //
-  // [FIX-EMAIL-SPARSE] `default: null` defeated the sparse index: Mongoose applies
-  // schema defaults on document construction regardless of what the caller passes,
-  // so every tenant created without an email was silently getting `email: null`
-  // written to Mongo. A sparse index only excludes documents where the field is
-  // truly ABSENT, not ones where it's explicitly null — so the first emailless
-  // tenant worked, and every one after it hit a false E11000 duplicate-key error
-  // on the shared null value (surfaced to the caller as the misleading "tenant
-  // with that phone number or email already exists" message). Removing the
-  // default means the field is only set when a value is actually provided,
-  // restoring correct sparse behavior. Existing tenants with a stored `email:
-  // null` need one-time cleanup — see scripts/migrate_unset_null_email.js.
   email: {
     type: String,
     required: false,
@@ -32,6 +20,7 @@ const tenantSchema = new mongoose.Schema({
     sparse: true,       // only index when present — allows multiple tenants with no email
     lowercase: true,
     trim: true,
+    default: null,
   },
 
   // ================= AUTH =================
