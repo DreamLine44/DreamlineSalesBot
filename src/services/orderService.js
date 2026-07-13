@@ -75,49 +75,94 @@ export function resolveOrderFields({ item, quantity, totalPrice, addOns, items }
 // purchasable) until the next unrelated menu edit debounces one in.
 // Never throws outward: called fire-and-forget from saveOrder(), same pattern
 // as recordOrderItem() above.
+//
+// [AUDIT-FIX-STOCK-RACE-1] Previously this read `menuItem.stockCount` via a
+// plain findById().lean() snapshot, computed `newStock = stockCount - qty` in
+// JS, then wrote that JS-computed value back with a plain $set. Two orders
+// for the same limited-stock item arriving close together (a real scenario —
+// this is a WhatsApp bot with no purchase-time reservation/lock step) both
+// read the same starting stockCount, both compute the same newStock, and the
+// second write simply overwrites the first: exactly one unit gets decremented
+// total instead of two, silently overselling. This is the identical
+// check-then-write race class already fixed atomically in promoService's
+// applyPromoUsage() (see [AUDIT-FIX-PROMO-RACE]) — same fix shape here: an
+// aggregation-pipeline update ($map/$cond) that reads and writes
+// menuItems.$.stockCount in one atomic server-side operation per item, so
+// concurrent decrements always serialize correctly instead of racing on a
+// stale JS-side snapshot.
 async function decrementStockForOrder(businessId, tenantId, lines) {
   if (!businessId || !Array.isArray(lines) || !lines.length) return;
 
   const { default: BusinessConfig } = await import('../models/BusinessConfig.js');
-  const business = await BusinessConfig.findById(businessId).select('menuItems waCatalog').lean();
-  if (!business) return;
 
-  const bulkOps = [];
   let anyWentOutOfStock = false;
+  let waCatalog = null;
 
   for (const { menuItemId, quantity } of lines) {
     if (!menuItemId) continue;
-    const menuItem = (business.menuItems || []).find(mi => String(mi._id) === String(menuItemId));
-    // Untracked (stockCount === null, the default) — nothing to decrement.
-    if (!menuItem || menuItem.stockCount == null) continue;
+    const qty = Number(quantity) || 1;
 
-    const newStock = Math.max(0, menuItem.stockCount - (Number(quantity) || 1));
-    const justSoldOut = newStock === 0 && menuItem.available !== false;
-    if (justSoldOut) anyWentOutOfStock = true;
-
-    bulkOps.push({
-      updateOne: {
-        filter: { _id: businessId, 'menuItems._id': menuItemId },
-        update: {
-          $set: {
-            'menuItems.$.stockCount': newStock,
-            ...(newStock === 0 ? { 'menuItems.$.available': false } : {}),
+    let updated;
+    try {
+      // Filter requires the target item to exist AND currently track stock
+      // (stockCount != null) — untracked items never match, so this is a
+      // complete no-op for them, same as before.
+      updated = await BusinessConfig.findOneAndUpdate(
+        { _id: businessId, menuItems: { $elemMatch: { _id: menuItemId, stockCount: { $ne: null } } } },
+        [
+          {
+            $set: {
+              menuItems: {
+                $map: {
+                  input: '$menuItems',
+                  as: 'mi',
+                  in: {
+                    $cond: [
+                      { $eq: ['$$mi._id', menuItemId] },
+                      {
+                        $mergeObjects: [
+                          '$$mi',
+                          {
+                            stockCount: { $max: [0, { $subtract: ['$$mi.stockCount', qty] }] },
+                            available: {
+                              $cond: [
+                                { $lte: [{ $subtract: ['$$mi.stockCount', qty] }, 0] },
+                                false,
+                                '$$mi.available',
+                              ],
+                            },
+                          },
+                        ],
+                      },
+                      '$$mi',
+                    ],
+                  },
+                },
+              },
+            },
           },
-        },
-      },
-    });
+        ],
+        { new: true, projection: { 'menuItems.$': 1, waCatalog: 1 } },
+      ).lean();
+    } catch (err) {
+      logger.error('[OrderService] stock decrement failed (non-fatal)', { err: err.message, businessId, menuItemId });
+      continue;
+    }
+
+    if (!updated) continue; // item didn't match (untracked, deleted, or wrong id) — nothing to do
+    waCatalog = updated.waCatalog || waCatalog;
+    const newStockCount = updated.menuItems?.[0]?.stockCount;
+    // Trigger a resync whenever the item is now at zero. This runs on every
+    // order that empties an already-empty item too (not just the "first" time
+    // it hits zero) — harmless: waCatalogSyncScheduler's delta sync
+    // ([CATALOG-DELTA-1]) skips items whose synced content hash is unchanged,
+    // so a redundant trigger costs nothing but avoids re-introducing the same
+    // stale-snapshot race this fix removes if we tried to detect the exact
+    // zero-crossing instead.
+    if (newStockCount === 0) anyWentOutOfStock = true;
   }
 
-  if (!bulkOps.length) return;
-
-  try {
-    await BusinessConfig.bulkWrite(bulkOps);
-  } catch (err) {
-    logger.error('[OrderService] stock decrement failed (non-fatal)', { err: err.message, businessId });
-    return;
-  }
-
-  if (anyWentOutOfStock && business.waCatalog?.enabled && business.waCatalog?.catalogId) {
+  if (anyWentOutOfStock && waCatalog?.enabled && waCatalog?.catalogId) {
     const { scheduleWaCatalogSync } = await import('../modules/catalog/waCatalogSyncScheduler.js');
     scheduleWaCatalogSync(String(tenantId));
   }

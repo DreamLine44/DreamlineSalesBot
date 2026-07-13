@@ -101,9 +101,21 @@ export async function updateBusinessConfig(req, res) {
       delete update.servicesList;
     }
 
-    if (!update || Object.keys(update).length === 0) {
-      return res.status(400).json({ error: 'Request body is empty — nothing to update' });
+    // [AUDIT-FIX-CATALOG-TENANT-LOCKDOWN-1] catalogId requires navigating Meta
+    // Commerce Manager, Business Settings → System Users, and per-catalog asset
+    // permissions to obtain and validate — access that lives entirely in the
+    // platform admin's Meta Business Portfolio, not anything a tenant business
+    // owner has or could reasonably self-serve. Setting it wrong (as happened
+    // in production) silently fails every sync with an opaque Graph API error
+    // that only someone with Business Manager access can diagnose. It's now
+    // admin-only via PATCH /admin/tenants/:id (see [AUDIT-FIX-CATALOG-ADMIN-1]
+    // in tenantController.js) — tenants keep `enabled` (the on/off toggle) and
+    // `mode` (the offer-mode dropdown), both of which are genuinely theirs to
+    // control day-to-day.
+    if (update.waCatalog && typeof update.waCatalog === 'object') {
+      delete update.waCatalog.catalogId;
     }
+    delete update['waCatalog.catalogId'];
 
     // [CATALOG-BIZ-1] $set with a plain nested object (`waCatalog: {...}`) REPLACES
     // the entire subdocument in MongoDB rather than merging — Mongoose does not
@@ -121,6 +133,10 @@ export async function updateBusinessConfig(req, res) {
         update[`waCatalog.${k}`] = v;
       }
       delete update.waCatalog;
+    }
+
+    if (!update || Object.keys(update).length === 0) {
+      return res.status(400).json({ error: 'Request body is empty — nothing to update' });
     }
 
     // [FIX-TONE-3] findOneAndUpdate bypasses Mongoose pre('save') hooks, so the
