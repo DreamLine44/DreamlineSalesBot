@@ -124,6 +124,47 @@ test('toCsvValue neutralizes leading formula-trigger characters before quoting',
   assert.match(dashboardCtrlSrc, /if \(\/\^\[=\+\\-@\\t\\r\]\/\.test\(s\)\) s = `'\$\{s\}`;/);
 });
 
+// ── [AUDIT-FIX-CATALOG-ENABLED-1 / -RESPONSE-1] tenantController.js updateTenant ─
+
+test('updateTenant ALLOWED list includes waCatalog.enabled', () => {
+  assert.match(tenantCtrlSrc, /'waCatalog\.catalogId',\s*'waCatalog\.mode',\s*'waCatalog\.enabled',/);
+});
+
+test('updateTenant extracts and boolean-coerces waCatalog.enabled into waCatalogUpdates', () => {
+  assert.match(
+    tenantCtrlSrc,
+    /waCatalogUpdates\.enabled = updates\['waCatalog\.enabled'\] === true \|\| updates\['waCatalog\.enabled'\] === 'true';/,
+  );
+});
+
+test('updateTenant response includes the post-write BusinessConfig.waCatalog state', () => {
+  assert.match(tenantCtrlSrc, /let waCatalogOut = null;/);
+  assert.match(tenantCtrlSrc, /\.\.\.\(waCatalogOut \? \{ waCatalog: waCatalogOut \} : \{\}\),/);
+});
+
+
+
+const tenantCtrlSrc = read('../controllers/tenantController.js');
+
+test('deleteTenant imports AdminUser and AdminNotification', () => {
+  assert.match(tenantCtrlSrc, /import AdminUser\s+from '\.\.\/models\/AdminUser\.js'/);
+  assert.match(tenantCtrlSrc, /import AdminNotification from '\.\.\/models\/AdminNotification\.js'/);
+});
+
+test('deleteTenant purges AdminUser, AdminNotification, and WhatsAppConnectionRequest alongside every pre-existing collection', () => {
+  const start = tenantCtrlSrc.indexOf('export async function deleteTenant');
+  const end   = tenantCtrlSrc.indexOf(']);', start);
+  const block = tenantCtrlSrc.slice(start, end);
+  // Pre-existing collections must still be present (no regression):
+  for (const model of ['BusinessConfig', 'Session', 'Order', 'Booking', 'UserProfile', 'Analytics', 'ProcessedMessage']) {
+    assert.match(block, new RegExp(`${model}\\.deleteMany\\(\\{ tenantId: tid \\}\\)`), `${model} must still be purged`);
+  }
+  // Newly added collections that were previously orphaned on tenant deletion:
+  for (const model of ['AdminUser', 'AdminNotification', 'WhatsAppConnectionRequest']) {
+    assert.match(block, new RegExp(`${model}\\.deleteMany\\(\\{ tenantId: tid \\}\\)`), `${model} must now be purged too`);
+  }
+});
+
 test('toCsvValue: functional check — a formula-like customer name is neutralized, a normal value is untouched', async () => {
   // Re-implements the exact fixed logic to verify behaviour without needing
   // to import controller internals (toCsvValue/rowsToCsv are not exported).
