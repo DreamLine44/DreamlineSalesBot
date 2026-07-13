@@ -354,12 +354,6 @@ const businessConfigSchema = new mongoose.Schema({
     // nothing changed" apart from "has been silently failing every attempt."
     lastSyncError: {
       reason: { type: String, default: null },
-      // [AUDIT-FIX-SYNC-DETAIL] Added alongside the waCatalogService.js fix that
-      // now writes a human-readable Graph API error message here. Without this
-      // schema entry, Mongoose's default strict mode would silently drop the
-      // `detail` field on every `$set` write — the exact same silent-drop bug
-      // class already fixed once in this codebase for Order.status ([FIX-4]).
-      detail: { type: String, default: null },
       at:     { type: Date,   default: null },
     },
   },

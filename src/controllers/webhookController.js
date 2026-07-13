@@ -2281,43 +2281,6 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
       return;
     }
 
-    // [AUDIT-FIX-ORDER-ESCAPE] Top-level flow-start button/list-row taps ('ORDER',
-    // 'BOOK', 'WALKIN' — the ids behind every welcome-menu "🍔 Order Food" / "📅 Book
-    // a Table" / "🚶 Join Queue" option) had no escape path here, unlike CANCEL/
-    // SHOW_MENU/SUPPORT above. A customer already mid-flow — e.g. stuck at
-    // SELECT_ITEM from an earlier abandoned order, or simply re-tapping the
-    // persistent Menu message — who tapped "Order Food" again had the literal
-    // button id 'ORDER' forwarded straight to the current step's handler as free
-    // text, which fuzzy-matched it against the menu, found nothing, and replied
-    // "I couldn't find "ORDER" on our menu." The flow was never reset, leaving the
-    // customer stuck until SESSION_TTL_MINUTES expiry or a manual SHOW_MENU/CANCEL
-    // tap. These ids are only ever used for top-level welcome-menu buttons/rows —
-    // no flow step anywhere treats 'ORDER'/'BOOK'/'WALKIN' as a real in-flow
-    // answer — so an explicit tap on one is an unambiguous "start this flow fresh"
-    // signal, safe to always honour. Routing through the same START_ORDER/
-    // START_BOOKING/WALKIN actions the pre-flow welcome buttons already use means
-    // startFlow() fully resets currentFlow/step/data before running the flow's
-    // INIT path (see flowEngine.js) — same clean-reset guarantee as SHOW_MENU above.
-    // Scoped to isInteractive only: the equivalent TYPED phrases ("i want to
-    // order", "book a table") are already handled more conservatively by the FSI
-    // mid-flow-switch prompt at 15.1d below, which asks for confirmation instead
-    // of resetting immediately — appropriate for free text, where the words could
-    // appear incidentally inside a genuine in-flow answer.
-    const FLOW_START_ACTIONS = { ORDER: 'START_ORDER', BOOK: 'START_BOOKING', WALKIN: 'WALKIN' };
-    if (isInteractive && FLOW_START_ACTIONS[upperMsg]) {
-      const reply = await route({
-        action: FLOW_START_ACTIONS[upperMsg], intent: upperMsg, session, message: messageText,
-        business, tenant: tenantDoc, isInteractive,
-      });
-      if (reply) {
-        const payloads = Array.isArray(reply) ? reply : [reply];
-        for (const payload of payloads) {
-          await dispatchMessage(from, payload, tenantDoc);
-        }
-      }
-      return;
-    }
-
     // [FIX-SUPPORT-ESCAPE] SUPPORT is now a global escape intent, same tier as
     // CANCEL/SHOW_MENU above. Covers both a direct button tap (e.g. "Contact
     // Support" shown outside its normally-validated steps) and typed requests
