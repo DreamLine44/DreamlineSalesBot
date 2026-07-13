@@ -7,172 +7,21 @@
  */
 import Order  from '../models/Order.js';
 import { recordOrderItem } from '../core/memory/customerMemory.js';
-import { validatePromoCode, applyPromoUsage } from './promoService.js';
 import logger from '../config/logger.js';
-
-// [MULTICART-v39] Hard ceiling on cart size, independent of any per-tenant
-// multiItemCart.maxItems config. This is a last-line-of-defense sanity bound
-// on saveOrder() itself — the flow layer (Phase 2's "add another item?" loop)
-// is expected to enforce the tenant's own configured maxItems (1-50) before
-// ever calling saveOrder(), but this schema field's max is 50, so no tenant
-// can legitimately need more than that. Without this, a stuck loop or a
-// caller bug upstream could hand saveOrder() an unbounded items[] array with
-// nothing here to catch it.
-const HARD_MAX_CART_ITEMS = 50;
-
-// [MULTICART-v39] Pure normalization, split out from saveOrder() so it's
-// unit-testable without a live DB connection. If items[] is supplied,
-// item/quantity/addOns always mirror items[0] so every pre-v39 reader
-// (dashboard, analytics, getLastOrderItem) keeps working unchanged, whether
-// this is a single- or multi-item order.
-export function resolveOrderFields({ item, quantity, totalPrice, addOns, items }) {
-  const hasCart = Array.isArray(items) && items.length > 0;
-
-  if (hasCart && items.length > HARD_MAX_CART_ITEMS) {
-    throw new Error(
-      `[MULTICART-v39] items[] has ${items.length} entries, exceeding the hard cap of ${HARD_MAX_CART_ITEMS}.`
-    );
-  }
-
-  const resolvedItem     = hasCart ? items[0].item     : item;
-  const resolvedQuantity = hasCart ? items[0].quantity : quantity;
-  const resolvedAddOns   = hasCart ? (items[0].addOns || []) : (addOns || []);
-
-  // [AUDIT-FIX-MULTICART-1] Previously, if only SOME cart items had a
-  // unitPrice, the sum silently added only the priced items and presented
-  // the partial result as if it were the full order total (e.g. a 2-item
-  // cart where only item 1 has a price would report item 1's price alone
-  // as "the total"). That's a silent undercount, not a real total. Now:
-  // the computed sum is only used when EVERY item has a unitPrice; if any
-  // item is missing one, resolvedTotal is null (unknown) rather than wrong.
-  const allItemsPriced = hasCart && items.every(it => it.unitPrice != null);
-  const computedCartTotal = allItemsPriced
-    ? items.reduce((sum, it) => sum + it.unitPrice * it.quantity, 0)
-    : null;
-
-  const resolvedTotal = totalPrice != null
-    ? totalPrice
-    : (hasCart ? computedCartTotal : null);
-
-  return { hasCart, resolvedItem, resolvedQuantity, resolvedAddOns, resolvedTotal };
-}
 
 // [FIX-SAVE-1] Added `notes` and `customerName` to destructure — previously both were
 // silently dropped because they weren't listed, even though notes IS in the Order schema
 // and all module callers pass it. customerName is also now in the Order schema.
-//
-// [MULTICART-v39] Backward-compatible signature change: callers can now pass an
-// optional `items` array ([{ item, quantity, addOns, unitPrice }, ...]) instead of
-// (or alongside) the single item/quantity/addOns fields. Every existing caller that
-// still passes item/quantity/addOns directly is unaffected — items defaults to
-// undefined and the single-item path below runs exactly as before.
-// [CATALOG-STOCK-1] Decrements BusinessConfig.menuItems[].stockCount for every
-// line in a just-placed order, for items that actually track stock (stockCount
-// != null — untracked items are a complete no-op, zero behaviour change).
-// Flips `available` to false once an item hits 0, and — if that happened and
-// the tenant has WA Catalog enabled — immediately schedules a resync so the
-// Meta-facing catalog doesn't sit stale (out-of-stock item still shown as
-// purchasable) until the next unrelated menu edit debounces one in.
-// Never throws outward: called fire-and-forget from saveOrder(), same pattern
-// as recordOrderItem() above.
-async function decrementStockForOrder(businessId, tenantId, lines) {
-  if (!businessId || !Array.isArray(lines) || !lines.length) return;
-
-  const { default: BusinessConfig } = await import('../models/BusinessConfig.js');
-  const business = await BusinessConfig.findById(businessId).select('menuItems waCatalog').lean();
-  if (!business) return;
-
-  const bulkOps = [];
-  let anyWentOutOfStock = false;
-
-  for (const { menuItemId, quantity } of lines) {
-    if (!menuItemId) continue;
-    const menuItem = (business.menuItems || []).find(mi => String(mi._id) === String(menuItemId));
-    // Untracked (stockCount === null, the default) — nothing to decrement.
-    if (!menuItem || menuItem.stockCount == null) continue;
-
-    const newStock = Math.max(0, menuItem.stockCount - (Number(quantity) || 1));
-    const justSoldOut = newStock === 0 && menuItem.available !== false;
-    if (justSoldOut) anyWentOutOfStock = true;
-
-    bulkOps.push({
-      updateOne: {
-        filter: { _id: businessId, 'menuItems._id': menuItemId },
-        update: {
-          $set: {
-            'menuItems.$.stockCount': newStock,
-            ...(newStock === 0 ? { 'menuItems.$.available': false } : {}),
-          },
-        },
-      },
-    });
-  }
-
-  if (!bulkOps.length) return;
-
-  try {
-    await BusinessConfig.bulkWrite(bulkOps);
-  } catch (err) {
-    logger.error('[OrderService] stock decrement failed (non-fatal)', { err: err.message, businessId });
-    return;
-  }
-
-  if (anyWentOutOfStock && business.waCatalog?.enabled && business.waCatalog?.catalogId) {
-    const { scheduleWaCatalogSync } = await import('../modules/catalog/waCatalogSyncScheduler.js');
-    scheduleWaCatalogSync(String(tenantId));
-  }
-}
-
-export async function saveOrder({
-  item, quantity, totalPrice, addOns,
-  items,          // [MULTICART-v39] optional multi-item array
-  menuItemId,     // [CATALOG-STOCK-1] optional — enables stock decrement for single-item orders
-  promoCode,      // [PROMO-1] optional — validated & applied below if present
-  notes, customerName, customerPhone, tenantId, businessId, status,
-}) {
-  const { hasCart, resolvedItem, resolvedQuantity, resolvedAddOns, resolvedTotal } =
-    resolveOrderFields({ item, quantity, totalPrice, addOns, items });
-
-  // [PROMO-1] Only touched when a caller explicitly supplies promoCode — every
-  // existing caller that doesn't pass one gets byte-for-byte the same order
-  // as before. Validation failures are non-fatal: the order still saves, just
-  // without a discount, so a stale/expired code never blocks a sale.
-  let finalTotal = resolvedTotal;
-  let appliedPromoCode = null;
-  let appliedDiscountAmount = null;
-  if (promoCode && resolvedTotal != null) {
-    try {
-      const result = await validatePromoCode(tenantId, promoCode, resolvedTotal);
-      if (result.valid) {
-        finalTotal = result.newTotal;
-        appliedPromoCode = result.promotion.code;
-        appliedDiscountAmount = result.discountAmount;
-      } else {
-        logger.info('[OrderService] promoCode not applied', { tenantId, promoCode, reason: result.reason });
-      }
-    } catch (err) {
-      logger.warn('[OrderService] promoCode validation failed (non-fatal)', { err: err.message, tenantId, promoCode });
-    }
-  }
-
+export async function saveOrder({ item, quantity, totalPrice, addOns, notes, customerName, customerPhone, tenantId, businessId, status }) {
   const order = await Order.create({
-    item: resolvedItem, quantity: resolvedQuantity, totalPrice: finalTotal,
-    addOns:        resolvedAddOns,
-    items:         hasCart ? items : undefined,
+    item, quantity, totalPrice,
+    addOns:        addOns        || [],
     notes:         notes         || null,
     customerName:  customerName  || null,
     customerPhone, tenantId, businessId,
     status:        status || 'pending',
     paymentStatus: 'unpaid',
-    promoCode:      appliedPromoCode,
-    discountAmount: appliedDiscountAmount,
   });
-
-  // [PROMO-1] Fire-and-forget usage increment — mirrors decrementStockForOrder's
-  // fire-and-forget pattern below. Must never block or fail order creation.
-  if (appliedPromoCode) {
-    applyPromoUsage(tenantId, appliedPromoCode).catch(() => {});
-  }
 
   // [FIX-BUG5] Update customer memory — fire-and-forget, never blocks order completion
   // [FIX-MEM-DOUBLECOUNT] countOrder:false — this fires on EVERY saveOrder() call,
@@ -182,28 +31,9 @@ export async function saveOrder({
   // Without this flag, every approved order was counted twice — once here at save
   // time, once again at confirmation — corrupting VIP-threshold detection and the
   // "welcome back" returning-customer greeting logic in moduleRouter.js.
-  // [MULTICART-v39] For a multi-item order, record EVERY item, not just the first —
-  // otherwise repeat-order/personalisation memory would silently forget every item
-  // past items[0] in a cart order.
-  const itemsToRecord = hasCart ? items.map(it => it.item) : [resolvedItem];
-  for (const itemName of itemsToRecord) {
-    recordOrderItem(customerPhone, String(tenantId), itemName, { countOrder: false }).catch(err =>
-      logger.debug('[OrderService] recordOrderItem failed (non-fatal)', { err: err.message })
-    );
-  }
-
-  // [CATALOG-STOCK-1] Fire-and-forget stock decrement — never blocks order
-  // completion. Only does anything for lines that actually carry a
-  // menuItemId (i.e. callers that resolved a real BusinessConfig.menuItems
-  // entry) and only for items that track stockCount at all.
-  const stockLines = hasCart
-    ? items.map(it => ({ menuItemId: it.menuItemId, quantity: it.quantity })).filter(l => l.menuItemId)
-    : (menuItemId ? [{ menuItemId, quantity: resolvedQuantity }] : []);
-  if (stockLines.length) {
-    decrementStockForOrder(businessId, tenantId, stockLines).catch(err =>
-      logger.debug('[OrderService] decrementStockForOrder failed (non-fatal)', { err: err.message })
-    );
-  }
+  recordOrderItem(customerPhone, String(tenantId), item, { countOrder: false }).catch(err =>
+    logger.debug('[OrderService] recordOrderItem failed (non-fatal)', { err: err.message })
+  );
 
   return order;
 }

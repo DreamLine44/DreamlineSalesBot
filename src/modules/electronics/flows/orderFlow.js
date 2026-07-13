@@ -191,19 +191,6 @@ export async function handleElectronicsOrder({
         : menu;
       const listMenu = filteredMenu.length ? filteredMenu : menu;
 
-      // [AUDIT-FIX-VIEWMENU] 'SHOW_MENU' is the id behind every "📋 Browse Products" /
-      // "🔄 Start Over" button shown at this step (see webhookController.js's
-      // MENU_BROWSE_STEPS passthrough, which now forwards this id here instead of
-      // resetting to the welcome menu). Without this explicit check the tap fell
-      // through every branch below — numeric guard misses, findBestMatch has no
-      // reason to score "SHOW_MENU" against real products — straight into an AI
-      // product-search call with customerMessage='SHOW_MENU', producing a
-      // nonsensical reply instead of the product list the customer tapped for.
-      if (['SHOW_MENU', 'MENU', 'HOME', '0'].includes(raw.toUpperCase())) {
-        await updateSession(session.customerPhone, session.tenantId, { menuViewed: true });
-        return buildProductList(listMenu, business, data.category);
-      }
-
       // Guard: number typed before seeing catalogue
       if (!isInteractive && !session.menuViewed && /^\d+$/.test(raw)) {
         await updateSession(session.customerPhone, session.tenantId, { menuViewed: true });
@@ -211,13 +198,8 @@ export async function handleElectronicsOrder({
       }
 
       // Numeric selection from list
-      // [AUDIT-FIX-PARSEINT-2] Same bug class as bakery/retail/etc: parseInt("2 usb
-      // cables", 10) = 2, not NaN, so mixed input silently resolved to listMenu[1]
-      // instead of reaching findBestMatch() below. Only trust the parsed index when
-      // raw is purely numeric or the tap came from an interactive list/button.
-      const isPureNumeric = /^\d+$/.test(raw.trim());
       const numIdx = parseInt(raw, 10) - 1;
-      let item = (isInteractive || isPureNumeric) && !isNaN(numIdx) && listMenu[numIdx] ? listMenu[numIdx] : null;
+      let item = (!isNaN(numIdx) && listMenu[numIdx]) ? listMenu[numIdx] : null;
 
       if (!item) {
         const { item: matched, confidenceLevel } = findBestMatch(listMenu, clean);
@@ -265,11 +247,7 @@ export async function handleElectronicsOrder({
     // Customer is confirming or rejecting a fuzzy-matched product suggestion.
     // CONFIRM_SUGGESTION button is in FLOW_PASSTHROUGH_IDS → always reaches here.
     case 'SUGGEST_CONFIRM': {
-      // [AUDIT-FIX-SUGGESTCONFIRM-1] Was missing 'sure', unlike every other confirm-style
-      // regex in this codebase (BOOKING_CONFIRM, restaurant SUGGESTION_CONFIRM, etc. — see
-      // [AUDIT-FIX-CONFIRM-1]). A customer replying "sure" to "Did you mean X?" fell through
-      // to the rejected/no-match branch below and silently lost the suggested product.
-      if (/^(yes|y|yep|yeah|confirm|ok|okay|sure|confirm_suggestion)$/i.test(clean)) {
+      if (/^(yes|y|yep|yeah|confirm|ok|okay|confirm_suggestion)$/i.test(clean)) {
         const item = data.suggestedItem
           || menu.find(i => norm(i.name) === norm(data.suggestion || ''));
         if (item) {
@@ -304,19 +282,6 @@ export async function handleElectronicsOrder({
       }
       if (raw.toUpperCase() === 'WARRANTY') {
         return startFlow({ flowName: 'WARRANTY', session, business, tenant });
-      }
-      // [AUDIT-FIX-VIEWMENU] 'SHOW_MENU' is the id behind the "🔄 Browse More" button
-      // shown on this card. Without this check it fell into the `raw.length >= 3`
-      // AI-question branch below, sending "SHOW_MENU" to the AI as if it were a
-      // genuine product question instead of returning the customer to the catalogue.
-      if (['SHOW_MENU', 'MENU', 'HOME', '0'].includes(raw.toUpperCase())) {
-        const filteredMenu = data.category
-          ? menu.filter(i => (i.category || 'General').toLowerCase() === data.category.toLowerCase())
-          : menu;
-        await updateSession(session.customerPhone, session.tenantId, {
-          step: 'SELECT_ITEM', data: { ...data, item: undefined }, menuViewed: true,
-        });
-        return buildProductList(filteredMenu.length ? filteredMenu : menu, business, data.category);
       }
       if (/^(confirm_item|order_this|order|yes|y|ok|buy)$/i.test(clean)) {
         const MAX_QTY = business?.settings?.maxOrderQuantity || 10;
@@ -461,7 +426,6 @@ export async function handleElectronicsOrder({
       try {
         savedOrder = await saveOrder({
           item:          data.item?.name,
-          menuItemId:    data.item?._id, // [CATALOG-STOCK-1] enables stock decrement on order
           quantity:      data.quantity,
           totalPrice:    data.totalPrice,
           // [AUDIT-FIX-ELEC-1] orderService.saveOrder() destructures a fixed set of
@@ -675,13 +639,7 @@ export async function handleSpecRequest({ session, message, business, tenant }) 
   // FLOW_PASSTHROUGH_IDS, so it will still re-enter this handler and re-trigger
   // startFlow('SPEC_REQUEST') — that path works correctly without completeFlow.
   // completeFlow clears currentFlow/step so ORDER and SHOW_MENU can route correctly.
-  // [FIX-ELEC-CF-3] completeFlow's return value was being discarded here — every
-  // other module (services, general, salon, restaurant, retail, bakery) captures it
-  // and returns it when truthy, since a non-null return means lead capture kicked in
-  // and its UI (e.g. "can we get your name/email?") should replace the normal reply.
-  // This was the one handler in the codebase silently dropping that override.
-  const _lcRspec = await completeFlow(session, 'SPEC_REQUEST', business, null);
-  if (_lcRspec) return _lcRspec;
+  await completeFlow(session, 'SPEC_REQUEST', business, null);
 
   return {
     type: 'buttons',
@@ -856,10 +814,7 @@ export async function handleWarranty({ session, message, business, tenant }) {
   // with the button ID as the customer message, producing nonsensical AI responses.
   // completeFlow clears the flow state and sets postFlowAck so follow-up messages
   // (thanks, ok) get a warm reply instead of falling through to a stale flow handler.
-  // [FIX-ELEC-CF-3] Same discarded-return-value bug as SPEC_REQUEST above — capture
-  // and return completeFlow's result when truthy (lead-capture override).
-  const _lcRwar = await completeFlow(session, 'WARRANTY', business, null);
-  if (_lcRwar) return _lcRwar;
+  await completeFlow(session, 'WARRANTY', business, null);
 
   return {
     type: 'buttons',

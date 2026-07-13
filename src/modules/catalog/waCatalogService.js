@@ -155,20 +155,12 @@ export async function sendCatalogMessage(to, business, tenant, { productRetailer
 // GET /:tenantId/wacatalog/health can distinguish "hasn't changed" from
 // "has been failing" — never throws outward, mirrors the lastSyncedAt write
 // pattern already used on the success path below.
-// [AUDIT-FIX-SYNC-DETAIL] recordSyncError previously only stored a terse code like
-// "GRAPH_ERROR (400)" — the actual Graph API error message (why Meta rejected the
-// batch: invalid catalog_id, missing permission, malformed field, etc.) was logged
-// server-side via logger.error() but never persisted anywhere the dashboard could
-// read it. An admin hitting a sync failure had no way to self-diagnose without
-// pulling raw deploy logs from Railway. `detail` is optional so every existing
-// call site (and the NETWORK_ERROR path, which has no Graph response body to
-// quote) keeps working unchanged.
-async function recordSyncError(businessId, reason, detail = null) {
+async function recordSyncError(businessId, reason) {
   try {
     const { default: BusinessConfig } = await import('../../models/BusinessConfig.js');
     await BusinessConfig.updateOne(
       { _id: businessId },
-      { $set: { 'waCatalog.lastSyncError': { reason, detail, at: new Date() } } },
+      { $set: { 'waCatalog.lastSyncError': { reason, at: new Date() } } },
     );
   } catch (err) {
     logger.debug('[WACatalog] recordSyncError write failed (non-fatal)', { err: err.message });
@@ -311,20 +303,8 @@ export async function syncMenuToCatalog(business, tenant) {
     if (!resp.ok) {
       const errText = await resp.text().catch(() => '');
       logger.error('[WACatalog] syncMenuToCatalog failed', { status: resp.status, err: errText.slice(0, 300) });
-      // [AUDIT-FIX-SYNC-DETAIL] Meta's Graph API error body is JSON shaped like
-      // { error: { message, type, code, error_subcode } } — pull out `message`
-      // (the actual human-readable reason, e.g. "Invalid parameter", "Unsupported
-      // request - method type: post") so it can be shown on the dashboard instead
-      // of only the bare status code. Falls back to the raw (truncated) body if
-      // it isn't valid JSON or doesn't have the expected shape, so nothing is
-      // ever silently dropped.
-      let detail = errText.slice(0, 300) || null;
-      try {
-        const parsed = JSON.parse(errText);
-        if (parsed?.error?.message) detail = parsed.error.message;
-      } catch { /* not JSON — keep the raw text fallback above */ }
-      await recordSyncError(business._id, `GRAPH_ERROR (${resp.status})`, detail);
-      return { ok: false, reason: 'GRAPH_ERROR', status: resp.status, detail };
+      await recordSyncError(business._id, `GRAPH_ERROR (${resp.status})`);
+      return { ok: false, reason: 'GRAPH_ERROR', status: resp.status };
     }
 
     try {
@@ -343,7 +323,7 @@ export async function syncMenuToCatalog(business, tenant) {
             // accurate for the whole catalog, not just what just changed.
             'waCatalog.syncedItemHashes': Object.fromEntries(allCurrentItems.map(i => [i.retailer_id, i.hash])),
             // [CATALOG-HEALTH-4] A successful sync clears any stale failure flag.
-            'waCatalog.lastSyncError': { reason: null, detail: null, at: null },
+            'waCatalog.lastSyncError': { reason: null, at: null },
           },
         },
       );
@@ -355,12 +335,7 @@ export async function syncMenuToCatalog(business, tenant) {
     return { ok: true, synced: updateRequests.length, deleted: deleteRequests.length, skipped: allCurrentItems.length - updateRequests.length, invalidSkipped: invalidSkipped.length };
   } catch (err) {
     logger.error('[WACatalog] syncMenuToCatalog network error', { err: err.message });
-    // [AUDIT-FIX-SYNC-DETAIL] err.name === 'AbortError' means the 15s timeout fired
-    // (see the AbortController above) — worth distinguishing from a genuine DNS/
-    // connection failure on the dashboard, since a timeout usually means "try
-    // again" while a connection error usually means "check network/Meta status".
-    const detail = err.name === 'AbortError' ? 'Request to Meta timed out after 15s' : err.message;
-    await recordSyncError(business._id, 'NETWORK_ERROR', detail);
-    return { ok: false, reason: 'NETWORK_ERROR', detail };
+    await recordSyncError(business._id, 'NETWORK_ERROR');
+    return { ok: false, reason: 'NETWORK_ERROR' };
   }
 }

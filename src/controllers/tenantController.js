@@ -238,16 +238,6 @@ export async function createTenant(req, res) {
       name, businessMode = 'RESTAURANT', adminPhone, email,
       whatsapp = {}, menuItems = [], services = [], payment = {},
       leadCapture = {}, faq = [], description = '',
-      // [AUDIT-FIX-CATALOG-CREATE-1] waCatalog was accepted nowhere in this
-      // function — a request body that included it (e.g. from a UI wizard
-      // step that lets an admin set enabled/catalogId up front) had the field
-      // silently dropped by the destructure above, same failure mode as every
-      // other "field missing from the accepted set" bug elsewhere in this
-      // codebase. Accept it here and pass it straight to BusinessConfig.create()
-      // so the schema's own defaults/validation (see models/BusinessConfig.js
-      // waCatalog block) do the rest. Still fully optional — omitting it
-      // behaves exactly as before (enabled:false, catalogId:null).
-      waCatalog = {},
     } = req.body;
 
     if (!name || typeof name !== 'string' || !name.trim()) {
@@ -274,25 +264,6 @@ export async function createTenant(req, res) {
       },
     });
 
-    // [AUDIT-FIX-CATALOG-CREATE-1] A tenant created with a SIM_ placeholder
-    // phoneNumberId (i.e. no real WhatsApp credentials yet) cannot have a
-    // working catalog — Meta's Commerce Catalog is tied to a real WABA/phone
-    // number. Silently accepting enabled:true here would leave the tenant in
-    // a confusing state (dashboard shows catalog "on" but wacatalog/health
-    // and every sync call will fail). Downgrade to enabled:false rather than
-    // rejecting the whole request — catalogId itself is harmless to store
-    // early (e.g. an admin who already knows their Meta catalog ID but hasn't
-    // pasted WhatsApp credentials into this same request yet) and can be
-    // flipped on later via PUT /business/:tenantId once real credentials exist.
-    const isSimPhone = !whatsapp.phoneNumberId || whatsapp.phoneNumberId.startsWith('SIM_');
-    const resolvedWaCatalog = {
-      enabled:   !!waCatalog.enabled && !isSimPhone,
-      catalogId: waCatalog.catalogId ? String(waCatalog.catalogId).trim().slice(0, 100) : null,
-      ...(waCatalog.mode && ['AI_DECIDES', 'ALWAYS_OFFER', 'MANUAL_ONLY'].includes(waCatalog.mode)
-        ? { mode: waCatalog.mode }
-        : {}),
-    };
-
     const business = await BusinessConfig.create({
       tenantId:      String(tenant._id),
       phoneNumberId: tenant.whatsapp.phoneNumberId,
@@ -300,49 +271,21 @@ export async function createTenant(req, res) {
       businessMode,  adminPhone,  description,
       menuItems,     services,    payment,
       leadCapture,   faq,
-      waCatalog:     resolvedWaCatalog,
       addOns: [],
     });
-
 
     const plaintextKey = tenant._plaintextApiKey;
     logger.info('[Tenant] Created', { tenantId: tenant._id, name: tenant.name });
     res.status(201).json({
       tenant:   { _id: tenant._id, name: tenant.name, status: tenant.status, apiKey: plaintextKey },
       business: { _id: business._id, businessMode, name: business.name },
-      // [AUDIT-FIX-CATALOG-CREATE-1] Echo back the RESOLVED waCatalog state, not just
-      // "it was accepted" — if the caller asked for enabled:true but this tenant has
-      // no real phoneNumberId yet, resolvedWaCatalog.enabled was silently downgraded
-      // to false above. Without surfacing that here, a frontend wizard that sent
-      // { enabled: true, catalogId: 'X' } in the same request as an empty WhatsApp
-      // step would show a success toast while the catalog is actually still off,
-      // with no indication why. `catalogPending` lets the UI show "catalog will
-      // activate once WhatsApp is connected" instead of silently disagreeing with
-      // what the admin just submitted.
-      waCatalog: {
-        enabled:        resolvedWaCatalog.enabled,
-        catalogId:      resolvedWaCatalog.catalogId,
-        catalogPending: !!waCatalog.enabled && !resolvedWaCatalog.enabled,
-      },
       next:     `Use x-api-key: <the key above> for business / dashboard routes. `
               + `Activate via PATCH /admin/tenants/${tenant._id} with credentials + "activate":true`,
     });
   } catch (err) {
     logger.error('[Tenant] createTenant failed', { err: err.message });
     if (err.code === 11000) {
-      // [FIX-DUP-KEY-MSG] err.code 11000 only tells us it was A duplicate key,
-      // not WHICH field — the old message always said "phone number or email"
-      // even when adminPhone isn't indexed at all and couldn't have been the
-      // cause. err.keyPattern names the actual unique index that was violated
-      // (e.g. "email", "whatsapp.phoneNumberId", "apiKeyHash"), so surface that
-      // instead of guessing.
-      const field = Object.keys(err.keyPattern || {})[0] || 'field';
-      const value = err.keyValue?.[field];
-      return res.status(409).json({
-        error: `A tenant with that ${field} already exists`,
-        field,
-        ...(value !== undefined ? { value } : {}),
-      });
+      return res.status(409).json({ error: 'A tenant with that phone number or email already exists' });
     }
     res.status(500).json({ error: err.message });
   }
@@ -606,34 +549,6 @@ export async function updateTenant(req, res) {
         logger.warn('[Tenant] BusinessConfig phoneNumberId sync failed (non-fatal)', {
           tenantId: req.params.id,
           err: syncErr.message,
-        });
-      }
-    }
-
-    // [AUDIT-FIX-CATALOG-ACTIVATE-1] Close the loop with [AUDIT-FIX-CATALOG-CREATE-1]:
-    // a tenant may have been created with a catalogId already stored but
-    // enabled forced to false because phoneNumberId was still a SIM_ placeholder
-    // at that time. Now that activation is providing a real phoneNumberId, if a
-    // catalogId is already on file and catalog is still off, turn it on — this
-    // is the exact condition the admin was told to wait for ("catalog will
-    // activate once WhatsApp is connected"), so it should happen automatically
-    // rather than requiring a THIRD separate PUT /business/:tenantId call the
-    // admin has no reason to know is still needed. Only acts when the caller
-    // never explicitly touched waCatalog themselves in this same request.
-    if (wantsActivate && updates['whatsapp.phoneNumberId'] && req.body.waCatalog === undefined) {
-      try {
-        const biz = await BusinessConfig.findOne({ tenantId: String(req.params.id) })
-          .select('waCatalog.enabled waCatalog.catalogId').lean();
-        if (biz?.waCatalog?.catalogId && !biz.waCatalog.enabled) {
-          await BusinessConfig.updateOne(
-            { tenantId: String(req.params.id) },
-            { $set: { 'waCatalog.enabled': true } },
-          );
-          logger.info('[Tenant] Auto-enabled pending WA Catalog on activation', { tenantId: req.params.id });
-        }
-      } catch (catalogSyncErr) {
-        logger.warn('[Tenant] Auto-enable WA Catalog on activation failed (non-fatal)', {
-          tenantId: req.params.id, err: catalogSyncErr.message,
         });
       }
     }
