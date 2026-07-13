@@ -161,18 +161,7 @@ app.use('/business', createRateLimiter(120), requireApiKey, businessRoutes);
 // Dashboard
 app.use('/dashboard', createRateLimiter(120), requireApiKey, dashboardRoutes);
 
-// Admin routes — ORDER IS LOAD-BEARING.
-// Express matches routes in registration order. /admin/tenants MUST be mounted
-// BEFORE /admin so requests to /admin/tenants/* hit requireSuperAdminKey (master
-// key only) and are not also caught by the broader /admin mount which accepts
-// tenant api keys via requireApiKey. If you ever add routes to adminRoutes that
-// start with /tenants they will be silently shadowed by tenantRoutes above —
-// put them in tenantRoutes instead, or use a prefix that avoids the collision.
-// [FIX-SAKEY] Super admin key rotation — POST /admin/rotate-super-key
-// IMPORTANT: This route MUST be registered BEFORE the broad `app.use('/admin', ...)` mount.
-// Express matches routes in registration order; if the /admin mount comes first it will
-// catch POST /admin/rotate-super-key (matching /rotate-super-key inside adminRoutes) before
-// this handler ever runs, making the endpoint unreachable.
+
 app.post('/admin/rotate-super-key', adminLimiter, requireSuperAdminKey, (_req, res) => {
   const candidate = crypto.randomBytes(40).toString('hex'); // 80 hex chars, 320 bits
   logger.info('[SuperAdmin] Super-admin key rotation candidate generated');
