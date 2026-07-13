@@ -395,7 +395,7 @@ export async function syncWaCatalog(req, res) {
       // configured at all) from an actual Graph API failure, so the response tells
       // an admin what to do next instead of a bare "GRAPH_ERROR" reason code.
       const status = result.reason === 'NO_TOKEN' || result.reason === 'NO_CATALOG_ID' ? 400 : 502;
-      return res.status(status).json({ ok: false, reason: result.reason, status: result.status });
+      return res.status(status).json({ ok: false, reason: result.reason, status: result.status, detail: result.detail || null });
     }
 
     res.json({ ok: true, synced: result.synced, deleted: result.deleted || 0 });
