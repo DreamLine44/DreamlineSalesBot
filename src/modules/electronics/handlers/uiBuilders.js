@@ -20,6 +20,12 @@
  * Falls through to full product list if no categories are set.
  */
 export function buildCategoryUI(categories, business) {
+  // [AUDIT-FIX-6] Was categories.slice(0, 10) here (added by the earlier
+  // [FIX-CAT-LIST-CAP] pass, which only fixed the "no notice" problem, not
+  // the truncation itself). dispatcher.js's row-chunking logic (see
+  // [FIX-LIST-TRUNC]) chunks a flat `rows` array into ≤10-row sections (up
+  // to 100 total) — but only if it receives the FULL list. Pre-slicing here
+  // defeated that. Build rows from the full category list instead.
   const rows = categories.map((cat, i) => ({
     id:    `CAT_${cat.toUpperCase().replace(/\s+/g, '_')}`,
     title: cat.slice(0, 24),
@@ -55,10 +61,13 @@ export function buildProductList(items, business, categoryLabel = null) {
     ? `${categoryLabel} — ${business?.name || 'Products'}`
     : business?.name || 'Products';
   const currency = business?.payment?.currency || 'D';
-  const total    = items.length;
-  const shown    = items.slice(0, 10);
 
-  const rows = shown.map((item, i) => {
+  // [AUDIT-FIX-6] Was items.slice(0, 10) here — same pre-slicing issue as
+  // buildCategoryUI above. Build rows from the full catalogue; dispatcher
+  // chunks into ≤10-row sections (up to 100 total). Numeric selection in
+  // orderFlow.js already resolves against the full unsliced `listMenu`, so
+  // this also fixes any latent row/index mismatch beyond item #10.
+  const rows = items.map((item, i) => {
     const priceStr = item.price ? `${currency}${item.price}` : '';
     const specStr  = item.specs?.short || item.description || '';
     const detail   = [priceStr, specStr].filter(Boolean).join(' · ').slice(0, 72);
@@ -69,16 +78,12 @@ export function buildProductList(items, business, categoryLabel = null) {
     };
   });
 
-  const overflowNote = total > 10
-    ? `\n\n_(Showing 10 of ${total} items — type a product name to search)_`
-    : '';
-
   return {
     type:        'list',
     header,
     body:        (categoryLabel
       ? `Here are our *${categoryLabel}* products:`
-      : "Here's our full product range — tap to view details:") + overflowNote,
+      : "Here's our full product range — tap to view details:"),
     buttonLabel: 'Browse Products',
     rows,
   };

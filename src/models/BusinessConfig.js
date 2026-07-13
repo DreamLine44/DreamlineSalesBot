@@ -28,6 +28,14 @@ const menuItemSchema = new mongoose.Schema({
   description: { type: String, default: '', trim: true, maxlength: 300 },
   keywords:    { type: [String], default: [], validate: { validator: v => v.length <= 20, message: 'Max 20 keywords per item' } },
   available:   { type: Boolean, default: true },
+  // [CATALOG-STOCK-1] Optional per-item stock count. null = untracked/unlimited
+  // (the default — zero behaviour change for every existing tenant/item that
+  // never sets this). When set, orderService.saveOrder() decrements it on every
+  // confirmed order line and flips `available` to false once it hits 0, then
+  // triggers an immediate WA Catalog resync so the Meta-facing listing doesn't
+  // go stale between manual menu edits. See services/orderService.js
+  // decrementStockForOrder().
+  stockCount:  { type: Number, default: null, min: 0 },
   // [v1-SALON] category: 'services'|'service' = appointment service; anything else = retail product.
   // Salon flow uses this to split the menu into bookable services vs purchasable products.
   category:    { type: String, default: null, trim: true, maxlength: 60 },
@@ -51,6 +59,28 @@ const menuItemSchema = new mongoose.Schema({
   },
   tags:              { type: [String], default: [] },  // e.g. ["popular", "new", "special"]
   showImageOnSelect: { type: Boolean,  default: true },
+  // [FIX-VARIANTS-SCHEMA] variants: product options (fashion sizes, retail
+  // options, etc). Entries can be a plain string ('M') or an object with at
+  // least a `name` field ({ name: 'M' }) — every reader in the codebase
+  // (retail/flows/index.js, fashion/flows/index.js, waCatalogHelpers.js
+  // resolveCatalogItem()) already does `v.name || v` / `String(v)` to accept
+  // either shape, and scripts/seed.js seeds plain strings. This field was
+  // missing from the schema entirely: Mongoose's default strict mode drops
+  // any key not declared on the (sub)document schema when casting writes —
+  // so every `variants` array sent via addMenuItem/updateMenuItem/updateMenu
+  // (dashboardController.js and businessController.js), or via seed.js's
+  // BusinessConfig.create(), was silently stripped before it ever reached
+  // Mongo. That broke, all at once: fashion size selection and retail
+  // variant selection (both fall back to "no variants — skip to quantity"
+  // for EVERY item), and WA Catalog's variant-specific retailer IDs
+  // (buildRetailerId()/resolveCatalogItem() in waCatalogHelpers.js), since
+  // there was never a `variants` array on any persisted menu item to build
+  // or resolve against.
+  variants: {
+    type: [mongoose.Schema.Types.Mixed],
+    default: [],
+    validate: { validator: v => v.length <= 20, message: 'Max 20 variants per item' },
+  },
 }, { _id: true });
 
 const serviceSchema = new mongoose.Schema({
@@ -238,6 +268,27 @@ const businessConfigSchema = new mongoose.Schema({
 
   faq: [faqSchema],
 
+  // ── Discount codes / promotions [PROMO-1] ─────────────────────────────────
+  // Config-only feature — the bot's live flows never write here. A promo is
+  // resolved and applied entirely inside orderService.saveOrder() at the
+  // moment an order is persisted (see services/promoService.js), the same
+  // pattern already used for stock decrement — so this never touches Session
+  // or any in-flight flow state.
+  promotions: {
+    type: [{
+      code:         { type: String, required: true, trim: true, uppercase: true, maxlength: 30 },
+      type:         { type: String, enum: ['PERCENT', 'FIXED'], required: true },
+      value:        { type: Number, required: true, min: 0 }, // percent (0-100) or fixed currency amount
+      active:       { type: Boolean, default: true },
+      minOrderValue:{ type: Number, default: 0, min: 0 },
+      maxUses:      { type: Number, default: null, min: 1 }, // null = unlimited
+      usedCount:    { type: Number, default: 0, min: 0 },
+      expiresAt:    { type: Date, default: null },
+      description:  { type: String, default: '', trim: true, maxlength: 200 },
+    }],
+    default: [],
+  },
+
   // ── Lead Capture (optional) ───────────────────────────────────────────────
   // When enabled, the bot collects customer name/contact before the first flow.
   // Controlled by leadCaptureService. Off by default — no behaviour change.
@@ -248,6 +299,82 @@ const businessConfigSchema = new mongoose.Schema({
     promptMessage: { type: String, default: null, trim: true, maxlength: 500 }, // custom opening line
     thankYouMsg:   { type: String, default: null, trim: true, maxlength: 300 }, // custom thank-you
     notifyAdmin:   { type: Boolean, default: true }, // send admin a WhatsApp alert per lead
+  },
+
+  // ── WA (Meta) Commerce Catalog — [CATALOG-1] ──────────────────────────────
+  // Optional, per-tenant, off by default. Purely a visual presentation layer
+  // on top of the existing menuItems/matchEngine/order-flow pipeline — see
+  // src/modules/catalog/ for the integration. Follows the same additive
+  // per-tenant-enum precedent as tone.industry/businessMode above (see
+  // [FIX-TONE-1]/[FIX-TONE-2]) rather than a new top-level collection: the
+  // retailer_id↔menuItem mapping is DERIVED from menuItems._id at send/sync
+  // time (waCatalogHelpers.js buildRetailerId/parseRetailerId), so no
+  // separate mapping table is needed and menuItems stays the single source
+  // of truth for product data.
+  waCatalog: {
+    enabled:   { type: Boolean, default: false },
+    // Meta Commerce Catalog ID this tenant's WhatsApp number is connected to.
+    // Required for enabled:true to have any effect — see waCatalogConfig.js
+    // isCatalogEnabled(), which treats enabled:true + no catalogId as "off".
+    catalogId: { type: String, default: null, trim: true, maxlength: 100 },
+    // AI_DECIDES  — offer WA Catalog when the already-classified intent looks
+    //               like open browsing (see waCatalogConfig.js BROWSE_INTENTS).
+    // ALWAYS_OFFER— offer WA Catalog on every START_ORDER-routed entry.
+    // MANUAL_ONLY — WA Catalog is never sent automatically (reserved for a
+    //               future explicit trigger, e.g. an admin "Send Catalog" action).
+    mode: {
+      type: String,
+      enum: ['AI_DECIDES', 'ALWAYS_OFFER', 'MANUAL_ONLY'],
+      default: 'AI_DECIDES',
+    },
+    // Set by waCatalogService.syncMenuToCatalog() on a successful push of
+    // menuItems into the Meta Commerce Catalog. null = never synced.
+    lastSyncedAt: { type: Date, default: null },
+    // [CATALOG-CRUD-1] The retailer_ids pushed as part of the MOST RECENT
+    // successful sync. Meta's Catalog Batch API has no "replace the whole
+    // catalog with this list" mode — CREATE/UPDATE/DELETE are all per-item,
+    // so the only way to know an item was REMOVED from menuItems (as opposed
+    // to just never having existed) is to diff the current menuItems against
+    // whatever was synced last time. This field is that "last time" snapshot;
+    // syncMenuToCatalog() rewrites it after every successful run.
+    syncedRetailerIds: { type: [String], default: [] },
+    // [CATALOG-DELTA-1] retailer_id -> content hash (sha1 of the exact payload
+    // last pushed for that item) from the MOST RECENT successful sync. Lets
+    // syncMenuToCatalog() skip re-sending items whose content is unchanged,
+    // instead of rebuilding+resending the full menu on every edit. Missing
+    // entries (e.g. tenants who synced before this field existed) are treated
+    // as "always changed" — self-healing, no migration needed.
+    syncedItemHashes: { type: Map, of: String, default: {} },
+    // [CATALOG-HEALTH-4] Set by waCatalogService.syncMenuToCatalog() on a
+    // FAILED sync attempt (network error, Graph API rejection, missing
+    // token) and cleared on the next SUCCESSFUL one. Previously a failing
+    // sync only ever produced a log line — lastSyncedAt simply stayed stale
+    // with no way for GET /:tenantId/wacatalog/health (and therefore no way
+    // for an admin dashboard) to tell "hasn't synced in a while because
+    // nothing changed" apart from "has been silently failing every attempt."
+    lastSyncError: {
+      reason: { type: String, default: null },
+      // [AUDIT-FIX-SYNC-DETAIL] Added alongside the waCatalogService.js fix that
+      // now writes a human-readable Graph API error message here. Without this
+      // schema entry, Mongoose's default strict mode would silently drop the
+      // `detail` field on every `$set` write — the exact same silent-drop bug
+      // class already fixed once in this codebase for Order.status ([FIX-4]).
+      detail: { type: String, default: null },
+      at:     { type: Date,   default: null },
+    },
+  },
+
+  // [MULTICART-v39] Per-tenant opt-in for multi-item orders (single checkout
+  // carrying several distinct items, e.g. a cosmetics customer ordering a
+  // lipstick + a foundation together instead of two separate orders).
+  // Default false: every existing tenant keeps today's single-item-per-order
+  // flow with zero behavior change. Follows the same additive
+  // enabled-flag-on-a-nested-object precedent as waCatalog above.
+  multiItemCart: {
+    enabled:  { type: Boolean, default: false },
+    // Upper bound on distinct items per order — protects against a customer
+    // (or a stuck "add another?" loop) building an unbounded cart.
+    maxItems: { type: Number, default: 10, min: 1, max: 50 },
   },
 
   settings: {

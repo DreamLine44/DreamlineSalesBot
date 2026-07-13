@@ -100,7 +100,7 @@ import Booking        from '../models/Booking.js';
 import Tenant         from '../models/Tenant.js';
 import BusinessConfig from '../models/BusinessConfig.js';
 import { updateSession } from '../core/sessions/sessionService.js';
-import { dispatchText, dispatchMessage } from '../core/whatsapp/dispatcher.js';
+import { dispatchMessage } from '../core/whatsapp/dispatcher.js';
 import { getModeConfig } from '../config/modes.js';
 import logger            from '../config/logger.js';
 
@@ -960,7 +960,9 @@ async function resumeBot(customerPhone, tenantId, tenantDoc) {
 export function buildAdminBookingAlertBody({ customerPhone, date, time, service, partySize, business, shortId, staff, bookingType }) {
   const bizName       = business?.name || 'Business';
   const mode          = (business?.businessMode || '').toUpperCase();
-  const isSalon       = mode === 'SALON' || mode === 'BARBERSHOP';
+  // [AUDIT-FLOWS-7] Removed a dead `isSalon` variable — this alert body already varies
+  // by mode only through `staffLabel` (Barber vs Stylist) and the walk-in/appointment
+  // header below; nothing here further branches on salon-vs-non-salon.
   const isWalkIn      = bookingType === 'walkin';
   const staffLabel    = mode === 'BARBERSHOP' ? 'Barber' : 'Stylist';
 

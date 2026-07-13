@@ -136,7 +136,11 @@ async function _buildSkincareAdvice(question, skinType, business, session) {
   // instead of routing to ORDER/QUESTION/SHOW_MENU as intended. Calling completeFlow
   // here clears currentFlow/step/data and sets postFlowAck='SKINCARE_ADVICE' so the
   // customer's next message gets an appropriate warm reply.
-  await completeFlow(session, 'SKINCARE_ADVICE', business, null);
+  // [FIX-COSM-CF-2] completeFlow's return value was discarded — same bug found and
+  // fixed in electronics' SPEC_REQUEST/WARRANTY handlers. Capture and return it when
+  // truthy so a triggered lead capture isn't silently dropped.
+  const _lcRskin = await completeFlow(session, 'SKINCARE_ADVICE', business, null);
+  if (_lcRskin) return _lcRskin;
 
   return {
     type: 'buttons',
