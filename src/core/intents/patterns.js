@@ -11,11 +11,6 @@
 export const BUTTON_ID_MAP = {
   // Primary actions
   'ORDER':              'START_ORDER',
-  // [CATALOG-UX-BUTTON] Explicit "🛍 Browse Catalog" welcome-menu button —
-  // see waCatalogConfig.js shouldShowCatalogButton() / moduleRouter.js
-  // GREET+SHOW_MENU cases (button injection) and moduleRegistry.js
-  // (action handler → waCatalogFlow.js browseCatalogExplicit()).
-  'BROWSE_CATALOG':     'BROWSE_CATALOG',
   'BOOK':               'START_BOOKING',
   'BOOK_AGAIN':         'START_BOOKING',   // [FIX] post-appointment rebook button
   'BOOK_NOW':           'START_BOOKING',   // [FIX] alternate booking trigger
@@ -27,7 +22,10 @@ export const BUTTON_ID_MAP = {
   'QUESTION':           'QUESTION',
   'SUPPORT':            'SUPPORT',
   'SHOW_MENU':          'SHOW_MENU',
-  'VIEW_MENU':          'SHOW_MENU',
+  // [AUDIT-FIX-VIEWMENU] Was 'SHOW_MENU' — collapsed the "View Menu" button tap
+  // into the reset/start-over action, so it never actually showed the menu.
+  // Now a distinct action; see moduleRouter.js case 'VIEW_MENU'.
+  'VIEW_MENU':          'VIEW_MENU',
 
   // Flow control
   'CONFIRM':            'CONFIRM',
@@ -95,17 +93,8 @@ export const BUTTON_ID_MAP = {
   'WALKIN_NOW':         'WALKIN',           // [FIX] Join Now variant button
   'JOIN_QUEUE':         'WALKIN',
   // [v14-PATTERNS] Salon/barbershop new button IDs
-  // [AUDIT-FLOWS-RESCHEDULE] Was 'START_BOOKING'. That mapping reset the session and
-  // started a completely fresh booking flow WITHOUT touching the customer's existing
-  // pending/confirmed appointment — so tapping "📅 Reschedule" from the greeting-gate
-  // screen (moduleRouter.js GREET case) left the OLD booking live in the DB and created
-  // a second, separate one from the new flow. This contradicted the documented behavior
-  // ("cancel the old one atomically" — see [v14-RESCHEDULE] in salon/flows/index.js) and
-  // silently duplicated admin alerts/reminders. postFlowHandler.js's own RESCHEDULE
-  // handling (used from postFlowAck contexts) already cancels-then-restarts correctly;
-  // routing here to a dedicated 'RESCHEDULE' action lets moduleRouter.js do the same for
-  // the greeting-gate entry point instead of falling through to the bare START_BOOKING reset.
-  'RESCHEDULE':         'RESCHEDULE',
+  'RESCHEDULE':         'RESCHEDULE',      // [AUDIT-FLOWS-RESCHEDULE] must cancel the old
+                                            // booking first, not just re-enter BOOKING fresh
   'CONSULTATION':       'QUESTION',        // consultation taps go to the QUESTION/AI flow
 
   // Payment
@@ -359,9 +348,24 @@ export const INTENT_PATTERNS = {
     'talk to staff', 'talk to someone else',
   ],
 
+  // [AUDIT-FIX-VIEWMENU] Split the old single SHOW_MENU list into two distinct
+  // intents. It previously conflated two different customer goals under one
+  // bucket: "let me see the menu/items" (menu, show menu, view menu, see menu,
+  // main menu, back to menu) vs. "take me back to the top-level options" (home,
+  // back, restart, 0, start over). Both mapped to the same SHOW_MENU action,
+  // which only ever resets the session and re-shows the generic welcome
+  // buttons — it never actually displays the menu. A customer mid-order who
+  // typed "menu" or tapped a "📋 View Menu" button (id SHOW_MENU) lost their
+  // flow progress and was NOT shown any menu items, despite the button/intent
+  // name promising exactly that. VIEW_MENU is now a first-class intent/action
+  // (see intentEngine.js intentToAction, moduleRouter.js case 'VIEW_MENU', and
+  // webhookController.js mid-flow handling) that actually renders the menu.
+  VIEW_MENU: [
+    'menu', 'show menu', 'view menu', 'see menu', 'main menu', 'back to menu',
+  ],
+
   SHOW_MENU: [
-    'menu', 'show menu', 'view menu', 'see menu', 'main menu', 'home',
-    'back to menu', 'back', 'restart', '0', 'start over',
+    'home', 'back', 'restart', '0', 'start over',
   ],
 
   CAKE_CUSTOMIZATION: [

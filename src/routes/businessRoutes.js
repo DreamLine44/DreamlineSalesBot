@@ -10,19 +10,11 @@ import {
   getBusinessConfig, updateBusinessConfig,
   getMenu, updateMenu, addMenuItem, deleteMenuItem,
   getModeInfo, listSupportedModes,
-  syncWaCatalog, getWaCatalogHealth,
 } from '../controllers/businessController.js';
 import { CLOUDINARY_ENABLED } from '../config/cloudinary.js';
 import { uploadSingle } from '../middleware/uploadMiddleware.js';
-import { catalogSyncLimiter } from '../middleware/rateLimiter.js';
-// [AUDIT-FIX-ROLE-GATE-1] Same gap as dashboardRoutes.js — this router had no
-// requireRole() calls at all, so a STAFF-role Bearer session could edit
-// business config / menu here exactly like an OWNER/MANAGER. See the fuller
-// note in dashboardRoutes.js.
-import { requireRole } from '../middleware/authMiddleware.js';
 
 const r = Router();
-const requireEditor = requireRole('OWNER', 'MANAGER');
 
 /**
  * enforceTenantScope — prevents tenant A from reading/writing tenant B's data.
@@ -48,17 +40,10 @@ r.get('/modes',                              listSupportedModes);
 r.get('/mode-info',                          getModeInfo);
 r.get('/cloudinary-status',                  (_req, res) => res.json({ cloudinaryEnabled: CLOUDINARY_ENABLED }));
 r.get('/:tenantId',                          enforceTenantScope, getBusinessConfig);
-r.put('/:tenantId',                          enforceTenantScope, requireEditor, updateBusinessConfig);
+r.put('/:tenantId',                          enforceTenantScope, updateBusinessConfig);
 r.get('/:tenantId/menu',                     enforceTenantScope, getMenu);
-r.put('/:tenantId/menu',                     enforceTenantScope, requireEditor, updateMenu);
-r.post('/:tenantId/menu',                    enforceTenantScope, requireEditor, uploadSingle, addMenuItem);
+r.put('/:tenantId/menu',                     enforceTenantScope, updateMenu);
+r.post('/:tenantId/menu',                    enforceTenantScope, uploadSingle, addMenuItem);
 // [FIX-BIZ-2] Changed :itemName → :itemId for safe, precise deletion by MongoDB _id
-r.delete('/:tenantId/menu/:itemId',          enforceTenantScope, requireEditor, deleteMenuItem);
-// [CATALOG-SYNC-ROUTE-1] Manual "Sync Now" action — pushes menuItems to the
-// tenant's Meta Commerce Catalog. Left open to STAFF: it doesn't change any
-// config, it just re-pushes whatever menuItems already say (an operational
-// action, not an edit) — see businessController.js syncWaCatalog().
-r.post('/:tenantId/wacatalog/sync',          enforceTenantScope, catalogSyncLimiter, syncWaCatalog);
-// [CATALOG-HEALTH-1] Read-only status widget data — see getWaCatalogHealth().
-r.get('/:tenantId/wacatalog/health',         enforceTenantScope, getWaCatalogHealth);
+r.delete('/:tenantId/menu/:itemId',          enforceTenantScope, deleteMenuItem);
 export default r;

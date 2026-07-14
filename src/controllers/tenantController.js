@@ -74,9 +74,6 @@ import UserProfile      from '../models/UserProfile.js';
 import Analytics        from '../models/Analytics.js';
 import ProcessedMessage from '../models/ProcessedMessage.js';
 import WhatsAppConnectionRequest from '../models/WhatsAppConnectionRequest.js';
-// [AUDIT-FIX-TENANT-PURGE-1] See note above deleteTenant below.
-import AdminUser         from '../models/AdminUser.js';
-import AdminNotification from '../models/AdminNotification.js';
 import crypto           from 'crypto';
 import logger           from '../config/logger.js';
 
@@ -241,16 +238,6 @@ export async function createTenant(req, res) {
       name, businessMode = 'RESTAURANT', adminPhone, email,
       whatsapp = {}, menuItems = [], services = [], payment = {},
       leadCapture = {}, faq = [], description = '',
-      // [AUDIT-FIX-CATALOG-CREATE-1] waCatalog was accepted nowhere in this
-      // function — a request body that included it (e.g. from a UI wizard
-      // step that lets an admin set enabled/catalogId up front) had the field
-      // silently dropped by the destructure above, same failure mode as every
-      // other "field missing from the accepted set" bug elsewhere in this
-      // codebase. Accept it here and pass it straight to BusinessConfig.create()
-      // so the schema's own defaults/validation (see models/BusinessConfig.js
-      // waCatalog block) do the rest. Still fully optional — omitting it
-      // behaves exactly as before (enabled:false, catalogId:null).
-      waCatalog = {},
     } = req.body;
 
     if (!name || typeof name !== 'string' || !name.trim()) {
@@ -277,25 +264,6 @@ export async function createTenant(req, res) {
       },
     });
 
-    // [AUDIT-FIX-CATALOG-CREATE-1] A tenant created with a SIM_ placeholder
-    // phoneNumberId (i.e. no real WhatsApp credentials yet) cannot have a
-    // working catalog — Meta's Commerce Catalog is tied to a real WABA/phone
-    // number. Silently accepting enabled:true here would leave the tenant in
-    // a confusing state (dashboard shows catalog "on" but wacatalog/health
-    // and every sync call will fail). Downgrade to enabled:false rather than
-    // rejecting the whole request — catalogId itself is harmless to store
-    // early (e.g. an admin who already knows their Meta catalog ID but hasn't
-    // pasted WhatsApp credentials into this same request yet) and can be
-    // flipped on later via PUT /business/:tenantId once real credentials exist.
-    const isSimPhone = !whatsapp.phoneNumberId || whatsapp.phoneNumberId.startsWith('SIM_');
-    const resolvedWaCatalog = {
-      enabled:   !!waCatalog.enabled && !isSimPhone,
-      catalogId: waCatalog.catalogId ? String(waCatalog.catalogId).trim().slice(0, 100) : null,
-      ...(waCatalog.mode && ['AI_DECIDES', 'ALWAYS_OFFER', 'MANUAL_ONLY'].includes(waCatalog.mode)
-        ? { mode: waCatalog.mode }
-        : {}),
-    };
-
     const business = await BusinessConfig.create({
       tenantId:      String(tenant._id),
       phoneNumberId: tenant.whatsapp.phoneNumberId,
@@ -303,49 +271,21 @@ export async function createTenant(req, res) {
       businessMode,  adminPhone,  description,
       menuItems,     services,    payment,
       leadCapture,   faq,
-      waCatalog:     resolvedWaCatalog,
       addOns: [],
     });
-
 
     const plaintextKey = tenant._plaintextApiKey;
     logger.info('[Tenant] Created', { tenantId: tenant._id, name: tenant.name });
     res.status(201).json({
       tenant:   { _id: tenant._id, name: tenant.name, status: tenant.status, apiKey: plaintextKey },
       business: { _id: business._id, businessMode, name: business.name },
-      // [AUDIT-FIX-CATALOG-CREATE-1] Echo back the RESOLVED waCatalog state, not just
-      // "it was accepted" — if the caller asked for enabled:true but this tenant has
-      // no real phoneNumberId yet, resolvedWaCatalog.enabled was silently downgraded
-      // to false above. Without surfacing that here, a frontend wizard that sent
-      // { enabled: true, catalogId: 'X' } in the same request as an empty WhatsApp
-      // step would show a success toast while the catalog is actually still off,
-      // with no indication why. `catalogPending` lets the UI show "catalog will
-      // activate once WhatsApp is connected" instead of silently disagreeing with
-      // what the admin just submitted.
-      waCatalog: {
-        enabled:        resolvedWaCatalog.enabled,
-        catalogId:      resolvedWaCatalog.catalogId,
-        catalogPending: !!waCatalog.enabled && !resolvedWaCatalog.enabled,
-      },
       next:     `Use x-api-key: <the key above> for business / dashboard routes. `
               + `Activate via PATCH /admin/tenants/${tenant._id} with credentials + "activate":true`,
     });
   } catch (err) {
     logger.error('[Tenant] createTenant failed', { err: err.message });
     if (err.code === 11000) {
-      // [FIX-DUP-KEY-MSG] err.code 11000 only tells us it was A duplicate key,
-      // not WHICH field — the old message always said "phone number or email"
-      // even when adminPhone isn't indexed at all and couldn't have been the
-      // cause. err.keyPattern names the actual unique index that was violated
-      // (e.g. "email", "whatsapp.phoneNumberId", "apiKeyHash"), so surface that
-      // instead of guessing.
-      const field = Object.keys(err.keyPattern || {})[0] || 'field';
-      const value = err.keyValue?.[field];
-      return res.status(409).json({
-        error: `A tenant with that ${field} already exists`,
-        field,
-        ...(value !== undefined ? { value } : {}),
-      });
+      return res.status(409).json({ error: 'A tenant with that phone number or email already exists' });
     }
     res.status(500).json({ error: err.message });
   }
@@ -502,16 +442,6 @@ export async function updateTenant(req, res) {
       'whatsapp.accessToken', 'whatsapp.verifyToken', 'whatsapp.webhookSecret', 'whatsapp.apiVersion',
       'meta.appId', 'meta.appSecret',
       'limits.messagesPerMonth', 'limits.maxMenuItems', 'limits.maxAdmins',
-      // [AUDIT-FIX-CATALOG-ADMIN-1] Catalog ID requires navigating Meta Commerce
-      // Manager, Business Settings, and system-user asset permissions — access a
-      // tenant business owner structurally does not have. It belongs alongside the
-      // other Meta credentials (meta.appId/appSecret, whatsapp.accessToken) that
-      // only the platform admin can obtain and set, not on the tenant-facing
-      // updateBusinessConfig endpoint. See [AUDIT-FIX-CATALOG-TENANT-LOCKDOWN-1]
-      // in businessController.js for the matching tenant-side restriction.
-      // [AUDIT-FIX-CATALOG-ENABLED-1] 'enabled' was missing here entirely —
-      // see the fuller note below where waCatalogUpdates.enabled is extracted.
-      'waCatalog.catalogId', 'waCatalog.mode', 'waCatalog.enabled',
     ];
 
     // Accept both nested { whatsapp: { accessToken } } and flat { 'whatsapp.accessToken': '...' }
@@ -531,44 +461,6 @@ export async function updateTenant(req, res) {
 
     if (!Object.keys(updates).length && !wantsActivate) {
       return res.status(400).json({ error: 'No valid fields to update', allowed: ALLOWED });
-    }
-
-    // [AUDIT-FIX-CATALOG-ADMIN-1] waCatalog lives on BusinessConfig, not Tenant —
-    // the Tenant schema has no such field, so leaving these in the Tenant $set
-    // below would hit the exact same silent-drop-under-strict-mode failure mode
-    // this codebase has already caught and fixed elsewhere (phoneNumberId,
-    // menuItems/"menu" alias, etc.). Pull them out here and write them to
-    // BusinessConfig separately, right after the Tenant update succeeds.
-    const waCatalogUpdates = {};
-    if (updates['waCatalog.catalogId'] !== undefined) {
-      waCatalogUpdates.catalogId = String(updates['waCatalog.catalogId'] || '').trim().slice(0, 100) || null;
-      delete updates['waCatalog.catalogId'];
-    }
-    if (updates['waCatalog.mode'] !== undefined) {
-      if (['AI_DECIDES', 'ALWAYS_OFFER', 'MANUAL_ONLY'].includes(updates['waCatalog.mode'])) {
-        waCatalogUpdates.mode = updates['waCatalog.mode'];
-      }
-      delete updates['waCatalog.mode'];
-    }
-    // [AUDIT-FIX-CATALOG-ENABLED-1] 'enabled' was never extracted here at all —
-    // only catalogId/mode were. A caller sending { waCatalog: { catalogId,
-    // mode, enabled: true } } (e.g. the exact ONE-SHOT activation shape this
-    // endpoint documents) had catalogId and mode saved correctly, but
-    // `enabled` was silently thrown away — never written to BusinessConfig,
-    // never mentioned in any response, no error. The tenant was left with
-    // waCatalog.enabled at its schema default of `false` despite the request
-    // explicitly asking to turn it on, so isCatalogEnabled() (waCatalogConfig.js)
-    // stayed false and nothing about WA Catalog ever activated: no button, no
-    // auto-offer, no sync. Worse, this also silently defeated the
-    // [AUDIT-FIX-CATALOG-ACTIVATE-1] auto-enable fallback further down, which
-    // only runs when the request body's `waCatalog` key is completely absent —
-    // since this request DID include `waCatalog`, that fallback never fired
-    // either. Net effect: there was no path in this endpoint that could ever
-    // turn waCatalog.enabled on when the caller explicitly asked for it
-    // alongside catalogId/mode in the same request.
-    if (updates['waCatalog.enabled'] !== undefined) {
-      waCatalogUpdates.enabled = updates['waCatalog.enabled'] === true || updates['waCatalog.enabled'] === 'true';
-      delete updates['waCatalog.enabled'];
     }
 
     // Encrypt sensitive tokens before they reach the DB
@@ -642,29 +534,6 @@ export async function updateTenant(req, res) {
     );
     if (!tenant) return res.status(404).json({ error: 'Tenant not found' });
 
-    // [AUDIT-FIX-CATALOG-ADMIN-1] Persist catalogId/mode to BusinessConfig now that
-    // the Tenant half of this update has succeeded. Flattened to dot-notation
-    // (matching [CATALOG-BIZ-1] in businessController.js) so an update to just
-    // catalogId never wipes out enabled/other waCatalog sibling fields via a
-    // plain-object $set replacing the whole subdocument.
-    if (Object.keys(waCatalogUpdates).length) {
-      try {
-        const set = {};
-        for (const [k, v] of Object.entries(waCatalogUpdates)) set[`waCatalog.${k}`] = v;
-        await BusinessConfig.updateOne(
-          { tenantId: String(req.params.id) },
-          { $set: set },
-        );
-        logger.info('[Tenant] Synced waCatalog fields to BusinessConfig', {
-          tenantId: req.params.id, fields: Object.keys(waCatalogUpdates),
-        });
-      } catch (syncErr) {
-        logger.warn('[Tenant] BusinessConfig waCatalog sync failed (non-fatal)', {
-          tenantId: req.params.id, err: syncErr.message,
-        });
-      }
-    }
-
     // [AUDIT-P1-A] Sync phoneNumberId to BusinessConfig when it changes
     if (updates['whatsapp.phoneNumberId']) {
       try {
@@ -684,65 +553,11 @@ export async function updateTenant(req, res) {
       }
     }
 
-    // [AUDIT-FIX-CATALOG-ACTIVATE-1] Close the loop with [AUDIT-FIX-CATALOG-CREATE-1]:
-    // a tenant may have been created with a catalogId already stored but
-    // enabled forced to false because phoneNumberId was still a SIM_ placeholder
-    // at that time. Now that activation is providing a real phoneNumberId, if a
-    // catalogId is already on file and catalog is still off, turn it on — this
-    // is the exact condition the admin was told to wait for ("catalog will
-    // activate once WhatsApp is connected"), so it should happen automatically
-    // rather than requiring a THIRD separate PUT /business/:tenantId call the
-    // admin has no reason to know is still needed. Only acts when the caller
-    // never explicitly touched waCatalog themselves in this same request.
-    if (wantsActivate && updates['whatsapp.phoneNumberId'] && req.body.waCatalog === undefined
-        && !Object.keys(waCatalogUpdates).length) {
-      try {
-        const biz = await BusinessConfig.findOne({ tenantId: String(req.params.id) })
-          .select('waCatalog.enabled waCatalog.catalogId').lean();
-        if (biz?.waCatalog?.catalogId && !biz.waCatalog.enabled) {
-          await BusinessConfig.updateOne(
-            { tenantId: String(req.params.id) },
-            { $set: { 'waCatalog.enabled': true } },
-          );
-          logger.info('[Tenant] Auto-enabled pending WA Catalog on activation', { tenantId: req.params.id });
-        }
-      } catch (catalogSyncErr) {
-        logger.warn('[Tenant] Auto-enable WA Catalog on activation failed (non-fatal)', {
-          tenantId: req.params.id, err: catalogSyncErr.message,
-        });
-      }
-    }
-
     logger.info('[Tenant] Updated', {
       tenantId:  tenant._id,
       fields:    Object.keys(updates),
       activated: wantsActivate,
     });
-
-    // [AUDIT-FIX-CATALOG-RESPONSE-1] This response only ever returned the
-    // Tenant document. waCatalog lives entirely on BusinessConfig (see
-    // [AUDIT-FIX-CATALOG-ADMIN-1] above), so a caller setting catalogId/mode/
-    // enabled here — including via the documented ONE-SHOT `activate: true`
-    // shape — got zero confirmation of what was actually saved, or whether
-    // the catalog ended up enabled at all. That blind spot is exactly what
-    // let the [AUDIT-FIX-CATALOG-ENABLED-1] bug above go unnoticed: the
-    // request "succeeded" with a 200 and no error, but nothing in the
-    // response could show that `enabled` had silently been dropped. Re-read
-    // the current BusinessConfig.waCatalog state (not the possibly-stale
-    // pre-write `waCatalogUpdates` object) and include it whenever this
-    // request touched catalog fields at all, or on any ONE-SHOT activation.
-    let waCatalogOut = null;
-    if (Object.keys(waCatalogUpdates).length || wantsActivate) {
-      try {
-        const biz = await BusinessConfig.findOne({ tenantId: String(req.params.id) })
-          .select('waCatalog').lean();
-        if (biz?.waCatalog) waCatalogOut = biz.waCatalog;
-      } catch (readErr) {
-        logger.warn('[Tenant] Reading back waCatalog for response failed (non-fatal)', {
-          tenantId: req.params.id, err: readErr.message,
-        });
-      }
-    }
 
     // [AUDIT-FIX-2] Delete apiKeyHash after toJSON() as defence-in-depth
     const tenantOut = tenant.toJSON();
@@ -751,7 +566,6 @@ export async function updateTenant(req, res) {
     res.json({
       ok:     true,
       tenant: tenantOut,
-      ...(waCatalogOut ? { waCatalog: waCatalogOut } : {}),
       ...(wantsActivate ? {
         activated:            true,
         message:              'Tenant credentials set and activated. Bot is live.',
@@ -833,17 +647,6 @@ export async function updateTenantStatus(req, res) {
 }
 
 // ─── deleteTenant ─────────────────────────────────────────────────────────────
-// [AUDIT-FIX-TENANT-PURGE-1] AdminUser (individual staff logins — email +
-// password hash) and AdminNotification (super-admin ↔ tenant messages) were
-// both added by later features ([FEATURE-MULTIADMIN-1], [ADMIN-NOTIFY-1])
-// and never added to this purge list, despite [FIX-TENANT-1]'s comment
-// (and this function's own log line) claiming it deletes "ALL tenant-scoped
-// data." Both models have a required tenantId — deleting a tenant left
-// every one of its staff accounts (including password hashes) and admin
-// message threads permanently orphaned in the DB with no owning tenant and
-// no way to clean them up later (there's no "list orphaned AdminUsers"
-// tooling). Adding both here closes that gap; every existing collection in
-// the list is untouched.
 export async function deleteTenant(req, res) {
   try {
     const { id } = req.params;
@@ -858,13 +661,6 @@ export async function deleteTenant(req, res) {
       UserProfile.deleteMany({ tenantId: tid }),
       Analytics.deleteMany({ tenantId: tid }),
       ProcessedMessage.deleteMany({ tenantId: tid }),
-      AdminUser.deleteMany({ tenantId: tid }),
-      AdminNotification.deleteMany({ tenantId: tid }),
-      // [AUDIT-FIX-TENANT-PURGE-1] Same gap: WhatsAppConnectionRequest is
-      // required:true tenantId-scoped ("Tracks each tenant's WhatsApp
-      // Business onboarding request") but was imported into this file (used
-      // by getPlatformStats) and never added to the purge list either.
-      WhatsAppConnectionRequest.deleteMany({ tenantId: tid }),
     ]);
 
     if (tenantResult.status === 'rejected') throw tenantResult.reason;

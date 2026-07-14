@@ -97,22 +97,13 @@ export async function resolveActiveOrder(customerPhone, tenantId, business = nul
         { paymentStatus: 'rejected' },
         // Proof submitted, still awaiting admin decision
         { paymentStatus: { $in: ['proof_received', 'payment_pending_verification'] } },
-        // [AUDIT-FIX-AOR-QUERY-REJECT] Admin-rejected orders (see _resolveState's
-        // `wasAdminRejected` below — status:'pending' + paymentStatus:'unpaid' +
-        // paymentReviewedAt set is the real written signal for a rejection, since
-        // rejectPayment() never writes the literal paymentStatus:'rejected'). The
-        // clause above for the general 'pending' status is bounded to the last 24h
-        // so abandoned carts age out — but that same bound was silently swallowing
-        // rejected orders too: an admin who reviews/rejects an order more than 24h
-        // after it was originally placed (routine — admins don't always respond
-        // same-day) produces exactly this state, yet the order's `createdAt` is
-        // already outside the window, so it never reached _resolveState at all and
-        // a customer whose session expired afterward was routed to NO_ACTIVE_ORDER
-        // instead of the "Payment Not Approved" card — the same bug FIX-AOR-REJECT
-        // fixed downstream, but only for orders less than a day old. A rejection is
-        // an explicit admin action awaiting the customer's retry or cancellation,
-        // not an abandoned cart, so it must not be subject to the abandoned-cart
-        // age bound at all.
+        // [AUDIT-FIX-AOR-QUERY-REJECT] Admin-rejected orders are written back as
+        // status:'pending' + paymentStatus:'unpaid' + paymentReviewedAt set (see
+        // the wasAdminRejected check below) — the SAME shape as an abandoned cart,
+        // so they were silently caught by the 24h-bounded 'pending' clause above
+        // and dropped once the admin took more than a day to review. A rejection
+        // is an order awaiting explicit customer action, not an abandoned cart, so
+        // this clause is intentionally left age-unbounded.
         { status: 'pending', paymentStatus: 'unpaid', paymentReviewedAt: { $ne: null } },
       ],
     })
@@ -147,8 +138,7 @@ function _resolveState(order, business, session) {
   const { paymentStatus, status, updatedAt } = order;
 
   const currency    = business?.payment?.currency || 'D';
-  // [AUDIT-FLOWS-9] Removed a dead `adminPhone` variable — none of the customer-facing
-  // status cards built below surface the admin's phone number.
+  const adminPhone  = business?.adminPhone || null;
   const custName    = session?.customerName ? `, ${session.customerName}` : '';
   const shortId     = order.shortId || '???';
   const itemSummary = `*${order.item}* × ${order.quantity}`;
@@ -218,22 +208,9 @@ function _resolveState(order, business, session) {
     };
   }
 
-  // Priority 3 — Order confirmed (accepted), regardless of how payment was settled.
-  // [AUDIT-AOR-CONFIRMED] Previously gated on `isPaymentVerified && status === 'confirmed'`,
-  // where isPaymentVerified required paymentStatus to be one of
-  // ['confirmed','self_confirmed','paid']. That excluded orders that are genuinely
-  // confirmed-and-in-progress but never touch those paymentStatus values:
-  //   - Cash orders accepted via AWAIT_ADMIN_CONFIRM (paymentStatus stays 'unpaid' —
-  //     see adminCommandService.markOrderReady's FIX-MARK-READY-GUARD comment, which
-  //     explicitly documents this state as reachable)
-  //   - Orders confirmed via the dashboard PATCH endpoint (dashboardController
-  //     updateOrderStatus), which sets status:'confirmed' without touching paymentStatus
-  // Those orders matched the DB query above (status:'confirmed' is in the $in list) but
-  // then fell through every priority branch here and resolved to NO_ACTIVE_ORDER —
-  // silently disabling interception for a real in-progress order. status === 'confirmed'
-  // is itself the authoritative "order accepted" signal; paymentStatus only changes which
-  // wording the resolver would otherwise pick, not whether the order is active.
-  if (status === 'confirmed') {
+  // Priority 3 — Payment confirmed, order being processed
+  const isPaymentVerified = ['confirmed', 'self_confirmed', 'paid'].includes(paymentStatus);
+  if (isPaymentVerified && status === 'confirmed') {
     return {
       order, orders: [order],
       state: ACTIVE_ORDER_STATES.PAYMENT_VERIFIED,

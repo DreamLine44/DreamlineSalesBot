@@ -24,18 +24,6 @@
  * [PFH-6] AI calls from ORDER_CONFIRMED context now pass orderContext so the AI system
  *         prompt includes the active order details.
  * [PFH-7] Payment rejection with reason: reads flowData.rejectReason if present.
- * [PFH-8] Sentiment classification: regex (ACK_RE/COMPLIMENT_RE/COMPLAINT_RE/QUESTION_RE)
- *         is the fast, free, zero-latency path and handles the vast majority of messages
- *         with a single unambiguous signal. When a message matches NONE of the four
- *         patterns (e.g. "not bad", "nothing wrong") or matches MORE THAN ONE at once
- *         (e.g. "not bad, quite good actually" hits both COMPLIMENT_RE and COMPLAINT_RE),
- *         regex alone can't be trusted — classifyPostFlowSentiment() falls back to
- *         groqProvider.classifyIntent(), the same lean one-word/20-token/temp-0.1
- *         classifier intentEngine.js already uses for general intent detection. This
- *         keeps the AI's role strictly to picking ONE label out of five — it never
- *         writes customer-facing wording here (that still happens per-branch below,
- *         same as before) and never touches flow state directly, consistent with
- *         aiRouter.js's "AI ROLE" contract at the top of that file.
  */
 
 import { updateSession }  from '../core/sessions/sessionService.js';
@@ -74,97 +62,50 @@ const COMPLIMENT_RE = /\b(amazing|excellent|fantastic|love|best|delicious|enjoye
 const COMPLAINT_RE  = /\b(bad|terrible|awful|horrible|disappoint|not\s*good|wrong|cold|late|missing|never|complain|refund|cheat|fraud|angry|upset|poor|issue|problem|unsatisfied|unhappy|rubbish|disgusting|unacceptable|worst)\b/i;
 const QUESTION_RE   = /[?]|^(how|when|where|what|why|can\s*you|do\s*you|is\s*there|will\s*you|could\s*you)\b/i;
 
-// [AUDIT-FIX-LIVE-3] Negation/sarcasm hints. Regex-only sentiment is trivially gamed by
-// anyone who knows the four patterns above exist — negating a compliment word ("not
-// amazing", "wasn't impressed") or sarcastically praising ("wow, real impressive 👏...")
-// still hits exactly ONE regex (COMPLIMENT_RE) and was previously trusted outright,
-// skipping the AI tiebreak entirely. That's the precise gap a customer probing "how weak
-// my bot could be" will find first. These hints don't classify anything themselves —
-// they only strip trust from a lone regex match so the AI tiebreak (now fast, see
-// GROQ_TIMEOUT_CLASSIFY in groqProvider.js) gets a look instead.
-const NEGATION_RE = /\b(not|isn'?t|wasn'?t|aren'?t|weren'?t|no|never|hardly|barely|n't)\b/i;
-const SARCASM_HINT_RE = /(\.{3}|\?!|!\?|🙄|😒|🤡|👏(?!.*\bthank)|"[a-z]+"|'[a-z]+')/i;
-
-// [PFH-8] The five labels classifyPostFlowSentiment can return. UNRELATED covers both
-// "genuinely off-topic" and "AI unavailable/failed" — same safe default the rest of
-// this file already uses (see [PFH-2]'s unknown-ackCtx fallback).
+// [PFH-8] Previously isAck/isCompliment/isComplaint/isQuestion were four independent
+// regex tests with no way to handle negation ("not bad"), conflicting signals
+// ("not bad, quite good actually" matches both COMPLIMENT_RE and COMPLAINT_RE), or
+// zero-signal messages — all three silently fell through to whatever precedence
+// order the booleans happened to be checked in, with no real classification.
 const SENTIMENT_LABELS = ['ACK', 'COMPLIMENT', 'COMPLAINT', 'QUESTION', 'UNRELATED'];
 
 /**
- * classifyPostFlowSentiment — decides which of the five sentiment buckets a
- * post-flow customer message belongs to.
+ * classifyPostFlowSentiment(msg, business)
  *
- * Fast path (no AI call): if exactly one of the four regexes fires, trust it —
- * this is the overwhelming majority of real traffic ("thanks", "terrible",
- * "when will it be ready?") and stays instant + free.
- *
- * Fallback (AI tiebreaker): if zero regexes fire (message doesn't look like
- * any of the four — often negation/sarcasm the regex can't parse, e.g. "not
- * bad", "no complaints") or more than one fires at once (conflicting signal,
- * e.g. "not bad, quite good actually" matches both COMPLIMENT_RE and
- * COMPLAINT_RE), ask groqProvider.classifyIntent() to pick exactly one label.
- * That function already returns a single bare word (max 20 tokens, temp 0.1)
- * and already defaults to a safe fallback on any failure — no new AI-reply
- * wording is introduced here, only a routing decision.
- *
- * @param {string} msg      — trimmed customer message
- * @param {object} business — BusinessConfig (for mode context in the AI prompt)
- * @returns {Promise<'ACK'|'COMPLIMENT'|'COMPLAINT'|'QUESTION'|'UNRELATED'>}
+ * Trusts a single confident regex match (fast path, zero added latency/cost),
+ * UNLESS that lone match is an ACK/COMPLIMENT sitting next to a negation or
+ * sarcasm hint ("not bad", "wow, real 'impressive' service 👏") — that's the
+ * exact gap a tone-testing customer exploits, so it's demoted to the AI
+ * tiebreak instead. Zero or conflicting regex matches also go to the AI
+ * tiebreak. Falls back to the safe 'UNRELATED' bucket if the AI call fails.
  */
 async function classifyPostFlowSentiment(msg, business) {
-  const rawAck        = ACK_RE.test(msg);
-  const rawCompliment = COMPLIMENT_RE.test(msg);
-  const rawComplaint  = COMPLAINT_RE.test(msg);
-  const rawQuestion   = QUESTION_RE.test(msg);
+  const mode = (business?.businessMode || 'RETAIL').toUpperCase();
 
-  const matches = [
-    rawAck        && 'ACK',
-    rawCompliment && 'COMPLIMENT',
-    rawComplaint  && 'COMPLAINT',
-    rawQuestion   && 'QUESTION',
-  ].filter(Boolean);
+  const matches = [];
+  if (ACK_RE.test(msg))        matches.push('ACK');
+  if (COMPLIMENT_RE.test(msg)) matches.push('COMPLIMENT');
+  if (COMPLAINT_RE.test(msg))  matches.push('COMPLAINT');
+  if (QUESTION_RE.test(msg))   matches.push('QUESTION');
 
-  // [AUDIT-FIX-LIVE-3] A lone COMPLAINT match is never second-guessed — negation or
-  // sarcasm on a genuinely negative word ("not terrible" is vanishingly rare phrasing
-  // in complaints, and even a false trigger here only costs an unnecessary empathetic
-  // reply, never a silently-dropped complaint). But a lone ACK or COMPLIMENT match
-  // sitting next to a negation or sarcasm hint is exactly the gameable case — "not
-  // amazing", "wasn't great tbh", "wow, real 'impressive' service 👏" — so those get
-  // demoted to ambiguous and routed to the AI tiebreak instead of being trusted outright.
-  const hasNegationOrSarcasm = NEGATION_RE.test(msg) || SARCASM_HINT_RE.test(msg);
-  const soleMatchIsGameable = matches.length === 1
-    && (matches[0] === 'ACK' || matches[0] === 'COMPLIMENT')
-    && hasNegationOrSarcasm;
+  // [AUDIT-FIX-LIVE-3] A regex can't tell "impressive" from "'impressive'" or
+  // "bad" from "not bad" — a negation word or quote-marked sarcasm next to a
+  // lone positive match means the fast path can't be trusted.
+  const hasNegationOrSarcasm = /\b(not|n't|never|hardly|barely)\b/i.test(msg) || /['"][^'"]+['"]/.test(msg);
+  const soleMatchIsGameable = matches.length === 1 &&
+    (matches[0] === 'ACK' || matches[0] === 'COMPLIMENT') &&
+    hasNegationOrSarcasm;
 
-  // Exactly one confident regex signal, and it isn't a gameable ACK/COMPLIMENT sitting
-  // next to a negation or sarcasm marker — skip AI entirely, stay instant.
   if (matches.length === 1 && !soleMatchIsGameable) return matches[0];
 
-  // Zero signals, conflicting signals, or a gameable lone match — ask the AI to break
-  // the tie. classifyIntent now runs on a tight, dedicated timeout budget (see
-  // GROQ_TIMEOUT_CLASSIFY in groqProvider.js), so this stays fast even under load.
   try {
     const { classifyIntent } = await import('../core/ai/providers/groqProvider.js');
-    const mode   = (business?.businessMode || 'RETAIL').toUpperCase();
     const result = await classifyIntent({ message: msg, validIntents: SENTIMENT_LABELS, mode });
-    if (SENTIMENT_LABELS.includes(result)) return result;
+    if (result && SENTIMENT_LABELS.includes(result.intent)) return result.intent;
+    return 'UNRELATED';
   } catch (err) {
-    logger.warn('[PostFlow] AI sentiment tiebreak failed, falling back to regex priority', { err: err.message });
+    return 'UNRELATED';
   }
-
-  // [AUDIT-FIX-LIVE-4] AI unavailable, errored, or returned something unrecognised.
-  // Previously this always defaulted to UNRELATED — meaning if Groq happened to be down
-  // at the exact moment a real complaint came in with ambiguous/negated wording, that
-  // complaint silently vanished into the generic bucket with no escalation option shown.
-  // Fall back to a safety-ordered regex priority instead: a complaint signal (even a
-  // conflicting/ambiguous one) is far costlier to miss than a compliment is to
-  // over-detect, so COMPLAINT wins any tie, then QUESTION (still useful to answer),
-  // then COMPLIMENT, then ACK. Only truly signal-free messages fall through to UNRELATED.
-  if (rawComplaint)  return 'COMPLAINT';
-  if (rawQuestion)   return 'QUESTION';
-  if (rawCompliment) return 'COMPLIMENT';
-  if (rawAck)        return 'ACK';
-  return 'UNRELATED';
 }
 
 /**
@@ -206,35 +147,20 @@ export async function handlePostFlowMessage({
   const msg   = messageText.trim();
   const upper = msg.toUpperCase();
 
-  // [PFH-8] Regex handles clean single-signal cases instantly; ambiguous/negated/
-  // conflicting messages get an AI tiebreak. See classifyPostFlowSentiment() above.
-  const sentiment     = await classifyPostFlowSentiment(msg, business);
-  const isAck         = sentiment === 'ACK';
-  const isCompliment  = sentiment === 'COMPLIMENT';
-  const isComplaint   = sentiment === 'COMPLAINT';
-  const isQuestion    = sentiment === 'QUESTION';
+  const sentiment = await classifyPostFlowSentiment(msg, business);
+  const isAck        = sentiment === 'ACK';
+  const isCompliment = sentiment === 'COMPLIMENT';
+  const isComplaint  = sentiment === 'COMPLAINT';
+  const isQuestion   = sentiment === 'QUESTION';
 
   // [PFH-2] Clear postFlowAck first — consumed regardless of path taken below.
   // Each handler that needs to KEEP the ack context restores it explicitly.
   await updateSession(from, tenantId, { postFlowAck: null, postFlowData: null });
 
-  // [CATALOG-QUEUE-1] This branch also covers an order confirmed
-  // asynchronously (e.g. an admin confirming from the dashboard) between the
-  // customer's turns — the ORDER_CONFIRMED ack is only being consumed NOW,
-  // on their next message, so this is the drain point for that case. The
-  // customer's actual message is still processed normally right after (via
-  // handleOrderConfirmed below); this only fires the queued item's own flow
-  // alongside it. Best-effort — never blocks or replaces the ack reply.
-  if (ackCtx === 'ORDER_CONFIRMED' && session?.pendingCatalogQueue?.length) {
-    import('../modules/catalog/waCatalogFlow.js')
-      .then(({ drainCatalogQueue }) => drainCatalogQueue({ session, business, tenant: tenantDoc }))
-      .catch(err => logger.warn('[PostFlow] drainCatalogQueue failed (non-fatal)', { err: err.message, tenantId, from }));
-  }
-
   switch (ackCtx) {
     case 'ORDER_CONFIRMED':
       return handleOrderConfirmed({
-        msg, upper, isAck, isCompliment, isComplaint, isQuestion, isInteractive,
+        msg, upper, isAck, isCompliment, isComplaint, isQuestion,
         flowData, session, business, tenantDoc, from, tenantId,
         cfg, bizName, mode, welcomeBtns, custName, isVIP,
       });
@@ -292,10 +218,82 @@ export async function handlePostFlowMessage({
       return true;
     }
 
+    // [AUDIT-FIX-SPEC-WARRANTY] SPEC_REQUEST/WARRANTY postFlowAck — set by
+    // completeFlow() calls in modules/electronics/flows/orderFlow.js's
+    // handleSpecRequest()/handleWarranty(). Previously fell to the generic
+    // `default` branch and logged a spurious "Unknown ackCtx" warning for an
+    // entirely expected, legitimate state — any follow-up after a spec or
+    // warranty answer (a "thanks", another question, or a buy-now tap) got the
+    // generic menu with zero context, same class of gap as QUESTION above.
+    case 'SPEC_REQUEST': {
+      const { getAIReply: _specAI } = await import('../core/ai/providers/aiRouter.js');
+      const _specBtns = [
+        { id: 'SPEC_REQUEST', title: '❓ Another Question' },
+        ...welcomeBtns.slice(0, 2),
+      ].slice(0, 3);
+      if (isAck || isCompliment) {
+        await dispatchMessage(from, {
+          type:    'buttons',
+          body:    `You're welcome${custName}! 😊 Let us know if you have any other questions about the product.`,
+          buttons: _specBtns,
+        }, tenantDoc);
+        return true;
+      }
+      if (isComplaint) {
+        const _r = await _specAI({ customerMessage: msg, business, intent: 'COMPLAINT' });
+        await dispatchMessage(from, {
+          type:    'buttons',
+          body:    _r || `We're sorry to hear that${custName}. 😔 Please speak to our team directly.`,
+          buttons: [{ id: 'SUPPORT', title: '💬 Speak to Team' }],
+        }, tenantDoc);
+        return true;
+      }
+      const _followUp = await _specAI({ customerMessage: msg, business, session, intent: 'SPEC_REQUEST' });
+      await dispatchMessage(from, {
+        type:    'buttons',
+        body:    _followUp || `Happy to help${custName}! 😊`,
+        buttons: _specBtns,
+      }, tenantDoc);
+      return true;
+    }
+
+    case 'WARRANTY': {
+      const { getAIReply: _warAI } = await import('../core/ai/providers/aiRouter.js');
+      const _warBtns = [
+        { id: 'WARRANTY',     title: '❓ Another Question' },
+        { id: 'SPEC_REQUEST', title: '🛒 Tech Help'         },
+        { id: 'SUPPORT',      title: '💬 Speak to Team'      },
+      ];
+      if (isAck || isCompliment) {
+        await dispatchMessage(from, {
+          type:    'buttons',
+          body:    `You're welcome${custName}! 😊 Let us know if you need anything else on warranty or after-sales.`,
+          buttons: _warBtns,
+        }, tenantDoc);
+        return true;
+      }
+      if (isComplaint) {
+        const _r = await _warAI({ customerMessage: msg, business, intent: 'COMPLAINT' });
+        await dispatchMessage(from, {
+          type:    'buttons',
+          body:    _r || `We're sorry to hear that${custName}. 😔 Please speak to our team directly.`,
+          buttons: [{ id: 'SUPPORT', title: '💬 Speak to Team' }],
+        }, tenantDoc);
+        return true;
+      }
+      const _followUp = await _warAI({ customerMessage: msg, business, session, intent: 'WARRANTY' });
+      await dispatchMessage(from, {
+        type:    'buttons',
+        body:    _followUp || `Happy to help${custName}! 😊`,
+        buttons: _warBtns,
+      }, tenantDoc);
+      return true;
+    }
+
     case 'BOOKING_CONFIRMED':
       return handleBookingConfirmed({
-        msg, upper, isAck, isCompliment, isComplaint, isInteractive,
-        flowData, session, business, tenantDoc, from, tenantId,
+        msg, upper, isAck, isCompliment, isComplaint,
+        flowData, business, tenantDoc, from, tenantId,
         custName,
       });
 
@@ -321,8 +319,7 @@ export async function handlePostFlowMessage({
     // options instead of routing to generic intent detection.
     case 'APPOINTMENT_REMINDER': {
       const mode       = (business?.businessMode || '').toUpperCase();
-      // [AUDIT-FLOWS-5] Removed a dead `isSalon` variable — this reminder card is worded
-      // identically for restaurant and salon/barbershop; only the emoji varies (by BARBERSHOP).
+      const isSalon    = mode === 'SALON' || mode === 'BARBERSHOP';
       const emoji      = mode === 'BARBERSHOP' ? '✂️' : '💇';
       const serviceStr = flowData?.service ? ` for *${flowData.service}*` : '';
       const whenStr    = flowData?.date
@@ -482,25 +479,7 @@ export async function handlePostFlowMessage({
     // farewell reply instead of going to AI → SUPPORT escalation.
     case 'ORDER_COLLECTED': {
       const itemStr = flowData.item ? ` *${flowData.item}*` : '';
-
-      // [AUDIT-FIX-N3] Grace window: once an order is fully completed (collected/
-      // picked up), the bot may still warmly engage with BUSINESS-relevant emotion —
-      // a compliment, a complaint, or a question about that completed order — but
-      // only for the first couple of follow-up messages. Beyond that, or for anything
-      // that isn't a reaction to the business itself, the completed order is forgotten
-      // entirely: a new activity (a new order, a booking, etc.) must never be blocked,
-      // delayed, or answered with old-order chatter instead of what the customer
-      // actually asked for. (Explicitly revisiting a past order — "what was my last
-      // order?" — is handled separately by the TRACK_ORDER intent, not here.)
-      const GRACE_LIMIT   = 2;
-      const followUpCount = (flowData.ackFollowUpCount || 0) + 1;
-      const withinGrace   = followUpCount <= GRACE_LIMIT;
-
-      if (withinGrace && (isCompliment || isAck)) {
-        await updateSession(from, tenantId, {
-          postFlowAck:  'ORDER_COLLECTED',
-          postFlowData: { ...flowData, ackFollowUpCount: followUpCount },
-        }).catch(() => {});
+      if (isCompliment || isAck) {
         await dispatchMessage(from, {
           type:    'buttons',
           body:    `You're so welcome${custName}! 😊 Glad you enjoyed your${itemStr}. Hope to see you again soon! 🙏`,
@@ -508,12 +487,7 @@ export async function handlePostFlowMessage({
         }, tenantDoc);
         return true;
       }
-
-      if (withinGrace && isComplaint) {
-        await updateSession(from, tenantId, {
-          postFlowAck:  'ORDER_COLLECTED',
-          postFlowData: { ...flowData, ackFollowUpCount: followUpCount },
-        }).catch(() => {});
+      if (isComplaint) {
         const { getAIReply } = await import('../core/ai/providers/aiRouter.js');
         const aiReply = await getAIReply({ customerMessage: msg, business, session, intent: 'COMPLAINT' });
         await dispatchMessage(from, {
@@ -523,50 +497,12 @@ export async function handlePostFlowMessage({
         }, tenantDoc);
         return true;
       }
-
-      if (withinGrace && isQuestion) {
-        await updateSession(from, tenantId, {
-          postFlowAck:  'ORDER_COLLECTED',
-          postFlowData: { ...flowData, ackFollowUpCount: followUpCount },
-        }).catch(() => {});
-        const { getAIReply } = await import('../core/ai/providers/aiRouter.js');
-        const orderContext = flowData.item ? { item: flowData.item, shortId: flowData.shortId } : null;
-        const aiReply = await getAIReply({ customerMessage: msg, business, session, intent: 'QUESTION', orderContext });
-        await dispatchMessage(from, {
-          type:    'buttons',
-          body:    aiReply || `Happy to help${custName}! 😊`,
-          buttons: welcomeBtns,
-        }, tenantDoc);
-        return true;
-      }
-
-      // Grace window spent, or the message isn't a business-relevant emotional
-      // reaction at all (this is exactly where "I'll have another one" used to land
-      // and get swallowed by a generic "Great to see you again!" reply). The completed
-      // order is now fully forgotten — route the message through the SAME fresh
-      // intent-detection → module-router pipeline normal messages use (see step 16
-      // in webhookController.js), so a new order/booking starts immediately on this
-      // very message instead of costing the customer an extra round-trip.
-      const { detectIntent } = await import('../core/intents/intentEngine.js');
-      const { route }        = await import('../core/conversations/moduleRouter.js');
-      const { action, intent, suggestion } = await detectIntent({
-        message: msg, isInteractive, session, business,
-      }).catch(() => ({ action: 'FALLBACK', intent: 'FALLBACK' }));
-      const freshReply = await route({
-        action, intent, session, message: msg, business,
-        tenant: tenantDoc, isInteractive, suggestion,
-      }).catch(() => null);
-
-      if (freshReply) {
-        const payloads = Array.isArray(freshReply) ? freshReply : [freshReply];
-        for (const payload of payloads) await dispatchMessage(from, payload, tenantDoc);
-      } else {
-        await dispatchMessage(from, {
-          type:    'buttons',
-          body:    `😊 How can I help you today${custName}?`,
-          buttons: welcomeBtns,
-        }, tenantDoc);
-      }
+      // Any other message — show welcome menu
+      await dispatchMessage(from, {
+        type:    'buttons',
+        body:    `😊 What would you like to do next${custName}?`,
+        buttons: welcomeBtns,
+      }, tenantDoc);
       return true;
     }
 
@@ -685,10 +621,7 @@ export async function handlePostFlowMessage({
       }
 
       const resumeFlow = flowData?.resumeFlow || null;
-      // [AUDIT-FLOWS-6] Removed a dead `resumeStep` local — this case only branches on
-      // whether a flow is resumable (resumeFlow) to choose which buttons to show; the
-      // actual step restoration happens later, reading resumeStep straight off
-      // session.postFlowData in webhookController.js's MFQ_RESUME_FLOW handler.
+      const resumeStep = flowData?.resumeStep || null;
 
       // [AUDIT-FIX-15] This case previously ignored the CONTENT of the customer's
       // message entirely — isAck/isCompliment/isComplaint/isQuestion are computed at
@@ -811,53 +744,6 @@ export async function handlePostFlowMessage({
       return true;
     }
 
-    // [AUDIT-FIX-SPEC-WARRANTY] SPEC_REQUEST / WARRANTY postFlowAck — set by
-    // completeFlow('SPEC_REQUEST') and completeFlow('WARRANTY') in
-    // modules/electronics/flows/orderFlow.js after answering a product spec or
-    // warranty question. These two states had no matching case here, unlike their
-    // ENQUIRY/QUOTE_FOLLOW/ABOUT siblings which were fixed under [FIX-26]. Every
-    // customer follow-up ("thanks", another question) after an electronics spec
-    // or warranty answer fell through to the `default` branch below, which both
-    // showed a generic reply AND logged a spurious "Unknown ackCtx" warning for a
-    // perfectly legitimate, expected state — polluting logs on every occurrence.
-    case 'SPEC_REQUEST': {
-      if (isAck || isCompliment) {
-        await dispatchMessage(from, {
-          type:    'buttons',
-          body:    `You're welcome${custName}! 😊 Let me know if you have any more questions.`,
-          buttons: welcomeBtns,
-        }, tenantDoc);
-        return true;
-      }
-      const { getAIReply: _specAI } = await import('../core/ai/providers/aiRouter.js');
-      const _specReply = await _specAI({ customerMessage: msg, business, intent: 'QUESTION' }).catch(() => null);
-      await dispatchMessage(from, {
-        type:    'buttons',
-        body:    _specReply || `Happy to help${custName}! 😊`,
-        buttons: welcomeBtns,
-      }, tenantDoc);
-      return true;
-    }
-
-    case 'WARRANTY': {
-      if (isAck || isCompliment) {
-        await dispatchMessage(from, {
-          type:    'buttons',
-          body:    `You're welcome${custName}! 😊 Let us know if anything else comes up.`,
-          buttons: welcomeBtns,
-        }, tenantDoc);
-        return true;
-      }
-      const { getAIReply: _warAI } = await import('../core/ai/providers/aiRouter.js');
-      const _warReply = await _warAI({ customerMessage: msg, business, intent: 'QUESTION' }).catch(() => null);
-      await dispatchMessage(from, {
-        type:    'buttons',
-        body:    _warReply || `Happy to help${custName}! 😊`,
-        buttons: welcomeBtns,
-      }, tenantDoc);
-      return true;
-    }
-
     default: {
       // [PFH-2] Unknown ackCtx — stale session or unhandled future state.
       // Clear it and show a gentle menu. Without this, the caller's intent detection
@@ -876,7 +762,7 @@ export async function handlePostFlowMessage({
 
 // ── ORDER_CONFIRMED ──────────────────────────────────────────────────────────
 async function handleOrderConfirmed({
-  msg, upper, isAck, isCompliment, isComplaint, isQuestion, isInteractive,
+  msg, upper, isAck, isCompliment, isComplaint, isQuestion,
   flowData, session, business, tenantDoc, from, tenantId,
   cfg, bizName, mode, welcomeBtns, custName, isVIP,
 }) {
@@ -885,28 +771,7 @@ async function handleOrderConfirmed({
 
   // [SPEC-4H] Cancel intent — show confirmation prompt before doing anything
   const CANCEL_RE = /^(cancel|cancel\s*(my\s*)?order|stop|nevermind|never\s*mind|abort)$/i;
-  const isCancelTyped = CANCEL_RE.test(msg) || upper === 'CANCEL' || upper === 'CANCEL_ORDER';
-
-  // [AUDIT-FIX-N1] Detect an attempt to start a DIFFERENT/new activity (a new order,
-  // a booking, a walk-in, etc.) while THIS order is still being prepared. Product
-  // policy: stay strict on the current order until the customer explicitly cancels
-  // it — but that choice must be surfaced clearly, not silently blocked (previous
-  // food-mode behaviour: "I can only help with your current order") nor silently
-  // looped on non-functional browse buttons (previous retail-mode behaviour: tapping
-  // "Place an Order" again just re-showed the same "still being prepared" message).
-  // Reuses the same SWITCH_YES/SWITCH_NO buttons/handlers already below — the only
-  // difference is the wording of the prompt and how we got here.
-  let isNewActivityAttempt = false;
-  if (!isCancelTyped) {
-    const { detectIntent } = await import('../core/intents/intentEngine.js');
-    const NEW_ACTIVITY_ACTIONS = new Set([
-      'START_ORDER', 'START_BOOKING', 'WALKIN', 'CAKE_CUSTOMIZATION', 'COLLECTION_SCHEDULE', 'REPEAT_ORDER',
-    ]);
-    const _detected = await detectIntent({ message: msg, isInteractive, session, business }).catch(() => ({ action: 'FALLBACK' }));
-    isNewActivityAttempt = NEW_ACTIVITY_ACTIONS.has(_detected.action);
-  }
-
-  if (isCancelTyped || isNewActivityAttempt) {
+  if (CANCEL_RE.test(msg) || upper === 'CANCEL' || upper === 'CANCEL_ORDER') {
     const activeOrd = await Order.findOne({
       customerPhone: from, tenantId,
       status: { $in: ['confirmed', 'pending'] },
@@ -922,20 +787,14 @@ async function handleOrderConfirmed({
     }).catch(() => {});
     await dispatchMessage(from, {
       type:    'buttons',
-      body: isNewActivityAttempt
-        ? `I hear you${custName}! 😊 But you currently have an order in progress${itemLine}.\n\nWould you like to cancel it to start something new, or keep waiting for it?`
-        : `Are you sure you want to cancel order *#${shortRef}*?` +
-          itemLine +
-          `\n\n⚠️ Cancellations at this stage may be subject to our refund policy.`,
-      buttons: isNewActivityAttempt
-        ? [
-            { id: 'SWITCH_YES', title: '✅ Cancel & Start New' },
-            { id: 'SWITCH_NO',  title: '⏳ Keep My Order'      },
-          ]
-        : [
-            { id: 'SWITCH_YES', title: '✅ Yes, Cancel'       },
-            { id: 'SWITCH_NO',  title: '❌ No, Keep My Order' },
-          ],
+      body:
+        `Are you sure you want to cancel order *#${shortRef}*?` +
+        itemLine +
+        `\n\n⚠️ Cancellations at this stage may be subject to our refund policy.`,
+      buttons: [
+        { id: 'SWITCH_YES', title: '✅ Yes, Cancel'       },
+        { id: 'SWITCH_NO',  title: '❌ No, Keep My Order' },
+      ],
     }, tenantDoc);
     return true;
   }
@@ -1285,8 +1144,8 @@ async function handleWalkInQueueAck({
 
 // ── BOOKING_CONFIRMED ────────────────────────────────────────────────────────
 async function handleBookingConfirmed({
-  msg, upper, isAck, isCompliment, isComplaint, isInteractive,
-  flowData, session, business, tenantDoc, from, tenantId,
+  msg, upper, isAck, isCompliment, isComplaint,
+  flowData, business, tenantDoc, from, tenantId,
   custName,
 }) {
   const { getAIReply } = await import('../core/ai/providers/aiRouter.js');
@@ -1323,30 +1182,6 @@ async function handleBookingConfirmed({
     const reply = await cancelFlow({ customerPhone: from, tenantId }, business);
     await dispatchMessage(from, reply, tenantDoc);
     return true;
-  }
-
-  // [AUDIT-FIX-N2] Detect an attempt to start a DIFFERENT/new activity (a new order,
-  // another booking, a walk-in, etc.) while THIS booking is confirmed but not yet
-  // fulfilled. Same strict-but-explicit policy as ORDER_CONFIRMED's equivalent fix:
-  // previously this fell straight through to the generic AI Q&A reply at the bottom
-  // of this function, silently swallowing the customer's actual request for one
-  // message before it worked normally on their next try. Now it's surfaced as an
-  // explicit cancel-or-keep choice on the very first message.
-  if (upper !== 'RESCHEDULE') {
-    const { detectIntent } = await import('../core/intents/intentEngine.js');
-    const NEW_ACTIVITY_ACTIONS = new Set([
-      'START_ORDER', 'START_BOOKING', 'WALKIN', 'CAKE_CUSTOMIZATION', 'COLLECTION_SCHEDULE', 'REPEAT_ORDER',
-    ]);
-    const _detected = await detectIntent({ message: msg, isInteractive, session, business }).catch(() => ({ action: 'FALLBACK' }));
-    if (NEW_ACTIVITY_ACTIONS.has(_detected.action)) {
-      const serviceStr = flowData?.service ? ` for *${flowData.service}*` : '';
-      await dispatchMessage(from, {
-        type:    'buttons',
-        body:    `I hear you${custName}! 😊 But you already have a booking${serviceStr}${whenStr}${staffStr} confirmed.\n\nIf you'd like to cancel it and book something new, tap below — otherwise your booking stays as is.`,
-        buttons: _salonConfirmBtns,
-      }, tenantDoc);
-      return true;
-    }
   }
 
   // [v15-RESCHEDULE] RESCHEDULE button: cancel old appointment and start a fresh booking.

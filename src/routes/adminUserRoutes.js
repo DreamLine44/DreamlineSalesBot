@@ -66,13 +66,7 @@ router.post(
 
 router.get(
   '/dashboard/:tenantId/admins',
-  // [AUDIT-FIX-ROLE-GATE-1] This route's own header comment above (and the
-  // file-level docstring) documented "list staff (OWNER, MANAGER)" but no
-  // requireRole() call was ever actually added — any authenticated STAFF
-  // Bearer session could list the full admin roster (names/emails/roles/
-  // status) for the tenant. Bringing the code in line with the documented
-  // intent.
-  requireApiKey, enforceTenantScope, requireRole('OWNER', 'MANAGER'),
+  requireApiKey, enforceTenantScope,
   listAdmins,
 );
 router.post(

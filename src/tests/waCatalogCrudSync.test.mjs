@@ -97,22 +97,3 @@ test('the autosync scheduler logs the deleted count on a successful debounced sy
   const src = read('../modules/catalog/waCatalogSyncScheduler.js');
   assert.match(src, /synced: result\.synced, deleted: result\.deleted \|\| 0/);
 });
-
-// [FIX-CATALOG-ITEM-TYPE] Production bug found 2026-07-13: every real sync
-// attempt failed with Meta error (#100) "The parameter item_type is
-// required" — the items_batch request body only ever sent `{ requests }`.
-// Meta's Catalog Batch API is shared across multiple catalog verticals
-// (products, hotels, vehicles, home listings, flights, destinations) and
-// requires a top-level `item_type` field declaring which one a given batch
-// is for; omitting it rejects the whole batch outright regardless of how
-// well-formed each individual request/data object is. WhatSales only ever
-// syncs physical menu/product items, so this is a fixed constant.
-test('syncMenuToCatalog sends the required top-level item_type field on every batch request', () => {
-  assert.match(
-    svcSrc,
-    /body:\s*JSON\.stringify\(\{\s*item_type:\s*'PRODUCT_ITEM',\s*requests\s*\}\)/,
-  );
-  // Guards against a future refactor reintroducing the bug by reverting to
-  // a bare `{ requests }` body.
-  assert.doesNotMatch(svcSrc, /body:\s*JSON\.stringify\(\{\s*requests\s*\}\)/);
-});

@@ -296,15 +296,7 @@ export async function syncMenuToCatalog(business, tenant) {
     const resp  = await fetch(url, {
       method: 'POST', signal: ctrl.signal,
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-      // [FIX-CATALOG-ITEM-TYPE] Meta's Catalog Batch API (items_batch) is shared
-      // across multiple catalog verticals — product items, hotels, vehicles, home
-      // listings, flights, destinations — and requires the caller to declare which
-      // one this batch is via a top-level `item_type` field. Without it Meta
-      // rejects the entire batch outright with (#100) "The parameter item_type is
-      // required", even when every individual request/data object is otherwise
-      // well-formed. WhatSales only ever deals in physical menu/product items, so
-      // this is a fixed constant, never derived per-tenant or per-item.
-      body: JSON.stringify({ item_type: 'PRODUCT_ITEM', requests }),
+      body: JSON.stringify({ requests }),
     });
     clearTimeout(timer);
 
