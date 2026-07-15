@@ -57,6 +57,7 @@ function escapeRegex(str) {
   return String(str).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 import { uploadMenuImage, deleteMenuImage, CLOUDINARY_ENABLED } from '../config/cloudinary.js';
+import { scheduleWaCatalogSync } from '../modules/catalog/waCatalogSyncScheduler.js';
 
 // ── Helper: load tenant doc for WhatsApp dispatch ─────────────────────────────
 async function loadTenant(tenantId) {
@@ -694,6 +695,7 @@ export async function addMenuItem(req, res) {
       { new: true },
     );
     if (!biz) return res.status(404).json({ error: 'Not found' });
+    scheduleWaCatalogSync(tenantId);
     res.status(201).json({ menuItems: biz.menuItems });
   } catch (err) { logger.error('[Dashboard] Request failed', { err: err.message }); res.status(500).json({ error: err.message }); }
 }
@@ -766,6 +768,7 @@ export async function updateMenuItem(req, res) {
       { new: true },
     );
     if (!biz) return res.status(404).json({ error: 'Item not found' });
+    scheduleWaCatalogSync(tenantId);
     res.json({ menuItems: biz.menuItems });
   } catch (err) { logger.error('[Dashboard] Request failed', { err: err.message }); res.status(500).json({ error: err.message }); }
 }
@@ -792,6 +795,7 @@ export async function deleteMenuItem(req, res) {
     // Clean up Cloudinary image (non-fatal — item is already removed from DB)
     if (imagePublicId) await deleteMenuImage(imagePublicId);
 
+    scheduleWaCatalogSync(tenantId);
     res.json({ ok: true });
   } catch (err) { logger.error('[Dashboard] Request failed', { err: err.message }); res.status(500).json({ error: err.message }); }
 }

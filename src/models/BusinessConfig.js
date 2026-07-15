@@ -250,6 +250,29 @@ const businessConfigSchema = new mongoose.Schema({
     notifyAdmin:   { type: Boolean, default: true }, // send admin a WhatsApp alert per lead
   },
 
+  // ── WA (Meta) Commerce Catalog integration ────────────────────────────────
+  // [CATALOG-CONFIG] enabled/catalogId/mode gate whether waCatalogService
+  // does anything at all for this tenant — see isCatalogEnabled() in
+  // waCatalogConfig.js. syncedRetailerIds/syncedItemHashes are the snapshots
+  // syncMenuToCatalog() writes after a successful sync, used to diff the
+  // NEXT sync (which items were deleted, which items actually changed) —
+  // see [CATALOG-CRUD-1]/[CATALOG-DELTA-1] in waCatalogService.js.
+  waCatalog: {
+    enabled:   { type: Boolean, default: false },
+    catalogId: { type: String,  default: null },
+    mode:      { type: String,  enum: ['AI_DECIDES', 'ALWAYS_OFFER', 'MANUAL_ONLY'], default: 'AI_DECIDES' },
+    syncedRetailerIds: { type: [String], default: [] },
+    syncedItemHashes:  { type: Map, of: String, default: {} },
+    lastSyncedAt: { type: Date, default: null },
+    // [CATALOG-HEALTH-4] Best-effort record of the last sync failure reason,
+    // cleared on the next successful sync — see recordSyncError() in
+    // waCatalogService.js.
+    lastSyncError: {
+      reason: { type: String, default: null },
+      at:     { type: Date,   default: null },
+    },
+  },
+
   settings: {
     autoSuggestions:       { type: Boolean, default: true },
     enableLearning:        { type: Boolean, default: true },

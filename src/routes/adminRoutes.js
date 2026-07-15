@@ -21,59 +21,12 @@ import Order    from '../models/Order.js';
 import Booking  from '../models/Booking.js';
 import Session  from '../models/Session.js';
 import Tenant   from '../models/Tenant.js';
-import AdminNotification, { NOTIFICATION_DIRECTIONS, NOTIFICATION_SEVERITIES } from '../models/AdminNotification.js';
 import { updateSession }              from '../core/sessions/sessionService.js';
 import { dispatchText, dispatchMessage } from '../core/whatsapp/dispatcher.js';
 import { humanModeLimiter, overviewLimiter } from '../middleware/rateLimiter.js';
 import logger from '../config/logger.js';
 
 const r = Router();
-
-// ── [ADMIN-NOTIFY-1] Notification helpers (pure, no DB) ────────────────────────
-
-/** Returns an error string, or null when input is valid. */
-export function validateNotificationInput({ subject, body, severity }) {
-  if (!subject || !String(subject).trim()) return 'subject is required';
-  if (!body || !String(body).trim()) return 'body is required';
-  if (String(subject).length > 150) return 'subject must be 150 characters or fewer';
-  if (String(body).length > 2000) return 'body must be 2000 characters or fewer';
-  if (severity !== undefined && !NOTIFICATION_SEVERITIES.includes(severity)) {
-    return `severity must be one of: ${NOTIFICATION_SEVERITIES.join(', ')}`;
-  }
-  return null;
-}
-
-/**
- * Builds the Mongo filter for the notification inbox, scoped by caller role.
- * SECURITY: a tenant caller can never see another tenant's thread or enumerate
- * broadcasts by id — both tenantId and broadcastId are ignored from the query
- * string for non-super-admin callers.
- */
-export function buildNotificationAccessFilter(admin, query = {}) {
-  const isSuperAdmin = !!admin?.isSuperAdmin;
-  const adminTenantId = admin?.tenantId;
-
-  if (!isSuperAdmin && !adminTenantId) {
-    return { error: 'Forbidden' };
-  }
-
-  const filter = {};
-  if (isSuperAdmin) {
-    if (query.tenantId)    filter.tenantId    = query.tenantId;
-    if (query.broadcastId) filter.broadcastId = query.broadcastId;
-  } else {
-    filter.tenantId = adminTenantId;
-  }
-
-  if (query.direction && NOTIFICATION_DIRECTIONS.includes(query.direction)) {
-    filter.direction = query.direction;
-  }
-  if (query.unreadOnly === 'true') {
-    filter.read = false;
-  }
-
-  return { filter };
-}
 
 // [FIX-ADMIN-7] payment_pending_verification is a valid Order.status value (in schema enum)
 // but was absent here — any admin PATCH to set that status got a 400 "Invalid status" error.
@@ -350,115 +303,6 @@ r.get('/sessions/:tenantId', overviewLimiter, async (req, res) => {
     });
   } catch (err) {
     logger.error('[Admin] getSessions failed', { err: err.message });
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// ── [ADMIN-NOTIFY-1] Notification routes ────────────────────────────────────────
-
-/** Best-effort WhatsApp nudge to a tenant's admin — never blocks the write. */
-async function pingTenantAdmin(tenantId, subject) {
-  try {
-    const tenant = await loadTenant(tenantId);
-    const adminPhone = tenant?.adminNotifyPhone || tenant?.ownerPhone;
-    if (!tenant || !adminPhone) return false;
-    await dispatchText(
-      adminPhone,
-      `📩 *New message from WhatSales*\n\n${subject}\n\nOpen your dashboard to read the full message.`,
-      tenant,
-    );
-    return true;
-  } catch (err) {
-    logger.warn('[Admin] pingTenantAdmin failed (non-fatal)', { err: err.message });
-    return false;
-  }
-}
-
-// GET /notifications — list, scoped by caller role
-r.get('/notifications', overviewLimiter, async (req, res) => {
-  try {
-    const admin = { isSuperAdmin: !!req.isSuperAdmin, tenantId: req.tenantId };
-    const { filter, error } = buildNotificationAccessFilter(admin, req.query);
-    if (error) return res.status(403).json({ error });
-
-    const limit = Math.min(Math.max(Number(req.query.limit) || 50, 1), 200);
-    const page  = Math.max(Number(req.query.page) || 1, 1);
-    const skip  = (page - 1) * limit;
-
-    const [notifications, total] = await Promise.all([
-      AdminNotification.find(filter).sort({ createdAt: -1 }).skip(skip).limit(limit).lean(),
-      AdminNotification.countDocuments(filter),
-    ]);
-
-    res.json({ notifications, total, page, pages: Math.ceil(total / limit), limit });
-  } catch (err) {
-    logger.error('[Admin] listNotifications failed', { err: err.message });
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// POST /notifications — send a message (super admin → one/all tenants, or tenant → super admin)
-r.post('/notifications', async (req, res) => {
-  try {
-    const { subject, body, severity, tenantId: targetTenantId, broadcast, fromLabel } = req.body;
-
-    const validationErr = validateNotificationInput({ subject, body, severity });
-    if (validationErr) return res.status(400).json({ error: validationErr });
-
-    if (req.isSuperAdmin) {
-      const direction = 'TO_TENANT';
-      let tenantIds;
-      if (broadcast) {
-        tenantIds = (await Tenant.find({}).select('_id').lean()).map(t => String(t._id));
-      } else {
-        if (!targetTenantId) return res.status(400).json({ error: 'tenantId is required unless broadcast=true' });
-        tenantIds = [targetTenantId];
-      }
-      const broadcastId = broadcast ? `bc_${Date.now()}_${Math.random().toString(36).slice(2, 8)}` : null;
-
-      const docs = await AdminNotification.insertMany(tenantIds.map(tid => ({
-        tenantId: tid, direction, broadcastId,
-        fromLabel: fromLabel || 'WhatSales Admin',
-        subject, body, severity: severity || 'info',
-      })));
-
-      // Fire-and-forget WhatsApp nudges
-      docs.forEach(d => pingTenantAdmin(String(d.tenantId), subject)
-        .then(pinged => pinged && AdminNotification.updateOne({ _id: d._id }, { whatsappPinged: true }).catch(() => {})));
-
-      return res.status(201).json({ ok: true, count: docs.length, broadcastId });
-    }
-
-    // Tenant admin → super admin
-    if (!req.tenantId) return res.status(403).json({ error: 'Forbidden' });
-    const doc = await AdminNotification.create({
-      tenantId: req.tenantId, direction: 'TO_ADMIN',
-      fromLabel: fromLabel || 'Tenant Admin',
-      subject, body, severity: severity || 'info',
-    });
-    res.status(201).json({ ok: true, notification: doc });
-  } catch (err) {
-    logger.error('[Admin] sendNotification failed', { err: err.message });
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// PATCH /notifications/:id/read — mark a single notification read, scoped by role
-r.patch('/notifications/:id/read', async (req, res) => {
-  try {
-    const admin = { isSuperAdmin: !!req.isSuperAdmin, tenantId: req.tenantId };
-    const { filter, error } = buildNotificationAccessFilter(admin, {});
-    if (error) return res.status(403).json({ error });
-
-    const doc = await AdminNotification.findOneAndUpdate(
-      { _id: req.params.id, ...filter },
-      { $set: { read: true, readAt: new Date() } },
-      { new: true },
-    );
-    if (!doc) return res.status(404).json({ error: 'Notification not found' });
-    res.json({ notification: doc });
-  } catch (err) {
-    logger.error('[Admin] markNotificationRead failed', { err: err.message });
     res.status(500).json({ error: err.message });
   }
 });

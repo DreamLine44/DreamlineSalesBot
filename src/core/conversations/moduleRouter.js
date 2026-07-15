@@ -37,7 +37,6 @@
 
 import { startFlow, cancelFlow } from './flowEngine.js';
 import { updateSession }         from '../sessions/sessionService.js';
-import { generateGreeting }      from '../ai/providers/aiRouter.js';
 import { dispatchText, dispatchMessage }          from '../whatsapp/dispatcher.js';
 import { getModeConfig }         from '../../config/modes.js';
 import logger from '../../config/logger.js';
@@ -299,14 +298,6 @@ export async function route({ action, intent, session, message, business, tenant
         });
       };
       const existingName = _isValidNameG(_rawNameG) ? _rawNameG : null;
-      // Use real last order from DB, not stale session.data
-      const lastOrder    = custCtx.lastItem || null;
-      const lastBooking  = custCtx.lastBooking || null;
-      const isSalonMode  = ['SALON', 'BARBERSHOP'].includes((business?.businessMode || '').toUpperCase());
-      // [MEM-SALON-1] For salon modes, a returning customer may only have bookings
-      // (no retail orders). Treat them as returning if they have a booking OR an order.
-      const isReturning  = custCtx.isReturning || custCtx.orderCount > 0 || (isSalonMode && !!lastBooking);
-      const orderCount   = custCtx.orderCount || 0;
 
       const cfg = getModeConfig(business);
       const customWelcome = business?.customMessages?.welcomeMessage;
@@ -319,86 +310,26 @@ export async function route({ action, intent, session, message, business, tenant
         customerName: existingName || null,
       });
 
-      let body = null;
-
-      // [FIX-GREET-2] Returning customer — personalised AI greeting using real history.
-      // Previously only fired when existingName was set; now fires for ANY returning
-      // customer even if they haven't shared their name, using order history as context.
-      // [GREET-COOLDOWN] Only call Groq for customers not seen in the last 4 hours.
-      // For recent returners a warm static message is faster and equally effective.
-      // [MEM-SALON-1] For salon modes, use lastBooking.createdAt as the recency signal
-      // when lastOrderAt is absent (booking-only customers have no order history).
-      const _lastSeenAt = custCtx.lastOrderAt ||
-        (isSalonMode ? (custCtx.lastBookingAt || custCtx.lastBooking?.createdAt || null) : null); // [FIX-MEM]
-      const hoursSinceLastOrder = _lastSeenAt
-        ? (Date.now() - new Date(_lastSeenAt)) / (1000 * 60 * 60)
-        : Infinity;
-
-      if (isReturning && hoursSinceLastOrder > 4) {
-        // Genuine returning customer (not seen in 4+ hours) — use Groq for personalised greeting
-        try {
-          const g = await generateGreeting({ business, customerName: existingName, lastOrder });
-          body = g;
-        } catch { /* non-fatal — fall through to static welcome */ }
-      } else if (isReturning && existingName) {
-        // Recent returner with known name — fast static greeting, skip API call entirely
-        body = `👋 Good to have you back, *${existingName}*! 😊`;
-      }
-
-      // [FIX-GREET-3] If AI greeting failed or customer is new, use a context-aware static.
-      // New customer gets a warm branded welcome; returning customer gets a loyalty nudge
-      // even if AI is unavailable.
-      if (!body) {
-        const isBarbershop = (business?.businessMode || '').toUpperCase() === 'BARBERSHOP';
-        const salonEmoji   = isBarbershop ? '✂️' : '💇';
-        if (isReturning && existingName) {
-          if (isSalonMode && lastBooking?.service) {
-            const staffStr = lastBooking.staff ? ` with *${lastBooking.staff}*` : '';
-            body = `👋 Welcome back, *${existingName}*! ${salonEmoji}\n\nLast time you booked a *${lastBooking.service}*${staffStr}. Would you like to book again?`;
-          } else {
-            const topItem = custCtx.topItem || lastOrder;
-            body = topItem
-              ? `👋 Welcome back, *${existingName}*! Great to see you again.\n\nYour favourite is *${topItem}* — want to order it again? 😊`
-              : `👋 Welcome back, *${existingName}*! Great to have you with us again. 🙏`;
-          }
-        } else if (isReturning) {
-          if (isSalonMode && lastBooking?.service) {
-            const staffStr = lastBooking.staff ? ` with *${lastBooking.staff}*` : '';
-            body = `👋 Welcome back! ${salonEmoji} Last time you booked *${lastBooking.service}*${staffStr} — shall we do that again?`;
-          } else {
-            body = lastOrder
-              ? `👋 Welcome back! Last time you ordered *${lastOrder}* — shall we do that again? 😊`
-              : `👋 Welcome back! Great to have you with us again. 🙏`;
-          }
-        } else {
-          // First-time customer
-          body = customWelcome || cfg.messages?.welcome || '👋 Welcome! How can I help you today?';
-        }
-      }
-
-      // [FIX-GREET-4] VIP tag for high-frequency customers (5+ orders or bookings)
-      // Appended to any greeting so the customer feels genuinely recognised.
-      // [MEM-SALON-1] For salon modes, count totalBookings alongside orderCount since
-      // booking-only customers would never reach VIP threshold on orders alone.
-      const vipThreshold  = business?.settings?.vipThreshold || 5;
-      const totalActivity = orderCount + (isSalonMode ? (custCtx.totalBookings || 0) : 0);
-      if (totalActivity >= vipThreshold && !body.includes('VIP') && !body.includes('loyal')) {
-        body += `\n\n⭐ _You're one of our valued regulars — thank you for your continued support!_`;
-      }
+      // [NO-MEMORY-1] Greeting is intentionally identical for new and returning
+      // customers, and never references order/booking history, order counts, or
+      // VIP/regular status — per the no-unsolicited-memory policy: the bot must
+      // not proactively remind a customer of past activity just to sound
+      // personable.
+      // [NO-MEMORY-2] Also intentionally NOT name-personalised for now, even
+      // though `existingName` may be known (from this session or recalled from
+      // customerMemory). Surfacing a remembered name on the very first message
+      // of a session reads the same as surfacing order history — it implies
+      // "I recognise you" before the customer has said anything this
+      // conversation. Name capture/validation above is left in place — it still
+      // feeds session.customerName for in-flow personalisation later (e.g.
+      // postFlowHandler acknowledgements once the customer is mid-conversation)
+      // — only the greeting text itself is generic for now.
+      // TODO: re-enable name-based greeting personalisation once product
+      // decides how/when it should surface (e.g. only after explicit opt-in).
+      const body = customWelcome || cfg.messages?.welcome || '👋 Welcome! How can I help you today?';
 
       return { type: 'buttons', body, buttons: cfg.ui?.welcomeButtons || [] };
     }
-
-    // [AUDIT-FIX-VIEWMENU] VIEW_MENU is distinct from SHOW_MENU (see patterns.js).
-    // Previously "View Menu" buttons/typed phrases were mapped to the SHOW_MENU
-    // action below, which only resets the session and re-shows the generic
-    // welcome buttons — never the actual menu. Routing through startFlow('ORDER')
-    // reuses each module's existing ORDER-flow INIT step (message === null),
-    // which already builds and returns the real menu/product list for that
-    // business (restaurant, delivery, retail, bakery, etc.) — no per-module
-    // menu-rendering duplication needed here.
-    case 'VIEW_MENU':
-      return startFlow({ flowName: 'ORDER', session, business, tenant });
 
     case 'SHOW_MENU': {
       const cfg = getModeConfig(business);
@@ -414,51 +345,6 @@ export async function route({ action, intent, session, message, business, tenant
         type:    'buttons',
         body:    cfg.messages?.showMenuPrompt || '👇 What would you like to do?',
         buttons: cfg.ui?.welcomeButtons || [],
-      };
-    }
-
-    // [AUDIT-FLOWS-RESCHEDULE] The "📅 Reschedule" button (shown from GREET for a
-    // customer with an active booking) previously aliased straight to START_BOOKING
-    // via patterns.js's BUTTON_ID_MAP — that reset the session and started a brand
-    // new booking WITHOUT ever cancelling the existing pending/confirmed appointment,
-    // silently duplicating it. This mirrors postFlowHandler.js's existing RESCHEDULE
-    // handling: cancel the most recent active, non-walk-in booking, then land the
-    // customer on step 'DATE' with the previous service/stylist carried over.
-    case 'RESCHEDULE': {
-      let _previousBooking = null;
-      try {
-        const { default: _ReschBooking } = await import('../../models/Booking.js');
-        _previousBooking = await _ReschBooking.findOneAndUpdate(
-          {
-            customerPhone: session.customerPhone,
-            tenantId:      session.tenantId,
-            status:        { $in: ['pending', 'confirmed'] },
-            // Never touch a walk-in queue entry — only a real dated appointment.
-            bookingType:   { $ne: 'walkin' },
-          },
-          {
-            $set: {
-              status:      'cancelled',
-              cancelledBy: 'customer',
-              cancelledAt: new Date(),
-            },
-          },
-          { sort: { createdAt: -1 } }
-        ).catch(() => null);
-      } catch (_) { /* non-fatal */ }
-
-      await updateSession(session.customerPhone, session.tenantId, {
-        currentFlow: 'BOOKING', step: 'DATE', postFlowAck: null,
-        data: {
-          service:         _previousBooking?.service || null,
-          selectedService: _previousBooking?.service || null,
-          stylist:         _previousBooking?.staff    || null,
-        },
-      });
-
-      return {
-        type: 'text',
-        body: `📅 *Reschedule Appointment*\n\nNo problem! Let's find a new time${_previousBooking?.service ? ` for your *${_previousBooking.service}*` : ''}.\n\nWhat date works best for you?`,
       };
     }
 
@@ -517,14 +403,16 @@ export async function route({ action, intent, session, message, business, tenant
           {
             customerPhone: session.customerPhone,
             tenantId:      session.tenantId,
-            // [AUDIT-FIX-CANCEL-CONFIRMED-GUARD] status:'confirmed' is the
-            // authoritative "order accepted" signal in this codebase (see
-            // activeOrderResolver's [AUDIT-AOR-CONFIRMED]) — dashboardController's
-            // updateOrderStatus() and the cash-order AWAIT_ADMIN_CONFIRM path both
-            // set status:'confirmed' WITHOUT ever touching paymentStatus, so relying
-            // on paymentStatus alone let an already-accepted order slip through and
-            // be self-cancelled by the customer. Only truly 'pending' orders — never
-            // accepted by an admin — are self-cancellable here.
+            // [AUDIT-FIX-CANCEL-CONFIRMED-GUARD] status:'confirmed' orders used to be
+            // included here, relying on paymentStatus to exclude ones that shouldn't be
+            // touched — but dashboardController.updateOrderStatus() sets status:'confirmed'
+            // without ever touching paymentStatus, and cash orders accepted via
+            // AWAIT_ADMIN_CONFIRM never set paymentStatus:'confirmed' either. Both slipped
+            // through the old paymentStatus filter, letting a customer silently cancel an
+            // order an admin had already accepted for prep. status:'confirmed' is itself the
+            // authoritative "order accepted" signal in this codebase (same reasoning as
+            // activeOrderResolver's [AUDIT-AOR-CONFIRMED]), so only truly pending orders are
+            // self-cancellable now.
             status:        'pending',
             // [FIX-CANCEL-REJECTED] 'rejected' was previously in this $nin exclusion list,
             // meaning a customer whose payment was rejected — the EXACT scenario where
@@ -586,16 +474,16 @@ export async function route({ action, intent, session, message, business, tenant
           {
             customerPhone: session.customerPhone,
             tenantId:      session.tenantId,
-            // [AUDIT-FIX-CANCEL-ALL-CONFIRMED-GUARD] Same guard as the single-order
-            // CANCEL case above — status:'confirmed'/'preparing' orders are already
-            // accepted by an admin and must not be bulk-cancellable by the customer.
+            // [AUDIT-FIX-CANCEL-ALL-CONFIRMED-GUARD] Previously matched status:'confirmed'
+            // and 'preparing' directly, with a paymentStatus exclusion list that didn't even
+            // exclude 'confirmed'/'paid' — so a customer could bulk-cancel an already-paid
+            // order that was already being prepared in the kitchen with a single "cancel all".
+            // Same reasoning as the single-order CANCEL case above: status:'confirmed' is the
+            // authoritative "order accepted" signal, so only truly pending orders are
+            // bulk-cancellable now, and the paymentStatus list also excludes confirmed/paid.
             status:        'pending',
-            // [FIX-CANCEL-REJECTED] Same fix as the single-order CANCEL case above —
-            // 'rejected' must not be excluded, or rejected-payment orders can never be
-            // bulk-cancelled either and keep re-appearing in the MULTIPLE_ACTIVE_ORDERS list.
-            // [AUDIT-FIX-CANCEL-ALL-CONFIRMED-GUARD] 'confirmed'/'paid' added — the old
-            // list only excluded 'cancelled'/'refunded', so an already-paid order could
-            // still be bulk-cancelled with a single "cancel all".
+            // [FIX-CANCEL-REJECTED] 'rejected' must not be excluded, or rejected-payment orders
+            // can never be bulk-cancelled either and keep re-appearing in the MULTIPLE_ACTIVE_ORDERS list.
             paymentStatus: { $nin: ['cancelled', 'refunded', 'confirmed', 'paid'] },
           },
           {
@@ -625,6 +513,56 @@ export async function route({ action, intent, session, message, business, tenant
         return {
           type:    'buttons',
           body:    '⚠️ Something went wrong cancelling your orders. Please contact support.',
+          buttons: [{ id: 'SUPPORT', title: '💬 Contact Support' }],
+        };
+      }
+    }
+
+    // [AUDIT-FLOWS-RESCHEDULE] Was aliased to the generic 'START_BOOKING' action,
+    // which resets the session and starts a brand-new booking WITHOUT ever touching
+    // the customer's existing pending/confirmed appointment — silently duplicating it
+    // (and the admin confirm/decline alert) instead of rescheduling. This mirrors
+    // services/postFlowHandler.js's already-correct RESCHEDULE handling: cancel the
+    // most recent active, non-walk-in booking, then land on step 'DATE' with the
+    // previous service/stylist carried over.
+    case 'RESCHEDULE': {
+      try {
+        const { default: _ReschBooking } = await import('../../models/Booking.js');
+        const _prevBooking = await _ReschBooking.findOneAndUpdate(
+          {
+            customerPhone: session.customerPhone,
+            tenantId:      session.tenantId,
+            status:        { $in: ['pending', 'confirmed'] },
+            bookingType:   { $ne: 'walkin' },
+          },
+          {
+            $set: {
+              status:      'cancelled',
+              cancelledBy: 'customer',
+              cancelledAt: new Date(),
+            },
+          },
+          { sort: { createdAt: -1 } }
+        ).catch(() => null);
+
+        await updateSession(session.customerPhone, session.tenantId, {
+          currentFlow: 'BOOKING', step: 'DATE', postFlowAck: null,
+          data: {
+            service:         _prevBooking?.service || null,
+            selectedService: _prevBooking?.service || null,
+            stylist:         _prevBooking?.staff    || null,
+          },
+        });
+
+        return {
+          type: 'text',
+          body: `📅 *Reschedule Appointment*\n\nNo problem! Let's find a new time${_prevBooking?.service ? ` for your *${_prevBooking.service}*` : ''}.\n\nWhat date works best for you?`,
+        };
+      } catch (err) {
+        logger.error('[Router] RESCHEDULE failed', { err: err.message });
+        return {
+          type:    'buttons',
+          body:    '⚠️ Something went wrong starting your reschedule. Please contact support.',
           buttons: [{ id: 'SUPPORT', title: '💬 Contact Support' }],
         };
       }

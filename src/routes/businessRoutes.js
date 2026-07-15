@@ -9,10 +9,11 @@ import { Router } from 'express';
 import {
   getBusinessConfig, updateBusinessConfig,
   getMenu, updateMenu, addMenuItem, deleteMenuItem,
-  getModeInfo, listSupportedModes,
+  getModeInfo, listSupportedModes, syncWaCatalog,
 } from '../controllers/businessController.js';
 import { CLOUDINARY_ENABLED } from '../config/cloudinary.js';
 import { uploadSingle } from '../middleware/uploadMiddleware.js';
+import { catalogSyncLimiter } from '../middleware/rateLimiter.js';
 
 const r = Router();
 
@@ -46,4 +47,8 @@ r.put('/:tenantId/menu',                     enforceTenantScope, updateMenu);
 r.post('/:tenantId/menu',                    enforceTenantScope, uploadSingle, addMenuItem);
 // [FIX-BIZ-2] Changed :itemName → :itemId for safe, precise deletion by MongoDB _id
 r.delete('/:tenantId/menu/:itemId',          enforceTenantScope, deleteMenuItem);
+// [CATALOG-SYNC-ROUTE-1] Manual, tenant-triggered push of menuItems into the
+// tenant's Meta Commerce Catalog. catalogSyncLimiter is deliberately strict —
+// this hits Meta's Graph API on the tenant's behalf.
+r.post('/:tenantId/wacatalog/sync',          enforceTenantScope, catalogSyncLimiter, syncWaCatalog);
 export default r;

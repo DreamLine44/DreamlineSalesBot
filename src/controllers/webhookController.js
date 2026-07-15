@@ -123,7 +123,7 @@
  */
 
 import { getSession, createSession, updateSession } from '../core/sessions/sessionService.js';
-import { detectIntent, extractCustomerName }         from '../core/intents/intentEngine.js';
+import { detectIntent, extractCustomerName, isInformationalIntent } from '../core/intents/intentEngine.js';
 import { INTENT_PATTERNS }                           from '../core/intents/patterns.js';
 import { updateName as persistCustomerName }         from '../core/memory/customerMemory.js';
 import { advance }                                   from '../core/conversations/flowEngine.js';
@@ -1834,8 +1834,7 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
                 }
               : {
                   body:    `To order from *${bizName}*, just type the *name of an item*.\n\nOr tap below to browse:`,
-                  // [AUDIT-FIX-VIEWMENU] was SHOW_MENU — see SELECT_ITEM case in patterns.js/moduleRouter.js
-                  buttons: [{ id: 'VIEW_MENU', title: '📋 View Full Menu' }, { id: 'CANCEL', title: '❌ Cancel' }],
+                  buttons: [{ id: 'SHOW_MENU', title: '📋 View Full Menu' }, { id: 'CANCEL', title: '❌ Cancel' }],
                 },
             QUANTITY: {
               body:    `How many *${itemName || 'units'}* would you like?\n\nJust type a number — for example: *1*, *2*, *three*.`,
@@ -1896,11 +1895,7 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
     // anything outside that set gets a "that option has passed" reply.
     const STEP_VALID_BUTTONS = {
       // ── Generic steps (used by restaurant / bakery / retail etc.) ──────────
-      // [AUDIT-FIX-VIEWMENU] VIEW_MENU added — restaurant/flows/orderFlow.js and
-      // delivery/flows/index.js both show a "📋 View Menu" button (id VIEW_MENU,
-      // previously mis-mapped to SHOW_MENU) at this step. Without this entry the
-      // stale-button guard above would reject a genuine View Menu tap here.
-      SELECT_ITEM:          new Set(['SHOW_MENU', 'VIEW_MENU', 'CANCEL', 'CONFIRM']),
+      SELECT_ITEM:          new Set(['SHOW_MENU', 'CANCEL', 'CONFIRM']),
       SUGGESTION_CONFIRM:   new Set(['CONFIRM', 'SHOW_MENU', 'CANCEL']),
       QUANTITY:             new Set([]), // expects free text — no valid buttons
       UPSELL:               new Set(['UPSELL_YES', 'UPSELL_NO']),
@@ -2015,36 +2010,7 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
       await dispatchMessage(from, reply, tenantDoc);
       return;
     }
-    // [AUDIT-FIX-VIEWMENU] "View Menu" (button id VIEW_MENU, or typed "menu" /
-    // "show menu" / "view menu" / "see menu" / "main menu" / "back to menu")
-    // used to fall into the SHOW_MENU branch below, which wipes currentFlow/step
-    // and dumps the customer on the generic welcome buttons — never showing any
-    // menu content, despite the button label promising exactly that. A dead
-    // fallback in restaurant/flows/orderFlow.js (SELECT_ITEM step) already tried
-    // to handle typed "menu"/"home" by calling buildMenuUI(), but it was
-    // unreachable because this check upstream always intercepted first.
-    //
-    // Fix: while inside an ORDER flow, re-render the real menu via
-    // startFlow('ORDER') (reuses each module's own INIT step / buildMenuUI)
-    // instead of resetting to the unrelated top-level buttons. Outside an
-    // ORDER flow (e.g. mid-booking) there's no menu concept to show, so it
-    // falls back to the same safe reset behavior as SHOW_MENU.
-    if (upperMsg === 'VIEW_MENU' || upperMsg === 'MENU' || upperMsg === 'SHOW MENU'
-        || upperMsg === 'VIEW MENU' || upperMsg === 'SEE MENU' || upperMsg === 'MAIN MENU'
-        || upperMsg === 'BACK TO MENU') {
-      if ((session.currentFlow || '').toUpperCase() === 'ORDER') {
-        const { startFlow } = await import('../core/conversations/flowEngine.js');
-        const reply = await startFlow({ flowName: 'ORDER', session, business, tenant: tenantDoc });
-        if (reply) await dispatchMessage(from, reply, tenantDoc);
-        return;
-      }
-      // Not in an order-capable flow — no menu to show, fall through to the
-      // same reset behavior as SHOW_MENU/HOME/0 below.
-    }
-
-    if (upperMsg === '0' || upperMsg === 'SHOW_MENU' || upperMsg === 'MENU' || upperMsg === 'HOME'
-        || upperMsg === 'VIEW_MENU' || upperMsg === 'SHOW MENU' || upperMsg === 'VIEW MENU'
-        || upperMsg === 'SEE MENU' || upperMsg === 'MAIN MENU' || upperMsg === 'BACK TO MENU') {
+    if (upperMsg === '0' || upperMsg === 'SHOW_MENU' || upperMsg === 'MENU' || upperMsg === 'HOME') {
       await updateSession(from, tenantId, { currentFlow: null, step: null, postFlowAck: null });
       const cfg = getModeConfig(business);
       // [FIX] Mid-session "Start Over" tap → short prompt, NOT full welcome greeting
@@ -2413,7 +2379,7 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
     session = { ...session, customerName: extractedName };
   }
 
-  const { action, intent, confidence, suggestion } = await detectIntent({
+  const { action, intent, confidence, suggestion, aiSignals } = await detectIntent({
     message: messageText, isInteractive, session, business,
   });
 
@@ -2443,9 +2409,31 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
     tenant: tenantDoc, isInteractive, suggestion,
   });
 
-  if (reply) {
+  let payloads = reply ? (Array.isArray(reply) ? reply : [reply]) : [];
+
+  // [PHASE-3] Multi-intent: "I want two burgers and can you tell me if you deliver?"
+  // Primary intent (ORDER) already started/continued the flow above via route(). If the
+  // AI also flagged a secondary, information-seeking intent (e.g. a delivery question)
+  // alongside it, answer that too instead of silently dropping it — rather than forcing
+  // a second round-trip where the customer has to re-ask. Only fires when:
+  //   - the primary action actually came from the high-confidence AI step (source: 'ai'),
+  //   - the primary action itself is NOT already an informational one (no duplicate answers),
+  //   - a reply was actually produced (the flow genuinely started/continued).
+  if (payloads.length && confidence === 'AI' && aiSignals?.secondaryIntents?.length && !isInformationalIntent(intent)) {
+    const infoIntent = aiSignals.secondaryIntents.find(isInformationalIntent);
+    if (infoIntent) {
+      try {
+        const { getAIReply } = await import('../core/ai/providers/aiRouter.js');
+        const infoText = await getAIReply({ customerMessage: messageText, business, session, intent: infoIntent });
+        if (infoText) payloads = [...payloads, { type: 'text', body: infoText }];
+      } catch (err) {
+        logger.warn('[Webhook] Multi-intent secondary info reply failed', { err: err.message });
+      }
+    }
+  }
+
+  if (payloads.length) {
     // reply can be an array (e.g. [imagePayload, buttonsPayload]) — dispatch each in order
-    const payloads = Array.isArray(reply) ? reply : [reply];
     for (const payload of payloads) {
       await dispatchMessage(from, payload, tenantDoc);
     }

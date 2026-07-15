@@ -141,14 +141,6 @@ export const createSession = async (customerPhone, tenantId, data = {}) => {
         stepHistory:     [],
         upsellSent:      false,
         pendingAddOn:    null,
-        // [FIX-SES-9] Explicitly reset — createSession upserts onto the SAME doc
-        // (matched by phone+tenantId) without deleting the expired one first, so
-        // Mongo's $set only touches fields it lists and any field omitted here
-        // silently survives from the expired session. A stale postFlowAck/
-        // postFlowData from before expiry could otherwise misroute the customer's
-        // first message in a brand-new conversation through handlePostFlowMessage.
-        postFlowAck:     null,
-        postFlowData:    null,
         // [SES-3] Preserve name if provided; don't wipe on re-create
         ...(data.customerName ? { customerName: data.customerName } : {}),
         // [FIX-SES-5] When humanMode is explicitly passed (e.g. TTL-restore path in

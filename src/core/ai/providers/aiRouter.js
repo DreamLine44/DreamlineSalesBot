@@ -60,16 +60,20 @@ export async function getAIReply({ customerMessage, business, session, intent = 
 }
 
 /**
- * generateGreeting({ business, customerName, lastOrder })
+ * generateGreeting({ business, customerName })
  * Returns string
+ *
+ * [NO-MEMORY-1] No longer accepts/forwards a lastOrder param — greetings must
+ * not reference a customer's order/booking history per the no-unsolicited-
+ * memory policy. Name-based personalisation only.
  */
-export async function generateGreeting({ business, customerName, lastOrder }) {
+export async function generateGreeting({ business, customerName }) {
   try {
     const provider = getProvider();
-    const result   = await provider.generateGreeting({ business, customerName, lastOrder });
-    return result?.text || `👋 Welcome back, ${customerName || 'there'}!`;
+    const result   = await provider.generateGreeting({ business, customerName });
+    return result?.text || `👋 Hello${customerName ? `, ${customerName}` : ''}!`;
   } catch {
-    return `👋 Welcome back, ${customerName || 'there'}!`;
+    return `👋 Hello${customerName ? `, ${customerName}` : ''}!`;
   }
 }
 

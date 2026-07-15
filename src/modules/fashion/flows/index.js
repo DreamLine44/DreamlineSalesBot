@@ -66,14 +66,13 @@ export async function handleFashionOrder({ session, message, business, tenant, i
         await updateSession(session.customerPhone, session.tenantId, { menuViewed: true });
         return buildCatalogUI(business);
       }
-      // [AUDIT-FIX-PARSEINT] parseInt("2 red shirts", 10) === 2, NOT NaN — so any
-      // message merely STARTING with a digit silently hijacked the menu index
-      // once menuViewed was true (the normal case). Only trust the parsed index
-      // for a bare number or an interactive tap; everything else falls through
-      // to fuzzy name matching below.
+      // [AUDIT-FIX-PARSEINT] parseInt("2 red shirts", 10) === 2, not NaN — a bare
+      // leading digit used to silently hijack the menu index for ANY mixed
+      // alphanumeric reply once menuViewed was true. Only trust the parsed index
+      // for a genuinely bare number or an interactive tap (list row / button).
       const isPureNumeric = /^\d+$/.test(raw.trim());
-      const numIdx = (isInteractive || isPureNumeric) ? parseInt(raw, 10) - 1 : NaN;
-      let item = (!isNaN(numIdx) && menu[numIdx]) ? menu[numIdx] : null;
+      const numIdx = parseInt(raw, 10) - 1;
+      let item = ((isInteractive || isPureNumeric) && !isNaN(numIdx) && menu[numIdx]) ? menu[numIdx] : null;
       if (!item) {
         const { item: matched, confidenceLevel } = findBestMatch(menu, clean);
         if (confidenceLevel === 'HIGH') item = matched;

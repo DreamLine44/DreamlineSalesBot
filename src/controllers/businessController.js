@@ -32,6 +32,7 @@ import BusinessConfig from '../models/BusinessConfig.js';
 import { getModeConfig, getSupportedModes } from '../config/modes.js';
 import logger from '../config/logger.js';
 import { uploadMenuImage, deleteMenuImage, CLOUDINARY_ENABLED } from '../config/cloudinary.js';
+import { scheduleWaCatalogSync } from '../modules/catalog/waCatalogSyncScheduler.js';
 
 // [AUDIT-FIX-17] Explicit whitelist — req.tenant is a lean object (no toJSON
 // stripping), so never spread it wholesale into a tenant-facing response.
@@ -99,6 +100,21 @@ export async function updateBusinessConfig(req, res) {
       delete update.servicesList;
     }
 
+    // [CATALOG-BIZ-1] MongoDB's $set on a plain (non-dot-path) nested field
+    // REPLACES the whole subdocument rather than merging it — Mongoose does
+    // not expand sibling fields or reapply schema defaults on an update-path
+    // $set. Since this is the only generic endpoint tenants use to configure
+    // WA Catalog, sending `{ waCatalog: { catalogId: 'X' } }` as-is would
+    // silently wipe an already-set enabled/mode, and vice versa. Flatten to
+    // waCatalog.<key> dot-notation (mirroring the pre-existing [FIX-TONE-3]
+    // pattern above) so each sub-field updates independently.
+    if (update.waCatalog && typeof update.waCatalog === 'object') {
+      for (const [k, v] of Object.entries(update.waCatalog)) {
+        update[`waCatalog.${k}`] = v;
+      }
+      delete update.waCatalog;
+    }
+
     if (!update || Object.keys(update).length === 0) {
       return res.status(400).json({ error: 'Request body is empty — nothing to update' });
     }
@@ -134,6 +150,9 @@ export async function updateBusinessConfig(req, res) {
       { new: true, upsert: false, runValidators: true },
     ).lean();
     if (!biz) return res.status(404).json({ error: 'Not found' });
+    // [CATALOG-AUTOSYNC-1] Only when this write actually touched menuItems —
+    // not on every generic config edit (hours, tone, payment settings, etc.).
+    if (update.menuItems !== undefined) scheduleWaCatalogSync(tenantId);
     res.json({ business: biz });
   } catch (err) {
     logger.error('[Business] updateBusinessConfig failed', { err: err.message });
@@ -167,6 +186,7 @@ export async function updateMenu(req, res) {
       { new: true },
     ).lean();
     if (!biz) return res.status(404).json({ error: 'Not found' });
+    scheduleWaCatalogSync(tenantId);
     res.json({ menuItems: biz.menuItems });
   } catch (err) {
     logger.error('[Business] updateMenu failed', { err: err.message });
@@ -228,6 +248,7 @@ export async function addMenuItem(req, res) {
       { new: true },
     );
     if (!biz) return res.status(404).json({ error: 'Not found' });
+    scheduleWaCatalogSync(tenantId);
     res.status(201).json({ menuItems: biz.menuItems });
   } catch (err) {
     logger.error('[Business] addMenuItem failed', { err: err.message });
@@ -261,6 +282,7 @@ export async function deleteMenuItem(req, res) {
     // Clean up Cloudinary asset (non-fatal — item is already removed from DB)
     if (imagePublicId) await deleteMenuImage(imagePublicId);
 
+    scheduleWaCatalogSync(tenantId);
     res.json({ ok: true });
   } catch (err) {
     logger.error('[Business] deleteMenuItem failed', { err: err.message });
@@ -275,6 +297,51 @@ export async function getModeInfo(req, res) {
     const cfg = getModeConfig(fakeBiz);
     res.json({ mode: cfg.businessMode, flows: cfg.flows, steps: cfg.steps, ui: cfg.ui });
   } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+}
+
+/**
+ * [CATALOG-SYNC-ROUTE-1] POST /:tenantId/wacatalog/sync
+ * Manual, tenant-triggered push of BusinessConfig.menuItems into the
+ * tenant's Meta Commerce Catalog via waCatalogService.syncMenuToCatalog().
+ * Previously this function was fully written and unit-tested but had zero
+ * callers anywhere in the app.
+ */
+export async function syncWaCatalog(req, res) {
+  try {
+    const { tenantId } = req.params;
+
+    const business = await BusinessConfig.findOne({ tenantId }).lean();
+    if (!business) return res.status(404).json({ error: 'Not found' });
+
+    // The enabled/catalogId guard runs BEFORE the Tenant document is fetched —
+    // a misconfigured tenant gets a clear 400 instead of an unnecessary DB
+    // round-trip followed by a confusing downstream Graph API failure.
+    if (!business.waCatalog?.enabled || !business.waCatalog?.catalogId) {
+      return res.status(400).json({ error: 'WA Catalog is not enabled or has no catalogId configured for this tenant.' });
+    }
+
+    // .lean() is required here — Tenant's toJSON transform strips
+    // accessToken, and syncMenuToCatalog() needs the raw encrypted token to
+    // decrypt and call the Graph API.
+    const { default: Tenant } = await import('../models/Tenant.js');
+    const tenant = await Tenant.findById(tenantId).lean();
+    if (!tenant) return res.status(404).json({ error: 'Tenant not found' });
+
+    const { syncMenuToCatalog } = await import('../modules/catalog/waCatalogService.js');
+    const result = await syncMenuToCatalog(business, tenant);
+
+    if (!result.ok) {
+      // NO_TOKEN/NO_CATALOG_ID are caller-fixable configuration problems (400);
+      // everything else (GRAPH_ERROR, NETWORK_ERROR) is an upstream failure (502).
+      const status = result.reason === 'NO_TOKEN' || result.reason === 'NO_CATALOG_ID' ? 400 : 502;
+      return res.status(status).json({ error: `WA Catalog sync failed: ${result.reason}` });
+    }
+
+    res.json({ ok: true, synced: result.synced, deleted: result.deleted || 0 });
+  } catch (err) {
+    logger.error('[Business] syncWaCatalog failed', { err: err.message });
     res.status(500).json({ error: err.message });
   }
 }

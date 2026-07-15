@@ -57,14 +57,13 @@ export async function handleBakeryOrderFlow({ session, message, business, tenant
       }
       if (clean.length < 2) return _buildBakeryMenu(menu, business);
 
-      // [AUDIT-FIX-PARSEINT] parseInt("2 red buns", 10) === 2, NOT NaN — so any
-      // message merely STARTING with a digit silently hijacked the menu index
-      // once menuViewed was true (the normal case). Only trust the parsed index
-      // for a bare number or an interactive tap; everything else falls through
-      // to fuzzy name matching below.
+      // [AUDIT-FIX-PARSEINT] parseInt("2 red shirts", 10) === 2, not NaN — a bare
+      // leading digit used to silently hijack the menu index for ANY mixed
+      // alphanumeric reply once menuViewed was true. Only trust the parsed index
+      // for a genuinely bare number or an interactive tap (list row / button).
       const isPureNumeric = /^\d+$/.test(raw.trim());
-      const numIdx = (isInteractive || isPureNumeric) ? parseInt(raw, 10) - 1 : NaN;
-      let item = (!isNaN(numIdx) && numIdx >= 0 && menu[numIdx]) ? menu[numIdx] : null;
+      const numIdx = parseInt(raw, 10) - 1;
+      let item = ((isInteractive || isPureNumeric) && !isNaN(numIdx) && numIdx >= 0 && menu[numIdx]) ? menu[numIdx] : null;
 
       if (!item) {
         const { item: matched, confidenceLevel } = findBestMatch(menu, clean);

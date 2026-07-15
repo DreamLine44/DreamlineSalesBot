@@ -61,6 +61,20 @@ export const overviewLimiter = rateLimit({
 });
 
 /**
+ * Strict limiter for the manual WA Catalog sync route (POST /:tenantId/wacatalog/sync).
+ * Each call hits Meta's Graph API items_batch endpoint — a low per-minute cap
+ * keeps an admin's repeated taps (or a scripted retry loop) from hammering
+ * Meta's rate limits on the tenant's behalf.
+ */
+export const catalogSyncLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 5,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many catalog sync requests — please wait a moment.' },
+});
+
+/**
  * Extra-strict limiter for the humanMode toggle endpoint.
  * The toggle directly affects bot silence — rapid toggling could be used to
  * expose the bot to a customer mid-human-mode. 5 req/min is sufficient for
