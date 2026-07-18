@@ -230,29 +230,13 @@ export async function registerAllModules() {
 
     const lastItem = await getLastOrderItem(session.customerPhone, session.tenantId).catch(() => null);
     if (lastItem) {
-      // [AUDIT-FIX-REPEAT-1] getLastOrderItem() only ever returns the stored item
-      // NAME (Order.item is a plain string) — writing that straight into session
-      // data as { name: lastItem } gave the QUANTITY step no price to work with,
-      // silently totalling D0 and, since totalPrice:0 also skips the payment
-      // step, quietly treated every repeat order as a free cash order with no
-      // admin payment-verification prompt. Re-resolve the full menu item (with
-      // price/image/etc.) from the current menu by name, falling back to the
-      // name-only stub — with an explicit price-uncertainty notice — only when
-      // the item can no longer be found (e.g. it was removed from the menu).
-      const fullItem = (business?.menuItems || []).find(
-        mi => (mi.name || '').toLowerCase() === lastItem.toLowerCase()
-      ) || null;
-
       await updateSession(session.customerPhone, session.tenantId, {
         currentFlow: 'ORDER', step: 'QUANTITY',
-        data: { item: fullItem || { name: lastItem } }, menuViewed: true,
+        data: { item: { name: lastItem } }, menuViewed: true,
       });
-      const priceNotice = !fullItem
-        ? `\n\n⚠️ We couldn't confirm the current price for this item — we'll follow up with the exact total before your order is finalised.`
-        : '';
       return {
         type: 'buttons',
-        body: `🔁 *Repeat your last order*\n\nYou previously ordered *${lastItem}*.${priceNotice}\n\nHow many would you like this time?\n\n_(Enter a number or word — e.g. *1*, *2*, *three*)_`,
+        body: `🔁 *Repeat your last order*\n\nYou previously ordered *${lastItem}*.\n\nHow many would you like this time?\n\n_(Enter a number or word — e.g. *1*, *2*, *three*)_`,
         buttons: [{ id: 'CANCEL', title: '❌ Cancel' }],
       };
     }

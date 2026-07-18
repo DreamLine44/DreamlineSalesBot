@@ -53,24 +53,26 @@ const orderSchema = new mongoose.Schema({
   // dropped every write. Upsell add-on names were never persisted to the order record.
   addOns: { type: [String], default: [] },
 
-  // [FIX-CATALOG-CART-2] Multi-item cart line items — populated when an order
-  // was placed via a cart flow (e.g. WA Catalog consolidation) rather than a
-  // single item/quantity pair. item/quantity/addOns on the parent order still
-  // mirror items[0] (see orderService.resolveOrderFields()) so every existing
-  // dashboard/analytics/getLastOrderItem reader keeps working unchanged.
+  // [MULTICART-v39 / FIX-CATALOG-CART-2] items[] — the multi-item cart
+  // counterpart to the top-level item/quantity/addOns fields above (which
+  // stay populated too, mirrored from items[0], for backward compat with
+  // every reader that only knows the single-item shape). Only present on
+  // orders saved via saveOrder({ items: [...] }) — i.e. WA Catalog
+  // consolidated carts (waCatalogFlow.js handleMultiItemCatalogOrder()) and
+  // any future per-vertical multi-item cart flow.
+  //
+  // menuItemId was produced by every cart-line builder (waCatalogHelpers.
+  // buildCatalogCartItems(), and the CATALOG-STOCK-1 menuItemId every
+  // per-vertical orderFlow.js passes) but was missing from this subdocument
+  // schema — Mongoose strict mode silently dropped it on every save, the
+  // same recurring "field missing from schema" bug class as variants/
+  // customerName/notes/addOns/staff earlier in this codebase's history.
   items: {
     type: [{
-      item:     { type: String, required: true },
-      quantity: { type: Number, required: true, min: 1 },
-      unitPrice: { type: Number, default: null },
-      addOns:   { type: [String], default: [] },
-      // menuItemId — produced by every cart-line builder (waCatalogHelpers.
-      // buildCatalogCartItems(), and the CATALOG-STOCK-1 menuItemId every
-      // per-vertical orderFlow.js passes) but previously missing from this
-      // subdocument schema — Mongoose strict mode silently dropped it on
-      // every save. Same recurring "field missing from schema" bug class as
-      // variants/customerName/notes/addOns/staff earlier in this codebase's
-      // history.
+      item:       { type: String, required: true },
+      quantity:   { type: Number, required: true, min: 1 },
+      addOns:     { type: [String], default: [] },
+      unitPrice:  { type: Number, default: null },
       menuItemId: { type: mongoose.Schema.Types.ObjectId, default: null },
     }],
     default: [],

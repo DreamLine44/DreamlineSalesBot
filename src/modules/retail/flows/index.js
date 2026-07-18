@@ -139,14 +139,13 @@ export async function handleRetailOrder({ session, message, business, tenant, is
       }
       if (clean.length < 2) return _buildProductList(menu, business);
 
-      // [AUDIT-FIX-PARSEINT] parseInt("2 red shirts", 10) === 2, NOT NaN — so any
-      // message merely STARTING with a digit silently hijacked the menu index
-      // once menuViewed was true (the normal case). Only trust the parsed index
-      // for a bare number or an interactive tap; everything else falls through
-      // to fuzzy name matching below.
+      // [AUDIT-FIX-PARSEINT] parseInt("2 red shirts", 10) === 2, not NaN — a bare
+      // leading digit used to silently hijack the menu index for ANY mixed
+      // alphanumeric reply once menuViewed was true. Only trust the parsed index
+      // for a genuinely bare number or an interactive tap (list row / button).
       const isPureNumeric = /^\d+$/.test(raw.trim());
-      const numIdx = (isInteractive || isPureNumeric) ? parseInt(raw, 10) - 1 : NaN;
-      let item = (!isNaN(numIdx) && menu[numIdx]) ? menu[numIdx] : null;
+      const numIdx = parseInt(raw, 10) - 1;
+      let item = ((isInteractive || isPureNumeric) && !isNaN(numIdx) && menu[numIdx]) ? menu[numIdx] : null;
 
       if (!item) {
         const { item: m, confidenceLevel } = findBestMatch(menu, clean);
@@ -521,17 +520,25 @@ function _getCategories(menu) {
 }
 
 function _buildCategoryUI(categories, business) {
+  // [FIX-CAT-LIST-CAP] Cap at 9 rows — the 10th row is reserved for the
+  // trailing "Browse All" row so the total never exceeds WhatsApp's 10-row
+  // list-section ceiling. Unlike electronics/fashion (whose lists have no
+  // trailing row and can rely on dispatcher.js's [FIX-LIST-TRUNC] chunking),
+  // this list always appends one extra row, so it needs its own cap + notice.
   return {
     type: 'list',
     body: `🛍 *${business?.name || 'Our Store'}*\n\nWhat are you shopping for today?`,
+    button: 'Choose category',
     sections: [{
       title: 'Categories',
-      rows: categories.map(c => ({
+      rows: categories.slice(0, 9).map(c => ({
         id:    `CAT_${c.toUpperCase().replace(/\s+/g, '_')}`,
         title: c,
       })).concat([{ id: 'SHOW_MENU', title: '📋 Browse All' }]),
     }],
-    footer: 'Tap a category or type what you\'re looking for',
+    footer: categories.length > 9
+      ? `Showing 9 of ${categories.length} categories — tap Browse All to see everything`
+      : 'Tap a category or type what you\'re looking for',
   };
 }
 

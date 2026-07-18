@@ -97,14 +97,6 @@ export async function resolveActiveOrder(customerPhone, tenantId, business = nul
         { paymentStatus: 'rejected' },
         // Proof submitted, still awaiting admin decision
         { paymentStatus: { $in: ['proof_received', 'payment_pending_verification'] } },
-        // [AUDIT-FIX-AOR-QUERY-REJECT] Admin-rejected orders are written back as
-        // status:'pending' + paymentStatus:'unpaid' + paymentReviewedAt set (see
-        // the wasAdminRejected check below) — the SAME shape as an abandoned cart,
-        // so they were silently caught by the 24h-bounded 'pending' clause above
-        // and dropped once the admin took more than a day to review. A rejection
-        // is an order awaiting explicit customer action, not an abandoned cart, so
-        // this clause is intentionally left age-unbounded.
-        { status: 'pending', paymentStatus: 'unpaid', paymentReviewedAt: { $ne: null } },
       ],
     })
       .sort({ createdAt: -1 })

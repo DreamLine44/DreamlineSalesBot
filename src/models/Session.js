@@ -83,15 +83,6 @@ const sessionSchema = new mongoose.Schema({
   lastLoopMessage:  { type: String, default: null },
   lastLoopStep:     { type: String, default: null },
 
-  // [FEAT-SPAM-1] Rapid identical-message suppression (spec: "Ignore repeated
-  // identical messages ... respond once"). Distinct from loopCount above
-  // (multi-turn stuck-loop detection over many exchanges) and from the wamid
-  // dedup in webhookController.js (network-level duplicate delivery of the
-  // SAME event) — this throttles the same customer re-sending the exact same
-  // text within a few seconds.
-  lastRapidMessage:   { type: String, default: null },
-  lastRapidMessageAt: { type: Date,   default: null },
-
   // [FIX-ACK-THROTTLE] Tracks the last time we sent an order-status acknowledgement
   // reply so we don't repeat the same status text on every reaction emoji or filler word.
   lastOrderStatusAckAt: { type: Date, default: null },

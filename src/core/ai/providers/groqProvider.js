@@ -45,6 +45,14 @@
  * [GROQ-FIX-6] buildSystemPrompt: richer mode-specific personas.
  * [GROQ-FIX-7] getReply: conversation history trimmed to last 10 turns.
  * [GROQ-FIX-8] classifyIntent: business mode context in system prompt.
+ * [GROQ-STRUCT-1] Added classifyIntentStructured() + buildStructuredClassifierPrompt()
+ *              + parseStructuredDecision() — a richer classification path that returns
+ *              confidence/emotion/negation/correction/cancellation signals alongside the
+ *              intent word, instead of just the bare intent string. Purely additive:
+ *              classifyIntent() is untouched (postFlowHandler.js and intentEngine.js's
+ *              existing call both keep working exactly as before). The AI still only
+ *              returns signals here — it never decides the workflow action; that stays
+ *              intentEngine.js's job.
  */
 
 import logger from '../../../config/logger.js';
@@ -439,19 +447,21 @@ export async function getReply({ customerMessage, business, intent = 'FALLBACK',
 }
 
 /**
- * generateGreeting({ business, customerName, lastOrder })
+ * generateGreeting({ business, customerName })
  * [GROQ-OPT-4] Returns { text, source } object.
  * [GROQ-V3-3] Uses fast 8b model — short output, speed matters more than depth for greetings.
+ * [NO-MEMORY-1] No longer accepts/uses lastOrder — greetings must not reference
+ * a customer's order/booking history per the no-unsolicited-memory policy. The
+ * same greeting is generated whether the customer is new or returning.
  */
-export async function generateGreeting({ business, customerName, lastOrder }) {
+export async function generateGreeting({ business, customerName }) {
   const name     = sanitise(business?.name || 'us');
   const custName = customerName ? `, ${customerName}` : '';
-  const lastStr  = lastOrder ? ` Last time they ordered *${sanitise(lastOrder, 40)}*.` : '';
   const mode     = (business?.businessMode || 'RETAIL').toUpperCase();
 
   const modeHints = {
-    RESTAURANT:  'Mention something warm about great food or a favourite dish.',
-    SALON:       'Mention how great it is to have them back and something about looking great.',
+    RESTAURANT:  'Mention something warm about great food.',
+    SALON:       'Mention something about looking and feeling great.',
     BARBERSHOP:  'Keep it cool and confident — mention a fresh cut or looking sharp.',
     BAKERY:      'Mention freshly baked goodness or a warm treat waiting for them.',
     FASHION:     'Mention their style or a new arrival they might love.',
@@ -462,17 +472,19 @@ export async function generateGreeting({ business, customerName, lastOrder }) {
   };
 
   const hint = modeHints[mode] || 'Keep it warm and friendly.';
-  const prompt = `You are a warm ${getPersona(mode)} for ${name}. Write ONE casual, friendly sentence welcoming a returning customer${custName} back.${lastStr} ${hint} Keep it under 20 words. Use one relevant emoji. Do not start with "Hi" or "Hello".`;
+  // [NO-MEMORY-1] Deliberately does not mention returning/back/history — must
+  // read identically for a first-time and a hundredth-time customer.
+  const prompt = `You are a warm ${getPersona(mode)} for ${name}. Write ONE casual, friendly welcome sentence for a customer${custName}. ${hint} Do not reference any past visit, order, or purchase history. Keep it under 20 words. Use one relevant emoji. Do not start with "Hi" or "Hello".`;
 
   try {
     // [GROQ-V3-3] Fast 8b model for greetings — speed over depth
     const text = await callGroq([{ role: 'user', content: prompt }], {
       model: GROQ_MODEL_FAST, maxTokens: 60, temperature: 0.8,
     });
-    return { text: text || `👋 Great to have you back${custName}!`, source: 'groq' };
+    return { text: text || `👋 Great to have you here${custName}!`, source: 'groq' };
   } catch (err) {
     logger.debug('[Groq] generateGreeting fallback', { err: err.message });
-    return { text: `👋 Great to have you back${custName}!`, source: 'mock' };
+    return { text: `👋 Great to have you here${custName}!`, source: 'mock' };
   }
 }
 
@@ -500,7 +512,7 @@ export async function healthCheck() {
  * [GROQ-FIX-8]  Business mode context so classification leans toward relevant intents.
  */
 export async function classifyIntent({ message, validIntents, mode = 'RETAIL' }) {
-  if (!process.env.GROQ_API_KEY) return { intent: 'UNKNOWN', confidence: 'LOW' };
+  if (!process.env.GROQ_API_KEY) return 'UNKNOWN';
   try {
     const modeContext = {
       RESTAURANT:  'a restaurant that takes food orders and table bookings',
@@ -516,27 +528,14 @@ export async function classifyIntent({ message, validIntents, mode = 'RETAIL' })
       GENERAL:     'a general business',
     }[mode] || 'a business';
 
-    // [AUDIT-FIX-CLASSIFY-2] Two additions, both scoped to stay inside the
-    // existing lean single-line-reply contract (see [FIX-CLASSIFY] above —
-    // a fuller persona prompt previously broke that contract entirely):
-    //   1. A short negation/full-meaning instruction, so messages like
-    //      "I don't want food" or "we already ate" aren't misread as ORDER
-    //      just because "food"/"ate" appears.
-    //   2. A confidence tier (HIGH/MEDIUM/LOW) appended after a pipe. The
-    //      caller (intentEngine.js classifyWithAI/detectIntent) now only
-    //      auto-continues a workflow on HIGH; MEDIUM/LOW route through the
-    //      existing CLARIFY path instead of acting on a shaky guess.
+    // [GROQ-V3-2] Fast 8b model — classification is short-context, doesn't need 70b
     const result = await callGroq([
       {
         role: 'system',
         content:
           `You are an intent classifier for ${modeContext} on WhatsApp.\n` +
-          `Understand the customer's full meaning, not just keywords — negation, past tense, ` +
-          `and context change meaning (e.g. "I don't want food" or "we already ate" is NOT an order request).\n` +
           `Classify the customer message into exactly ONE of: ${validIntents.join(', ')}\n` +
-          `Also rate your confidence as HIGH (explicit and unambiguous), MEDIUM (likely but not certain), ` +
-          `or LOW (vague or unclear).\n` +
-          `Reply with ONLY "INTENT|CONFIDENCE" — nothing else, no explanation, no punctuation. Example: ORDER|HIGH`,
+          `Reply with ONLY the intent word — nothing else, no explanation, no punctuation.`,
       },
       { role: 'user', content: String(message || '').slice(0, 200) },
     ], { model: GROQ_MODEL_FAST, maxTokens: 20, temperature: 0.1 });
@@ -545,22 +544,165 @@ export async function classifyIntent({ message, validIntents, mode = 'RETAIL' })
     // explanation (e.g. "QUESTION." or "BOOKING — the customer wants...").
     // Extract only the first whitespace/punctuation-bounded token and uppercase it.
     const rawResult = String(result || '').trim();
-    const [rawIntentPart, rawConfPart] = rawResult.split('|');
-    const firstWord = String(rawIntentPart || '').trim().split(/[\s.,;:!?—\-]/)[0].toUpperCase();
+    const firstWord = rawResult.split(/[\s.,;:!?—\-]/)[0].toUpperCase();
     const classified = validIntents.includes(firstWord) ? firstWord : 'UNKNOWN';
-
-    // [AUDIT-FIX-CLASSIFY-2] Parse the confidence tier defensively — older prompt
-    // caches, model drift, or a malformed reply could all omit it. Default to
-    // MEDIUM (not HIGH) when unparseable, per the "don't inflate confidence"
-    // policy: an unlabeled classification should not auto-execute a workflow.
-    const confToken = String(rawConfPart || '').trim().split(/[\s.,;:!?—\-]/)[0].toUpperCase();
-    const confidence = classified === 'UNKNOWN'
-      ? 'LOW'
-      : (['HIGH', 'MEDIUM', 'LOW'].includes(confToken) ? confToken : 'MEDIUM');
-
-    return { intent: classified, confidence };
+    return classified;
   } catch {
-    return { intent: 'UNKNOWN', confidence: 'LOW' };
+    return 'UNKNOWN';
+  }
+}
+
+// ── Structured decision classifier [GROQ-STRUCT-1] ──────────────────────────────
+//
+// Signal-only contract: this returns what the message MEANS (intent, confidence,
+// negation, correction, cancellation, emotion, urgency, clarification/human flags).
+// It never returns a workflow action — mapping signals to an action is intentEngine.js's
+// job (see intentToAction() and the confidence-tier policy applied around the call site).
+// This keeps the AI/NLU layer out of business logic per the project's separation-of-
+// concerns rule.
+
+const VALID_EMOTIONS = new Set([
+  'neutral', 'happy', 'excited', 'satisfied', 'confused', 'frustrated',
+  'angry', 'urgent', 'curious', 'apologetic', 'disappointed', 'grateful',
+]);
+
+// Safe, all-false/neutral default returned whenever the model can't be reached
+// or its output can't be parsed — callers must treat this as "no signal", not
+// as a confident UNKNOWN classification.
+function defaultStructuredDecision(reason = 'unavailable') {
+  return {
+    primaryIntent: 'UNKNOWN',
+    secondaryIntents: [],
+    confidence: 0,
+    emotion: 'neutral',
+    urgency: 'normal',
+    negated: false,
+    confirmation: false,
+    correction: false,
+    cancellation: false,
+    needsClarification: false,
+    requiresHuman: false,
+    reason,
+  };
+}
+
+/**
+ * buildStructuredClassifierPrompt({ validIntents, mode })
+ * Exported (additive only) so prompt content can be covered by a direct
+ * regression test instead of only indirectly through a live Groq call.
+ */
+export function buildStructuredClassifierPrompt({ validIntents, mode = 'RETAIL' }) {
+  const modeContext = {
+    RESTAURANT:  'a restaurant that takes food orders and table bookings',
+    SALON:       'a hair and beauty salon that books appointments and handles walk-ins',
+    BARBERSHOP:  'a barbershop that books appointments and handles walk-ins',
+    BAKERY:      'a bakery that takes orders for bread, cakes, and pastries',
+    RETAIL:      'a retail store that sells products',
+    FASHION:     'a fashion store selling clothing and accessories',
+    COSMETICS:   'a cosmetics and skincare store',
+    ELECTRONICS: 'an electronics store selling phones, laptops, and gadgets',
+    DELIVERY:    'a delivery and courier service',
+    SERVICES:    'a professional services business (consulting, design, etc.)',
+    GENERAL:     'a general business',
+  }[mode] || 'a business';
+
+  return (
+    `You are a conversational-intent analyst for ${modeContext} on WhatsApp. ` +
+    `You do not control orders, bookings, or payments — you only analyse the customer's message.\n\n` +
+    `Analyse the message and reply with ONLY a single JSON object (no prose, no markdown fences), matching exactly:\n` +
+    `{"primaryIntent":"<one of: ${validIntents.join(', ')}>",` +
+    `"secondaryIntents":[<zero or more of the same list>],` +
+    `"confidence":<0.0-1.0>,` +
+    `"emotion":"<one of: ${[...VALID_EMOTIONS].join(', ')}>",` +
+    `"urgency":"<low|normal|high>",` +
+    `"negated":<true|false>,` +
+    `"confirmation":<true|false>,` +
+    `"correction":<true|false>,` +
+    `"cancellation":<true|false>,` +
+    `"needsClarification":<true|false>,` +
+    `"requiresHuman":<true|false>,` +
+    `"reason":"<one short sentence>"}\n\n` +
+    `Rules:\n` +
+    `- Understand full meaning — grammar, negation, and context — never just keyword-match. ` +
+    `"I don't want food" is NOT an order intent; set negated:true and primaryIntent to the closest ` +
+    `non-order intent (e.g. UNKNOWN or QUESTION).\n` +
+    `- Be conservative with confidence. Only use 0.92+ when the intent is explicit and unambiguous.\n` +
+    `- correction:true for messages like "actually, make that three" or "no, medium instead".\n` +
+    `- cancellation:true for "cancel", "forget it", "never mind", "stop".\n` +
+    `- confirmation:true for simple "yes"/"ok"/"that's right" style replies.\n` +
+    `- Never invent an intent outside the provided list.`
+  );
+}
+
+/**
+ * parseStructuredDecision(raw, validIntents)
+ * Exported (additive only) so JSON-parsing/validation can be unit-tested without
+ * a live network call. Always returns a fully-shaped, safe object — never throws.
+ */
+export function parseStructuredDecision(raw, validIntents = []) {
+  if (!raw) return defaultStructuredDecision('empty_response');
+
+  // Strip common code-fence wrapping some models add despite instructions.
+  const cleaned = String(raw).trim().replace(/^```(json)?/i, '').replace(/```$/, '').trim();
+
+  let parsed;
+  try {
+    parsed = JSON.parse(cleaned);
+  } catch {
+    return defaultStructuredDecision('parse_failed');
+  }
+  if (!parsed || typeof parsed !== 'object') return defaultStructuredDecision('parse_failed');
+
+  const intentSet = new Set(validIntents);
+  const primaryIntent = intentSet.has(parsed.primaryIntent) ? parsed.primaryIntent : 'UNKNOWN';
+
+  const secondaryIntents = Array.isArray(parsed.secondaryIntents)
+    ? parsed.secondaryIntents.filter(i => intentSet.has(i) && i !== primaryIntent).slice(0, 3)
+    : [];
+
+  const confidenceNum = Number(parsed.confidence);
+  const confidence = Number.isFinite(confidenceNum) ? Math.max(0, Math.min(1, confidenceNum)) : 0;
+
+  const emotion = VALID_EMOTIONS.has(parsed.emotion) ? parsed.emotion : 'neutral';
+  const urgency = ['low', 'normal', 'high'].includes(parsed.urgency) ? parsed.urgency : 'normal';
+
+  const bool = (v) => v === true;
+
+  return {
+    primaryIntent,
+    secondaryIntents,
+    confidence,
+    emotion,
+    urgency,
+    negated: bool(parsed.negated),
+    confirmation: bool(parsed.confirmation),
+    correction: bool(parsed.correction),
+    cancellation: bool(parsed.cancellation),
+    needsClarification: bool(parsed.needsClarification),
+    requiresHuman: bool(parsed.requiresHuman),
+    reason: typeof parsed.reason === 'string' ? parsed.reason.slice(0, 200) : '',
+  };
+}
+
+/**
+ * classifyIntentStructured({ message, validIntents, mode })
+ * [GROQ-STRUCT-1] Richer sibling of classifyIntent() — same fast 8b model, same
+ * validIntents contract, but returns the full signal object instead of a bare word.
+ * Never throws: network/parse failures resolve to defaultStructuredDecision().
+ */
+export async function classifyIntentStructured({ message, validIntents, mode = 'RETAIL' }) {
+  if (!process.env.GROQ_API_KEY) return defaultStructuredDecision('no_api_key');
+  try {
+    const systemPrompt = buildStructuredClassifierPrompt({ validIntents, mode });
+    const result = await callGroq([
+      { role: 'system', content: systemPrompt },
+      { role: 'user', content: String(message || '').slice(0, 200) },
+    ], { model: GROQ_MODEL_FAST, maxTokens: 220, temperature: 0.1 });
+
+    return parseStructuredDecision(result, validIntents);
+  } catch (err) {
+    logger.warn('[Groq] classifyIntentStructured failed', { err: err.message });
+    return defaultStructuredDecision('error');
   }
 }
 

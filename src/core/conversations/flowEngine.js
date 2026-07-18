@@ -204,32 +204,21 @@ export async function completeFlow(session, completedFlow, business = null, tena
   });
 
   // Lead capture trigger — fire after ORDER or BOOKING if configured.
-  // [AUDIT-FIX-LEADCAP-1] Previously used an "else" catch-all: only
-  // 'BOOKING'/'WALKIN' mapped to AFTER_BOOKING, and EVERYTHING ELSE
-  // (QUESTION, ENQUIRY, ABOUT, SPEC_REQUEST, WARRANTY, SKINCARE_ADVICE,
-  // QUOTE_FOLLOW — none of which are an order being placed) silently mapped
-  // to AFTER_ORDER. A business configured with leadCapture.triggerOn=
-  // 'AFTER_ORDER' would get a "what's your name?" prompt injected after
-  // simply answering an FAQ. Explicit allowlists force a conscious decision
-  // for any new completedFlow value instead of defaulting it into AFTER_ORDER.
-  const ORDER_COMPLETING_FLOWS   = new Set(['ORDER']);
-  const BOOKING_COMPLETING_FLOWS = new Set(['BOOKING', 'WALKIN']);
-
+  // [FIX-SALON-15] WALKIN uses saveBooking() just like BOOKING, so it should
+  // also trigger AFTER_BOOKING lead capture. Previously 'WALKIN' fell to the
+  // AFTER_ORDER branch (wrong trigger type) meaning any FIRST_MESSAGE-style
+  // lead-capture config would still work, but AFTER_BOOKING-only configs would
+  // never fire for walk-in customers.
   if (business) {
     try {
       const completedUpper = completedFlow.toUpperCase();
-      let trigger = null;
-      if (ORDER_COMPLETING_FLOWS.has(completedUpper)) {
-        trigger = 'AFTER_ORDER';
-      } else if (BOOKING_COMPLETING_FLOWS.has(completedUpper)) {
-        trigger = 'AFTER_BOOKING';
-      }
-      if (trigger) {
-        const { shouldCaptureLead, startLeadCapture } = await import('../../services/leadCaptureService.js');
-        const freshSession = (await getSession(session.customerPhone, session.tenantId)) || session;
-        if (await shouldCaptureLead(business, freshSession, trigger)) {
-          return await startLeadCapture(freshSession, business);
-        }
+      const trigger = (completedUpper === 'BOOKING' || completedUpper === 'WALKIN')
+        ? 'AFTER_BOOKING'
+        : 'AFTER_ORDER';
+      const { shouldCaptureLead, startLeadCapture } = await import('../../services/leadCaptureService.js');
+      const freshSession = (await getSession(session.customerPhone, session.tenantId)) || session;
+      if (await shouldCaptureLead(business, freshSession, trigger)) {
+        return await startLeadCapture(freshSession, business);
       }
     } catch (err) {
       logger.debug('[FlowEngine] Lead capture check failed (non-fatal)', { err: err.message });

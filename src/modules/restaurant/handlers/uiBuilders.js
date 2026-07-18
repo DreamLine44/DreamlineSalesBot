@@ -47,17 +47,17 @@ export function buildOrderSummary({ item, qty, total, addOns = [], business }) {
 export function buildOrderSuccess({ item, qty, business }) {
   const name     = typeof item === 'object' ? item.name : (item || 'your item');
   const quantity = qty || 1;
+  const canBook  = (business?.services || []).length > 0;
+  const buttons  = [
+    { id: 'ORDER',    title: '🛒 Place New Order' },
+    canBook ? { id: 'BOOK', title: '📅 Book a Table' } : null,
+    { id: 'SHOW_MENU', title: '🔄 Start Over' },
+  ].filter(Boolean).slice(0, 3);
 
-  // [FIX-GOODBYE-1] Previously bundled "Place New Order / Book a Table / Start
-  // Over" buttons into the SAME message as the thank-you — the bot said goodbye
-  // and immediately asked "what would you like to do next?" in one breath,
-  // which read as fake/contradictory to customers. This now ends the message
-  // as a genuine close: plain text, no buttons. The conversation only resumes
-  // if the customer messages again, via the normal returning-customer greeting
-  // path in moduleRouter.js.
   return {
-    type: 'text',
-    body: `✅ *Order placed!*\n\n🍳 *${quantity}× ${name}* — we're preparing it now.\n\nThank you! 😊`,
+    type:    'buttons',
+    body:    `✅ *Order placed!*\n\n🍳 *${quantity}× ${name}* — we're preparing it now.\n\nThank you! 😊`,
+    buttons,
   };
 }
 

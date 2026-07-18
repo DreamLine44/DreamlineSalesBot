@@ -14,10 +14,10 @@
  *
  * ── v14 CHANGES ────────────────────────────────────────────────────────────────
  *
- * [v14-GREET-1]  Returning-customer greeting: checks booking history and emits
- *                a personalised welcome ("Welcome back, Fatou!") with last-visit
- *                context when the customer is known. New customers get a warm
- *                branded welcome. This replaces the generic flat welcome message.
+ * [v14-GREET-1]  Greeting: same message for new and returning customers, with
+ *                name-based personalisation only ("Hello, Fatou!") when known.
+ *                [NO-MEMORY-1] No longer references booking history or
+ *                last-visit context — see moduleRouter.js GREET case.
  *
  * [v14-CONSULT]  AI consultation flow: customer can describe their hair/skin concern
  *                and receive a tailored recommendation before booking. Maps to
@@ -709,14 +709,13 @@ export async function handleSalonProductOrder({ session, message, business, tena
     // ── SELECT_ITEM ────────────────────────────────────────────────────────
     case 'SELECT_ITEM': {
       // [v14-BUG-9] List row IDs are 1-based numeric strings; resolve them first
-      // [AUDIT-FIX-PARSEINT] parseInt("2 red shirts", 10) === 2, NOT NaN — so any
-      // message merely STARTING with a digit silently hijacked the menu index
-      // once menuViewed was true (the normal case). Only trust the parsed index
-      // for a bare number or an interactive tap; everything else falls through
-      // to fuzzy name matching below.
+      // [AUDIT-FIX-PARSEINT] parseInt("2 red shirts", 10) === 2, not NaN — a bare
+      // leading digit used to silently hijack the menu index for ANY mixed
+      // alphanumeric reply once menuViewed was true. Only trust the parsed index
+      // for a genuinely bare number or an interactive tap (list row / button).
       const isPureNumeric = /^\d+$/.test(raw.trim());
-      const numIdx = (isInteractive || isPureNumeric) ? parseInt(raw, 10) - 1 : NaN;
-      let item = (!isNaN(numIdx) && numIdx >= 0 && menu[numIdx]) ? menu[numIdx] : null;
+      const numIdx = parseInt(raw, 10) - 1;
+      let item = ((isInteractive || isPureNumeric) && !isNaN(numIdx) && numIdx >= 0 && menu[numIdx]) ? menu[numIdx] : null;
 
       if (!item && !isInteractive && !session.menuViewed && /^\d+$/.test(raw)) {
         await updateSession(session.customerPhone, session.tenantId, { menuViewed: true });
@@ -1142,8 +1141,12 @@ function _buildProductMenu(items, business, isBarbershop) {
 
   const currency = business?.payment?.currency || 'D';
 
-  // [v14-BUG-9] Row IDs are 1-based numeric strings to match numIdx parsing
-  const rows = items.slice(0, 10).map((item, i) => ({
+  // [AUDIT-FIX-SALON-PRODUCT-CHUNK] Was pre-sliced to 10 items and wrapped in a
+  // single sections entry — dispatcher.js's [FIX-LIST-TRUNC] chunking only
+  // operates on a flat top-level `rows` array, so items past #10 were silently
+  // dropped before the dispatcher ever got a chance to place them in later
+  // sections. Build rows from the full catalog and return them flat.
+  const rows = items.map((item, i) => ({
     id:          String(i + 1),
     title:       item.name.slice(0, 24),
     description: [
@@ -1159,11 +1162,7 @@ function _buildProductMenu(items, business, isBarbershop) {
       ? 'Our grooming products — tap to select:'
       : 'Our hair & beauty products — tap to select:',
     button: 'View Products',
-    sections: [{
-      title: isBarbershop ? 'Grooming Products' : 'Beauty Products',
-      rows,
-    }],
-    footer: items.length > 10 ? `Showing ${rows.length} of ${items.length} products` : undefined,
+    rows,
   };
 }
 

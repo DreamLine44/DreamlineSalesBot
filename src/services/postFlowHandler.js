@@ -62,48 +62,54 @@ const COMPLIMENT_RE = /\b(amazing|excellent|fantastic|love|best|delicious|enjoye
 const COMPLAINT_RE  = /\b(bad|terrible|awful|horrible|disappoint|not\s*good|wrong|cold|late|missing|never|complain|refund|cheat|fraud|angry|upset|poor|issue|problem|unsatisfied|unhappy|rubbish|disgusting|unacceptable|worst)\b/i;
 const QUESTION_RE   = /[?]|^(how|when|where|what|why|can\s*you|do\s*you|is\s*there|will\s*you|could\s*you)\b/i;
 
-// [PFH-8] A lone ACK/COMPLIMENT regex match sitting next to a negation ("not amazing"),
-// a hedge ("hardly", "barely"), or a sarcasm marker (quoted word, clapping emoji, "lol")
-// is exactly the gap a tone-testing customer exploits — the regex sees the positive
-// word and ignores the qualifier flipping its meaning. Demote those to the AI tiebreak.
-const NEGATION_SARCASM_RE = /\b(not|never|hardly|barely|isn't|wasn't|aren't|weren't|no\s*way|yeah\s*right)\b|['"][^'"]{2,}['"]|👏|🙄|😏|\blol\b|\blmao\b/i;
+// [PFH-8] The five buckets classifyPostFlowSentiment() resolves every post-flow
+// message into. UNRELATED covers zero-signal messages that reach the AI tiebreak
+// and still come back ambiguous, plus the AI-unavailable/error fallback.
 const SENTIMENT_LABELS = ['ACK', 'COMPLIMENT', 'COMPLAINT', 'QUESTION', 'UNRELATED'];
+
+// [AUDIT-FIX-LIVE-3] A lone ACK/COMPLIMENT regex match next to a negation ("not
+// amazing") or a sarcasm hint (a quoted word, or 👏/🙄/😒) is exactly the gap a
+// tone-testing customer exploits — the regex fires on the positive word alone and
+// never sees the negation/sarcasm around it. Demote that specific case to the AI
+// tiebreak instead of trusting the instant fast path.
+const NEGATION_OR_SARCASM_RE = /\b(not|isn't|wasn't|didn't|don't|no|never)\b|["'“”‘’][^"'“”‘’]+["'“”‘’]|🙄|😒|👏/i;
+function hasNegationOrSarcasm(m) {
+  return NEGATION_OR_SARCASM_RE.test(m);
+}
 
 /**
  * classifyPostFlowSentiment(msg, business)
+ * [PFH-8] Single source of truth for post-flow sentiment — replaces four
+ * independent, non-mutually-exclusive regex booleans with one classification call.
  *
- * Trusts a single confident regex match (fast path, zero added latency/cost),
- * UNLESS that lone match is an ACK/COMPLIMENT sitting next to a negation or
- * sarcasm hint ("not bad", "wow, real 'impressive' service 👏") — that's the
- * exact gap a tone-testing customer exploits, so it's demoted to the AI
- * tiebreak instead. Zero or conflicting regex matches also go to the AI
- * tiebreak. Falls back to the safe 'UNRELATED' bucket if the AI call fails.
+ * - Trusts a single confident regex match with zero added latency/cost, UNLESS
+ *   that lone match is a gameable ACK/COMPLIMENT next to a negation/sarcasm hint.
+ * - Falls back to groqProvider.classifyIntent() (the same lean one-word classifier
+ *   intentEngine.js already uses) when regexes give zero or conflicting signals,
+ *   or the sole match looks gameable.
+ * - Never throws — defaults to the safe 'UNRELATED' bucket on any AI failure.
  */
 async function classifyPostFlowSentiment(msg, business) {
   const mode = (business?.businessMode || 'RETAIL').toUpperCase();
 
   const matches = [];
-  if (ACK_RE.test(msg))        matches.push('ACK');
+  if (ACK_RE.test(msg)) matches.push('ACK');
   if (COMPLIMENT_RE.test(msg)) matches.push('COMPLIMENT');
-  if (COMPLAINT_RE.test(msg))  matches.push('COMPLAINT');
-  if (QUESTION_RE.test(msg))   matches.push('QUESTION');
+  if (COMPLAINT_RE.test(msg)) matches.push('COMPLAINT');
+  if (QUESTION_RE.test(msg)) matches.push('QUESTION');
 
-  // [AUDIT-FIX-LIVE-3] A regex can't tell "impressive" from "'impressive'" or
-  // "bad" from "not bad" — a negation word or sarcasm marker next to a lone
-  // positive match means the fast path can't be trusted.
-  const hasNegationOrSarcasm = NEGATION_SARCASM_RE.test(msg);
   const soleMatchIsGameable = matches.length === 1 &&
     (matches[0] === 'ACK' || matches[0] === 'COMPLIMENT') &&
-    hasNegationOrSarcasm;
+    hasNegationOrSarcasm(msg);
 
   if (matches.length === 1 && !soleMatchIsGameable) return matches[0];
 
   try {
     const { classifyIntent } = await import('../core/ai/providers/groqProvider.js');
     const result = await classifyIntent({ message: msg, validIntents: SENTIMENT_LABELS, mode });
-    if (result && SENTIMENT_LABELS.includes(result.intent)) return result.intent;
-    return 'UNRELATED';
+    return SENTIMENT_LABELS.includes(result) ? result : 'UNRELATED';
   } catch (err) {
+    logger.warn('[PostFlowHandler] classifyPostFlowSentiment AI tiebreak failed', { err: err.message });
     return 'UNRELATED';
   }
 }
@@ -147,11 +153,11 @@ export async function handlePostFlowMessage({
   const msg   = messageText.trim();
   const upper = msg.toUpperCase();
 
-  const sentiment = await classifyPostFlowSentiment(msg, business);
-  const isAck        = sentiment === 'ACK';
-  const isCompliment = sentiment === 'COMPLIMENT';
-  const isComplaint  = sentiment === 'COMPLAINT';
-  const isQuestion   = sentiment === 'QUESTION';
+  const sentiment     = await classifyPostFlowSentiment(msg, business);
+  const isAck         = sentiment === 'ACK';
+  const isCompliment  = sentiment === 'COMPLIMENT';
+  const isComplaint   = sentiment === 'COMPLAINT';
+  const isQuestion    = sentiment === 'QUESTION';
 
   // [PFH-2] Clear postFlowAck first — consumed regardless of path taken below.
   // Each handler that needs to KEEP the ack context restores it explicitly.
@@ -218,23 +224,22 @@ export async function handlePostFlowMessage({
       return true;
     }
 
-    // [AUDIT-FIX-SPEC-WARRANTY] SPEC_REQUEST/WARRANTY postFlowAck — set by
-    // completeFlow() calls in modules/electronics/flows/orderFlow.js's
-    // handleSpecRequest()/handleWarranty(). Previously fell to the generic
-    // `default` branch and logged a spurious "Unknown ackCtx" warning for an
-    // entirely expected, legitimate state — any follow-up after a spec or
-    // warranty answer (a "thanks", another question, or a buy-now tap) got the
-    // generic menu with zero context, same class of gap as QUESTION above.
+    // [AUDIT-FIX-SPEC-WARRANTY] SPEC_REQUEST / WARRANTY postFlowAck — set by
+    // completeFlow('SPEC_REQUEST') / completeFlow('WARRANTY') in
+    // modules/electronics/flows/orderFlow.js. Previously fell to the default
+    // "unknown ackCtx" branch, logging a spurious warning for an entirely
+    // expected state and showing the generic welcome menu instead of a
+    // context-aware reply. Modeled directly on the QUESTION case above.
     case 'SPEC_REQUEST': {
       const { getAIReply: _specAI } = await import('../core/ai/providers/aiRouter.js');
       const _specBtns = [
-        { id: 'SPEC_REQUEST', title: '❓ Another Question' },
+        { id: 'SPEC_REQUEST', title: '❓ Ask Another' },
         ...welcomeBtns.slice(0, 2),
       ].slice(0, 3);
       if (isAck || isCompliment) {
         await dispatchMessage(from, {
           type:    'buttons',
-          body:    `You're welcome${custName}! 😊 Let us know if you have any other questions about the product.`,
+          body:    `You're welcome${custName}! 😊 Let me know if you have any other questions about the specs.`,
           buttons: _specBtns,
         }, tenantDoc);
         return true;
@@ -248,7 +253,7 @@ export async function handlePostFlowMessage({
         }, tenantDoc);
         return true;
       }
-      const _followUp = await _specAI({ customerMessage: msg, business, session, intent: 'SPEC_REQUEST' });
+      const _followUp = await _specAI({ customerMessage: msg, business, intent: 'SPEC_REQUEST' });
       await dispatchMessage(from, {
         type:    'buttons',
         body:    _followUp || `Happy to help${custName}! 😊`,
@@ -258,22 +263,21 @@ export async function handlePostFlowMessage({
     }
 
     case 'WARRANTY': {
-      const { getAIReply: _warAI } = await import('../core/ai/providers/aiRouter.js');
-      const _warBtns = [
-        { id: 'WARRANTY',     title: '❓ Another Question' },
-        { id: 'SPEC_REQUEST', title: '🛒 Tech Help'         },
-        { id: 'SUPPORT',      title: '💬 Speak to Team'      },
-      ];
+      const { getAIReply: _warrAI } = await import('../core/ai/providers/aiRouter.js');
+      const _warrBtns = [
+        { id: 'WARRANTY', title: '🛡 Ask Another' },
+        ...welcomeBtns.slice(0, 2),
+      ].slice(0, 3);
       if (isAck || isCompliment) {
         await dispatchMessage(from, {
           type:    'buttons',
-          body:    `You're welcome${custName}! 😊 Let us know if you need anything else on warranty or after-sales.`,
-          buttons: _warBtns,
+          body:    `You're welcome${custName}! 😊 Let me know if you need anything else on warranty or after-sales.`,
+          buttons: _warrBtns,
         }, tenantDoc);
         return true;
       }
       if (isComplaint) {
-        const _r = await _warAI({ customerMessage: msg, business, intent: 'COMPLAINT' });
+        const _r = await _warrAI({ customerMessage: msg, business, intent: 'COMPLAINT' });
         await dispatchMessage(from, {
           type:    'buttons',
           body:    _r || `We're sorry to hear that${custName}. 😔 Please speak to our team directly.`,
@@ -281,11 +285,11 @@ export async function handlePostFlowMessage({
         }, tenantDoc);
         return true;
       }
-      const _followUp = await _warAI({ customerMessage: msg, business, session, intent: 'WARRANTY' });
+      const _followUp = await _warrAI({ customerMessage: msg, business, intent: 'WARRANTY' });
       await dispatchMessage(from, {
         type:    'buttons',
         body:    _followUp || `Happy to help${custName}! 😊`,
-        buttons: _warBtns,
+        buttons: _warrBtns,
       }, tenantDoc);
       return true;
     }
