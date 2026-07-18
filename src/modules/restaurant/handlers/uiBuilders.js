@@ -48,12 +48,13 @@ export function buildOrderSuccess({ item, qty, business }) {
   const name     = typeof item === 'object' ? item.name : (item || 'your item');
   const quantity = qty || 1;
 
-  // [FIX-GOODBYE-1] Previously bundled "Place New Order / Book a Table / Start
-  // Over" buttons into this SAME message — the bot said goodbye and immediately
-  // asked "what would you like to do next?" in one breath, which read as fake/
-  // contradictory to customers. End the message as a genuine close instead: no
-  // buttons. The conversation only resumes if the customer messages again, via
-  // the normal returning-customer greeting path in moduleRouter.js.
+  // [FIX-GOODBYE-1] Previously this bundled "Place New Order / Book a Table /
+  // Start Over" buttons into the SAME message as the order-placed thank-you —
+  // the bot said goodbye and immediately asked "what would you like to do
+  // next?" in one breath, which read as fake/contradictory to customers.
+  // Fix: end as a genuine close (plain text, no buttons). The conversation
+  // only resumes if the customer messages again, via the normal
+  // returning-customer greeting path in moduleRouter.js.
   return {
     type: 'text',
     body: `✅ *Order placed!*\n\n🍳 *${quantity}× ${name}* — we're preparing it now.\n\nThank you! 😊`,

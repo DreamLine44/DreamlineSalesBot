@@ -4,101 +4,139 @@
  * [FIX-BUG5] Now calls recordOrderItem() after every successful save so that
  *            customer memory / personalisation / repeat-order features actually work.
  *            Previously customerMemory was defined but never invoked from here.
+ *
+ * [MULTICART-v39] resolveOrderFields() — pure normalization function that lets
+ * saveOrder() accept EITHER the original single-item shape (item/quantity/
+ * totalPrice/addOns — every one of the 9 non-cart verticals) OR a new items[]
+ * cart shape (WA Catalog multi-item orders — see waCatalogFlow.js
+ * handleMultiItemCatalogOrder()) without changing behaviour for existing
+ * callers at all. When items[] is used, item/quantity/addOns are mirrored
+ * from items[0] so every downstream reader (dashboard, analytics,
+ * getLastOrderItem, admin alerts) keeps working unmodified.
  */
 import Order  from '../models/Order.js';
 import { recordOrderItem } from '../core/memory/customerMemory.js';
+import { logAudit } from './auditService.js';
+import { validatePromoCode, applyPromoUsage } from './promoService.js';
 import logger from '../config/logger.js';
 
-// [MULTICART-v39] Phase 1 — pure normalization function, no DB/session
-// dependency. Given either legacy scalar order fields (item/quantity/
-// totalPrice/addOns) OR a multi-item cart (items: [{item, quantity,
-// unitPrice, addOns}, ...]), returns one consistent shape:
-//   { hasCart, resolvedItem, resolvedQuantity, resolvedTotal, resolvedAddOns }
-//
-// Backward compat: a call with no items[] (or an empty items[]) returns
-// exactly what was passed in — zero behavior change for the verticals that
-// don't use carts yet.
-//
-// New path: a non-empty items[] mirrors item/quantity/addOns from items[0]
-// (so dashboard/analytics/getLastOrderItem readers never have to change),
-// and sums totalPrice from unitPrice*quantity across all items — UNLESS an
-// explicit totalPrice was given (always wins, e.g. a discount applied
-// upstream), or [AUDIT-FIX-MULTICART-1] any single item is missing a
-// unitPrice, in which case the total is null rather than a silently partial
-// sum (previously this could add up just the priced items and hand that
-// back as if it were the whole order's total).
-//
-// [AUDIT-FIX-MULTICART-2] items[] gets a 50-item hard cap here as a last
-// line of defense against an unbounded array (a stuck "add another item?"
-// loop, or a caller bug) — the multiItemCart.maxItems config field exists
-// but enforcing it at the flow layer is separate, later work.
-//
-// Wiring this into saveOrder() (and persisting items[] on the Order
-// document) is intentionally NOT done in this pass — that needs an Order
-// schema addition, which is out of scope for Phase 1.
+// [AUDIT-FIX-MULTICART-2] Hard ceiling on items[] length — saveOrder() itself
+// must never accept an unbounded cart, independent of any flow-layer cap
+// (business.multiItemCart.maxItems is a Phase 2 UX limit; this is the Phase 1
+// data-layer backstop).
+const HARD_MAX_CART_ITEMS = 50;
+
+/**
+ * resolveOrderFields({ item, quantity, totalPrice, addOns, items })
+ * → { hasCart, resolvedItem, resolvedQuantity, resolvedTotal, resolvedAddOns }
+ *
+ * Pure — no DB access, no side effects. Exported for direct unit testing and
+ * so buildCatalogCartItems() output can be validated before it ever reaches
+ * saveOrder()/Order.create().
+ */
 export function resolveOrderFields({ item, quantity, totalPrice, addOns, items } = {}) {
   const hasCart = Array.isArray(items) && items.length > 0;
 
   if (!hasCart) {
     return {
-      hasCart: false,
-      resolvedItem: item,
+      hasCart:          false,
+      resolvedItem:     item,
       resolvedQuantity: quantity,
-      resolvedTotal: totalPrice === undefined ? null : totalPrice,
-      resolvedAddOns: addOns || [],
+      resolvedAddOns:   addOns || [],
+      resolvedTotal:    totalPrice ?? null,
     };
   }
 
-  if (items.length > 50) {
-    throw new Error(`Cart is exceeding the hard cap of 50 items (got ${items.length})`);
+  if (items.length > HARD_MAX_CART_ITEMS) {
+    throw new Error(`Cart items[] exceeding the hard cap of ${HARD_MAX_CART_ITEMS} items`);
   }
 
   const first = items[0];
 
-  let resolvedTotal;
-  if (totalPrice !== undefined) {
-    resolvedTotal = totalPrice;
-  } else {
+  // [AUDIT-FIX-MULTICART-1] Only auto-sum when EVERY item has a known
+  // unitPrice — a partial sum silently presented as "the total" would drop
+  // the cost of whatever's missing a price. Explicit totalPrice always wins.
+  let resolvedTotal = totalPrice ?? null;
+  if (resolvedTotal === null) {
     const allPriced = items.every(i => typeof i.unitPrice === 'number');
     resolvedTotal = allPriced
-      ? items.reduce((sum, i) => sum + i.unitPrice * (i.quantity ?? 1), 0)
+      ? items.reduce((sum, i) => sum + i.unitPrice * i.quantity, 0)
       : null;
   }
 
   return {
-    hasCart: true,
-    resolvedItem: first.item,
+    hasCart:          true,
+    resolvedItem:     first.item,
     resolvedQuantity: first.quantity,
+    resolvedAddOns:   first.addOns || [],
     resolvedTotal,
-    resolvedAddOns: first.addOns || [],
   };
 }
 
 // [FIX-SAVE-1] Added `notes` and `customerName` to destructure — previously both were
 // silently dropped because they weren't listed, even though notes IS in the Order schema
 // and all module callers pass it. customerName is also now in the Order schema.
-//
-// [FIX-CATALOG-CART-2] Added `items` to destructure and wired resolveOrderFields()
-// through it. waCatalogFlow.js's handleMultiItemCatalogOrder() already called
-// saveOrder({ items: cartItems, ... }) but `items` wasn't in this destructure at
-// all — every multi-item catalog order silently saved with item/quantity/totalPrice
-// all undefined. Single-item callers (the vast majority) pass no `items`, so
-// resolveOrderFields()'s hasCart:false branch returns their scalar fields
-// completely unchanged — zero behavior change for every existing caller.
-export async function saveOrder({ item, quantity, totalPrice, addOns, items, notes, customerName, customerPhone, tenantId, businessId, status }) {
-  const resolved = resolveOrderFields({ item, quantity, totalPrice, addOns, items });
+export async function saveOrder({ item, quantity, totalPrice, addOns, items, notes, customerName, customerPhone, tenantId, businessId, status, promoCode }) {
+  const { hasCart, resolvedItem, resolvedQuantity, resolvedTotal, resolvedAddOns } =
+    resolveOrderFields({ item, quantity, totalPrice, addOns, items });
+
+  // [AUDIT-FIX-PROMO-WIRE-1] promoService.js's own docstring says it's
+  // "intentionally called from ONE place — orderService.saveOrder()" — but
+  // nothing ever actually called it, and BusinessConfig had no `promotions`
+  // field to read from in the first place (see [AUDIT-FIX-PROMO-SCHEMA-1]).
+  // Only attempted when a promoCode was actually supplied and the order has
+  // a known subtotal to discount — never blocks order creation on an
+  // invalid/expired code, matching validatePromoCode()'s own non-throwing
+  // contract; an invalid code just means no discount is applied.
+  let finalTotal      = resolvedTotal;
+  let appliedPromo    = null;
+  let discountAmount  = 0;
+  if (promoCode && resolvedTotal != null) {
+    try {
+      const promoResult = await validatePromoCode(tenantId, promoCode, resolvedTotal);
+      if (promoResult.valid) {
+        finalTotal     = promoResult.newTotal;
+        discountAmount = promoResult.discountAmount;
+        appliedPromo   = promoResult.promotion.code;
+      } else {
+        logger.info('[OrderService] promoCode not applied', { tenantId, promoCode, reason: promoResult.reason });
+      }
+    } catch (err) {
+      logger.warn('[OrderService] validatePromoCode failed (non-fatal, order proceeds without discount)', {
+        tenantId, promoCode, err: err.message,
+      });
+    }
+  }
 
   const order = await Order.create({
-    item:          resolved.resolvedItem,
-    quantity:      resolved.resolvedQuantity,
-    totalPrice:    resolved.resolvedTotal,
-    addOns:        resolved.resolvedAddOns,
-    items:         resolved.hasCart ? items : [],
+    item:          resolvedItem,
+    quantity:      resolvedQuantity,
+    totalPrice:    finalTotal,
+    promoCode:     appliedPromo,
+    discountAmount,
+    addOns:        resolvedAddOns,
+    ...(hasCart ? { items } : {}),
     notes:         notes         || null,
     customerName:  customerName  || null,
     customerPhone, tenantId, businessId,
     status:        status || 'pending',
     paymentStatus: 'unpaid',
+  });
+
+  // Only consume a use once the order this discount applies to actually exists.
+  if (appliedPromo) {
+    applyPromoUsage(tenantId, appliedPromo).catch(err =>
+      logger.debug('[OrderService] applyPromoUsage failed (non-fatal)', { err: err.message })
+    );
+  }
+
+  // [AUDIT-FIX-AUDITLOG-1] See adminCommandService.js's confirmPayment/rejectPayment —
+  // same previously-dead logAudit() wiring. order_created is the one event every
+  // order goes through, regardless of vertical/module.
+  logAudit({
+    tenantId, orderId: order._id, actor: 'customer', actorId: customerPhone,
+    action: 'order_created',
+    metadata: { item: resolvedItem, quantity: resolvedQuantity, totalPrice: finalTotal, hasCart, promoCode: appliedPromo },
   });
 
   // [FIX-BUG5] Update customer memory — fire-and-forget, never blocks order completion
@@ -109,7 +147,7 @@ export async function saveOrder({ item, quantity, totalPrice, addOns, items, not
   // Without this flag, every approved order was counted twice — once here at save
   // time, once again at confirmation — corrupting VIP-threshold detection and the
   // "welcome back" returning-customer greeting logic in moduleRouter.js.
-  recordOrderItem(customerPhone, String(tenantId), resolved.resolvedItem, { countOrder: false }).catch(err =>
+  recordOrderItem(customerPhone, String(tenantId), resolvedItem, { countOrder: false }).catch(err =>
     logger.debug('[OrderService] recordOrderItem failed (non-fatal)', { err: err.message })
   );
 

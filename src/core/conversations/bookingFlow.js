@@ -365,10 +365,10 @@ export async function handleBookingFlow({ session, message, business, tenant, is
   switch (step) {
 
     case 'SELECT_SERVICE': {
-      // [AUDIT-FIX-PARSEINT-9] parseInt("2 haircuts please", 10) === 2, not
-      // NaN — digit-prefixed mixed input would silently hijack services[idx].
-      // Only trust the parsed index for a bare numeric reply; anything else
-      // falls through to the name-match branch below.
+      // [AUDIT-FIX-PARSEINT-9] parseInt("2 haircuts please") === 2, not NaN —
+      // only trust the parsed index for a bare number; mixed alphanumeric
+      // input must fall through to fuzzy name matching below instead of
+      // silently hijacking the services array with the wrong pick.
       const isPureNumeric = /^\d+$/.test(raw.trim());
       const idx = isPureNumeric ? parseInt(raw, 10) - 1 : NaN;
       // Handle SVC_ button ID prefixes from list responses
@@ -633,11 +633,10 @@ export async function handleBookingFlow({ session, message, business, tenant, is
         return cancelFlow(session, business);
       }
 
-      // [AUDIT-FIX-CONFIRM-1] Was missing 'yeah'/'yep' — DATE_CONFIRM and
-      // TIME_CONFIRM in this same file already accept them. This is the step
-      // that actually SAVES the booking, so a customer typing "yeah" here
-      // got the summary silently re-displayed instead of their booking saved.
-      if (!/^(yes|y|yep|yeah|confirm|ok|okay|sure)$/i.test(clean) && clean !== 'confirm') {
+      // [AUDIT-FIX-CONFIRM-1] "yeah"/"yep" were missing here even though
+      // DATE_CONFIRM/TIME_CONFIRM both accept them — this is the step that
+      // actually SAVES the booking.
+      if (!/^(yes|y|yeah|yep|confirm|ok|okay|sure)$/i.test(clean) && clean !== 'confirm') {
         const { date, time, service, partySize, stylist, staff } = data;
         const staffDisplay2 = stylist || staff || null;
         const isBarbershopReprompt = (business?.businessMode || '').toUpperCase() === 'BARBERSHOP';

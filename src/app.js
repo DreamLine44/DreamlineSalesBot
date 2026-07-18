@@ -52,6 +52,7 @@ import dashboardRoutes   from './routes/dashboardRoutes.js';
 import tenantRoutes      from './routes/tenantRoutes.js';
 import adminRoutes                 from './routes/adminRoutes.js';
 import whatsappOnboardingRoutes from './routes/whatsappOnboardingRoutes.js';
+import adminUserRoutes from './routes/adminUserRoutes.js';
 
 const app        = express();
 const isProduction = process.env.NODE_ENV === 'production';
@@ -136,6 +137,18 @@ if (!isProduction && process.env.SIMULATION_MODE === 'true') {
 
 // Business management
 app.use('/business', createRateLimiter(120), requireApiKey, businessRoutes);
+
+// [AUDIT-FIX-MULTIADMIN-MOUNT] Tenant Dashboard staff login/management
+// (adminUserRoutes.js). MUST be mounted BEFORE the blanket
+// app.use('/dashboard', requireApiKey, dashboardRoutes) below — its own
+// /dashboard/auth/login and /dashboard/auth/accept-invite routes are
+// deliberately unauthenticated (they're how a session token is obtained in
+// the first place), and every other route in this file applies requireApiKey
+// itself, matching the pattern already used for tenantRoutes/
+// whatsappOnboardingRoutes below. Previously this file existed (controller +
+// service + model all present) but was never imported or mounted anywhere —
+// the entire feature was unreachable.
+app.use('/', createRateLimiter(120), adminUserRoutes);
 
 // Dashboard
 app.use('/dashboard', createRateLimiter(120), requireApiKey, dashboardRoutes);

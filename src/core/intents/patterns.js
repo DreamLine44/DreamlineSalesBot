@@ -22,10 +22,7 @@ export const BUTTON_ID_MAP = {
   'QUESTION':           'QUESTION',
   'SUPPORT':            'SUPPORT',
   'SHOW_MENU':          'SHOW_MENU',
-  // [AUDIT-FIX-VIEWMENU] Was 'SHOW_MENU' — collapsed the "View Menu" button tap
-  // into the reset/start-over action, so it never actually showed the menu.
-  // Now a distinct action; see moduleRouter.js case 'VIEW_MENU'.
-  'VIEW_MENU':          'VIEW_MENU',
+  'VIEW_MENU':          'SHOW_MENU',
 
   // Flow control
   'CONFIRM':            'CONFIRM',
@@ -93,13 +90,10 @@ export const BUTTON_ID_MAP = {
   'WALKIN_NOW':         'WALKIN',           // [FIX] Join Now variant button
   'JOIN_QUEUE':         'WALKIN',
   // [v14-PATTERNS] Salon/barbershop new button IDs
-  // [AUDIT-FLOWS-RESCHEDULE] Previously aliased straight to 'START_BOOKING', which just
+  // [AUDIT-FLOWS-RESCHEDULE] Was aliased straight to 'START_BOOKING', which just
   // starts a brand-new booking flow without ever touching the customer's existing
-  // pending/confirmed appointment — silently duplicating it (old booking stays live,
-  // a second unrelated one gets created, plus a duplicate admin alert). Routes to its
-  // own dedicated 'RESCHEDULE' action now — see moduleRouter.js's case 'RESCHEDULE',
-  // which mirrors the already-correct postFlowHandler.js RESCHEDULE handling: cancel
-  // the old booking first, then start the new one.
+  // pending/confirmed appointment — silently duplicating it instead of rescheduling.
+  // Now routes to its own dedicated action; see moduleRouter.js's case 'RESCHEDULE'.
   'RESCHEDULE':         'RESCHEDULE',
   'CONSULTATION':       'QUESTION',        // consultation taps go to the QUESTION/AI flow
 
@@ -354,24 +348,9 @@ export const INTENT_PATTERNS = {
     'talk to staff', 'talk to someone else',
   ],
 
-  // [AUDIT-FIX-VIEWMENU] Split the old single SHOW_MENU list into two distinct
-  // intents. It previously conflated two different customer goals under one
-  // bucket: "let me see the menu/items" (menu, show menu, view menu, see menu,
-  // main menu, back to menu) vs. "take me back to the top-level options" (home,
-  // back, restart, 0, start over). Both mapped to the same SHOW_MENU action,
-  // which only ever resets the session and re-shows the generic welcome
-  // buttons — it never actually displays the menu. A customer mid-order who
-  // typed "menu" or tapped a "📋 View Menu" button (id SHOW_MENU) lost their
-  // flow progress and was NOT shown any menu items, despite the button/intent
-  // name promising exactly that. VIEW_MENU is now a first-class intent/action
-  // (see intentEngine.js intentToAction, moduleRouter.js case 'VIEW_MENU', and
-  // webhookController.js mid-flow handling) that actually renders the menu.
-  VIEW_MENU: [
-    'menu', 'show menu', 'view menu', 'see menu', 'main menu', 'back to menu',
-  ],
-
   SHOW_MENU: [
-    'home', 'back', 'restart', '0', 'start over',
+    'menu', 'show menu', 'view menu', 'see menu', 'main menu', 'home',
+    'back to menu', 'back', 'restart', '0', 'start over',
   ],
 
   CAKE_CUSTOMIZATION: [

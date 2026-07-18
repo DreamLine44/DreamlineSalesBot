@@ -95,19 +95,18 @@ export async function resolveActiveOrder(customerPhone, tenantId, business = nul
         { status: 'delivered', updatedAt: { $gte: new Date(Date.now() - DELIVERED_CONTEXT_WINDOW_MS) } },
         // Rejected payments (order.status may be 'pending' after a reject+retry window)
         { paymentStatus: 'rejected' },
+        // [AUDIT-FIX-AOR-QUERY-REJECT] _resolveState() correctly detects an
+        // admin-rejected order via status:'pending' + paymentStatus:'unpaid' +
+        // paymentReviewedAt set (see FIX-AOR-REJECT) — but that shape also
+        // matches the general 'pending' clause above, which is bounded to the
+        // last 24h so abandoned carts age out. A rejected order isn't an
+        // abandoned cart though — it's awaiting explicit customer action — so
+        // it must be surfaced regardless of how long ago the admin reviewed
+        // (and thus rejected) it. Deliberately age-unbounded, unlike the
+        // general 'pending' clause.
+        { status: 'pending', paymentStatus: 'unpaid', paymentReviewedAt: { $ne: null } },
         // Proof submitted, still awaiting admin decision
         { paymentStatus: { $in: ['proof_received', 'payment_pending_verification'] } },
-        // [AUDIT-FIX-AOR-QUERY-REJECT] Admin-rejected orders written via
-        // adminCommandService.rejectPayment() land at status:'pending' +
-        // paymentStatus:'unpaid' (see [FIX-AOR-REJECT] / wasAdminRejected below) —
-        // the SAME shape the abandoned-cart clause above bounds to 24h. But a
-        // rejected order isn't an abandoned cart; it's awaiting explicit customer
-        // action (retry or give up), and an admin reviewing/rejecting more than
-        // 24h after the order was placed is routine, not a bug. Without this
-        // unbounded clause the query silently dropped the order once 24h had
-        // passed, even though _resolveState() below already knows how to turn it
-        // into a PAYMENT_REJECTED card with the rejection reason and a retry button.
-        { status: 'pending', paymentStatus: 'unpaid', paymentReviewedAt: { $ne: null } },
       ],
     })
       .sort({ createdAt: -1 })

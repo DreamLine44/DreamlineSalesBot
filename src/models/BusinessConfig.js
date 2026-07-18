@@ -27,19 +27,6 @@ const menuItemSchema = new mongoose.Schema({
   price:       { type: Number, default: 0, min: 0, max: 999999 },
   description: { type: String, default: '', trim: true, maxlength: 300 },
   keywords:    { type: [String], default: [], validate: { validator: v => v.length <= 20, message: 'Max 20 keywords per item' } },
-  // [FIX-VARIANTS-SCHEMA] Previously undeclared — Mongoose's default strict mode
-  // silently drops any key not declared on a (sub)document schema when casting a
-  // write, so every `variants` array sent via addMenuItem/updateMenuItem/
-  // updateMenu, or via scripts/seed.js's BusinessConfig.create(), was stripped
-  // before it ever reached Mongo, with no error raised anywhere. This broke, all
-  // at once: fashion/flows/index.js's SELECT_ITEM size-selection step (always
-  // saw item.variants as empty), retail/flows/index.js's SELECT_VARIANT step
-  // (same), and waCatalogHelpers.js's resolveCatalogItem() variant-specific
-  // retailer_id suffix resolution (nothing to resolve against). Accepts either
-  // plain strings (the scripts/seed.js shape) or `{ name }` objects (the shape
-  // every reader also accepts via `v.name || v`) — Mixed so both cast through
-  // unchanged rather than Mongoose coercing everything into one shape.
-  variants:    { type: [mongoose.Schema.Types.Mixed], default: [], validate: { validator: v => v.length <= 20, message: 'Max 20 variants per item' } },
   available:   { type: Boolean, default: true },
   // [v1-SALON] category: 'services'|'service' = appointment service; anything else = retail product.
   // Salon flow uses this to split the menu into bookable services vs purchasable products.
@@ -64,6 +51,18 @@ const menuItemSchema = new mongoose.Schema({
   },
   tags:              { type: [String], default: [] },  // e.g. ["popular", "new", "special"]
   showImageOnSelect: { type: Boolean,  default: true },
+
+  // [FIX-VARIANTS-SCHEMA] variants — size/colour/option list for this item.
+  // Accepts either plain strings (scripts/seed.js shape, e.g. 'S'/'M'/'L') or
+  // { name } objects — every reader (fashion/flows/index.js SELECT_ITEM,
+  // retail/flows/index.js SELECT_VARIANT, waCatalogHelpers.resolveCatalogItem())
+  // already handles both via `v.name || v`, so Mixed accepts both without
+  // forcing either shape. Capped at 20 to match the keywords[] precedent above.
+  variants: {
+    type: [mongoose.Schema.Types.Mixed],
+    default: [],
+    validate: { validator: v => v.length <= 20, message: 'Max 20 variants per item' },
+  },
 }, { _id: true });
 
 const serviceSchema = new mongoose.Schema({
@@ -202,37 +201,6 @@ const businessConfigSchema = new mongoose.Schema({
     default: [],
   },
 
-  // ── WA (Meta) Commerce Catalog integration ────────────────────────────────
-  // [CATALOG-CONFIG] Feature flag + sync bookkeeping for the WhatsApp/Meta
-  // Commerce Catalog integration (see modules/catalog/*). Previously entirely
-  // absent from this schema — every field written by the WA Catalog fixes
-  // (enabled/catalogId toggles from onboarding, syncedRetailerIds/
-  // syncedItemHashes snapshots from syncMenuToCatalog()) was silently dropped
-  // by Mongoose strict mode on every save.
-  waCatalog: {
-    enabled:   { type: Boolean, default: false },
-    catalogId: { type: String,  default: null },
-    mode: {
-      type: String,
-      enum: ['AI_DECIDES', 'ALWAYS_OFFER', 'MANUAL_ONLY'],
-      default: 'AI_DECIDES',
-    },
-    // [CATALOG-CRUD-1] Snapshot of retailer_ids currently live in Meta's
-    // catalog as of the last successful sync — lets the next sync diff
-    // against it to build DELETE requests for items removed since then.
-    syncedRetailerIds: { type: [String], default: [] },
-    // [CATALOG-DELTA-1] Per-retailer_id content hash from the last successful
-    // sync — lets the next sync only re-send items whose data actually
-    // changed, instead of re-uploading the tenant's entire catalog every time.
-    syncedItemHashes: { type: Map, of: String, default: {} },
-    lastSyncedAt: { type: Date, default: null },
-    // [CATALOG-HEALTH-4] Cleared on the next successful sync.
-    lastSyncError: {
-      reason: { type: String, default: null },
-      at:     { type: Date,   default: null },
-    },
-  },
-
   nlp: {
     synonyms: { type: Map, of: [String], default: {} },
     keywords: {
@@ -292,6 +260,48 @@ const businessConfigSchema = new mongoose.Schema({
     promptMessage: { type: String, default: null, trim: true, maxlength: 500 }, // custom opening line
     thankYouMsg:   { type: String, default: null, trim: true, maxlength: 300 }, // custom thank-you
     notifyAdmin:   { type: Boolean, default: true }, // send admin a WhatsApp alert per lead
+  },
+
+  // ── WA (Meta) Commerce Catalog integration ────────────────────────────────
+  // [CATALOG-CONFIG] enabled/catalogId/mode gate whether waCatalogService
+  // does anything at all for this tenant — see isCatalogEnabled() in
+  // waCatalogConfig.js. syncedRetailerIds/syncedItemHashes are the snapshots
+  // syncMenuToCatalog() writes after a successful sync, used to diff the
+  // NEXT sync (which items were deleted, which items actually changed) —
+  // see [CATALOG-CRUD-1]/[CATALOG-DELTA-1] in waCatalogService.js.
+  waCatalog: {
+    enabled:   { type: Boolean, default: false },
+    catalogId: { type: String,  default: null },
+    mode:      { type: String,  enum: ['AI_DECIDES', 'ALWAYS_OFFER', 'MANUAL_ONLY'], default: 'AI_DECIDES' },
+    syncedRetailerIds: { type: [String], default: [] },
+    syncedItemHashes:  { type: Map, of: String, default: {} },
+    lastSyncedAt: { type: Date, default: null },
+    // [CATALOG-HEALTH-4] Best-effort record of the last sync failure reason,
+    // cleared on the next successful sync — see recordSyncError() in
+    // waCatalogService.js.
+    lastSyncError: {
+      reason: { type: String, default: null },
+      at:     { type: Date,   default: null },
+    },
+  },
+
+  // [AUDIT-FIX-PROMO-SCHEMA-1] Discount/promo codes — see services/promoService.js
+  // (validatePromoCode/applyPromoUsage). This field did not exist at all despite
+  // promoService.js being fully built against exactly this shape; every
+  // validatePromoCode() call silently found `business.promotions` undefined
+  // (→ []) and returned "Invalid promo code" for any code, on every tenant.
+  promotions: {
+    type: [{
+      code:          { type: String,  required: true, uppercase: true, trim: true },
+      type:          { type: String,  enum: ['PERCENT', 'FIXED'], default: 'PERCENT' },
+      value:         { type: Number,  required: true, min: 0 },
+      active:        { type: Boolean, default: true },
+      expiresAt:     { type: Date,    default: null },
+      maxUses:       { type: Number,  default: null },  // null = unlimited
+      usedCount:     { type: Number,  default: 0 },
+      minOrderValue: { type: Number,  default: null },
+    }],
+    default: [],
   },
 
   settings: {

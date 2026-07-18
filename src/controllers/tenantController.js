@@ -521,6 +521,35 @@ export async function updateTenant(req, res) {
         ...(metaVerification.error ? { metaError: metaVerification.error } : {}),
       });
 
+      // [AUDIT-FIX-ACTIVATE-VERIFY] Previously this set status:'ACTIVE'
+      // unconditionally whenever activate:true was requested, regardless of
+      // metaVerification.verified — only whatsapp.connected reflected the
+      // real result. receiveWebhook() gates message processing purely on
+      // status:'ACTIVE' (not whatsapp.connected), so a tenant whose
+      // credentials Meta explicitly rejected (bad token, wrong phoneNumberId,
+      // etc.) was activated anyway: the bot would try to serve real customer
+      // messages using credentials already known to be broken, with every
+      // reply silently failing to dispatch. The response message
+      // ("Tenant credentials set and activated. Bot is live.") was also
+      // shown even when verification had failed, which is actively
+      // misleading to the admin. Only flip to ACTIVE when Meta actually
+      // confirmed the credentials; otherwise the credential field updates
+      // above are still saved (so the admin doesn't have to resupply them),
+      // but status is left untouched and a 502 with the verification
+      // error/hint is returned instead of a false "Bot is live" message.
+      if (!metaVerification.verified) {
+        await Tenant.findByIdAndUpdate(
+          req.params.id,
+          { $set: { ...updates, 'whatsapp.connected': false } },
+          { new: true, runValidators: true },
+        );
+        return res.status(502).json({
+          ok:                   false,
+          error:                'Cannot activate: Meta did not verify the WhatsApp credentials.',
+          whatsappVerification: metaVerification,
+        });
+      }
+
       // whatsapp.connected = true only when Meta confirmed
       updates['whatsapp.connected'] = metaVerification.verified;
       updates['status']             = 'ACTIVE';

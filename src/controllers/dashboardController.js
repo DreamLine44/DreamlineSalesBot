@@ -40,7 +40,6 @@ import Tenant         from '../models/Tenant.js';
 import { getAnalyticsSummary, getAnalyticsTimeseries } from '../core/analytics/analyticsService.js';
 import { updateSession }       from '../core/sessions/sessionService.js';
 import { dispatchText, dispatchMessage } from '../core/whatsapp/dispatcher.js';
-import { scheduleWaCatalogSync } from '../modules/catalog/waCatalogSyncScheduler.js';
 import logger from '../config/logger.js';
 
 // [AUDIT-FIX-9] User-supplied search strings were interpolated directly into
@@ -58,6 +57,8 @@ function escapeRegex(str) {
   return String(str).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 import { uploadMenuImage, deleteMenuImage, CLOUDINARY_ENABLED } from '../config/cloudinary.js';
+import { scheduleWaCatalogSync } from '../modules/catalog/waCatalogSyncScheduler.js';
+import { getTenantUsageSummary } from '../services/usageService.js';
 
 // ── Helper: load tenant doc for WhatsApp dispatch ─────────────────────────────
 async function loadTenant(tenantId) {
@@ -70,19 +71,25 @@ export async function getDashboardOverview(req, res) {
     const { tenantId } = req.params;
     const since30 = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
 
-    const [orders, bookings, customers, humanModes, analytics, business] = await Promise.all([
+    const [orders, bookings, customers, humanModes, analytics, business, usage] = await Promise.all([
       Order.countDocuments({ tenantId, createdAt: { $gte: since30 } }),
       Booking.countDocuments({ tenantId, createdAt: { $gte: since30 } }),
       UserProfile.countDocuments({ tenantId }),
       Session.countDocuments({ tenantId, humanMode: true }),
       getAnalyticsSummary(tenantId, 30),
       BusinessConfig.findOne({ tenantId }).select('name businessMode adminPhone').lean(),
+      // [AUDIT-FIX-USAGE-WIRE-1] getTenantUsageSummary() was fully built
+      // (see usageService.js) but never called from anywhere — the plan/usage
+      // widget this was meant to power had no data source. Non-fatal: a
+      // lookup failure here shouldn't break the rest of the overview.
+      getTenantUsageSummary(tenantId).catch(() => null),
     ]);
 
     res.json({
       business,
       last30Days: { orders, bookings, customers, revenue: analytics.revenue },
       activeHumanSessions: humanModes,
+      usage,
     });
   } catch (err) {
     logger.error('[Dashboard] getDashboardOverview failed', { err: err.message });
@@ -695,8 +702,6 @@ export async function addMenuItem(req, res) {
       { new: true },
     );
     if (!biz) return res.status(404).json({ error: 'Not found' });
-    // [CATALOG-AUTOSYNC-1] Fire-and-forget debounced WA Catalog sync — no-op
-    // for tenants who haven't enabled it (see waCatalogSyncScheduler.js).
     scheduleWaCatalogSync(tenantId);
     res.status(201).json({ menuItems: biz.menuItems });
   } catch (err) { logger.error('[Dashboard] Request failed', { err: err.message }); res.status(500).json({ error: err.message }); }

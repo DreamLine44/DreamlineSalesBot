@@ -708,11 +708,10 @@ export async function handleSalonProductOrder({ session, message, business, tena
 
     // ── SELECT_ITEM ────────────────────────────────────────────────────────
     case 'SELECT_ITEM': {
-      // [AUDIT-FIX-PARSEINT] parseInt("2 blue nail polish", 10) === 2, not
-      // NaN — digit-prefixed mixed input would silently hijack menu[idx].
-      // List row IDs are legitimately bare numeric strings (isInteractive),
-      // and a bare typed number is fine too — but mixed alphanumeric input
-      // must fall through to fuzzy name matching instead.
+      // [v14-BUG-9] List row IDs are 1-based numeric strings; resolve them first
+      // [AUDIT-FIX-PARSEINT] parseInt("2 red shirts") === 2, not NaN — only trust
+      // the parsed index for a bare number or an interactive tap; mixed
+      // alphanumeric input must fall through to fuzzy name matching below.
       const isPureNumeric = /^\d+$/.test(raw.trim());
       const numIdx = parseInt(raw, 10) - 1;
       let item = ((isInteractive || isPureNumeric) && !isNaN(numIdx) && numIdx >= 0 && menu[numIdx]) ? menu[numIdx] : null;
@@ -1141,15 +1140,11 @@ function _buildProductMenu(items, business, isBarbershop) {
 
   const currency = business?.payment?.currency || 'D';
 
-  // [AUDIT-FIX-SALON-PRODUCT-CHUNK] Previously sliced to 10 here AND wrapped the
-  // result inside a single `sections: [{ rows }]` entry. dispatcher.js's chunking
-  // logic ([FIX-LIST-TRUNC]) only chunks the FLAT top-level `rows` format into
-  // ≤10-row sections — when `sections` is already present it trusts the caller to
-  // have pre-chunked and just slices EACH given section to 10, so a single section
-  // holding all N products still silently dropped everything past the 10th. Build
-  // rows from the FULL catalog and return them flat, matching the already-correct
-  // pattern used by _buildServiceMenu/_buildStylistMenu and retail's
-  // _buildProductList.
+  // [AUDIT-FIX-SALON-PRODUCT-CHUNK] Was pre-sliced to 10 items and wrapped in a
+  // single sections entry — dispatcher.js's [FIX-LIST-TRUNC] chunking only
+  // operates on a flat top-level `rows` array, so items past #10 were silently
+  // dropped before the dispatcher ever got a chance to place them in later
+  // sections. Build rows from the full catalog and return them flat.
   // [v14-BUG-9] Row IDs are 1-based numeric strings to match numIdx parsing
   const rows = items.map((item, i) => ({
     id:          String(i + 1),
@@ -1168,7 +1163,6 @@ function _buildProductMenu(items, business, isBarbershop) {
       : 'Our hair & beauty products — tap to select:',
     button: 'View Products',
     rows,
-    footer: items.length > 10 ? `Showing ${rows.length} of ${items.length} products` : undefined,
   };
 }
 

@@ -103,6 +103,7 @@ import { updateSession } from '../core/sessions/sessionService.js';
 import { dispatchText, dispatchMessage } from '../core/whatsapp/dispatcher.js';
 import { getModeConfig } from '../config/modes.js';
 import logger            from '../config/logger.js';
+import { logAudit }      from './auditService.js';
 
 const MAX_INPUT_LENGTH = 500; // guard against absurdly long button IDs / command strings
 
@@ -472,6 +473,15 @@ async function confirmPayment(shortId, tenantId, adminPhone, tenantDoc, business
     }
 
     logger.info('[AdminCmd] Payment confirmed', { shortId, adminPhone });
+    // [AUDIT-FIX-AUDITLOG-1] auditService.js's logAudit() was fully built
+    // (model, enum, non-blocking write) but never called from anywhere in
+    // the app — every payment approval/rejection left zero audit trail.
+    // Fire-and-forget, matching the documented usage pattern.
+    logAudit({
+      tenantId, orderId: order._id, actor: 'admin', actorId: adminPhone,
+      action: 'payment_approved',
+      metadata: { shortId: order.shortId || shortId, item: order.item, quantity: order.quantity, isCashConfirm },
+    });
     // [FIX-READY-BTN] Return a button message to the admin instead of plain text.
     // Previously the admin got "✅ Payment confirmed" as plain text with no next action.
     // They had to remember to type "MARK READY <shortId>" later — a step many admins
@@ -623,6 +633,12 @@ async function rejectPayment(shortId, tenantId, adminPhone, tenantDoc, business,
     }));
 
     logger.info('[AdminCmd] Payment rejected', { shortId, adminPhone });
+    // [AUDIT-FIX-AUDITLOG-1] See confirmPayment — same previously-dead logAudit() wiring.
+    logAudit({
+      tenantId, orderId: order._id, actor: 'admin', actorId: adminPhone,
+      action: 'payment_rejected',
+      metadata: { shortId: order.shortId || shortId, item: order.item, reason: rejectReason || null, isCashOrder },
+    });
     return `❌ *Payment rejected*\n\nOrder #${shortId} — ${order.item}\nCustomer ${order.customerPhone} notified. Retry window open.`;
   } catch (err) {
     // [FIX-CMD-15] See confirmPayment — guarantees the admin always gets a reply
