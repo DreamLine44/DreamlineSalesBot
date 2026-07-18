@@ -198,12 +198,14 @@ export async function handleElectronicsOrder({
       }
 
       // Numeric selection from list
-      // [AUDIT-FIX-PARSEINT] parseInt("2 red shirts") === 2, not NaN — only trust
-      // the parsed index for a bare number or an interactive tap; mixed
-      // alphanumeric input must fall through to fuzzy name matching below.
+      // [AUDIT-FIX-PARSEINT] parseInt("2 red shirts", 10) === 2, NOT NaN — so any
+      // message merely STARTING with a digit silently hijacked the menu index
+      // once menuViewed was true (the normal case). Only trust the parsed index
+      // for a bare number or an interactive tap; everything else falls through
+      // to fuzzy name matching below.
       const isPureNumeric = /^\d+$/.test(raw.trim());
-      const numIdx = parseInt(raw, 10) - 1;
-      let item = ((isInteractive || isPureNumeric) && !isNaN(numIdx) && listMenu[numIdx]) ? listMenu[numIdx] : null;
+      const numIdx = (isInteractive || isPureNumeric) ? parseInt(raw, 10) - 1 : NaN;
+      let item = (!isNaN(numIdx) && listMenu[numIdx]) ? listMenu[numIdx] : null;
 
       if (!item) {
         const { item: matched, confidenceLevel } = findBestMatch(listMenu, clean);

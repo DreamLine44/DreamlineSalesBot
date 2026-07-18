@@ -95,18 +95,16 @@ export async function resolveActiveOrder(customerPhone, tenantId, business = nul
         { status: 'delivered', updatedAt: { $gte: new Date(Date.now() - DELIVERED_CONTEXT_WINDOW_MS) } },
         // Rejected payments (order.status may be 'pending' after a reject+retry window)
         { paymentStatus: 'rejected' },
-        // [AUDIT-FIX-AOR-QUERY-REJECT] _resolveState() correctly detects an
-        // admin-rejected order via status:'pending' + paymentStatus:'unpaid' +
-        // paymentReviewedAt set (see FIX-AOR-REJECT) — but that shape also
-        // matches the general 'pending' clause above, which is bounded to the
-        // last 24h so abandoned carts age out. A rejected order isn't an
-        // abandoned cart though — it's awaiting explicit customer action — so
-        // it must be surfaced regardless of how long ago the admin reviewed
-        // (and thus rejected) it. Deliberately age-unbounded, unlike the
-        // general 'pending' clause.
-        { status: 'pending', paymentStatus: 'unpaid', paymentReviewedAt: { $ne: null } },
         // Proof submitted, still awaiting admin decision
         { paymentStatus: { $in: ['proof_received', 'payment_pending_verification'] } },
+        // [AUDIT-FIX-AOR-QUERY-REJECT] Admin-rejected orders are written back as
+        // status:'pending' + paymentStatus:'unpaid' + paymentReviewedAt set (see
+        // the wasAdminRejected check below) — the SAME shape as an abandoned cart,
+        // so they were silently caught by the 24h-bounded 'pending' clause above
+        // and dropped once the admin took more than a day to review. A rejection
+        // is an order awaiting explicit customer action, not an abandoned cart, so
+        // this clause is intentionally left age-unbounded.
+        { status: 'pending', paymentStatus: 'unpaid', paymentReviewedAt: { $ne: null } },
       ],
     })
       .sort({ createdAt: -1 })

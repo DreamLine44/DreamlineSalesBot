@@ -81,9 +81,6 @@ export async function handleEnquiryFlow({ session, message, business, tenant }) 
     return {
       type: 'list',
       body: '📋 *Get a Quote*\n\nWhat type of service are you looking for?\n\n_(Tap one below or type your answer)_',
-      // [AUDIT-FIX-BTNLABEL] Explicit button label — without this the dispatcher
-      // falls back to the generic 'Choose option' label.
-      button: 'Choose service',
       sections: [{
         title: 'Service Types',
         rows: serviceTypes.slice(0, 10).map(s => ({ id: `SVC_${s.toUpperCase().replace(/\s+/g, '_')}`, title: s })),
@@ -370,8 +367,6 @@ function _askServiceType(business) {
   return {
     type: 'list',
     body: '📋 *Get a Quote*\n\nWhat type of service are you looking for?',
-    // [AUDIT-FIX-BTNLABEL] Explicit button label (see handleEnquiryFlow INIT fix above).
-    button: 'Choose service',
     sections: [{
       title: 'Service Types',
       rows: serviceTypes.slice(0, 10).map(s => ({ id: `SVC_${s.toUpperCase().replace(/\s+/g, '_')}`, title: s })),

@@ -52,12 +52,15 @@ const menuItemSchema = new mongoose.Schema({
   tags:              { type: [String], default: [] },  // e.g. ["popular", "new", "special"]
   showImageOnSelect: { type: Boolean,  default: true },
 
-  // [FIX-VARIANTS-SCHEMA] variants — size/colour/option list for this item.
-  // Accepts either plain strings (scripts/seed.js shape, e.g. 'S'/'M'/'L') or
-  // { name } objects — every reader (fashion/flows/index.js SELECT_ITEM,
-  // retail/flows/index.js SELECT_VARIANT, waCatalogHelpers.resolveCatalogItem())
-  // already handles both via `v.name || v`, so Mixed accepts both without
-  // forcing either shape. Capped at 20 to match the keywords[] precedent above.
+  // [FIX-VARIANTS-SCHEMA] variants was written by addMenuItem/updateMenuItem/
+  // updateMenu (dashboardController.js and businessController.js) and by
+  // scripts/seed.js, but absent from this schema — Mongoose strict mode
+  // silently dropped it on every write. This broke fashion's SELECT_ITEM size
+  // selection, retail's SELECT_VARIANT, and waCatalogHelpers.resolveCatalogItem's
+  // variant-specific retailer_id resolution all at once, since item.variants
+  // was never actually populated on any persisted item. Mixed type since both
+  // plain strings (scripts/seed.js shape) and { name } objects (the shape every
+  // reader also accepts via `v.name || v`) are written across this codebase.
   variants: {
     type: [mongoose.Schema.Types.Mixed],
     default: [],
@@ -201,6 +204,37 @@ const businessConfigSchema = new mongoose.Schema({
     default: [],
   },
 
+  // ── WA (Meta) Commerce Catalog integration ────────────────────────────────
+  // [CATALOG-CONFIG] Feature flag + sync bookkeeping for the WhatsApp/Meta
+  // Commerce Catalog integration (see modules/catalog/*). Previously entirely
+  // absent from this schema — every field written by the WA Catalog fixes
+  // (enabled/catalogId toggles from onboarding, syncedRetailerIds/
+  // syncedItemHashes snapshots from syncMenuToCatalog()) was silently dropped
+  // by Mongoose strict mode on every save.
+  waCatalog: {
+    enabled:   { type: Boolean, default: false },
+    catalogId: { type: String,  default: null },
+    mode: {
+      type: String,
+      enum: ['AI_DECIDES', 'ALWAYS_OFFER', 'MANUAL_ONLY'],
+      default: 'AI_DECIDES',
+    },
+    // [CATALOG-CRUD-1] Snapshot of retailer_ids currently live in Meta's
+    // catalog as of the last successful sync — lets the next sync diff
+    // against it to build DELETE requests for items removed since then.
+    syncedRetailerIds: { type: [String], default: [] },
+    // [CATALOG-DELTA-1] Per-retailer_id content hash from the last successful
+    // sync — lets the next sync only re-send items whose data actually
+    // changed, instead of re-uploading the tenant's entire catalog every time.
+    syncedItemHashes: { type: Map, of: String, default: {} },
+    lastSyncedAt: { type: Date, default: null },
+    // [CATALOG-HEALTH-4] Cleared on the next successful sync.
+    lastSyncError: {
+      reason: { type: String, default: null },
+      at:     { type: Date,   default: null },
+    },
+  },
+
   nlp: {
     synonyms: { type: Map, of: [String], default: {} },
     keywords: {
@@ -260,48 +294,6 @@ const businessConfigSchema = new mongoose.Schema({
     promptMessage: { type: String, default: null, trim: true, maxlength: 500 }, // custom opening line
     thankYouMsg:   { type: String, default: null, trim: true, maxlength: 300 }, // custom thank-you
     notifyAdmin:   { type: Boolean, default: true }, // send admin a WhatsApp alert per lead
-  },
-
-  // ── WA (Meta) Commerce Catalog integration ────────────────────────────────
-  // [CATALOG-CONFIG] enabled/catalogId/mode gate whether waCatalogService
-  // does anything at all for this tenant — see isCatalogEnabled() in
-  // waCatalogConfig.js. syncedRetailerIds/syncedItemHashes are the snapshots
-  // syncMenuToCatalog() writes after a successful sync, used to diff the
-  // NEXT sync (which items were deleted, which items actually changed) —
-  // see [CATALOG-CRUD-1]/[CATALOG-DELTA-1] in waCatalogService.js.
-  waCatalog: {
-    enabled:   { type: Boolean, default: false },
-    catalogId: { type: String,  default: null },
-    mode:      { type: String,  enum: ['AI_DECIDES', 'ALWAYS_OFFER', 'MANUAL_ONLY'], default: 'AI_DECIDES' },
-    syncedRetailerIds: { type: [String], default: [] },
-    syncedItemHashes:  { type: Map, of: String, default: {} },
-    lastSyncedAt: { type: Date, default: null },
-    // [CATALOG-HEALTH-4] Best-effort record of the last sync failure reason,
-    // cleared on the next successful sync — see recordSyncError() in
-    // waCatalogService.js.
-    lastSyncError: {
-      reason: { type: String, default: null },
-      at:     { type: Date,   default: null },
-    },
-  },
-
-  // [AUDIT-FIX-PROMO-SCHEMA-1] Discount/promo codes — see services/promoService.js
-  // (validatePromoCode/applyPromoUsage). This field did not exist at all despite
-  // promoService.js being fully built against exactly this shape; every
-  // validatePromoCode() call silently found `business.promotions` undefined
-  // (→ []) and returned "Invalid promo code" for any code, on every tenant.
-  promotions: {
-    type: [{
-      code:          { type: String,  required: true, uppercase: true, trim: true },
-      type:          { type: String,  enum: ['PERCENT', 'FIXED'], default: 'PERCENT' },
-      value:         { type: Number,  required: true, min: 0 },
-      active:        { type: Boolean, default: true },
-      expiresAt:     { type: Date,    default: null },
-      maxUses:       { type: Number,  default: null },  // null = unlimited
-      usedCount:     { type: Number,  default: 0 },
-      minOrderValue: { type: Number,  default: null },
-    }],
-    default: [],
   },
 
   settings: {

@@ -88,11 +88,11 @@ export async function handleOrderFlow({ session, message, business, tenant, isIn
     // ────────────────────────────────────────────────────────────────────────
     case 'SELECT_ITEM': {
       // [FIX-2] 0-indexed WORD_NUMS: WORD_NUMS['one']=0 → menu[0] ✓
-      // [AUDIT-FIX-PARSEINT-6] parseInt("2 red shirts") === 2, not NaN — the
-      // WORD_NUMS lookup is exact-match-only and safe, but the parseInt
-      // fallback must be gated behind isPureNumeric so mixed alphanumeric
-      // input ("2 pizzas please") falls through to fuzzy name matching
-      // instead of silently hijacking the menu array index.
+      // [AUDIT-FIX-PARSEINT-6] parseInt("2 red pizzas", 10) === 2, NOT NaN — so
+      // any message merely STARTING with a digit silently hijacked the menu
+      // index. The WORD_NUMS lookup is exact-match-only and safe; only the
+      // parseInt fallback needed gating so it never fires on mixed alphanumeric
+      // input — it now only fires for a bare number.
       const isPureNumeric = /^\d+$/.test(raw.trim());
       const numIndex = WORD_NUMS[clean] ?? (isPureNumeric ? parseInt(raw, 10) - 1 : NaN);
       const isNum    = !isNaN(numIndex) && numIndex >= 0;
@@ -141,7 +141,7 @@ export async function handleOrderFlow({ session, message, business, tenant, isIn
           type:    'buttons',
           body:    `Hi there! 😊 You're in the ordering flow for *${business.name || 'our restaurant'}*.\n\nPlease type the *name of a dish* you'd like to order, or tap below to browse the full menu:`,
           buttons: [
-            { id: 'SHOW_MENU', title: '📋 View Menu' },
+            { id: 'VIEW_MENU', title: '📋 View Menu' }, // [AUDIT-FIX-VIEWMENU] was SHOW_MENU
             { id: 'CANCEL',    title: '❌ Cancel'    },
           ],
         };
@@ -265,9 +265,8 @@ export async function handleOrderFlow({ session, message, business, tenant, isIn
 
     // ────────────────────────────────────────────────────────────────────────
     case 'CONFIRM': {
-      // [AUDIT-FIX-CONFIRM-1] "yeah"/"yep" were missing here even though every
-      // other confirm step in this file (SUGGESTION_CONFIRM, UPSELL) accepts
-      // them — this is the step that actually SAVES the order.
+      // [FIX-CONFIRM-1] "yeah"/"yep" were missing here even though every other
+      // confirm-style step in this file (SUGGESTION_CONFIRM, UPSELL) accepts them.
       const isConfirm = /^(yes|y|yeah|yep|confirm|ok|okay|sure|place|confirmed)$/i.test(clean);
       if (!isConfirm) {
         return buildOrderSummary({ item: data.item, qty: data.quantity, total: data.totalPrice, business });
@@ -445,15 +444,14 @@ export async function handleOrderFlow({ session, message, business, tenant, isIn
 
 // ── Select item helper ────────────────────────────────────────────────────────
 async function _selectItem(item, session, business, data) {
-  const addOns = business?.addOns || [];
-  // [AUDIT-FIX-ADDON-1] Previously the teaser below always advertised the
-  // first configured add-on's name, but the QUANTITY step's actual upsell
-  // prompt picked a DIFFERENT, RANDOM add-on from the same list — a customer
-  // could be told "*Soft Drink* pairs well with this" and then be asked
-  // "Would you like to add *Dessert*?" one message later. Fix: choose the
-  // add-on ONCE here, store it as data.pendingAddOn, and let QUANTITY (which
-  // already prefers data.pendingAddOn over re-rolling) use that same pinned
-  // choice.
+  // [AUDIT-FIX-ADDON-1] Previously the teaser here always advertised addOns[0],
+  // but the QUANTITY step's upsell prompt picked a DIFFERENT, RANDOM add-on from
+  // the same list — a customer could be told "*Soft Drink* pairs well with this"
+  // and then be asked "Would you like to add *Dessert*?" one message later. The
+  // add-on is now chosen ONCE here, pinned as data.pendingAddOn, and QUANTITY
+  // (which already prefers data.pendingAddOn over re-rolling) reuses that same
+  // pinned choice — so the teaser and the actual checkout offer always match.
+  const addOns       = business?.addOns || [];
   const pendingAddOn = addOns.length ? addOns[Math.floor(Math.random() * addOns.length)] : null;
 
   await updateSession(session.customerPhone, session.tenantId, {
@@ -511,7 +509,7 @@ export async function handleRestaurantQuestion({ session, message, business, ten
       body: '❓ What would you like to know? Ask about our menu, hours, allergens, or anything else!',
       buttons: [
         { id: 'ORDER',     title: '🍔 Order Food'  },
-        { id: 'SHOW_MENU', title: '📋 View Menu'   },
+        { id: 'VIEW_MENU', title: '📋 View Menu'   }, // [AUDIT-FIX-VIEWMENU] was SHOW_MENU
       ],
     };
   }

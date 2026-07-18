@@ -106,18 +106,9 @@ function buildPayload(to, ui) {
         rows:  (sec.rows || []).slice(0, 10).map(normalizeRow),
       })).filter(sec => sec.rows.length > 0);
     } else {
-      // [FIX-LIST-TRUNC] Flat rows format (legacy — the format every module in
-      // src/modules uses). WhatsApp's real limit is 10 rows PER SECTION, up to
-      // 10 sections (100 rows total) — not 10 rows overall. Previously
-      // `.slice(0, 10)` silently dropped everything past the 10th row with no
-      // error or log; a business with a 15-item menu only ever showed the
-      // first 10. Now chunked across sections instead of truncated.
-      const allRows = (ui.rows || []).slice(0, 100).map(normalizeRow);
-      sections = [];
-      for (let i = 0; i < allRows.length; i += 10) {
-        sections.push({ rows: allRows.slice(i, i + 10) });
-      }
-      if (!sections.length) sections = [{ rows: [] }];
+      // Flat rows format (legacy — single unlabelled section)
+      const rows = (ui.rows || []).slice(0, 10).map(normalizeRow);
+      sections = [{ rows }];
     }
 
     if (!sections.length || !sections[0].rows.length) return null;
@@ -138,6 +129,56 @@ function buildPayload(to, ui) {
     };
   }
 
+  // ── WA Catalog messages ────────────────────────────────────────────────────
+  // [CATALOG-DISPATCH-1] Meta interactive message types for the Commerce
+  // Catalog integration (see modules/catalog/*). Both are refused (null
+  // payload, never sent malformed) when required fields are missing —
+  // consistent with the 'list'/'image' guards above.
+  if (type === 'catalog_message') {
+    if (!ui.catalogId) return null;
+    return {
+      messaging_product: 'whatsapp', recipient_type: 'individual',
+      to, type: 'interactive',
+      interactive: {
+        type: 'catalog_message',
+        body: { text: String(ui.body || '').slice(0, 1024) },
+        action: {
+          name: 'catalog_message',
+          parameters: { catalog_id: String(ui.catalogId) },
+        },
+      },
+    };
+  }
+
+  if (type === 'product_list') {
+    const rawSections = ui.sections || [];
+    const sections = rawSections
+      .map(sec => ({
+        title: sec.title ? String(sec.title).slice(0, 24) : undefined,
+        // Meta caps product_list at 30 items per section.
+        product_items: (sec.productRetailerIds || []).slice(0, 30).map(id => ({
+          product_retailer_id: String(id),
+        })),
+      }))
+      .filter(sec => sec.product_items.length > 0);
+
+    if (!ui.catalogId || !sections.length) return null;
+
+    return {
+      messaging_product: 'whatsapp', recipient_type: 'individual',
+      to, type: 'interactive',
+      interactive: {
+        type: 'product_list',
+        ...(ui.header ? { header: { type: 'text', text: String(ui.header).slice(0, 60) } } : {}),
+        body: { text: String(ui.body || '').slice(0, 1024) },
+        action: {
+          catalog_id: String(ui.catalogId),
+          sections,
+        },
+      },
+    };
+  }
+
   // ── Image message ─────────────────────────────────────────────────────────
   // ui.type === 'image' → { type: 'image', url: '...', caption?: '...' }
   if (type === 'image') {
@@ -148,48 +189,6 @@ function buildPayload(to, ui) {
       image: {
         link:    String(ui.url),
         ...(ui.caption ? { caption: String(ui.caption).slice(0, 1024) } : {}),
-      },
-    };
-  }
-
-  // ── WA Catalog: catalog_message ───────────────────────────────────────────
-  // [CATALOG-DISPATCH-1] ui.type === 'catalog_message' → Meta's full
-  // searchable/scrollable Commerce Catalog browse UI, opened in one extra tap.
-  if (type === 'catalog_message') {
-    if (!ui.catalogId) return null;
-    return {
-      messaging_product: 'whatsapp', recipient_type: 'individual',
-      to, type: 'interactive',
-      interactive: {
-        type: 'catalog_message',
-        body: { text: String(ui.body || '').slice(0, 1024) },
-        action: { name: 'catalog_message', parameters: { catalog_id: String(ui.catalogId) } },
-      },
-    };
-  }
-
-  // ── WA Catalog: product_list ──────────────────────────────────────────────
-  // [CATALOG-DISPATCH-1] ui.type === 'product_list' → up-front, categorized
-  // browse UI (see waCatalogService.sendCatalogMessage()). Meta caps each
-  // section at 30 product_items.
-  if (type === 'product_list') {
-    if (!ui.catalogId || !ui.sections?.length) return null;
-    const sections = ui.sections
-      .map(sec => ({
-        title:         sec.title ? String(sec.title).slice(0, 24) : undefined,
-        product_items: (sec.productRetailerIds || []).slice(0, 30).map(id => ({ product_retailer_id: String(id) })),
-      }))
-      .filter(sec => sec.product_items.length > 0);
-    if (!sections.length) return null;
-
-    return {
-      messaging_product: 'whatsapp', recipient_type: 'individual',
-      to, type: 'interactive',
-      interactive: {
-        type: 'product_list',
-        ...(ui.header ? { header: { type: 'text', text: String(ui.header).slice(0, 60) } } : {}),
-        body:   { text: String(ui.body || '').slice(0, 1024) },
-        action: { catalog_id: String(ui.catalogId), sections },
       },
     };
   }
@@ -287,10 +286,9 @@ export async function dispatchMessage(to, ui, tenant) {
         err: err.slice(0, 300),
         tenantId: tenant?._id,
       });
-      // [AUDIT-FIX-DISPATCH-FALSE-SUCCESS] Previously fell through to
-      // `return resp;` unconditionally — a 4xx/5xx Response object is still
-      // truthy, so every caller (sendCatalogMessage() and friends) read a
-      // failed send as a success and never fell back for the customer.
+      // [FIX-DISPATCH-FALSE-SUCCESS] A Meta 4xx/5xx must not be handed back to
+      // callers as a truthy value — sendCatalogMessage() and friends treat any
+      // truthy return as "message actually sent" and skip fallback behavior.
       return null;
     }
     logger.debug('[Dispatch] ✓ Message sent via Meta API', {

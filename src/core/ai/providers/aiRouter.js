@@ -38,18 +38,16 @@ function getProvider() {
 // ── Public API ─────────────────────────────────────────────────────────────────
 
 /**
- * getAIReply({ customerMessage, business, session, intent, history, orderContext, sessionContext, urgent })
+ * getAIReply({ customerMessage, business, session, intent, history, orderContext, sessionContext })
  * Returns string | null
  *
  * [AI-OPT-1] orderContext: optional active order details for ORDER_CONFIRMED post-flow context.
  * [GROQ-V3-8] sessionContext: optional string for active-flow grounding (walk-in queue, etc.).
- * [FEAT-URGENCY-3] urgent: optional bool — tightens reply length/tone (spec: "Respond faster
- *                  and more concisely"). Purely additive; omitted callers are unaffected.
  */
-export async function getAIReply({ customerMessage, business, session, intent = 'FALLBACK', history = [], orderContext = null, sessionContext = null, urgent = false }) {
+export async function getAIReply({ customerMessage, business, session, intent = 'FALLBACK', history = [], orderContext = null, sessionContext = null }) {
   try {
     const provider = getProvider();
-    const result   = await provider.getReply({ customerMessage, business, intent, history, orderContext, sessionContext, urgent });
+    const result   = await provider.getReply({ customerMessage, business, intent, history, orderContext, sessionContext });
     if (!result?.text) return null;
     logger.debug('[AI] Reply', { source: result.source, intent });
     return result.text;

@@ -139,12 +139,14 @@ export async function handleRetailOrder({ session, message, business, tenant, is
       }
       if (clean.length < 2) return _buildProductList(menu, business);
 
-      // [AUDIT-FIX-PARSEINT] parseInt("2 red shirts") === 2, not NaN — only trust
-      // the parsed index for a bare number or an interactive tap; mixed
-      // alphanumeric input must fall through to fuzzy name matching below.
+      // [AUDIT-FIX-PARSEINT] parseInt("2 red shirts", 10) === 2, NOT NaN — so any
+      // message merely STARTING with a digit silently hijacked the menu index
+      // once menuViewed was true (the normal case). Only trust the parsed index
+      // for a bare number or an interactive tap; everything else falls through
+      // to fuzzy name matching below.
       const isPureNumeric = /^\d+$/.test(raw.trim());
-      const numIdx = parseInt(raw, 10) - 1;
-      let item = ((isInteractive || isPureNumeric) && !isNaN(numIdx) && menu[numIdx]) ? menu[numIdx] : null;
+      const numIdx = (isInteractive || isPureNumeric) ? parseInt(raw, 10) - 1 : NaN;
+      let item = (!isNaN(numIdx) && menu[numIdx]) ? menu[numIdx] : null;
 
       if (!item) {
         const { item: m, confidenceLevel } = findBestMatch(menu, clean);
@@ -241,34 +243,13 @@ export async function handleRetailOrder({ session, message, business, tenant, is
       }
 
       // Show variant picker
-      // [AUDIT-FIX-RETAIL-VARIANT] Previously this sliced variantKeys to 3
-      // BEFORE appending CANCEL, then re-sliced the combined array to 3 —
-      // silently truncating variants beyond the first 3 with no list
-      // fallback, AND silently dropping CANCEL itself whenever there were
-      // 3+ variants. Mirrors fashion's exact pattern: ≤3 variants get a
-      // button UI (CANCEL always a candidate since it's combined BEFORE
-      // slicing), 4+ variants get a flat rows list for dispatcher to chunk.
-      if (variantKeys.length > 3) {
-        return {
-          type: 'list',
-          body: `🛍 *${item.name}*\n\nWhich option would you like?`,
-          button: 'Choose option',
-          sections: [{
-            title: 'Options',
-            rows: variantKeys.map(v => ({
-              id:    `VAR_${v.toUpperCase().replace(/\s+/g, '_')}`,
-              title: v,
-            })),
-          }],
-        };
-      }
       return {
         type: 'buttons',
         body: `🛍 *${item.name}*\n\nWhich option would you like?`,
-        buttons: [
-          ...variantKeys.map(v => ({ id: `VAR_${v.toUpperCase().replace(/\s+/g, '_')}`, title: v })),
-          { id: 'CANCEL', title: '❌ Cancel' },
-        ].slice(0, 3),
+        buttons: variantKeys.slice(0, 3).map(v => ({
+          id: `VAR_${v.toUpperCase().replace(/\s+/g, '_')}`,
+          title: v,
+        })).concat([{ id: 'CANCEL', title: '❌ Cancel' }]).slice(0, 3),
       };
     }
 
@@ -543,20 +524,14 @@ function _buildCategoryUI(categories, business) {
   return {
     type: 'list',
     body: `🛍 *${business?.name || 'Our Store'}*\n\nWhat are you shopping for today?`,
-    // [AUDIT-FIX-BTNLABEL] Explicit button label — without this the dispatcher
-    // falls back to the generic 'Choose option' label.
-    button: 'Choose category',
-    // [FIX-CAT-LIST-CAP] Cap at 9 rows — 10th row reserved for "Browse All".
     sections: [{
       title: 'Categories',
-      rows: categories.slice(0, 9).map(c => ({
+      rows: categories.map(c => ({
         id:    `CAT_${c.toUpperCase().replace(/\s+/g, '_')}`,
         title: c,
       })).concat([{ id: 'SHOW_MENU', title: '📋 Browse All' }]),
     }],
-    footer: categories.length > 9
-      ? `Showing 9 of ${categories.length} categories — tap Browse All to see everything`
-      : 'Tap a category or type what you\'re looking for',
+    footer: 'Tap a category or type what you\'re looking for',
   };
 }
 

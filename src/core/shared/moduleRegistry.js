@@ -230,17 +230,15 @@ export async function registerAllModules() {
 
     const lastItem = await getLastOrderItem(session.customerPhone, session.tenantId).catch(() => null);
     if (lastItem) {
-      // [AUDIT-FIX-REPEAT-1] getLastOrderItem() only ever returns the stored
-      // item NAME (Order.item is a plain string) — writing that straight into
-      // session.data as { name: lastItem } left the item with no `price`.
-      // orderFlow.js's QUANTITY step computes `price = item?.price || 0`, so
-      // every repeated order silently totalled D0, and a totalPrice of 0 ALSO
-      // skipped the payment step entirely for tenants with payment enabled.
-      // Fix: re-resolve the full menu item (with price/image/etc.) from the
-      // current business.menuItems by name, falling back to the name-only
-      // stub only when the item can no longer be found on the current menu —
-      // and warn the customer explicitly when that happens so they know to
-      // double check the price before confirming.
+      // [AUDIT-FIX-REPEAT-1] getLastOrderItem() only ever returns the stored item
+      // NAME (Order.item is a plain string) — writing that straight into session
+      // data as { name: lastItem } gave the QUANTITY step no price to work with,
+      // silently totalling D0 and, since totalPrice:0 also skips the payment
+      // step, quietly treated every repeat order as a free cash order with no
+      // admin payment-verification prompt. Re-resolve the full menu item (with
+      // price/image/etc.) from the current menu by name, falling back to the
+      // name-only stub — with an explicit price-uncertainty notice — only when
+      // the item can no longer be found (e.g. it was removed from the menu).
       const fullItem = (business?.menuItems || []).find(
         mi => (mi.name || '').toLowerCase() === lastItem.toLowerCase()
       ) || null;
@@ -249,11 +247,9 @@ export async function registerAllModules() {
         currentFlow: 'ORDER', step: 'QUANTITY',
         data: { item: fullItem || { name: lastItem } }, menuViewed: true,
       });
-
       const priceNotice = !fullItem
-        ? `\n\n_⚠️ We couldn't confirm the current price for this item — it'll be verified before your order is finalised._`
+        ? `\n\n⚠️ We couldn't confirm the current price for this item — we'll follow up with the exact total before your order is finalised.`
         : '';
-
       return {
         type: 'buttons',
         body: `🔁 *Repeat your last order*\n\nYou previously ordered *${lastItem}*.${priceNotice}\n\nHow many would you like this time?\n\n_(Enter a number or word — e.g. *1*, *2*, *three*)_`,

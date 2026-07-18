@@ -36,63 +36,13 @@ function safeCompare(a, b) {
 }
 
 /**
- * requireApiKey — accepts, in order:
- *   a) [AUDIT-FIX-MULTIADMIN-SESSION] An AdminUser Bearer session token
- *      (Authorization: Bearer <token>, signed by adminAuthService.js's
- *      createSessionToken()). Sets req.adminUser so per-admin identity
- *      (name/role/id) is available to controllers and requireRole() below.
- *      Previously this entire path was missing: adminUserController.js's
- *      login()/acceptInvite() issued session tokens, but NOTHING anywhere
- *      in the app ever verified one — every "authenticated" request was
- *      silently treated as a legacy shared-key call instead, and
- *      req.adminUser was always undefined.
- *   b) SUPER_ADMIN_API_KEY (master key)
- *   c) A valid tenant API key (looked up by SHA-256 hash in Tenant collection)
+ * requireApiKey — accepts either:
+ *   a) SUPER_ADMIN_API_KEY (master key)
+ *   b) A valid tenant API key (looked up by SHA-256 hash in Tenant collection)
  *
- * Sets req.tenant/req.tenantId when a tenant key or admin session is used so
- * downstream routes can use it.
+ * Sets req.tenant when a tenant key is used so downstream routes can use it.
  */
 export async function requireApiKey(req, res, next) {
-  // [AUDIT-FIX-MULTIADMIN-SESSION] Bearer session — checked first so a
-  // logged-in staff member's own identity is used instead of silently
-  // falling back to shared-key behaviour.
-  const authHeader = req.headers['authorization'];
-  if (authHeader && authHeader.startsWith('Bearer ')) {
-    const token = authHeader.slice(7).trim();
-    try {
-      const { verifySessionToken } = await import('../services/adminAuthService.js');
-      const payload = verifySessionToken(token);
-      if (!payload) {
-        logger.warn('[Auth] Invalid or expired admin session token', { path: req.path, ip: req.ip });
-        return res.status(401).json({ error: 'Unauthorized — invalid or expired session' });
-      }
-
-      // Re-fetch the AdminUser (rather than trusting the token payload's
-      // embedded role) so a role change or disablement takes effect
-      // immediately, not only after the 7-day token expiry.
-      const { default: AdminUser } = await import('../models/AdminUser.js');
-      const admin = await AdminUser.findById(payload.sub).select('name email role status tenantId').lean();
-      if (!admin || admin.status !== 'ACTIVE') {
-        logger.warn('[Auth] Session references a missing/disabled admin', { sub: payload.sub, path: req.path });
-        return res.status(401).json({ error: 'Unauthorized — account disabled or removed' });
-      }
-
-      const tenant = await Tenant.findById(admin.tenantId).lean();
-      if (!tenant || tenant.status === 'SUSPENDED') {
-        return res.status(403).json({ error: 'Account suspended. Contact support.' });
-      }
-
-      req.adminUser    = { id: String(admin._id), name: admin.name, email: admin.email, role: admin.role };
-      req.tenant       = tenant;
-      req.tenantId     = String(admin.tenantId);
-      req.isSuperAdmin = false;
-      return next();
-    } catch (err) {
-      logger.error('[Auth] Admin session verification failed', { err: err.message });
-      return res.status(500).json({ error: 'Internal server error' });
-    }
-  }
-
   const key = req.headers['x-api-key'];
   if (!key) {
     logger.warn('[Auth] Missing x-api-key', { path: req.path, ip: req.ip });
@@ -147,29 +97,4 @@ export function requireSuperAdminKey(req, res, next) {
   }
   req.isSuperAdmin = true;
   next();
-}
-
-/**
- * [AUDIT-FIX-MULTIADMIN-SESSION] requireRole — gates a route to a specific
- * AdminUser role. Mount AFTER requireApiKey.
- *
- * A legacy x-api-key caller (req.adminUser is unset — no individual admin
- * session, just the shared tenant/super-admin key) is treated as
- * OWNER-equivalent for backward compatibility: possession of that key
- * already granted full access under the pre-existing auth model, and
- * routes using requireRole are additive gating on TOP of that model, not a
- * replacement for it. An authenticated AdminUser session, by contrast, is
- * held to its actual assigned role.
- */
-export function requireRole(role) {
-  return (req, res, next) => {
-    if (req.isSuperAdmin || !req.adminUser) return next();
-    if (req.adminUser.role !== role) {
-      logger.warn('[Auth] Role check failed', {
-        required: role, actual: req.adminUser.role, path: req.path,
-      });
-      return res.status(403).json({ error: `Forbidden — requires ${role} role` });
-    }
-    next();
-  };
 }
