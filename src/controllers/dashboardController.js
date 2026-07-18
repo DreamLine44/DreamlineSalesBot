@@ -40,6 +40,7 @@ import Tenant         from '../models/Tenant.js';
 import { getAnalyticsSummary, getAnalyticsTimeseries } from '../core/analytics/analyticsService.js';
 import { updateSession }       from '../core/sessions/sessionService.js';
 import { dispatchText, dispatchMessage } from '../core/whatsapp/dispatcher.js';
+import { scheduleWaCatalogSync } from '../modules/catalog/waCatalogSyncScheduler.js';
 import logger from '../config/logger.js';
 
 // [AUDIT-FIX-9] User-supplied search strings were interpolated directly into
@@ -57,7 +58,6 @@ function escapeRegex(str) {
   return String(str).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 import { uploadMenuImage, deleteMenuImage, CLOUDINARY_ENABLED } from '../config/cloudinary.js';
-import { scheduleWaCatalogSync } from '../modules/catalog/waCatalogSyncScheduler.js';
 
 // ── Helper: load tenant doc for WhatsApp dispatch ─────────────────────────────
 async function loadTenant(tenantId) {
@@ -695,6 +695,8 @@ export async function addMenuItem(req, res) {
       { new: true },
     );
     if (!biz) return res.status(404).json({ error: 'Not found' });
+    // [CATALOG-AUTOSYNC-1] Fire-and-forget debounced WA Catalog sync — no-op
+    // for tenants who haven't enabled it (see waCatalogSyncScheduler.js).
     scheduleWaCatalogSync(tenantId);
     res.status(201).json({ menuItems: biz.menuItems });
   } catch (err) { logger.error('[Dashboard] Request failed', { err: err.message }); res.status(500).json({ error: err.message }); }

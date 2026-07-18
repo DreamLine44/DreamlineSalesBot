@@ -24,28 +24,19 @@ import { INTENT_PATTERNS, BUTTON_ID_MAP, EMOJI_MAP } from './patterns.js';
 import { getAIReply } from '../ai/providers/aiRouter.js';
 import logger from '../../config/logger.js';
 
-// [GROQ-STRUCT-1 / PHASE-2] Confidence-tier policy for the AI classify step.
-// Mirrors the "Confidence Policy" in the merged conversational-intelligence spec:
-//   >= AI_EXECUTE_CONFIDENCE  -> execute the mapped action immediately
-//   >= AI_CLARIFY_CONFIDENCE  -> ask exactly one clarification question (CLARIFY)
-//   below that                -> don't change workflow, fall through to fallback
-export const AI_EXECUTE_CONFIDENCE = 0.92;
-export const AI_CLARIFY_CONFIDENCE = 0.70;
+// ── Normalise ─────────────────────────────────────────────────────────────────
+export const normalise = (text = '') =>
+  text.toLowerCase().replace(/[^\w\s]/g, ' ').replace(/\s+/g, ' ').trim();
 
-// [UPGRADE-DIRECT-INTENT / UPGRADE-DIRECT-INTENT-2] Step 4.5 — natural phrasing
-// that unambiguously asks to order or book ("I want to order food please", "can
-// I book a table for tonight") falls too far outside Levenshtein's edit-distance
-// window to match the step-4 whole-message keyword list, so it used to fall
-// through to AI classify (may be UNKNOWN) → FALLBACK, showing the generic
-// welcome menu instead of the customer's actual request.
-//
-// DIRECT_INTENT_EXCLUDE_RE guards against hijacking cancellation, tracking,
-// status-check, or negated phrasing ("cancel my order", "where is my order",
-// "I don't want to book") — checked BEFORE the order/booking regexes.
-// [AUDIT-FIX-DIRECT-INTENT-3] normalise() turns apostrophes into spaces, so
-// "don't" becomes "don t" — both the bare "don'?t" form (pre-normalisation
-// safety) and the space-separated "don t" form (actual post-normalisation
-// shape) are listed so negation is never missed.
+// ── Direct ORDER / BOOKING phrase matching ──────────────────────────────────
+// [UPGRADE-DIRECT-INTENT] / [UPGRADE-DIRECT-INTENT-2] Natural phrasing with
+// extra words ("I want to order food please", "give me 2 burgers", "table
+// for tonight") falls outside the exact whole-message keyword match (step 4)
+// and is too far in edit distance for Levenshtein (step 5) — it used to fall
+// through to AI classify (which may be unavailable) → FALLBACK, showing the
+// generic welcome menu instead of routing to what the customer actually
+// asked for. Exported so intentEngine.js's own pre-flow step and any other
+// caller (e.g. a future mid-flow switch intercept) share one source of truth.
 export const DIRECT_INTENT_EXCLUDE_RE = new RegExp(
   '\\b(' + [
     'cancel', 'cancle', "don'?t", 'don t', 'do not', 'dont', 'stop',
@@ -54,14 +45,14 @@ export const DIRECT_INTENT_EXCLUDE_RE = new RegExp(
     'how long', 'refund', 'reject', 'decline',
   ].join('|') + ')\\b' + '|\\bcheck\\w*\\b'
 );
-// Widened v2 vocabulary — catches requests that don't contain the literal
-// word "order"/"book" (e.g. "give me 2 burgers", "table for tonight").
+// [AUDIT-FIX-DIRECT-INTENT-3] normalise() turns apostrophes into spaces, so
+// "don't" becomes "don t" — the bare "don'?t" alternative above never matched
+// it, and since the literal word "order"/"book" was still present, these
+// messages incorrectly fired START_ORDER/START_BOOKING despite being a clear
+// decline. 'don t' (space-separated, post-normalisation form) is included
+// above specifically to close that gap.
 export const ORDER_DIRECT_RE   = /\b(order|buy|purchase|shopping|can i get|can i have|i ll have|i ll take|give me|get me|i want|i d like|craving)\b/;
 export const BOOKING_DIRECT_RE = /\b(book|reserve|reservation|appointment|table for|party of|table at|table tonight|come in|slot for|availability for)\b/;
-
-// ── Normalise ─────────────────────────────────────────────────────────────────
-export const normalise = (text = '') =>
-  text.toLowerCase().replace(/[^\w\s]/g, ' ').replace(/\s+/g, ' ').trim();
 
 // ── Name extraction ───────────────────────────────────────────────────────────
 // [FIX-NAME-6] Explicit-declaration-only approach.
@@ -157,22 +148,6 @@ export function extractCustomerName(raw = '') {
   return null;
 }
 
-// [PHASE-3] Intents that ask for business information rather than starting/continuing
-// a transactional flow. Used by webhookController.js to detect the "order + also asked
-// about delivery" multi-intent case: primary action starts/continues a flow, and if the
-// AI also flagged one of these as a secondary intent, that question gets answered too
-// instead of silently dropped. Exported (additive only) — a plain lookup, no behavior
-// change to detectIntent()'s own routing.
-const INFORMATIONAL_INTENTS = new Set([
-  'QUESTION', 'PAYMENT', 'SPEC_REQUEST', 'SKINCARE_ADVICE', 'WARRANTY_INFO',
-  'AVAILABILITY_CHECK', 'AFTERCARE', 'PRODUCT_INQUIRY', 'COMPATIBILITY_CHECK',
-  'SIZE_GUIDE', 'RECOMMENDATION',
-]);
-
-export function isInformationalIntent(intent) {
-  return INFORMATIONAL_INTENTS.has(intent);
-}
-
 // ── Core detect ───────────────────────────────────────────────────────────────
 
 /**
@@ -181,7 +156,7 @@ export function isInformationalIntent(intent) {
  * @returns {
  *   action: string,        // 'START_ORDER' | 'START_BOOKING' | 'GREET' | etc.
  *   intent: string,        // same or more specific
- *   confidence: 'HIGH'|'LOW'|'AI',
+ *   confidence: 'HIGH'|'MEDIUM'|'LOW',
  *   source: string,        // 'button'|'emoji'|'keyword'|'ai'|'fallback'
  *   suggestion?: string,   // for Levenshtein "did you mean" only
  * }
@@ -226,11 +201,12 @@ export async function detectIntent({ message, isInteractive = false, session, bu
     }
   }
 
-  // ── 4.5. Direct ORDER / BOOKING phrase match [UPGRADE-DIRECT-INTENT] ──────
-  // Pre-flow only — active flows own their own messages (GOLDEN RULES). Booking
-  // is checked before order: widened ORDER_DIRECT_RE includes phrases like
-  // "i d like" (post-normalise "I'd like") that also appear inside genuine
-  // booking requests ("I'd like to book a table"), so booking must win first.
+  // ── 4.5. Direct ORDER / BOOKING phrase match ──────────────────────────────
+  // [UPGRADE-DIRECT-INTENT] Pre-flow only — active flows own their own input
+  // (a customer typing "I want jollof rice" mid-order must not be re-routed
+  // just because "i want" matches ORDER_DIRECT_RE). Booking is checked before
+  // ordering since "table for"/"party of" phrasing is unambiguous and more
+  // specific than the broader ORDER vocabulary.
   if (!session?.currentFlow && !DIRECT_INTENT_EXCLUDE_RE.test(clean)) {
     if (BOOKING_DIRECT_RE.test(clean)) {
       return { action: 'START_BOOKING', intent: 'BOOKING', confidence: 'HIGH', source: 'direct-phrase' };
@@ -254,25 +230,25 @@ export async function detectIntent({ message, isInteractive = false, session, bu
     }
   }
 
-  // ── 6. Short inputs → FALLBACK/CLARIFY or CONTINUE_FLOW ──────────────────
-  // In-flow short replies (<8 chars) still short-circuit to CONTINUE_FLOW without
-  // reaching AI classify — active flows own their own messages (GOLDEN RULES).
+  // ── 6. Short non-AI inputs → FALLBACK or CONTINUE_FLOW ───────────────────
+  // In-flow: don't bother re-routing anything under 8 chars — it's almost
+  // always a quantity/date/short answer the active flow's own handler owns.
   if (raw.length < 8 && session?.currentFlow) {
     return { action: 'CONTINUE_FLOW', intent: 'CONTINUE_FLOW', confidence: 'HIGH', source: 'short' };
   }
-  // [UPGRADE-DIRECT-INTENT-2] Pre-flow threshold lowered from <8 to <4 chars —
-  // short-but-real requests ("buy 2", "book pls") now get a chance at step 7 AI
-  // classification instead of going straight to CLARIFY/FALLBACK. Only messages
-  // under 4 chars pre-flow (almost always a typo or accidental send) skip AI.
-  if (!session?.currentFlow && raw.length < 4) {
+  // [AUDIT-FIX-DIRECT-INTENT-2] Pre-flow threshold lowered from 8 to 4 chars —
+  // short-but-real requests ("buy 2", "book pls") were being skipped straight
+  // to FALLBACK/CLARIFY without ever getting a chance at AI classification
+  // (step 7 below). Only genuinely too-short input (<4 chars) skips AI now.
+  if (raw.length < 4) {
     if (suggestion) {
-      logger.info('[IntentEngine] miss', { path: 'short-fallback', message: raw, suggestion: suggIntent });
+      logger.info('[IntentEngine] miss', { path: 'short-fallback', raw, suggestion: suggIntent });
       return {
         action: 'CLARIFY', intent: 'CLARIFY', confidence: 'LOW', source: 'levenshtein',
         suggestion: suggIntent,
       };
     }
-    logger.info('[IntentEngine] miss', { path: 'short-fallback', message: raw });
+    logger.info('[IntentEngine] miss', { path: 'short-fallback', raw });
     return { action: 'FALLBACK', intent: 'FALLBACK', confidence: 'LOW', source: 'fallback' };
   }
 
@@ -283,39 +259,21 @@ export async function detectIntent({ message, isInteractive = false, session, bu
   // Groq API call and risks overriding the flow handler with an incorrect intent.
   if (!session?.currentFlow) {
     try {
-      const decision = await classifyWithAI({ message: raw, business });
-
-      // [PHASE-2] Defense in depth: never execute a workflow action on a message
-      // the AI flagged as negated or a cancellation, even if primaryIntent looks
-      // confident — the confidence score reflects intent-word certainty, not
-      // polarity. "I don't want food" must never fire START_ORDER.
-      const blocked = decision.negated || decision.cancellation;
-
-      if (!blocked && decision.primaryIntent !== 'UNKNOWN' && decision.confidence >= AI_EXECUTE_CONFIDENCE) {
-        const action = intentToAction(decision.primaryIntent, business);
-        return { action, intent: decision.primaryIntent, confidence: 'AI', source: 'ai', aiSignals: decision };
-      }
-
-      if (!blocked && decision.primaryIntent !== 'UNKNOWN' && decision.confidence >= AI_CLARIFY_CONFIDENCE) {
-        // Probable, not certain — ask exactly one clarification question rather
-        // than guessing. Reuses the existing CLARIFY/suggestion path so downstream
-        // handling (moduleRouter's FALLBACK/CLARIFY case) is unchanged.
-        logger.info('[IntentEngine] AI classify below execute threshold — asking for clarification', {
-          messagePreview: raw.slice(0, 60), primaryIntent: decision.primaryIntent, confidence: decision.confidence,
-        });
-        return {
-          action: 'CLARIFY', intent: 'CLARIFY', confidence: 'LOW', source: 'ai-clarify',
-          suggestion: decision.primaryIntent, aiSignals: decision,
-        };
-      }
-
-      if (blocked || decision.primaryIntent !== 'UNKNOWN') {
-        // Miss-logging: negated/cancelled/low-confidence AI reads are useful audit
-        // signal even though we deliberately don't act on them here.
-        logger.info('[IntentEngine] AI classify did not clear confidence/negation gate', {
-          messagePreview: raw.slice(0, 60), primaryIntent: decision.primaryIntent,
-          confidence: decision.confidence, negated: decision.negated, cancellation: decision.cancellation,
-        });
+      // [AUDIT-FIX-CLASSIFY-2] classifyWithAI now returns { intent, confidence }.
+      const { intent: aiIntent, confidence: aiConfidence } = await classifyWithAI({ message: raw, business });
+      if (aiIntent && aiIntent !== 'UNKNOWN') {
+        if (aiConfidence === 'HIGH') {
+          const action = intentToAction(aiIntent, business);
+          return { action, intent: aiIntent, confidence: 'HIGH', source: 'ai' };
+        }
+        // [AUDIT-FIX-CLASSIFY-2] Previously ANY successful AI classification —
+        // even a shaky guess — was auto-executed as if certain (confidence
+        // was a flat 'AI' tag, never checked by any caller). Per the "never
+        // force a workflow when uncertain" principle, MEDIUM/LOW confidence
+        // no longer auto-continues the guessed workflow; it routes through
+        // the existing CLARIFY path (moduleRouter.js already handles this —
+        // a natural AI reply, not a hard menu dump) instead.
+        return { action: 'CLARIFY', intent: 'CLARIFY', confidence: aiConfidence, source: 'ai' };
       }
     } catch (err) {
       logger.warn('[IntentEngine] AI classify failed', { err: err.message });
@@ -324,27 +282,18 @@ export async function detectIntent({ message, isInteractive = false, session, bu
 
   // ── 8. Final fallback ──────────────────────────────────────────────────────
   if (suggestion) {
-    logger.info('[IntentEngine] miss', { path: 'clarify', message: raw, suggestion: suggIntent });
+    logger.info('[IntentEngine] miss', { path: 'clarify', raw, suggestion: suggIntent });
     return {
       action: 'CLARIFY', intent: 'CLARIFY', confidence: 'LOW', source: 'levenshtein',
       suggestion: suggIntent,
     };
   }
 
-  logger.info('[IntentEngine] miss', { path: 'final-fallback', message: raw });
+  logger.info('[IntentEngine] miss', { path: 'final-fallback', raw });
   return { action: 'FALLBACK', intent: 'FALLBACK', confidence: 'LOW', source: 'fallback' };
 }
 
 // ── AI intent classifier ──────────────────────────────────────────────────────
-// [PHASE-2] Upgraded from groqProvider.classifyIntent() (bare intent word) to
-// groqProvider.classifyIntentStructured() (intent + confidence/negation/emotion/
-// cancellation/correction signals). classifyIntent() itself is untouched — it's
-// still used as-is by postFlowHandler.js for sentiment tiebreaking. Only this
-// private, intentEngine-internal call site is upgraded, so nothing outside this
-// file is affected.
-//
-// Always returns a fully-shaped decision object — never throws, never returns
-// a bare string — so callers don't need their own null/shape checks.
 async function classifyWithAI({ message, business }) {
   const mode         = (business?.businessMode || 'RETAIL').toUpperCase();
   const validIntents = getValidIntents(mode);
@@ -356,22 +305,26 @@ async function classifyWithAI({ message, business }) {
     .replace(/[<>]/g, '')
     .trim();
 
-  const SAFE_DEFAULT = {
-    primaryIntent: 'UNKNOWN', secondaryIntents: [], confidence: 0, emotion: 'neutral',
-    urgency: 'normal', negated: false, confirmation: false, correction: false,
-    cancellation: false, needsClarification: false, requiresHuman: false, reason: 'unavailable',
-  };
-
+  // [FIX-CLASSIFY] Use groqProvider.classifyIntent() — a lean two-message prompt
+  // that sends ONLY the classification instruction, without the customer-service
+  // persona system prompt that groq.getReply() always prepends. The old approach
+  // (calling groq.getReply() with business:null + a crafted user message) still
+  // received "You are a helpful business assistant. Reply in 1–2 short sentences..."
+  // as its system context, which conflicted with the classification instruction and
+  // caused the model to return prose explanations instead of bare intent words.
+  //
+  // [AUDIT-FIX-CLASSIFY-2] classifyIntent now returns { intent, confidence }
+  // instead of a bare intent string — see groqProvider.js.
   try {
-    const { classifyIntentStructured } = await import('../ai/providers/groqProvider.js').catch(() => ({ classifyIntentStructured: null }));
-    if (classifyIntentStructured && process.env.GROQ_API_KEY) {
-      return await classifyIntentStructured({ message: sanitisedMsg, validIntents, mode });
+    const { classifyIntent } = await import('../ai/providers/groqProvider.js').catch(() => ({ classifyIntent: null }));
+    if (classifyIntent && process.env.GROQ_API_KEY) {
+      return await classifyIntent({ message: sanitisedMsg, validIntents, mode });
     }
-    // Groq not available — safe default so caller's fallback path runs.
-    return SAFE_DEFAULT;
+    // Groq not available — return UNKNOWN so caller falls back
+    return { intent: 'UNKNOWN', confidence: 'LOW' };
   } catch (err) {
     logger.warn('[IntentEngine] classifyWithAI failed', { err: err.message });
-    return SAFE_DEFAULT;
+    return { intent: 'UNKNOWN', confidence: 'LOW' };
   }
 }
 
@@ -426,6 +379,11 @@ function intentToAction(intent, business) {
     TRACK_ORDER:        'TRACK_ORDER',
     REPEAT_ORDER:       'REPEAT_ORDER',
     SHOW_MENU:          'SHOW_MENU',
+    // [AUDIT-FIX-VIEWMENU] Companion to the SHOW_MENU split in patterns.js —
+    // typed "menu" / "view menu" / "show menu" etc. now map to their own
+    // action instead of silently reusing the reset-to-top-level SHOW_MENU
+    // action, which never rendered any menu content.
+    VIEW_MENU:          'VIEW_MENU',
     ADD_TO_CART:        'START_ORDER',
     CHECKOUT:           'START_ORDER',
     REMOVE_FROM_CART:   'START_ORDER',       // re-enter order flow to adjust
