@@ -45,14 +45,6 @@
  * [GROQ-FIX-6] buildSystemPrompt: richer mode-specific personas.
  * [GROQ-FIX-7] getReply: conversation history trimmed to last 10 turns.
  * [GROQ-FIX-8] classifyIntent: business mode context in system prompt.
- * [GROQ-STRUCT-1] Added classifyIntentStructured() + buildStructuredClassifierPrompt()
- *              + parseStructuredDecision() — a richer classification path that returns
- *              confidence/emotion/negation/correction/cancellation signals alongside the
- *              intent word, instead of just the bare intent string. Purely additive:
- *              classifyIntent() is untouched (postFlowHandler.js and intentEngine.js's
- *              existing call both keep working exactly as before). The AI still only
- *              returns signals here — it never decides the workflow action; that stays
- *              intentEngine.js's job.
  */
 
 import logger from '../../../config/logger.js';
@@ -450,6 +442,7 @@ export async function getReply({ customerMessage, business, intent = 'FALLBACK',
  * generateGreeting({ business, customerName })
  * [GROQ-OPT-4] Returns { text, source } object.
  * [GROQ-V3-3] Uses fast 8b model — short output, speed matters more than depth for greetings.
+ *
  * [NO-MEMORY-1] No longer accepts/uses lastOrder — greetings must not reference
  * a customer's order/booking history per the no-unsolicited-memory policy. The
  * same greeting is generated whether the customer is new or returning.
@@ -512,7 +505,7 @@ export async function healthCheck() {
  * [GROQ-FIX-8]  Business mode context so classification leans toward relevant intents.
  */
 export async function classifyIntent({ message, validIntents, mode = 'RETAIL' }) {
-  if (!process.env.GROQ_API_KEY) return 'UNKNOWN';
+  if (!process.env.GROQ_API_KEY) return { intent: 'UNKNOWN', confidence: 'LOW' };
   try {
     const modeContext = {
       RESTAURANT:  'a restaurant that takes food orders and table bookings',
@@ -528,14 +521,27 @@ export async function classifyIntent({ message, validIntents, mode = 'RETAIL' })
       GENERAL:     'a general business',
     }[mode] || 'a business';
 
-    // [GROQ-V3-2] Fast 8b model — classification is short-context, doesn't need 70b
+    // [AUDIT-FIX-CLASSIFY-2] Two additions, both scoped to stay inside the
+    // existing lean single-line-reply contract (see [FIX-CLASSIFY] above —
+    // a fuller persona prompt previously broke that contract entirely):
+    //   1. A short negation/full-meaning instruction, so messages like
+    //      "I don't want food" or "we already ate" aren't misread as ORDER
+    //      just because "food"/"ate" appears.
+    //   2. A confidence tier (HIGH/MEDIUM/LOW) appended after a pipe. The
+    //      caller (intentEngine.js classifyWithAI/detectIntent) now only
+    //      auto-continues a workflow on HIGH; MEDIUM/LOW route through the
+    //      existing CLARIFY path instead of acting on a shaky guess.
     const result = await callGroq([
       {
         role: 'system',
         content:
           `You are an intent classifier for ${modeContext} on WhatsApp.\n` +
+          `Understand the customer's full meaning, not just keywords — negation, past tense, ` +
+          `and context change meaning (e.g. "I don't want food" or "we already ate" is NOT an order request).\n` +
           `Classify the customer message into exactly ONE of: ${validIntents.join(', ')}\n` +
-          `Reply with ONLY the intent word — nothing else, no explanation, no punctuation.`,
+          `Also rate your confidence as HIGH (explicit and unambiguous), MEDIUM (likely but not certain), ` +
+          `or LOW (vague or unclear).\n` +
+          `Reply with ONLY "INTENT|CONFIDENCE" — nothing else, no explanation, no punctuation. Example: ORDER|HIGH`,
       },
       { role: 'user', content: String(message || '').slice(0, 200) },
     ], { model: GROQ_MODEL_FAST, maxTokens: 20, temperature: 0.1 });
@@ -544,11 +550,22 @@ export async function classifyIntent({ message, validIntents, mode = 'RETAIL' })
     // explanation (e.g. "QUESTION." or "BOOKING — the customer wants...").
     // Extract only the first whitespace/punctuation-bounded token and uppercase it.
     const rawResult = String(result || '').trim();
-    const firstWord = rawResult.split(/[\s.,;:!?—\-]/)[0].toUpperCase();
+    const [rawIntentPart, rawConfPart] = rawResult.split('|');
+    const firstWord = String(rawIntentPart || '').trim().split(/[\s.,;:!?—\-]/)[0].toUpperCase();
     const classified = validIntents.includes(firstWord) ? firstWord : 'UNKNOWN';
-    return classified;
+
+    // [AUDIT-FIX-CLASSIFY-2] Parse the confidence tier defensively — older prompt
+    // caches, model drift, or a malformed reply could all omit it. Default to
+    // MEDIUM (not HIGH) when unparseable, per the "don't inflate confidence"
+    // policy: an unlabeled classification should not auto-execute a workflow.
+    const confToken = String(rawConfPart || '').trim().split(/[\s.,;:!?—\-]/)[0].toUpperCase();
+    const confidence = classified === 'UNKNOWN'
+      ? 'LOW'
+      : (['HIGH', 'MEDIUM', 'LOW'].includes(confToken) ? confToken : 'MEDIUM');
+
+    return { intent: classified, confidence };
   } catch {
-    return 'UNKNOWN';
+    return { intent: 'UNKNOWN', confidence: 'LOW' };
   }
 }
 

@@ -230,13 +230,35 @@ export async function registerAllModules() {
 
     const lastItem = await getLastOrderItem(session.customerPhone, session.tenantId).catch(() => null);
     if (lastItem) {
+      // [AUDIT-FIX-REPEAT-1] getLastOrderItem() only ever returns the stored item
+      // NAME (Order.item is a plain string) — the old `{ name: lastItem }` stub
+      // had no price at all. orderFlow.js's QUANTITY step computes
+      // `price = item?.price || 0`, so every repeated order silently totalled D0,
+      // and a totalPrice of 0 ALSO skips the payment step entirely for tenants
+      // with payment enabled (CONFIRM only collects payment when data.totalPrice
+      // is truthy) — treated as a free cash order with no admin verification
+      // prompt. Re-resolve the full menu item (with price/image/etc.) from the
+      // current menu by name so a repeat order behaves exactly like a fresh pick.
+      const fullItem = (business?.menuItems || []).find(
+        i => i.name?.toLowerCase() === lastItem.toLowerCase(),
+      );
+
       await updateSession(session.customerPhone, session.tenantId, {
         currentFlow: 'ORDER', step: 'QUANTITY',
-        data: { item: { name: lastItem } }, menuViewed: true,
+        data: { item: fullItem || { name: lastItem } }, menuViewed: true,
       });
+
+      // The item may no longer be on the menu (discontinued, renamed) — fullItem
+      // stays undefined and we fall back to the name-only stub above, but the
+      // customer must be told the price/availability couldn't be confirmed
+      // rather than silently proceeding as if everything resolved normally.
+      const priceNotice = !fullItem
+        ? `\n\n⚠️ We couldn't confirm this item's current price/availability — we'll follow up before finalizing your order.`
+        : '';
+
       return {
         type: 'buttons',
-        body: `🔁 *Repeat your last order*\n\nYou previously ordered *${lastItem}*.\n\nHow many would you like this time?\n\n_(Enter a number or word — e.g. *1*, *2*, *three*)_`,
+        body: `🔁 *Repeat your last order*\n\nYou previously ordered *${lastItem}*.${priceNotice}\n\nHow many would you like this time?\n\n_(Enter a number or word — e.g. *1*, *2*, *three*)_`,
         buttons: [{ id: 'CANCEL', title: '❌ Cancel' }],
       };
     }

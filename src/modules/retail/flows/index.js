@@ -139,10 +139,10 @@ export async function handleRetailOrder({ session, message, business, tenant, is
       }
       if (clean.length < 2) return _buildProductList(menu, business);
 
-      // [AUDIT-FIX-PARSEINT] parseInt("2 red shirts", 10) === 2, not NaN — a bare
-      // leading digit used to silently hijack the menu index for ANY mixed
-      // alphanumeric reply once menuViewed was true. Only trust the parsed index
-      // for a genuinely bare number or an interactive tap (list row / button).
+      // [AUDIT-FIX-PARSEINT] parseInt("2 phone cases", 10) === 2, not NaN —
+      // digit-prefixed mixed input would silently hijack menu[idx] once
+      // menuViewed was true. Only trust the index for a bare numeric reply
+      // or an interactive tap; anything else falls through to fuzzy matching.
       const isPureNumeric = /^\d+$/.test(raw.trim());
       const numIdx = parseInt(raw, 10) - 1;
       let item = ((isInteractive || isPureNumeric) && !isNaN(numIdx) && menu[numIdx]) ? menu[numIdx] : null;
@@ -242,13 +242,39 @@ export async function handleRetailOrder({ session, message, business, tenant, is
       }
 
       // Show variant picker
+      // [AUDIT-FIX-RETAIL-VARIANT] Previously always rendered `type: 'buttons'` with
+      // `variantKeys.slice(0, 3).map(...).concat([CANCEL]).slice(0, 3)` — sliced to 3
+      // BEFORE appending CANCEL, so any item with 3+ variants only ever offered its
+      // first 3 with no way to see the rest, AND the re-slice to 3 after concatenating
+      // silently dropped CANCEL itself. Mirrors the fix already applied to fashion
+      // sizes/colors, salon services/products, bakery, cosmetics, and electronics:
+      // 4+ options switch to a list-type UI (dispatcher.js owns the chunking, so
+      // the full set is passed through unsliced), ≤3 options stay as buttons.
+      if (variantKeys.length > 3) {
+        return {
+          type: 'list',
+          body: `🛍 *${item.name}*\n\nWhich option would you like?`,
+          button: 'Choose option',
+          sections: [{
+            title: 'Options',
+            rows: variantKeys.map(v => ({
+              id:    `VAR_${v.toUpperCase().replace(/\s+/g, '_')}`,
+              title: v,
+            })),
+          }],
+        };
+      }
+
       return {
         type: 'buttons',
         body: `🛍 *${item.name}*\n\nWhich option would you like?`,
-        buttons: variantKeys.slice(0, 3).map(v => ({
-          id: `VAR_${v.toUpperCase().replace(/\s+/g, '_')}`,
-          title: v,
-        })).concat([{ id: 'CANCEL', title: '❌ Cancel' }]).slice(0, 3),
+        buttons: [
+          ...variantKeys.map(v => ({
+            id: `VAR_${v.toUpperCase().replace(/\s+/g, '_')}`,
+            title: v,
+          })),
+          { id: 'CANCEL', title: '❌ Cancel' },
+        ].slice(0, 3),
       };
     }
 
@@ -520,24 +546,24 @@ function _getCategories(menu) {
 }
 
 function _buildCategoryUI(categories, business) {
-  // [FIX-CAT-LIST-CAP] Cap at 9 rows — the 10th row is reserved for the
-  // trailing "Browse All" row so the total never exceeds WhatsApp's 10-row
-  // list-section ceiling. Unlike electronics/fashion (whose lists have no
-  // trailing row and can rely on dispatcher.js's [FIX-LIST-TRUNC] chunking),
-  // this list always appends one extra row, so it needs its own cap + notice.
+  // [AUDIT-FIX-RETAIL-CATCAP] WhatsApp interactive lists hard-cap at 10 rows total.
+  // The "📋 Browse All" row is always appended, so only 9 categories can be shown
+  // alongside it — previously uncapped, a tenant with 10+ categories would silently
+  // fail to send (or exceed the WhatsApp API's row limit) with no fallback.
+  const shown = categories.slice(0, 9);
   return {
     type: 'list',
     body: `🛍 *${business?.name || 'Our Store'}*\n\nWhat are you shopping for today?`,
     button: 'Choose category',
     sections: [{
       title: 'Categories',
-      rows: categories.slice(0, 9).map(c => ({
+      rows: shown.map(c => ({
         id:    `CAT_${c.toUpperCase().replace(/\s+/g, '_')}`,
         title: c,
       })).concat([{ id: 'SHOW_MENU', title: '📋 Browse All' }]),
     }],
     footer: categories.length > 9
-      ? `Showing 9 of ${categories.length} categories — tap Browse All to see everything`
+      ? `Showing ${shown.length} of ${categories.length} — tap Browse All to see everything`
       : 'Tap a category or type what you\'re looking for',
   };
 }

@@ -61,10 +61,9 @@ export const overviewLimiter = rateLimit({
 });
 
 /**
- * Strict limiter for the manual WA Catalog sync route (POST /:tenantId/wacatalog/sync).
- * Each call hits Meta's Graph API items_batch endpoint — a low per-minute cap
- * keeps an admin's repeated taps (or a scripted retry loop) from hammering
- * Meta's rate limits on the tenant's behalf.
+ * Strict limiter for the WA Catalog manual sync endpoint — each call hits
+ * Meta's Graph API items_batch endpoint, so this must stay tight regardless
+ * of how generous the tenant's other business-config limits are.
  */
 export const catalogSyncLimiter = rateLimit({
   windowMs: 60 * 1000,

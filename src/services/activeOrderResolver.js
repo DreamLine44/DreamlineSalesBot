@@ -97,6 +97,17 @@ export async function resolveActiveOrder(customerPhone, tenantId, business = nul
         { paymentStatus: 'rejected' },
         // Proof submitted, still awaiting admin decision
         { paymentStatus: { $in: ['proof_received', 'payment_pending_verification'] } },
+        // [AUDIT-FIX-AOR-QUERY-REJECT] Admin-rejected orders written via
+        // adminCommandService.rejectPayment() land at status:'pending' +
+        // paymentStatus:'unpaid' (see [FIX-AOR-REJECT] / wasAdminRejected below) —
+        // the SAME shape the abandoned-cart clause above bounds to 24h. But a
+        // rejected order isn't an abandoned cart; it's awaiting explicit customer
+        // action (retry or give up), and an admin reviewing/rejecting more than
+        // 24h after the order was placed is routine, not a bug. Without this
+        // unbounded clause the query silently dropped the order once 24h had
+        // passed, even though _resolveState() below already knows how to turn it
+        // into a PAYMENT_REJECTED card with the rejection reason and a retry button.
+        { status: 'pending', paymentStatus: 'unpaid', paymentReviewedAt: { $ne: null } },
       ],
     })
       .sort({ createdAt: -1 })

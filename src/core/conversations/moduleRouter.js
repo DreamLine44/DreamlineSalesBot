@@ -261,19 +261,10 @@ export async function route({ action, intent, session, message, business, tenant
         logger.debug('[Router] Greeting gate check failed (non-fatal)', { err: _gateErr.message });
       }
       // ── No active order/booking — proceed to normal welcome ──────────────
-      // [FIX-GREET-1] Pull persistent customer context from UserProfile (customerMemory)
-      // rather than relying on session.data.lastItem which is cleared on every new flow.
-      // This gives new vs returning awareness, real last-order data, and order count —
-      // all of which survive session TTL expiry between visits.
-      const { getCustomerContext } = await import('../../core/memory/customerMemory.js');
-      const custCtx    = await getCustomerContext(session.customerPhone, session.tenantId).catch(() => ({
-        name: null, topItem: null, lastItem: null, orderCount: 0, isReturning: false,
-      }));
-
       // [FIX-NAME-8] Expanded validation — matches webhookController and leadCaptureService.
       // Min 3 chars per word, per-word vowel check, per-word repeated-char check,
       // expanded NOISE set covering everything intentEngine's BAD_NAME_WORDS covers.
-      const _rawNameG = session?.customerName || custCtx.name || null;
+      const _rawNameG = session?.customerName || null;
       const _isValidNameG = (n) => {
         if (!n || n.length < 3 || n.length > 40) return false;
         if (!/^[a-zA-Z\s]+$/.test(n)) return false;
@@ -331,6 +322,17 @@ export async function route({ action, intent, session, message, business, tenant
       return { type: 'buttons', body, buttons: cfg.ui?.welcomeButtons || [] };
     }
 
+    // [AUDIT-FIX-VIEWMENU] VIEW_MENU is distinct from SHOW_MENU (see patterns.js).
+    // Previously "View Menu" buttons/typed phrases were mapped to the SHOW_MENU
+    // action below, which only resets the session and re-shows the generic
+    // welcome buttons — never the actual menu. Routing through startFlow('ORDER')
+    // reuses each module's existing ORDER-flow INIT step (message === null),
+    // which already builds and returns the real menu/product list for that
+    // business (restaurant, delivery, retail, bakery, etc.) — no per-module
+    // menu-rendering duplication needed here.
+    case 'VIEW_MENU':
+      return startFlow({ flowName: 'ORDER', session, business, tenant });
+
     case 'SHOW_MENU': {
       const cfg = getModeConfig(business);
       await updateSession(session.customerPhone, session.tenantId, {
@@ -346,6 +348,62 @@ export async function route({ action, intent, session, message, business, tenant
         body:    cfg.messages?.showMenuPrompt || '👇 What would you like to do?',
         buttons: cfg.ui?.welcomeButtons || [],
       };
+    }
+
+    // [AUDIT-FLOWS-RESCHEDULE] The "📅 Reschedule" button (shown from the GREET
+    // greeting-gate for a customer with an active appointment) previously routed
+    // through patterns.js's BUTTON_ID_MAP straight to 'START_BOOKING', which just
+    // calls flowEngine.startFlow({ flowName: 'BOOKING' }) — resetting the session
+    // and starting a brand-new booking WITHOUT ever touching the existing one.
+    // That silently duplicated the appointment (old one stays live in the DB, a
+    // second unrelated one gets created, plus a duplicate admin confirm alert).
+    // Mirrors the already-correct RESCHEDULE handling in postFlowHandler.js:
+    // cancel the customer's most recent active, non-walk-in booking first, then
+    // land them on step 'DATE' with the previous service/stylist carried over.
+    case 'RESCHEDULE': {
+      try {
+        const { default: _ReschBooking } = await import('../../models/Booking.js');
+        const _prevBooking = await _ReschBooking.findOneAndUpdate(
+          {
+            customerPhone: session.customerPhone,
+            tenantId:      session.tenantId,
+            status:        { $in: ['pending', 'confirmed'] },
+            // Never target a walk-in queue entry — there's no appointment slot
+            // to reschedule, only a queue position (see CANCEL_BOOKING/leave-
+            // queue handling for that case instead).
+            bookingType:   { $ne: 'walkin' },
+          },
+          {
+            $set: {
+              status:      'cancelled',
+              cancelledBy: 'customer',
+              cancelledAt: new Date(),
+            },
+          },
+          { sort: { createdAt: -1 } }
+        ).catch(() => null);
+
+        await updateSession(session.customerPhone, session.tenantId, {
+          currentFlow: 'BOOKING', step: 'DATE', postFlowAck: null,
+          data: {
+            service:         _prevBooking?.service || null,
+            selectedService: _prevBooking?.service || null,
+            stylist:         _prevBooking?.staff    || null,
+          },
+        });
+
+        return {
+          type: 'text',
+          body: `📅 *Reschedule Appointment*\n\nNo problem! Let's find a new time${_prevBooking?.service ? ` for your *${_prevBooking.service}*` : ''}.\n\nWhat date works best for you?`,
+        };
+      } catch (err) {
+        logger.error('[Router] RESCHEDULE failed', { err: err.message });
+        return {
+          type:    'buttons',
+          body:    '⚠️ Something went wrong starting your reschedule. Please contact support.',
+          buttons: [{ id: 'SUPPORT', title: '💬 Contact Support' }],
+        };
+      }
     }
 
     case 'CANCEL': {
@@ -403,15 +461,17 @@ export async function route({ action, intent, session, message, business, tenant
           {
             customerPhone: session.customerPhone,
             tenantId:      session.tenantId,
-            // [AUDIT-FIX-CANCEL-CONFIRMED-GUARD] status:'confirmed' orders used to be
-            // included here, relying on paymentStatus to exclude ones that shouldn't be
-            // touched — but dashboardController.updateOrderStatus() sets status:'confirmed'
-            // without ever touching paymentStatus, and cash orders accepted via
-            // AWAIT_ADMIN_CONFIRM never set paymentStatus:'confirmed' either. Both slipped
-            // through the old paymentStatus filter, letting a customer silently cancel an
-            // order an admin had already accepted for prep. status:'confirmed' is itself the
-            // authoritative "order accepted" signal in this codebase (same reasoning as
-            // activeOrderResolver's [AUDIT-AOR-CONFIRMED]), so only truly pending orders are
+            // [AUDIT-FIX-CANCEL-CONFIRMED-GUARD] Previously { $in: ['pending', 'confirmed'] },
+            // relying on paymentStatus to exclude confirmed orders that shouldn't be
+            // touched. That signal is unreliable for exactly the orders needing
+            // protection most: dashboardController.updateOrderStatus() sets
+            // status:'confirmed' without ever touching paymentStatus, and cash orders
+            // accepted via AWAIT_ADMIN_CONFIRM never set paymentStatus:'confirmed'
+            // either — both slipped through the old filter, letting a customer
+            // silently self-cancel an order an admin had already accepted for prep.
+            // status:'confirmed' is itself the authoritative "order accepted" signal
+            // in this codebase (same reasoning as activeOrderResolver's
+            // [AUDIT-AOR-CONFIRMED]), so only truly 'pending' orders are
             // self-cancellable now.
             status:        'pending',
             // [FIX-CANCEL-REJECTED] 'rejected' was previously in this $nin exclusion list,
@@ -474,16 +534,16 @@ export async function route({ action, intent, session, message, business, tenant
           {
             customerPhone: session.customerPhone,
             tenantId:      session.tenantId,
-            // [AUDIT-FIX-CANCEL-ALL-CONFIRMED-GUARD] Previously matched status:'confirmed'
-            // and 'preparing' directly, with a paymentStatus exclusion list that didn't even
-            // exclude 'confirmed'/'paid' — so a customer could bulk-cancel an already-paid
-            // order that was already being prepared in the kitchen with a single "cancel all".
-            // Same reasoning as the single-order CANCEL case above: status:'confirmed' is the
-            // authoritative "order accepted" signal, so only truly pending orders are
-            // bulk-cancellable now, and the paymentStatus list also excludes confirmed/paid.
+            // [AUDIT-FIX-CANCEL-ALL-CONFIRMED-GUARD] Previously matched status:'preparing'
+            // directly (in addition to pending/confirmed) with a paymentStatus exclusion
+            // list that didn't even exclude 'confirmed'/'paid' — a customer could bulk-
+            // cancel an already-paid order already being prepared in the kitchen with a
+            // single "cancel all". status:'confirmed' is the authoritative "order accepted"
+            // signal in this codebase, so only 'pending' orders are bulk-cancellable now.
             status:        'pending',
-            // [FIX-CANCEL-REJECTED] 'rejected' must not be excluded, or rejected-payment orders
-            // can never be bulk-cancelled either and keep re-appearing in the MULTIPLE_ACTIVE_ORDERS list.
+            // [FIX-CANCEL-REJECTED] Same fix as the single-order CANCEL case above —
+            // 'rejected' must not be excluded, or rejected-payment orders can never be
+            // bulk-cancelled either and keep re-appearing in the MULTIPLE_ACTIVE_ORDERS list.
             paymentStatus: { $nin: ['cancelled', 'refunded', 'confirmed', 'paid'] },
           },
           {
@@ -513,56 +573,6 @@ export async function route({ action, intent, session, message, business, tenant
         return {
           type:    'buttons',
           body:    '⚠️ Something went wrong cancelling your orders. Please contact support.',
-          buttons: [{ id: 'SUPPORT', title: '💬 Contact Support' }],
-        };
-      }
-    }
-
-    // [AUDIT-FLOWS-RESCHEDULE] Was aliased to the generic 'START_BOOKING' action,
-    // which resets the session and starts a brand-new booking WITHOUT ever touching
-    // the customer's existing pending/confirmed appointment — silently duplicating it
-    // (and the admin confirm/decline alert) instead of rescheduling. This mirrors
-    // services/postFlowHandler.js's already-correct RESCHEDULE handling: cancel the
-    // most recent active, non-walk-in booking, then land on step 'DATE' with the
-    // previous service/stylist carried over.
-    case 'RESCHEDULE': {
-      try {
-        const { default: _ReschBooking } = await import('../../models/Booking.js');
-        const _prevBooking = await _ReschBooking.findOneAndUpdate(
-          {
-            customerPhone: session.customerPhone,
-            tenantId:      session.tenantId,
-            status:        { $in: ['pending', 'confirmed'] },
-            bookingType:   { $ne: 'walkin' },
-          },
-          {
-            $set: {
-              status:      'cancelled',
-              cancelledBy: 'customer',
-              cancelledAt: new Date(),
-            },
-          },
-          { sort: { createdAt: -1 } }
-        ).catch(() => null);
-
-        await updateSession(session.customerPhone, session.tenantId, {
-          currentFlow: 'BOOKING', step: 'DATE', postFlowAck: null,
-          data: {
-            service:         _prevBooking?.service || null,
-            selectedService: _prevBooking?.service || null,
-            stylist:         _prevBooking?.staff    || null,
-          },
-        });
-
-        return {
-          type: 'text',
-          body: `📅 *Reschedule Appointment*\n\nNo problem! Let's find a new time${_prevBooking?.service ? ` for your *${_prevBooking.service}*` : ''}.\n\nWhat date works best for you?`,
-        };
-      } catch (err) {
-        logger.error('[Router] RESCHEDULE failed', { err: err.message });
-        return {
-          type:    'buttons',
-          body:    '⚠️ Something went wrong starting your reschedule. Please contact support.',
           buttons: [{ id: 'SUPPORT', title: '💬 Contact Support' }],
         };
       }

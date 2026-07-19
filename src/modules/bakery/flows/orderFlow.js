@@ -57,10 +57,12 @@ export async function handleBakeryOrderFlow({ session, message, business, tenant
       }
       if (clean.length < 2) return _buildBakeryMenu(menu, business);
 
-      // [AUDIT-FIX-PARSEINT] parseInt("2 red shirts", 10) === 2, not NaN — a bare
-      // leading digit used to silently hijack the menu index for ANY mixed
-      // alphanumeric reply once menuViewed was true. Only trust the parsed index
-      // for a genuinely bare number or an interactive tap (list row / button).
+      // [AUDIT-FIX-PARSEINT] parseInt("2 croissants", 10) === 2, not NaN — so
+      // any message merely starting with a digit silently hijacked menu[idx]
+      // once menuViewed was true (the !isInteractive && !menuViewed guard
+      // above only covers the bare-number-before-menu-shown case). Only trust
+      // the parsed index for a bare numeric reply or an interactive tap;
+      // mixed alphanumeric input now falls through to fuzzy name matching.
       const isPureNumeric = /^\d+$/.test(raw.trim());
       const numIdx = parseInt(raw, 10) - 1;
       let item = ((isInteractive || isPureNumeric) && !isNaN(numIdx) && numIdx >= 0 && menu[numIdx]) ? menu[numIdx] : null;

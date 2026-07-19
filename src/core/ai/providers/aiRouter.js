@@ -65,7 +65,7 @@ export async function getAIReply({ customerMessage, business, session, intent = 
  *
  * [NO-MEMORY-1] No longer accepts/forwards a lastOrder param — greetings must
  * not reference a customer's order/booking history per the no-unsolicited-
- * memory policy. Name-based personalisation only.
+ * memory policy.
  */
 export async function generateGreeting({ business, customerName }) {
   try {

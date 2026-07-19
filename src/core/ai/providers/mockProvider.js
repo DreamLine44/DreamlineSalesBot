@@ -62,11 +62,11 @@ export async function getReply({ customerMessage, business, intent = 'FALLBACK',
   };
 }
 
-// [NO-MEMORY-1] Templates must read the same for a first-time and a returning
-// customer — no "welcome back" or other history-implying phrasing.
 export async function generateGreeting({ business, customerName }) {
   const name = customerName ? `, ${customerName}` : '';
   const mode = (business?.businessMode || 'RETAIL').toUpperCase();
+  // [NO-MEMORY-1] Templates must read the same for a first-time and a returning
+  // customer — no "welcome back" or other history-implying phrasing.
   const greetings = {
     RESTAURANT: `👋 Hello${name}! Ready to order?`,
     SALON:      `👋 Great to hear from you${name}! Looking to book?`,
