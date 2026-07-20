@@ -113,54 +113,54 @@ export function shouldShowCatalogButton(business) {
 
 /**
  * withCatalogWelcomeOption(buttons, business)
- * [CATALOG-UX-BUTTON] Merges a "🛍 Browse Catalog" option into every
- * tenant's welcome-menu button set — unconditionally, by explicit product
- * decision, regardless of shouldShowCatalogButton()/WA Catalog enablement.
- * The welcome menu should look and read the same for every tenant, catalog
- * configured or not; the button itself stays safe to show even with no WA
- * Catalog set up because browseCatalogExplicit() (waCatalogFlow.js) already
- * falls back gracefully to the module's normal ORDER/product flow whenever
- * sendCatalogMessage() reports the catalog isn't actually configured — a tap
- * never dead-ends, it just quietly behaves like "Order Food" for tenants who
- * haven't turned WA Catalog on yet. shouldShowCatalogButton() is kept as a
- * named export for any future call site that still needs the real
- * enabled+configured check (e.g. deciding whether to *promote* the catalog
- * automatically) — it's simply no longer consulted here.
+ * [CATALOG-UX-BUTTON] Merges a "🛍 Browse Catalog" option into an existing
+ * welcome-menu button set for tenants where shouldShowCatalogButton() is
+ * true — a no-op ({ buttons }, unchanged) for every tenant who hasn't
+ * enabled WA Catalog.
  *
  * dispatcher.js's 'buttons' UI type hard-caps at 3 (`.slice(0, 3)`, silent
  * truncation) — every vertical's welcomeButtons config already uses all 3
- * slots (Order/Book/Question or similar), so simply appending a 4th button
- * would silently vanish, which is worse than not adding it at all (looks
- * like a bug, not a missing feature). When the combined set fits in 3, it's
- * returned as `buttons` (unchanged rendering). When it doesn't,
- * `rows` is returned instead — the caller renders a 'list' message
- * (dispatcher.js's list type, used throughout this codebase for >3 options),
- * which shows every option with nothing silently dropped. Button IDs are
- * identical either way, so BUTTON_ID_MAP / numeric shortcuts keep working
- * regardless of which shape a given tenant ends up rendering.
+ * slots (Order/Book/Question or similar). [FIX-CATALOG-3BTN] Rather than
+ * appending Browse Catalog as a 4th option (which either silently vanished
+ * to the 3-button cap, or forced a fallback to a WhatsApp *list* message —
+ * every option, catalog included, hidden behind a "Choose an option"
+ * tap-to-expand button), Browse Catalog now REPLACES the QUESTION slot when
+ * one exists. This function always returns `{ buttons }` — it never
+ * produces a `rows`/list payload. Losing the Question button from the
+ * welcome screen doesn't remove the feature: a typed question is answered
+ * exactly the same way whether or not its button is visible (see
+ * INTENT_PATTERNS.QUESTION / the direct-question-phrase matcher in
+ * intentEngine.js — no tap has ever been required for it).
  */
-export function withCatalogWelcomeOption(buttons, _business) {
+export function withCatalogWelcomeOption(buttons, business) {
   const base = buttons || [];
+  if (!shouldShowCatalogButton(business)) return { buttons: base };
 
   const catalogOption = {
     id: 'BROWSE_CATALOG', title: '🛍 Browse Catalog',
     description: 'Shop our products & collections',
   };
 
-  // [FIX-CATALOG-ORDER] Insert Browse Catalog before the final option rather
-  // than appending it after every other option — every vertical's
-  // welcomeButtons ends with its "help/question" action, and that reads best
-  // as the last item in the list, with the browsable/transactional options
-  // (order/book/catalog) grouped together ahead of it. Generic "before the
-  // last item" (rather than hunting for a specific id) keeps this correct
-  // even for verticals whose button order doesn't end in QUESTION.
-  const insertIdx = base.length > 0 ? base.length - 1 : 0;
-  const combined = [...base.slice(0, insertIdx), catalogOption, ...base.slice(insertIdx)];
+  if (base.length === 0) return { buttons: [catalogOption] };
 
-  if (combined.length <= 3) return { buttons: combined };
-  // [FIX-CATALOG-DESC] Preserve each option's `description` (not just id/title)
-  // so the rendered WhatsApp list shows a helpful subtitle under every row —
-  // dropping it here silently degraded the list to bare titles even when the
-  // caller had supplied a description.
-  return { rows: combined.map(b => ({ id: b.id, title: b.title, description: b.description })) };
+  // Insert before the final slot first, same placement as before — if the
+  // combined set still fits within the 3-button cap, nothing needs to be
+  // dropped and every original option is kept.
+  const insertIdx = base.length - 1;
+  const inserted  = [...base.slice(0, insertIdx), catalogOption, ...base.slice(insertIdx)];
+  if (inserted.length <= 3) return { buttons: inserted };
+
+  // [FIX-CATALOG-3BTN] Combined set would exceed 3 (the case every
+  // vertical's welcomeButtons hits in practice, since all 3 slots are
+  // already used). Replace the QUESTION slot specifically — not just "the
+  // last slot" — since most verticals put QUESTION last but GENERAL mode
+  // puts it first, and picking by id keeps this correct regardless of a
+  // given vertical's button order. Verticals with no QUESTION button at all
+  // (delivery, electronics) fall back to replacing the final slot, matching
+  // the original "next to the help action" placement intent.
+  const questionIdx = base.findIndex(b => b.id === 'QUESTION');
+  const replaceIdx  = questionIdx !== -1 ? questionIdx : base.length - 1;
+
+  const combined = base.map((b, i) => (i === replaceIdx ? catalogOption : b));
+  return { buttons: combined };
 }

@@ -35,12 +35,12 @@ export const RETAIL_CONFIG = {
   ui: {
     welcomeButtons: [
       { id: 'ORDER',     title: '🛍 Shop Now',           description: 'Browse our products & shop' },
-      { id: 'VIEW_MENU', title: '📋 View All Products',  description: 'See our full catalog'       },
+      { id: 'SHOW_MENU', title: '📋 View All Products',  description: 'See our full catalog'       },
       { id: 'QUESTION',  title: '❓ Product Query',      description: 'Ask about a product'         },
     ],
     fallbackButtons: [
       { id: 'ORDER',     title: '🛍 Shop'      },
-      { id: 'VIEW_MENU', title: '📋 Products'  },
+      { id: 'SHOW_MENU', title: '📋 Products'  },
       { id: 'QUESTION',  title: '❓ Ask'        },
     ],
     confirmButtons: [
@@ -123,7 +123,7 @@ export async function handleRetailOrder({ session, message, business, tenant, is
         return {
           type: 'buttons',
           body: `🔍 Searching for *"${raw}"*...\n\nHere's what we have:`,
-          buttons: [{ id: 'VIEW_MENU', title: '📋 All Products' }, { id: 'CANCEL', title: '❌ Cancel' }],
+          buttons: [{ id: 'SHOW_MENU', title: '📋 All Products' }, { id: 'CANCEL', title: '❌ Cancel' }],
         };
       }
 
@@ -157,7 +157,7 @@ export async function handleRetailOrder({ session, message, business, tenant, is
             body: `Did you mean *${m?.name}*?`,
             buttons: [
               { id: 'CONFIRM',   title: '✅ Yes'         },
-              { id: 'VIEW_MENU', title: '🔄 Browse All'  },
+              { id: 'SHOW_MENU', title: '🔄 Browse All'  },
             ],
           };
         }
@@ -175,7 +175,7 @@ export async function handleRetailOrder({ session, message, business, tenant, is
           type: 'buttons',
           body: aiReply || `I couldn't find *"${raw}"* — here's what we have in stock:`,
           buttons: [
-            { id: 'VIEW_MENU', title: '📋 Browse All'    },
+            { id: 'SHOW_MENU', title: '📋 Browse All'    },
             { id: 'QUESTION',  title: '❓ Ask About Stock' },
           ],
         };
@@ -544,7 +544,7 @@ export async function handleProductQuery({ session, message, business, tenant })
     body: aiReply || "Great question! Let me point you to the right product.",
     buttons: [
       { id: 'ORDER',     title: '🛍 Shop Now'    },
-      { id: 'VIEW_MENU', title: '📋 View All'    },
+      { id: 'SHOW_MENU', title: '📋 View All'    },
     ],
   };
 }
@@ -571,7 +571,7 @@ function _buildCategoryUI(categories, business) {
       rows: categories.slice(0, 9).map(c => ({
         id:    `CAT_${c.toUpperCase().replace(/\s+/g, '_')}`,
         title: c,
-      })).concat([{ id: 'VIEW_MENU', title: '📋 Browse All' }]),
+      })).concat([{ id: 'SHOW_MENU', title: '📋 Browse All' }]),
     }],
     footer: categories.length > 9
       ? `Showing 9 of ${categories.length} categories — tap Browse All to see everything`
@@ -591,7 +591,7 @@ function _buildProductList(items, business, category = null) {
     return {
       type:    'buttons',
       body:    `${header}\n\nNo products available in this category right now.`,
-      buttons: [{ id: 'VIEW_MENU', title: '🔄 All Categories' }, { id: 'CANCEL', title: '❌ Cancel' }],
+      buttons: [{ id: 'SHOW_MENU', title: '🔄 All Categories' }, { id: 'CANCEL', title: '❌ Cancel' }],
     };
   }
 
@@ -626,7 +626,7 @@ function _buildItemDetail(item, business) { // [FIX-RETAIL-BUSINESS-SCOPE] busin
     body: `🛍 *${item.name}*\n${desc}${price}${variants}\nWould you like to order this item?`,
     buttons: [
       { id: 'CONFIRM',   title: '🛍 Yes, I want this' },
-      { id: 'VIEW_MENU', title: '🔄 Browse Others'    },
+      { id: 'SHOW_MENU', title: '🔄 Browse Others'    },
       { id: 'CANCEL',    title: '❌ Cancel'            },
     ],
   };

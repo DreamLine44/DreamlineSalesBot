@@ -6,9 +6,9 @@
 //      items into one row per variant so every row maps to a retailer_id
 //      syncMenuToCatalog() actually uploaded.
 //   2. shouldShowCatalogButton() / withCatalogWelcomeOption() (waCatalogConfig.js)
-//      — the explicit "🛍 Browse Catalog" welcome-menu button, and the
-//      buttons-vs-list fallback that avoids silently exceeding WhatsApp's
-//      3-button cap.
+//      — the explicit "🛍 Browse Catalog" welcome-menu button. [FIX-CATALOG-3BTN]
+//      Always stays within WhatsApp's 3-button cap by replacing the QUESTION
+//      slot when needed, rather than falling back to a list message.
 //
 // All pure, dependency-free (no mongoose/logger/network), same isolation
 // rationale as waCatalogNormalization.test.mjs.
@@ -98,11 +98,10 @@ test('shouldShowCatalogButton is false when disabled, unconfigured, or nothing s
   assert.equal(shouldShowCatalogButton(makeBusiness({ menuItems: [{ _id: 'x', available: false }] })), false);
 });
 
-test('withCatalogWelcomeOption always merges in Browse Catalog, even for a tenant without WA Catalog configured', () => {
+test('withCatalogWelcomeOption is a no-op for a tenant without WA Catalog', () => {
   const buttons = [{ id: 'ORDER', title: '🛍 Shop' }];
   const business = makeBusiness({ waCatalog: { enabled: false } });
-  const result = withCatalogWelcomeOption(buttons, business);
-  assert.ok(result.buttons.some(b => b.id === 'BROWSE_CATALOG'));
+  assert.deepEqual(withCatalogWelcomeOption(buttons, business), { buttons });
 });
 
 test('withCatalogWelcomeOption adds a real button when there is room (<=3 total), inserted before the final option', () => {
@@ -113,28 +112,31 @@ test('withCatalogWelcomeOption adds a real button when there is room (<=3 total)
   assert.equal(result.rows, undefined);
 });
 
-test('withCatalogWelcomeOption switches to list rows (never silently drops a button) when it would exceed 3', () => {
+// [FIX-CATALOG-3BTN] Regression test: this used to fall back to a `rows`
+// (WhatsApp list / "Choose an option" tap-to-expand) payload once the
+// combined set exceeded 3. It must now replace the QUESTION button instead
+// and stay a 3-button payload — never rows — so the welcome menu always
+// renders as native, always-visible reply buttons.
+test('withCatalogWelcomeOption replaces the QUESTION button (never falls back to list rows) when it would exceed 3', () => {
   const buttons = [
     { id: 'ORDER', title: '🛍 Shop' },
     { id: 'BOOK', title: '📅 Book' },
     { id: 'QUESTION', title: '❓ Ask' },
   ];
   const result = withCatalogWelcomeOption(buttons, makeBusiness());
-  assert.equal(result.buttons, undefined);
-  assert.equal(result.rows.length, 4);
-  // [FIX-CATALOG-ORDER] Browse Catalog is inserted before the final
-  // (help/question) option, not appended after it.
-  assert.deepEqual(result.rows.map(r => r.id), ['ORDER', 'BOOK', 'BROWSE_CATALOG', 'QUESTION']);
+  assert.equal(result.rows, undefined, 'must never fall back to a list/rows payload');
+  assert.equal(result.buttons.length, 3, 'must stay within the 3-button cap');
+  assert.deepEqual(result.buttons.map(b => b.id), ['ORDER', 'BOOK', 'BROWSE_CATALOG']);
 });
 
-test('withCatalogWelcomeOption: rows include a description for every option (list-row subtitle)', () => {
+test('withCatalogWelcomeOption: every retained button keeps its description', () => {
   const buttons = [
     { id: 'ORDER', title: '🛍 Shop', description: 'Browse our menu & place an order' },
     { id: 'BOOK', title: '📅 Book', description: 'Reserve a table in advance' },
     { id: 'QUESTION', title: '❓ Ask', description: 'Get help from our team' },
   ];
   const result = withCatalogWelcomeOption(buttons, makeBusiness());
-  assert.ok(result.rows.every(r => typeof r.description === 'string' && r.description.length > 0));
-  const catalogRow = result.rows.find(r => r.id === 'BROWSE_CATALOG');
-  assert.equal(catalogRow.description, 'Shop our products & collections');
+  assert.ok(result.buttons.every(b => typeof b.description === 'string' && b.description.length > 0));
+  const catalogBtn = result.buttons.find(b => b.id === 'BROWSE_CATALOG');
+  assert.equal(catalogBtn.description, 'Shop our products & collections');
 });

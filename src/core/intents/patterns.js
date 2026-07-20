@@ -244,6 +244,17 @@ export const INTENT_PATTERNS = {
     'yo', 'sup', 'whatsup', 'what sup', 'assalamu alaikum',
   ],
 
+  // [FIX-CATALOG-TEXT] BROWSE_CATALOG previously had zero typed-text keywords —
+  // only BUTTON_ID_MAP mapped it, so it could only ever be triggered by tapping
+  // the "🛍 Browse Catalog" button. Now that it's a primary welcome-menu button
+  // (see waCatalogConfig.js#withCatalogWelcomeOption), a customer typing what
+  // the button says must reach the same handler a tap would.
+  BROWSE_CATALOG: [
+    'browse catalog', 'view catalog', 'see catalog', 'show catalog',
+    'catalog', 'shop catalog', 'see the catalog', 'open catalog',
+    'browse the catalog', 'show me the catalog', 'see products catalog',
+  ],
+
   ORDER: [
     'order', 'order now', 'buy', 'purchase', 'shop', 'shop now',
     'i want to order', 'place order', 'i want to buy', 'i want food',

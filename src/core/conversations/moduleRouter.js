@@ -330,16 +330,14 @@ export async function route({ action, intent, session, message, business, tenant
 
       // [FIX-CATALOG-BTN] Merge in the "🛍 Browse Catalog" welcome option for
       // tenants with WA Catalog enabled + sellable products (see
-      // waCatalogConfig.js#withCatalogWelcomeOption for the 3-button-cap /
-      // list-fallback rationale). A no-op for every tenant who hasn't enabled it.
+      // waCatalogConfig.js#withCatalogWelcomeOption). A no-op for every
+      // tenant who hasn't enabled it. [FIX-CATALOG-3BTN] Always renders as
+      // native reply buttons now — withCatalogWelcomeOption() replaces a
+      // slot (QUESTION when present) rather than appending a 4th option, so
+      // this never falls back to a WhatsApp list message / "Choose an
+      // option" tap-to-expand button.
       const { withCatalogWelcomeOption } = await import('../../modules/catalog/waCatalogConfig.js');
       const greetMenu = withCatalogWelcomeOption(cfg.ui?.welcomeButtons || [], business);
-      if (greetMenu.rows) {
-        return {
-          type: 'list', body, button: 'Choose an option',
-          sections: [{ title: 'Options', rows: greetMenu.rows }],
-        };
-      }
       return { type: 'buttons', body, buttons: greetMenu.buttons };
     }
 
@@ -380,15 +378,10 @@ export async function route({ action, intent, session, message, business, tenant
 
       // [FIX-CATALOG-BTN] Same catalog-option merge as GREET above — a
       // returning-to-menu customer should see the same options a fresh
-      // greeting would show, catalog button included.
+      // greeting would show, catalog button included. [FIX-CATALOG-3BTN]
+      // Always renders as native reply buttons — see withCatalogWelcomeOption().
       const { withCatalogWelcomeOption } = await import('../../modules/catalog/waCatalogConfig.js');
       const showMenuMenu = withCatalogWelcomeOption(cfg.ui?.welcomeButtons || [], business);
-      if (showMenuMenu.rows) {
-        return {
-          type: 'list', body: showMenuBody, button: 'Choose an option',
-          sections: [{ title: 'Options', rows: showMenuMenu.rows }],
-        };
-      }
       return { type: 'buttons', body: showMenuBody, buttons: showMenuMenu.buttons };
     }
 

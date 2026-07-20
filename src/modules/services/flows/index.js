@@ -32,20 +32,13 @@ export const SERVICES_CONFIG = {
     // [FIX-4BTN-SVC] Meta button messages are capped at 3 buttons; the dispatcher
     // silently drops the 4th via .slice(0,3). This array previously had 4 items —
     // 'QUESTION' was never rendered and customers had no way to tap it.
-    // Fix: keep 3 buttons. QUESTION is accessible via the 'ENQUIRY' flow, free-text,
-    // or by using a list-type welcome message (see welcomeList below).
+    // Fix: keep 3 buttons. QUESTION is always reachable via typed text
+    // regardless of whether its button is shown (see INTENT_PATTERNS.QUESTION
+    // in patterns.js), and via QUOTE_FOLLOW/ENQUIRY for quote-specific asks.
     welcomeButtons: [
       { id: 'ENQUIRY',      title: '📋 Get a Quote',        description: 'Request a project quote'       },
       { id: 'BOOK',         title: '📅 Book Consultation',  description: 'Schedule a call or site visit' },
       { id: 'QUESTION',     title: '❓ Ask a Question',     description: 'Get a quick answer'             },
-    ],
-    // [FIX-4BTN-SVC] Full 4-option list for callers that use list-type messages.
-    // Use this instead of welcomeButtons when the UI can support a list (no button cap).
-    welcomeList: [
-      { id: 'ENQUIRY',      title: '📋 Get a Quote',           description: 'Request a project quote'       },
-      { id: 'BOOK',         title: '📅 Book Consultation',     description: 'Schedule a call or site visit' },
-      { id: 'QUOTE_FOLLOW', title: '🔍 Follow Up on Quote',    description: 'Check on a pending quote'      },
-      { id: 'QUESTION',     title: '❓ Ask a Question',        description: 'Get a quick answer'            },
     ],
     fallbackButtons: [
       { id: 'ENQUIRY', title: '📋 Get a Quote'       },

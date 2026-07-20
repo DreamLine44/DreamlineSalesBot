@@ -51,29 +51,51 @@ test('shouldShowCatalogButton: true only when catalog is enabled+configured AND 
   assert.equal(shouldShowCatalogButton(disabledBusiness), false);
 });
 
-test('withCatalogWelcomeOption: Browse Catalog is shown even for a tenant without catalog enabled (always-on welcome option)', () => {
+test('withCatalogWelcomeOption: no-op for a tenant without catalog enabled', () => {
   const base = [{ id: 'ORDER', title: 'Order' }, { id: 'BOOK', title: 'Book' }];
   const result = withCatalogWelcomeOption(base, disabledBusiness);
-  assert.ok(result.buttons.some(b => b.id === 'BROWSE_CATALOG'));
+  assert.deepEqual(result, { buttons: base });
 });
 
-test('withCatalogWelcomeOption: appends BROWSE_CATALOG as a button when the combined set still fits in 3', () => {
+test('withCatalogWelcomeOption: appends BROWSE_CATALOG as a button when there is room under 3', () => {
   const base = [{ id: 'ORDER', title: 'Order' }];
   const result = withCatalogWelcomeOption(base, enabledBusiness);
   assert.ok(result.buttons, 'expected a buttons payload for a 2-item combined set');
+  assert.equal(result.buttons.length, 2);
   assert.ok(result.buttons.some(b => b.id === 'BROWSE_CATALOG'));
+  assert.ok(result.buttons.some(b => b.id === 'ORDER'), 'existing button must be preserved, not dropped');
 });
 
-test('withCatalogWelcomeOption: falls back to a list (rows) when the combined set would exceed 3 buttons', () => {
+// [FIX-CATALOG-3BTN] Regression test: this used to fall back to a `rows`/list
+// payload (the "Choose an option" tap-to-expand bug) once the combined set
+// exceeded 3 buttons. It must now replace the QUESTION slot instead and stay
+// a 3-button payload, never rows.
+test('withCatalogWelcomeOption: REPLACES the QUESTION slot (not a rows/list fallback) once the combined set would exceed 3 buttons', () => {
   const base = [
     { id: 'ORDER', title: 'Order' },
     { id: 'BOOK', title: 'Book' },
     { id: 'QUESTION', title: 'Question' },
   ];
   const result = withCatalogWelcomeOption(base, enabledBusiness);
-  assert.ok(result.rows, 'expected a rows/list payload once the combined set exceeds 3');
-  assert.equal(result.rows.length, 4);
-  assert.ok(result.rows.some(r => r.id === 'BROWSE_CATALOG'));
+  assert.ok(!result.rows, 'must never fall back to a rows/list payload');
+  assert.ok(result.buttons, 'expected a buttons payload');
+  assert.equal(result.buttons.length, 3, 'must stay within the 3-button cap');
+  assert.ok(result.buttons.some(b => b.id === 'BROWSE_CATALOG'));
+  assert.ok(result.buttons.some(b => b.id === 'ORDER'), 'ORDER must survive');
+  assert.ok(result.buttons.some(b => b.id === 'BOOK'), 'BOOK must survive');
+  assert.ok(!result.buttons.some(b => b.id === 'QUESTION'), 'QUESTION is replaced, not kept alongside a 4th slot');
+});
+
+test('withCatalogWelcomeOption: falls back to replacing the final slot when there is no QUESTION button at all', () => {
+  const base = [
+    { id: 'ORDER', title: 'Order' },
+    { id: 'TRACK_ORDER', title: 'Track' },
+    { id: 'VIEW_MENU', title: 'Menu' },
+  ];
+  const result = withCatalogWelcomeOption(base, enabledBusiness);
+  assert.equal(result.buttons.length, 3);
+  assert.ok(result.buttons.some(b => b.id === 'BROWSE_CATALOG'));
+  assert.equal(result.buttons[result.buttons.length - 1].id, 'BROWSE_CATALOG');
 });
 
 // ── BUTTON_ID_MAP wiring ────────────────────────────────────────────────────
@@ -109,10 +131,40 @@ test('moduleRouter.js: SHOW_MENU case calls withCatalogWelcomeOption before retu
   assert.match(showMenuBody, /withCatalogWelcomeOption\(/, 'SHOW_MENU case must call withCatalogWelcomeOption()');
 });
 
-test('moduleRouter.js: GREET/SHOW_MENU handle the rows (list) branch, not just buttons', () => {
+// [FIX-CATALOG-3BTN] Regression test: GREET/SHOW_MENU used to render a
+// WhatsApp list message ("Choose an option" tap-to-expand button) whenever
+// Browse Catalog pushed the welcome menu past 3 options. withCatalogWelcomeOption()
+// now always returns a buttons payload, so neither case should ever build a
+// 'list' type UI for the welcome menu anymore.
+test('moduleRouter.js: GREET/SHOW_MENU never fall back to a list ("Choose an option") payload', () => {
   const greetStart = routerSrc.indexOf("case 'GREET'");
   const browseCatalogStart = routerSrc.indexOf("case 'BROWSE_CATALOG'");
   const greetBody = routerSrc.slice(greetStart, browseCatalogStart);
-  assert.match(greetBody, /\.rows/, 'GREET must check the .rows branch returned by withCatalogWelcomeOption');
-  assert.match(greetBody, /type:\s*'list'/, 'GREET must be able to render a list payload, not only buttons');
+  assert.doesNotMatch(greetBody, /type:\s*'list'/, 'GREET must not render a list/"Choose an option" payload');
+  assert.match(greetBody, /type:\s*'buttons'/, 'GREET must render native reply buttons');
+
+  const showMenuStart = routerSrc.indexOf("case 'SHOW_MENU'");
+  const cancelStart = routerSrc.indexOf("case 'CANCEL'");
+  const showMenuBody = routerSrc.slice(showMenuStart, cancelStart);
+  assert.doesNotMatch(showMenuBody, /type:\s*'list'/, 'SHOW_MENU must not render a list/"Choose an option" payload');
+  assert.match(showMenuBody, /type:\s*'buttons'/, 'SHOW_MENU must render native reply buttons');
+});
+
+// [FIX-CATALOG-TEXT] Typed "browse catalog" must reach the same place the
+// button tap does, now that Browse Catalog is a primary welcome-menu action.
+test('patterns.js: BROWSE_CATALOG has typed-text keywords and maps to the BROWSE_CATALOG action', async () => {
+  const { INTENT_PATTERNS } = await import('../core/intents/patterns.js');
+  assert.ok(Array.isArray(INTENT_PATTERNS.BROWSE_CATALOG) && INTENT_PATTERNS.BROWSE_CATALOG.length > 0);
+  assert.ok(INTENT_PATTERNS.BROWSE_CATALOG.includes('browse catalog'));
+});
+
+// [FIX-CATALOG-3BTN] Removing the QUESTION button from the welcome menu must
+// not remove the feature — typed questions still route to QUESTION with no
+// button required, independent of what's currently shown on screen.
+test('patterns.js: QUESTION keyword detection does not depend on any button being present', () => {
+  const patternsSrc = read('../core/intents/patterns.js');
+  const qIdx = patternsSrc.indexOf('QUESTION: [');
+  assert.ok(qIdx !== -1, 'QUESTION keyword array must still exist');
+  const qBlock = patternsSrc.slice(qIdx, qIdx + 400);
+  assert.match(qBlock, /'question'/, 'typed "question" must still be a recognised keyword');
 });

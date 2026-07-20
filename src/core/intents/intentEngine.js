@@ -542,6 +542,12 @@ function intentToAction(intent, business) {
     // silently reusing the reset-to-top-level SHOW_MENU action, which never
     // rendered any menu content.
     VIEW_MENU:          'VIEW_MENU',
+    // [FIX-CATALOG-TEXT] Typed "browse catalog" / "catalog" etc. must route the
+    // same place the "🛍 Browse Catalog" button tap does (moduleRouter.js's
+    // BROWSE_CATALOG case → browseCatalogExplicit(), which itself gracefully
+    // falls back to the normal ORDER flow for tenants without WA Catalog
+    // configured — so this is always safe to reach, not just for catalog tenants).
+    BROWSE_CATALOG:     'BROWSE_CATALOG',
     ADD_TO_CART:        'START_ORDER',
     CHECKOUT:           'START_ORDER',
     REMOVE_FROM_CART:   'START_ORDER',       // re-enter order flow to adjust
