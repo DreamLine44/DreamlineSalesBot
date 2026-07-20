@@ -8,26 +8,22 @@
  *   2. Emoji shortcuts          → instant
  *   3. Greeting patterns        → instant
  *   4. Exact keyword map        → instant
- *   4.2 Complaint guard         → instant, any time (see negationGuard.js)
- *   4.4 Cancellation guard      → instant, any time (see negationGuard.js)
- *   4.5 Direct order/booking phrase (pre-flow only, see UPGRADE-DIRECT-INTENT)
- *   4.6 Correction/confirm guard → instant, in-flow only (see negationGuard.js)
+ *   4.5 Direct ORDER/BOOKING phrase (pre-flow only) → instant
+ *   4.6 Direct QUESTION phrase (pre-flow only, see FEAT-INSTANT-QA-2) → instant
+ *   4.7 Complaint / cancellation guards → instant, any time [MERGE-FEAT-NEGATION-1]
+ *   4.8 Correction / confirmation guard → instant, in-flow only [MERGE-FEAT-NEGATION-2]
  *   5. Levenshtein suggestion   → "did you mean?" only, never auto-execute
  *   6. AI classify              → ONLY if message ≥8 chars & non-numeric
  *   7. FALLBACK                 → default catch-all
  *
  * GOLDEN RULES:
  *   - Buttons always win. If it came from a button tap, trust the ID.
- *   - AI never triggers flows directly. It returns a structured decision object
- *     (see [FEAT-STRUCTURED-AI-4]); intentEngine applies the confidence policy
- *     and is the only thing that decides the final action.
+ *   - AI never triggers flows directly. It returns an intent, human confirms.
  *   - Short/numeric inputs (qty, date digits) → CONTINUE_FLOW always.
- *   - Active flows own their messages. Only CANCEL/CONFIRM (and now complaint/
- *     correction, see [FEAT-NEGATION-1]/[MERGE-NEGATION-1]) can escape.
- *     Complaint and cancellation guards deliberately run BEFORE the
- *     correction guard — a message like "actually, cancel it" or "actually
- *     my order was wrong" starts with a correction cue but must still
- *     escape, not be swallowed as a mere correction (see [FEAT-NEGATION-2]).
+ *   - Active flows own their messages. Only CANCEL/CONFIRM/complaint (and now
+ *     corrections/confirmations, see [MERGE-FEAT-NEGATION-2]) can escape.
+ *     Complaint and cancellation guards deliberately run BEFORE the correction/
+ *     confirmation guard — "actually, cancel it" still cancels.
  */
 
 import levenshtein from 'fast-levenshtein';
@@ -70,6 +66,36 @@ export const DIRECT_INTENT_EXCLUDE_RE = new RegExp(
 // word "order"/"book" (e.g. "give me 2 burgers", "table for tonight").
 export const ORDER_DIRECT_RE   = /\b(order|buy|purchase|shopping|can i get|can i have|i ll have|i ll take|give me|get me|i want|i d like|craving)\b/;
 export const BOOKING_DIRECT_RE = /\b(book|reserve|reservation|appointment|table for|party of|table at|table tonight|come in|slot for|availability for)\b/;
+
+// [FEAT-INSTANT-QA-2] Pre-flow direct-question detection, mirroring
+// [UPGRADE-DIRECT-INTENT] above but for QUESTION/ENQUIRY rather than
+// ORDER/BOOKING. A natural question ("do you guys deliver to Bakau on
+// weekends?") doesn't literally equal a step-4 exact-keyword entry and is
+// too far in edit distance for Levenshtein — without this it fell through
+// to AI classify, which only answers confidently on a HIGH-confidence read;
+// anything below that landed on CLARIFY, a needlessly uncertain response for
+// what was actually just a normal question. This runs whether or not the
+// customer ever taps "❓ Ask a Question" — per product policy (see
+// PROJECT_POLICIES.md, [FEAT-INSTANT-QA-1/2/3]), a typed question must be
+// answered the same way regardless of how it arrived. Checked AFTER the
+// order/booking direct-phrase step above so genuine order/booking requests
+// are never misread as questions about them.
+export const DIRECT_QUESTION_KEYWORDS = new Set([
+  'question', 'questions', 'i have a question', 'i want to ask', 'i want to ask a question',
+  'can i ask', 'can i ask something', 'let me ask', 'i need to know',
+  'i need to ask', 'quick question', 'one question', 'just a question',
+  'need some info', 'need information', 'just wondering',
+  'how much', 'how long does', 'how long will', 'how long is',
+  'what is your', 'what are your', 'what time do you',
+  'do you have', 'do you offer', 'can you tell me',
+  'is it possible', 'are you able', 'can you help me',
+  'opening hours', 'what time do you open', 'when do you open', 'when do you close',
+  'where are you', 'where are you located',
+  'do you deliver', 'do you do delivery',
+  'how do i pay', 'payment options',
+  'tell me more about', 'can you explain',
+]);
+export const DIRECT_QUESTION_RE = /^(wh(at|o|y|en|ere|ich)|how|can|is|are|do|does|would|could|will|shall|may|might)\b/i;
 
 // ── Normalise ─────────────────────────────────────────────────────────────────
 export const normalise = (text = '') =>
@@ -238,35 +264,6 @@ export async function detectIntent({ message, isInteractive = false, session, bu
     }
   }
 
-  // [MERGE-NEGATION-1] Single pass over the deterministic negation/cancellation/
-  // correction/rejection/complaint guard — reused across steps 4.2/4.4/4.6 below.
-  const guard = analyzeMessage(raw);
-
-  // ── 4.2 Deterministic complaint guard ──────────────────────────────────────
-  // Runs regardless of whether a flow is active — complaints always escalate
-  // to support and must never be treated as an FAQ, a flow answer, or
-  // (critically) mistaken for a correction just because it happens to start
-  // with "actually"/"sorry" (see [FEAT-NEGATION-2] below — this MUST run
-  // before the correction guard). Free-form complement to the existing
-  // bare-word SUPPORT keyword entries, which only match when they are the
-  // entire message.
-  if (guard.complaint) {
-    return { action: 'SUPPORT', intent: 'SUPPORT', confidence: 'HIGH', source: 'complaint-guard' };
-  }
-
-  // ── 4.4 Deterministic cancellation guard ───────────────────────────────────
-  // Runs regardless of whether a flow is active (mirrors the file's own golden
-  // rule: "Only CANCEL/CONFIRM can escape" a flow) and regardless of AI
-  // availability. Catches free-form cancellation phrasing that doesn't
-  // literally equal a CANCEL/SUPPORT keyword entry — see negationGuard.js for
-  // the full rationale. Only reached for messages that didn't already exact-
-  // match a keyword above (a literal "cancel" keyword match already returned).
-  // MUST run before the correction guard — "actually, cancel it" starts with
-  // "actually" and must still cancel, not be swallowed as a correction.
-  if (guard.cancelled) {
-    return { action: 'CANCEL', intent: 'CANCEL_ORDER', confidence: 'HIGH', source: 'negation-guard' };
-  }
-
   // ── 4.5. Direct ORDER / BOOKING phrase match [UPGRADE-DIRECT-INTENT] ──────
   // Pre-flow only — active flows own their own messages (GOLDEN RULES). Booking
   // is checked before order: widened ORDER_DIRECT_RE includes phrases like
@@ -281,17 +278,66 @@ export async function detectIntent({ message, isInteractive = false, session, bu
     }
   }
 
-  // ── 4.6 Confirmation / correction detection inside an active flow ─────────
-  // [FEAT-NEGATION-2] "Actually, make that three." / "Sorry, I meant medium."
-  // AND free-form confirmations like "yeah sure that sounds good" (which don't
-  // exactly equal a bare CONFIRM keyword) must stay owned by the active flow's
-  // own handler rather than falling through this pipeline to the generic
-  // FALLBACK/CLARIFY card — which would show an unrelated AI reply plus the
-  // welcome buttons, silently derailing the flow. Only reached here (i.e.
-  // AFTER the complaint and cancellation guards above) so a complaint or
-  // cancellation that happens to start with "actually"/"sorry", or contain
-  // "yes", is never misread as a mere correction/confirmation. Never fires
-  // when there's no active flow to hand the message to.
+  // ── 4.6 Direct QUESTION phrase match [FEAT-INSTANT-QA-2] ──────────────────
+  // Pre-flow only, same reasoning as 4.5 above but for questions. Fires whether
+  // or not the customer tapped "❓ Ask a Question" — a typed question gets
+  // answered the same way either way. Length gate (>=15) on the generic
+  // wh-word regex mirrors the mid-flow question detector in
+  // webhookController.js so a bare "Which" (e.g. the start of a menu item
+  // name) is never misread as a question.
+  //
+  // [FIX-QA-SUPPORT-PRECEDENCE] Some DIRECT_QUESTION_KEYWORDS entries ("can you
+  // help me", "can you tell me") are genuinely ambiguous with a human-escalation
+  // request ("can you help me, I want to speak to someone"). The complaint guard
+  // below only catches specific complaint phrasing, not a bare help request, so
+  // without this exclusion a message containing real SUPPORT-flavored language
+  // (checked the same "contains" way _detectMidFlowSupportRequest checks it)
+  // would be forced to QUESTION here, before Levenshtein/AI-classify ever got a
+  // chance to read it as SUPPORT instead.
+  if (!session?.currentFlow) {
+    const _supportWords = clean.split(' ');
+    const looksLikeSupport = (INTENT_PATTERNS.SUPPORT || []).some(kw =>
+      kw.includes(' ') ? clean.includes(kw) : _supportWords.includes(kw)
+    );
+    const isDirectQuestion = !looksLikeSupport && (
+      DIRECT_QUESTION_KEYWORDS.has(clean) ||
+      [...DIRECT_QUESTION_KEYWORDS].some(kw => kw.includes(' ') && clean.includes(kw)) ||
+      raw.trim().endsWith('?') ||
+      (DIRECT_QUESTION_RE.test(clean) && clean.length >= 15)
+    );
+    if (isDirectQuestion) {
+      return { action: 'QUESTION', intent: 'QUESTION', confidence: 'HIGH', source: 'direct-question' };
+    }
+  }
+
+  // ── 4.7 [MERGE-FEAT-NEGATION-1] Complaint / cancellation guards ───────────
+  // Ported from a parallel audit pass (same underlying spec this file's
+  // [UPGRADE-DIRECT-INTENT]/[GROQ-STRUCT-1] work implements). Runs regardless
+  // of active-flow state — mirrors this file's own golden rule "Only CANCEL/
+  // CONFIRM can escape" a flow. Distinct from DIRECT_INTENT_EXCLUDE_RE above
+  // (which only *prevents* the direct-phrase step from misfiring on
+  // cancellation-flavored text) — these guards *act* on it. Catches free-form
+  // phrasing ("please just forget it, I don't want to continue", "my order
+  // was wrong and cold") that doesn't literally equal a CANCEL/SUPPORT
+  // keyword entry, and — critically — that classifyWithAI would otherwise
+  // never see, since step 7 below is skipped entirely whenever a flow is
+  // active (see [FIX-INTENT-AI]).
+  const guard = analyzeMessage(raw);
+
+  if (guard.complaint) {
+    return { action: 'SUPPORT', intent: 'SUPPORT', confidence: 'HIGH', source: 'complaint-guard' };
+  }
+  if (guard.cancelled) {
+    return { action: 'CANCEL', intent: 'CANCEL_ORDER', confidence: 'HIGH', source: 'negation-guard' };
+  }
+
+  // ── 4.8 [MERGE-FEAT-NEGATION-2] Correction / confirmation guard (in-flow) ──
+  // "Actually, make that three." / "yeah sure that sounds good" must stay
+  // owned by the active flow's own handler rather than falling through to the
+  // generic FALLBACK/CLARIFY card at step 8, which would show an unrelated AI
+  // reply and derail the flow. Checked AFTER complaint/cancellation above so
+  // "actually, cancel it" still cancels rather than being read as a mere
+  // correction. Never fires when there's no active flow to hand it to.
   if (session?.currentFlow && (guard.correction || guard.confirmed)) {
     return {
       action: 'CONTINUE_FLOW', intent: 'CONTINUE_FLOW', confidence: 'HIGH',
@@ -328,65 +374,52 @@ export async function detectIntent({ message, isInteractive = false, session, bu
       logger.info('[IntentEngine] miss', { path: 'short-fallback', message: raw, suggestion: suggIntent });
       return {
         action: 'CLARIFY', intent: 'CLARIFY', confidence: 'LOW', source: 'levenshtein',
-        suggestion: suggIntent,
+        suggestion: suggIntent, hesitant: guard.hesitant,
       };
     }
     logger.info('[IntentEngine] miss', { path: 'short-fallback', message: raw });
-    return { action: 'FALLBACK', intent: 'FALLBACK', confidence: 'LOW', source: 'fallback' };
+    return { action: 'FALLBACK', intent: 'FALLBACK', confidence: 'LOW', source: 'fallback', hesitant: guard.hesitant };
   }
 
   // ── 7. AI classify (last resort — multi-word, non-numeric messages only) ──
-  // [FEAT-STRUCTURED-AI-4] Upgraded from a bare intent word to the full
-  // structured decision object (confidence, negation, emotion, urgency,
-  // correction, multi-intent) per the WhatSales Conversational Intelligence
-  // spec. Confidence policy (spec Part A, "Confidence Policy"):
-  //   >= 0.92        → route immediately, no clarification
-  //   0.70 - 0.91    → ask exactly one clarification question (never guess)
-  //   <  0.70        → do not switch workflows; fall through to step 8 unchanged
-  // [FIX-INTENT-AI] (carried over) Skipped entirely when session is already in
-  // an active flow — the flow engine owns those messages, same as before.
+  // [FIX-INTENT-AI] Skip AI classify when session is already in an active flow
+  // that owns the input (e.g. ENQUIRY:AWAITING_QUESTION). The flow engine handles
+  // it at step 13/15 of webhookController — running the classifier here wastes a
+  // Groq API call and risks overriding the flow handler with an incorrect intent.
   if (!session?.currentFlow) {
     try {
-      const decision = await classifyWithStructuredAI({ message: raw, business });
+      const decision = await classifyWithAI({ message: raw, business });
 
-      // Negation/rejection always wins over whatever intent the model guessed —
-      // never start a workflow the customer just said they don't want.
-      if (decision.negated || decision.rejected) {
-        logger.info('[IntentEngine] miss', { path: 'ai-negated', message: raw });
-        return { action: 'FALLBACK', intent: 'FALLBACK', confidence: 'LOW', source: 'ai-negated' };
+      // [PHASE-2] Defense in depth: never execute a workflow action on a message
+      // the AI flagged as negated or a cancellation, even if primaryIntent looks
+      // confident — the confidence score reflects intent-word certainty, not
+      // polarity. "I don't want food" must never fire START_ORDER.
+      const blocked = decision.negated || decision.cancellation;
+
+      if (!blocked && decision.primaryIntent !== 'UNKNOWN' && decision.confidence >= AI_EXECUTE_CONFIDENCE) {
+        const action = intentToAction(decision.primaryIntent, business);
+        return { action, intent: decision.primaryIntent, confidence: 'AI', source: 'ai', aiSignals: decision };
       }
-      if (decision.cancelled) {
-        return { action: 'CANCEL', intent: 'CANCEL_ORDER', confidence: 'HIGH', source: 'ai-cancel' };
-      }
-      if (decision.requiresHuman) {
-        return { action: 'SUPPORT', intent: 'SUPPORT', confidence: 'HIGH', source: 'ai-escalate' };
-      }
-      if (decision.primaryIntent && decision.primaryIntent !== 'UNKNOWN') {
-        if (decision.confidence >= AI_EXECUTE_CONFIDENCE) {
-          const action = intentToAction(decision.primaryIntent, business);
-          return {
-            action, intent: decision.primaryIntent, confidence: 'AI', source: 'ai',
-            emotion: decision.emotion, urgency: decision.urgency,
-            secondaryIntents: decision.secondaryIntents,
-            businessInformationRequested: decision.businessInformationRequested,
-          };
-        }
-        if (decision.confidence >= AI_CLARIFY_CONFIDENCE || decision.needsClarification) {
-          logger.info('[IntentEngine] AI classify below execute threshold — asking for clarification', {
-            messagePreview: raw.slice(0, 60), primaryIntent: decision.primaryIntent, confidence: decision.confidence,
-          });
-          return {
-            action: 'CLARIFY', intent: 'CLARIFY', confidence: 'LOW', source: 'ai-clarify',
-            suggestion: decision.primaryIntent,
-            clarification: decision.clarificationQuestion
-              || 'What can I help you with today — ordering, booking, or something else?',
-            emotion: decision.emotion,
-          };
-        }
-        // < 0.70 and no clarification requested → deliberately fall through to
-        // step 8 unchanged, per the spec's conservative confidence policy.
-        logger.info('[IntentEngine] AI classify did not clear confidence/negation gate', {
+
+      if (!blocked && decision.primaryIntent !== 'UNKNOWN' && decision.confidence >= AI_CLARIFY_CONFIDENCE) {
+        // Probable, not certain — ask exactly one clarification question rather
+        // than guessing. Reuses the existing CLARIFY/suggestion path so downstream
+        // handling (moduleRouter's FALLBACK/CLARIFY case) is unchanged.
+        logger.info('[IntentEngine] AI classify below execute threshold — asking for clarification', {
           messagePreview: raw.slice(0, 60), primaryIntent: decision.primaryIntent, confidence: decision.confidence,
+        });
+        return {
+          action: 'CLARIFY', intent: 'CLARIFY', confidence: 'LOW', source: 'ai-clarify',
+          suggestion: decision.primaryIntent, aiSignals: decision,
+        };
+      }
+
+      if (blocked || decision.primaryIntent !== 'UNKNOWN') {
+        // Miss-logging: negated/cancelled/low-confidence AI reads are useful audit
+        // signal even though we deliberately don't act on them here.
+        logger.info('[IntentEngine] AI classify did not clear confidence/negation gate', {
+          messagePreview: raw.slice(0, 60), primaryIntent: decision.primaryIntent,
+          confidence: decision.confidence, negated: decision.negated, cancellation: decision.cancellation,
         });
       }
     } catch (err) {
@@ -395,10 +428,11 @@ export async function detectIntent({ message, isInteractive = false, session, bu
   }
 
   // ── 8. Final fallback ──────────────────────────────────────────────────────
-  // [FEAT-NEGATION-3] guard.hesitant ("maybe", "just browsing", "not sure yet")
-  // is surfaced here so callers (e.g. moduleRouter's FALLBACK/CLARIFY case) can
-  // ask for a softer, informational tone instead of a pushy one. Never changes
-  // the action itself — hesitation shapes tone only, exactly like emotion does.
+  // [MERGE-FEAT-NEGATION-3] guard.hesitant ("maybe", "just browsing", "not sure
+  // yet") surfaced here so moduleRouter's FALLBACK/CLARIFY case can ask for a
+  // softer, informational tone instead of a pushy one (spec: Hesitation
+  // Detection — "don't push the sale, offer helpful information instead").
+  // Never changes the action itself.
   if (suggestion) {
     logger.info('[IntentEngine] miss', { path: 'clarify', message: raw, suggestion: suggIntent });
     return {
@@ -411,20 +445,17 @@ export async function detectIntent({ message, isInteractive = false, session, bu
   return { action: 'FALLBACK', intent: 'FALLBACK', confidence: 'LOW', source: 'fallback', hesitant: guard.hesitant };
 }
 
-// ── AI structured classifier ──────────────────────────────────────────────────
-// [FEAT-STRUCTURED-AI-5] Upgraded from a bare intent word to the full structured
-// decision object (confidence, negation, emotion, urgency, correction, multi-intent).
-// classifyIntent() in groqProvider.js is a separate function this file never
-// calls directly — it's used as-is by postFlowHandler.js for sentiment
-// tiebreaking, and was separately upgraded there ([AUDIT-FIX-CLASSIFY-2]) to
-// return a { intent, confidence } shape with a negation-aware prompt. This
-// file's own classifyMessageStructured() call site below is a fully separate
-// upgrade path, so nothing about that change affects this file. Still lazy-imports groqProvider.js so a missing/broken AI provider
-// module can never break module load for the deterministic layers above.
+// ── AI intent classifier ──────────────────────────────────────────────────────
+// [PHASE-2] Upgraded from groqProvider.classifyIntent() (bare intent word) to
+// groqProvider.classifyIntentStructured() (intent + confidence/negation/emotion/
+// cancellation/correction signals). classifyIntent() itself is untouched — it's
+// still used as-is by postFlowHandler.js for sentiment tiebreaking. Only this
+// private, intentEngine-internal call site is upgraded, so nothing outside this
+// file is affected.
 //
 // Always returns a fully-shaped decision object — never throws, never returns
 // a bare string — so callers don't need their own null/shape checks.
-async function classifyWithStructuredAI({ message, business }) {
+async function classifyWithAI({ message, business }) {
   const mode         = (business?.businessMode || 'RETAIL').toUpperCase();
   const validIntents = getValidIntents(mode);
 
@@ -435,24 +466,22 @@ async function classifyWithStructuredAI({ message, business }) {
     .replace(/[<>]/g, '')
     .trim();
 
-  const fallback = {
-    primaryIntent: 'UNKNOWN', confidence: 0, negated: false, cancelled: false,
-    rejected: false, confirmed: false, correction: false, urgency: 'normal',
-    emotion: 'neutral', needsClarification: false, clarificationQuestion: null,
-    requiresHuman: false, secondaryIntents: [], businessInformationRequested: [],
+  const SAFE_DEFAULT = {
+    primaryIntent: 'UNKNOWN', secondaryIntents: [], confidence: 0, emotion: 'neutral',
+    urgency: 'normal', negated: false, confirmation: false, correction: false,
+    cancellation: false, needsClarification: false, requiresHuman: false, reason: 'unavailable',
   };
 
   try {
-    const { classifyMessageStructured } = await import('../ai/providers/groqProvider.js')
-      .catch(() => ({ classifyMessageStructured: null }));
-    if (classifyMessageStructured && process.env.GROQ_API_KEY) {
-      return await classifyMessageStructured({ message: sanitisedMsg, validIntents, mode });
+    const { classifyIntentStructured } = await import('../ai/providers/groqProvider.js').catch(() => ({ classifyIntentStructured: null }));
+    if (classifyIntentStructured && process.env.GROQ_API_KEY) {
+      return await classifyIntentStructured({ message: sanitisedMsg, validIntents, mode });
     }
     // Groq not available — safe default so caller's fallback path runs.
-    return fallback;
+    return SAFE_DEFAULT;
   } catch (err) {
-    logger.warn('[IntentEngine] classifyWithStructuredAI failed', { err: err.message });
-    return fallback;
+    logger.warn('[IntentEngine] classifyWithAI failed', { err: err.message });
+    return SAFE_DEFAULT;
   }
 }
 
@@ -507,10 +536,11 @@ function intentToAction(intent, business) {
     TRACK_ORDER:        'TRACK_ORDER',
     REPEAT_ORDER:       'REPEAT_ORDER',
     SHOW_MENU:          'SHOW_MENU',
-    // [AUDIT-FIX-VIEWMENU] Companion to the SHOW_MENU split in patterns.js —
-    // typed "menu" / "view menu" / "show menu" etc. now map to their own
-    // action instead of silently reusing the reset-to-top-level SHOW_MENU
-    // action, which never rendered any menu content.
+    // [AUDIT-FIX-VIEWMENU] Was previously absent, so BUTTON_ID_MAP's old
+    // VIEW_MENU:'SHOW_MENU' mapping meant a "View Menu" tap or a customer
+    // typed "menu" / "view menu" etc. now map to their own action instead of
+    // silently reusing the reset-to-top-level SHOW_MENU action, which never
+    // rendered any menu content.
     VIEW_MENU:          'VIEW_MENU',
     ADD_TO_CART:        'START_ORDER',
     CHECKOUT:           'START_ORDER',

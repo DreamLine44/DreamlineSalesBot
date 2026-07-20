@@ -123,7 +123,8 @@
  */
 
 import { getSession, createSession, updateSession } from '../core/sessions/sessionService.js';
-import { detectIntent, extractCustomerName, ORDER_DIRECT_RE, BOOKING_DIRECT_RE, DIRECT_INTENT_EXCLUDE_RE, normalise } from '../core/intents/intentEngine.js';
+import { detectIntent, extractCustomerName, isInformationalIntent, ORDER_DIRECT_RE, BOOKING_DIRECT_RE, DIRECT_INTENT_EXCLUDE_RE, normalise as normaliseFsi } from '../core/intents/intentEngine.js';
+import { findBestMatch } from '../utils/matchEngine.js';
 import { analyzeMessage }                            from '../core/intents/negationGuard.js';
 import { INTENT_PATTERNS }                           from '../core/intents/patterns.js';
 import { updateName as persistCustomerName }         from '../core/memory/customerMemory.js';
@@ -131,7 +132,6 @@ import { advance, startFlow }                        from '../core/conversations
 import { route }                                     from '../core/conversations/moduleRouter.js';
 import { dispatchMessage }                           from '../core/whatsapp/dispatcher.js';
 import { getModeConfig }                             from '../config/modes.js';
-import { findBestMatch }                             from '../utils/matchEngine.js';
 import { decryptToken }                              from './tenantController.js';
 // [FIX-IMPORT-1] handlePostFlowMessage was called at step 14 but never imported —
 // every postFlowAck message fell through to the default-case "unknown ackCtx" path in
@@ -166,20 +166,10 @@ import crypto           from 'crypto';
 //
 // IMPORTANT: req.rawBody (Buffer) must be set by app.js before this runs.
 // The existing express.raw() setup in app.js already handles this.
-// [AUDIT-FIX-SIG-DIAG] Previously returned a bare boolean, so a mismatch produced
-// a single log line with no way to tell WHY it happened (wrong secret? stale/short
-// rawBody? proxy re-encoding the request? a genuinely spoofed request?). Production
-// deploy logs showed the SAME tenant passing verification on some messages ("hi")
-// and failing on others (an interactive button reply) seconds apart — with a static
-// per-tenant secret and a deterministic HMAC, that pattern can only be explained by
-// something about the REQUEST (rawBody/header) differing, not the secret. Returning
-// a rich diagnostic object (instead of true/false) lets the call site log exactly
-// what it compared, so the next occurrence is actually diagnosable.
 function _verifyTenantWebhookSignature(req, tenant) {
   // [META-CREDS] Resolve secret: per-tenant first, then global env fallback.
   // decryptToken handles the enc: prefix transparently (imported above).
   const encryptedSecret = tenant?.meta?.appSecret ?? null;
-  const secretSource = encryptedSecret ? 'tenant' : (process.env.META_APP_SECRET ? 'global-env' : 'none');
   const rawSecret = (encryptedSecret ? decryptToken(encryptedSecret) : null)
     ?? process.env.META_APP_SECRET
     ?? null;
@@ -197,26 +187,20 @@ function _verifyTenantWebhookSignature(req, tenant) {
       tenantId: String(tenant?._id),
       env: process.env.NODE_ENV,
     });
-    return { ok: true, reason: 'no-secret-skip', secretSource };
+    return true;
   }
 
   const sigHeader = req.headers['x-hub-signature-256'];
   if (!sigHeader) {
     // Meta always sends this header on real webhook events
-    return { ok: false, reason: 'missing-header', secretSource };
+    logger.warn('[Webhook] Missing X-Hub-Signature-256 header', { ip: req.ip });
+    return false;
   }
 
   const rawBody = req.rawBody;
-  if (!rawBody || !Buffer.isBuffer(rawBody) || rawBody.length === 0) {
-    // [AUDIT-FIX-SIG-DIAG] A missing/empty rawBody is a body-parsing/ordering bug
-    // (e.g. something upstream of the raw-body capture consuming the request
-    // stream), NOT a spoofing attempt — surfacing it distinctly from a genuine
-    // HMAC mismatch makes this fixable instead of looking like a security event.
-    return {
-      ok: false, reason: 'rawBody-missing-or-empty', secretSource,
-      contentLength: req.headers['content-length'] ?? null,
-      rawBodyType: rawBody ? typeof rawBody : 'undefined',
-    };
+  if (!rawBody) {
+    logger.error('[Webhook] rawBody missing — check app.js raw body parser setup');
+    return false;
   }
 
   const expected = 'sha256=' + crypto
@@ -226,21 +210,8 @@ function _verifyTenantWebhookSignature(req, tenant) {
 
   const sigBuf = Buffer.from(sigHeader);
   const expBuf = Buffer.from(expected);
-  const match = sigBuf.length === expBuf.length &&
-                crypto.timingSafeEqual(sigBuf, expBuf);
-
-  return {
-    ok: match,
-    reason: match ? 'ok' : 'hmac-mismatch',
-    secretSource,
-    // Short, non-secret-revealing fingerprints for comparing across log lines —
-    // enough to tell "totally different body" from "off by one byte" without
-    // ever logging the secret or the full signature.
-    rawBodyLength: rawBody.length,
-    contentLength: req.headers['content-length'] ?? null,
-    receivedSigPrefix: sigHeader.slice(0, 14),
-    expectedSigPrefix: expected.slice(0, 14),
-  };
+  return sigBuf.length === expBuf.length &&
+         crypto.timingSafeEqual(sigBuf, expBuf);
 }
 
 // ── [FIX-BUG9] Button IDs generated inside active flows — must bypass intent detection
@@ -426,17 +397,15 @@ const FLOW_PASSTHROUGH_IDS = new Set([
   // detection, which would otherwise misclassify MFQ_SWITCH_YES as FALLBACK.
   'MFQ_SWITCH_YES',
   'MFQ_SWITCH_NO',
+  // ── [FSI] Mid-Flow Order/Booking-Switch intercept response buttons ────────
+  // Same rationale as MFQ_SWITCH_YES/NO above — must bypass intent detection
+  // so they reach the FSI handler block, not get misclassified as FALLBACK.
+  'FSI_SWITCH_YES',
+  'FSI_SWITCH_NO',
   // [MFQ] Resume-flow button shown after Q&A is complete — lets the customer jump
   // back into the paused flow. Must bypass intent detection so it reaches the
   // MFQ_RESUME_FLOW handler at step 15.1b, not GREET or FALLBACK.
   'MFQ_RESUME_FLOW',
-  // ── [FSI] Mid-Flow Order/Booking-Switch intercept response buttons ───────
-  // When the customer is inside an active ORDER or BOOKING flow and sends a
-  // message that clearly asks for the OTHER flow, the bot pauses and presents
-  // these two options. Must bypass intent detection so the response reaches
-  // the FSI handler block, not GREET or FALLBACK.
-  'FSI_SWITCH_YES',
-  'FSI_SWITCH_NO',
 ]);
 
 // ── [FIX-BUG3] Hours enforcement ─────────────────────────────────────────────
@@ -611,16 +580,18 @@ function extractMessage(msgObj) {
 }
 
 /**
- * [FEAT-EMOTION-WIRE-2] Maps the structured-AI classifier's emotion vocabulary
- * (lowercase, spec Part A) onto emotionEngine.js's existing tone enum. 'urgent'
- * deliberately has no mapping to a prefix-bearing tone here (emotionEngine.js's
- * own TONE_PREFIX table intentionally has none for URGENT either — urgency is
- * served by brevity, not an added line). 'apologetic' has no corresponding tone
- * prefix and is left unmapped rather than guessed.
+ * [MERGE-FEAT-EMOTION-WIRE-3] Maps classifyIntentStructured()'s ([GROQ-STRUCT-1])
+ * emotion vocabulary onto emotionEngine.js's existing tone enum, so aiSignals.emotion
+ * can serve as a fallback signal when the regex-based detectPreFlowEmotion() found
+ * nothing. 'urgent' maps to URGENT deliberately even though URGENT has no tone
+ * prefix in TONE_PREFIX (urgency is served by brevity — see [MERGE-FEAT-URGENCY-1]
+ * — not an added line) — mapping it still lets `finalEmotion === 'URGENT'` reach
+ * route() correctly. Emotions with no sensible tone-prefix equivalent (satisfied,
+ * angry, curious, apologetic, disappointed, grateful) are deliberately left
+ * unmapped rather than guessed.
  */
 const AI_EMOTION_TO_TONE = {
   frustrated: 'FRUSTRATED',
-  angry:      'FRUSTRATED', // [MERGE-EMOTION-1] closest existing tone — was unmapped, silently dropped to NEUTRAL
   confused:   'CONFUSED',
   excited:    'EXCITED',
   happy:      'EXCITED',
@@ -628,15 +599,12 @@ const AI_EMOTION_TO_TONE = {
 };
 
 /**
- * [FEAT-STRUCTURED-AI-10] Human-readable labels for the AI classifier's
- * `secondaryIntents` field (spec Part A, "Multi-Intent Detection" — e.g. "I want
- * pizza, and can you also book me a table later?" → primary: ORDER, secondary:
- * BOOKING). The existing FSM only supports one active flow per session at a
- * time (redesigning that is out of scope — see the integration directive's
- * "do not redesign the architecture" rule), so a second workflow can't actually
- * be started in parallel. Rather than silently drop the second request (the
- * gap this closes), it's acknowledged in the same reply so the customer knows
- * it was heard and will be picked up next — a deliberately small, additive fix.
+ * [MERGE-FEAT-STRUCTURED-AI-2] Human-readable labels for classifyIntentStructured()'s
+ * secondaryIntents field when it names a genuine second WORKFLOW request (not an
+ * informational question — those are already answered directly, see the multi-intent
+ * block above). The FSM only supports one active flow per session at a time, so a
+ * second workflow can't actually be started in parallel; acknowledging it here means
+ * it's never silently dropped.
  */
 const SECONDARY_INTENT_LABEL = {
   ORDER: 'placing your order', BOOKING: 'booking a table', WALKIN: 'your walk-in',
@@ -652,33 +620,21 @@ function describeSecondaryIntents(secondaryIntents = []) {
 }
 
 /**
- * appendBusinessInfoAnswer(reply, extraText)
- *
- * [FEAT-STRUCTURED-AI-9] Appends a short deterministic line — either a
- * business-info answer (see groqProvider.js#formatBusinessInfoAnswer) or a
- * secondary-intent acknowledgment (see describeSecondaryIntents above) — to
- * whatever text-bearing payload route() already produced, without touching
- * any other field (buttons, type, images, etc.) or any of route()'s many
- * internal return points. Mirrors the same string | {body} | array-of-those
- * payload handling already used by emotionEngine.js#applyEmotionTone, purely
- * additive. Generic on purpose so both callers below can share it.
+ * appendToFirstTextPayload(payloads, extraText)
+ * Appends a short line to the first text-bearing payload in a payloads array,
+ * without touching any other field (buttons, type, images, etc.). Mirrors the
+ * string | {body} payload handling already used by emotionEngine.js#applyEmotionTone.
  */
-function appendBusinessInfoAnswer(reply, extraText) {
-  if (!extraText || !reply) return reply;
-
-  const isArray  = Array.isArray(reply);
-  const payloads = isArray ? [...reply] : [reply];
-  const idx = payloads.findIndex(p =>
-    typeof p === 'string' || (p && typeof p === 'object' && typeof p.body === 'string')
-  );
-  if (idx === -1) return reply; // no text-bearing payload anywhere — leave untouched
-
-  const target = payloads[idx];
-  payloads[idx] = typeof target === 'string'
+function appendToFirstTextPayload(payloads, extraText) {
+  if (!extraText || !payloads?.length) return payloads;
+  const idx = payloads.findIndex(p => typeof p === 'string' || (p && typeof p.body === 'string'));
+  if (idx === -1) return payloads;
+  const next = [...payloads];
+  const target = next[idx];
+  next[idx] = typeof target === 'string'
     ? `${target}\n\n${extraText}`
     : { ...target, body: `${target.body}\n\n${extraText}` };
-
-  return isArray ? payloads : payloads[0];
+  return next;
 }
 
 // ── [MFQ] Mid-Flow Question helpers ──────────────────────────────────────────
@@ -721,30 +677,6 @@ const MFQ_DATE_TIME_STEPS = new Set([
   'SELECT_DATE', 'ENTER_DATE', 'SELECT_TIME', 'ENTER_TIME',
   'BOOKING_DATE', 'BOOKING_TIME', 'PICKUP_TIME', 'CUSTOM_TIME',
 ]);
-
-// [MERGE-NEGATION-WIRE] Free-form cancellation phrasing mid-flow, using
-// negationGuard.js's analyzeMessage(). negationGuard.js's own header comment
-// describes exactly this as its reason for existing ("please just forget it,
-// I don't want to continue with this" mid-flow) — but that detection lived
-// only inside intentEngine.js's detectIntent(), which is NEVER called for
-// ordinary in-flow typed text: the step-15 block below (`if
-// (session.currentFlow) { ... }`) calls flowEngine.advance() directly for any
-// text that isn't a passthrough ID, an exact "CANCEL" keyword, or one of the
-// other dedicated mid-flow detectors. A longer cancellation phrase that
-// doesn't literally equal "cancel"/"cancel_booking"/"cancel_order" silently
-// reached advance() instead, which has no knowledge of free-form phrasing and
-// just re-prompted the current step — the flow-equivalent of the bot
-// "looping on the same thing" instead of hearing the customer out. Mirrors
-// _detectMidFlowStatusRequest's own free-text/date-time step exclusions — an
-// address or note must never be hijacked just because it happens to contain
-// a word like "cancel" or "stop".
-function _detectMidFlowCancellationRequest(text, session) {
-  const step = (session.step || '').toUpperCase();
-  if (MFQ_FREE_TEXT_STEPS.has(step) || MFQ_DATE_TIME_STEPS.has(step)) return false;
-  if (step === 'PAYMENT_PROOF') return false;
-  if (!text || !text.trim()) return false;
-  return analyzeMessage(text).cancelled;
-}
 
 // ── Quick STATUS command — single source of truth ─────────────────────────
 // Used both by the no-flow fast path (step 14.6 below) and by the mid-flow
@@ -796,6 +728,13 @@ const MFQ_QUESTION_RE = /^(wh(at|o|y|en|ere|ich)|how|can|is|are|do|does|would|co
 // Uses the same SUPPORT keyword list as top-level intent detection (single source
 // of truth in core/intents/patterns.js) so adding a new admin phrase there also
 // fixes mid-flow escalation with no other code change needed.
+//
+// [MERGE-NEGATION-2] The SUPPORT keyword list above is deliberately narrow (admin/
+// human-escalation phrasing). It does NOT cover free-form complaint phrasing like
+// "the food arrived cold" or "an item was missing" — a customer typing that mid-flow
+// used to just get the current step's generic re-prompt. analyzeMessage().complaint
+// (negationGuard.js — the same deterministic complaint detector intentEngine.js's
+// own pre-flow guard uses) is now OR'd in below to close that gap.
 function _detectMidFlowSupportRequest(text, session) {
   const step  = (session.step || '').toUpperCase();
   const clean = text.toLowerCase().replace(/[^\w\s]/g, ' ').replace(/\s+/g, ' ').trim();
@@ -805,6 +744,8 @@ function _detectMidFlowSupportRequest(text, session) {
   if (MFQ_FREE_TEXT_STEPS.has(step) || MFQ_DATE_TIME_STEPS.has(step)) return false;
   if (step === 'PAYMENT_PROOF') return false;
   if (!clean || clean.length < 3) return false;
+
+  if (analyzeMessage(text).complaint) return true;
 
   const words = clean.split(' ');
   for (const kw of (INTENT_PATTERNS.SUPPORT || [])) {
@@ -885,62 +826,68 @@ function _detectMidFlowQuestion(text, session) {
   return false;
 }
 
-// ── [FSI] Mid-Flow Order/Booking-Switch intercept detector ───────────────────
+// ── [FSI] Mid-Flow Order/Booking-Switch detector ─────────────────────────────
 //
-// PROBLEM: a customer already inside an active BOOKING flow (or ORDER flow) who
-// deliberately types a request for the OTHER flow (e.g. "I want to order food"
-// while mid-booking) previously had that message silently swallowed by the
-// current step's handler, which just re-showed its existing prompt — no
-// acknowledgement, no way forward except finding CANCEL on their own.
+// PROBLEM: a customer already inside an active BOOKING flow (or ORDER flow)
+// who deliberately types a request for the OTHER flow (e.g. "I want to order
+// food" while mid-booking) previously had that message silently swallowed by
+// the current step's handler (which just re-showed its existing prompt) —
+// the exact same infinite-loop shape as the SUPPORT/STATUS/MFQ-question gaps
+// above, just for switching between the platform's two core flows.
 //
-// Mirrors the MFQ question intercept above: reuses ORDER_DIRECT_RE/
-// BOOKING_DIRECT_RE/DIRECT_INTENT_EXCLUDE_RE (the same source of truth the
-// no-flow direct-intent step in intentEngine.js uses) so a phrase is detected
-// identically whether the customer is mid-flow or not.
+// Reuses ORDER_DIRECT_RE / BOOKING_DIRECT_RE / DIRECT_INTENT_EXCLUDE_RE — the
+// exact same regexes the no-flow direct-phrase step (intentEngine.js step 4.5)
+// already uses — so "does this text look like an order/booking request" has a
+// single source of truth whether or not a flow is active.
 //
-// [FIX-FSI-1] Item-name collision guard: a business can sell a product/service
-// literally named something that matches the OTHER flow's vocabulary (e.g. a
-// wine called "Reserve Cabernet", a salon treatment called "Coloring Book").
-// Only checks the CURRENT flow's own catalog (menuItems for ORDER, services for
-// BOOKING) — a coincidental match against the OTHER flow's catalog isn't what
-// the customer is currently selecting from and must not suppress a genuine switch.
+// [FIX-FSI-1] Item-name collision guard: if the CURRENT flow's own catalog
+// (menuItems for ORDER, services for BOOKING — never the other flow's
+// catalog) has a HIGH-confidence findBestMatch() hit for this exact text,
+// it's naming an item/service, not requesting a switch — e.g. a restaurant
+// selling a dish literally called "Reserve Cabernet". Only a HIGH match
+// suppresses the switch; a LOW/typo match still allows it through.
 //
-// [FIX-FSI-2] Capability gate: never offers a switch into a flow the business's
-// vertical doesn't support (e.g. RETAIL/FASHION/DELIVERY have no BOOKING flow).
-const normaliseFsi = normalise;
-
+// [FIX-FSI-2] Capability gate: never offer a switch into a flow the business
+// vertical doesn't actually support (checked via getModeConfig(business).flows
+// — e.g. RETAIL/FASHION/ELECTRONICS/DELIVERY have no BOOKING flow at all).
 function _detectMidFlowSwitchRequest(text, session, business) {
   const flow = (session.currentFlow || '').toUpperCase();
-  // Only ORDER/BOOKING have a meaningful "other flow" to switch into — a false
-  // positive on a niche flow (CAKE_CUSTOMIZATION, WALKIN, ENQUIRY, LEAD_CAPTURE)
-  // is a worse outcome than doing nothing, so those are deliberately left alone.
   if (flow !== 'ORDER' && flow !== 'BOOKING') return null;
 
   const step = (session.step || '').toUpperCase();
   if (MFQ_FREE_TEXT_STEPS.has(step) || MFQ_DATE_TIME_STEPS.has(step)) return null;
+  if (step === 'PAYMENT_PROOF') return null;
 
-  const raw = String(text || '').trim();
-  if (!raw || raw.length < 4 || /^\d+$/.test(raw)) return null;
+  const clean = normaliseFsi(text || '');
+  if (!clean || clean.length < 4 || /^\d+$/.test(clean)) return null;
 
-  const clean = normaliseFsi(raw);
+  // Negation/cancellation/status phrasing must never trigger a switch prompt —
+  // "I don't want to order anymore" must not be read as an order request.
   if (DIRECT_INTENT_EXCLUDE_RE.test(clean)) return null;
 
+  // Check the OTHER flow's regex first — a phrase like "I want to book a
+  // table" mid-ORDER matches BOTH ORDER_DIRECT_RE ("i want") and
+  // BOOKING_DIRECT_RE ("book"), but the customer is clearly asking to book,
+  // not to order. Prioritising same-flow's own regex would misread this as
+  // "still ordering" and never offer the switch.
   let targetFlow = null;
-  if (BOOKING_DIRECT_RE.test(clean)) targetFlow = 'BOOKING';
-  else if (ORDER_DIRECT_RE.test(clean)) targetFlow = 'ORDER';
+  if (flow === 'ORDER') {
+    if (BOOKING_DIRECT_RE.test(clean))    targetFlow = 'BOOKING';
+    else if (ORDER_DIRECT_RE.test(clean)) targetFlow = 'ORDER';
+  } else {
+    if (ORDER_DIRECT_RE.test(clean))        targetFlow = 'ORDER';
+    else if (BOOKING_DIRECT_RE.test(clean)) targetFlow = 'BOOKING';
+  }
   if (!targetFlow || targetFlow === flow) return null;
 
-  // [FIX-FSI-1] Only the CURRENT flow's own catalog can suppress the switch.
-  const catalog = flow === 'ORDER' ? (business?.menuItems || []) : (business?.services || []);
-  if (catalog.length) {
-    const match = findBestMatch(catalog, raw);
-    if (match?.confidenceLevel === 'HIGH') return null;
-  }
-
   // [FIX-FSI-2] Capability gate.
-  const cfg = getModeConfig(business);
-  const supportedFlows = cfg?.flows || [];
+  const supportedFlows = getModeConfig(business)?.flows || [];
   if (!supportedFlows.includes(targetFlow)) return null;
+
+  // [FIX-FSI-1] Item-name collision guard — only the CURRENT flow's own catalog.
+  const catalog = flow === 'ORDER' ? (business?.menuItems || []) : (business?.services || []);
+  const match   = findBestMatch(catalog, text);
+  if (match.confidenceLevel === 'HIGH') return null;
 
   return targetFlow;
 }
@@ -1135,7 +1082,7 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
     .then(({ incrementTenantUsage }) => incrementTenantUsage(tenantId))
     .catch(err => logger.debug('[Webhook] Usage tracking skipped', { err: err.message }));
 
-  // ── 4.5 [FEAT-SPAM-1] Rapid identical-message suppression ──────────────────
+  // ── 4.5 [MERGE-FEAT-SPAM-1] Rapid identical-message suppression ────────────
   // Spec: "Ignore repeated identical messages (e.g. 'hello' sent 4 times) —
   // respond once." Distinct from the wamid dedup above (network-level duplicate
   // delivery of the SAME event, different customer intent) and from
@@ -1747,9 +1694,7 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
   const _isMfqButtonTap = isInteractive && (
     _step14UpperMsg === 'MFQ_RESUME_FLOW' ||
     _step14UpperMsg === 'MFQ_SWITCH_YES'  ||
-    _step14UpperMsg === 'MFQ_SWITCH_NO'   ||
-    _step14UpperMsg === 'FSI_SWITCH_YES'  ||
-    _step14UpperMsg === 'FSI_SWITCH_NO'
+    _step14UpperMsg === 'MFQ_SWITCH_NO'
   );
   if (session.postFlowAck && messageText && !_isMfqButtonTap) {
     const { getCustomerContext } = await import('../core/memory/customerMemory.js');
@@ -2109,7 +2054,7 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
                 }
               : {
                   body:    `To order from *${bizName}*, just type the *name of an item*.\n\nOr tap below to browse:`,
-                  buttons: [{ id: 'VIEW_MENU', title: '📋 View Full Menu' }, { id: 'CANCEL', title: '❌ Cancel' }],
+                  buttons: [{ id: 'SHOW_MENU', title: '📋 View Full Menu' }, { id: 'CANCEL', title: '❌ Cancel' }],
                 },
             QUANTITY: {
               body:    `How many *${itemName || 'units'}* would you like?\n\nJust type a number — for example: *1*, *2*, *three*.`,
@@ -2171,9 +2116,9 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
     const STEP_VALID_BUTTONS = {
       // ── Generic steps (used by restaurant / bakery / retail etc.) ──────────
       // [AUDIT-FIX-VIEWMENU] VIEW_MENU added — restaurant/flows/orderFlow.js and
-      // delivery/flows/index.js both show a "📋 View Menu" button (id VIEW_MENU,
-      // previously mis-mapped to SHOW_MENU) at this step. Without this entry the
-      // stale-button guard above would reject a genuine View Menu tap here.
+      // delivery/flows/index.js both show a "📋 View Menu" button (id VIEW_MENU)
+      // at this step; without this entry the tap failed STEP_VALID_BUTTONS
+      // validation before ever reaching the VIEW_MENU intercept below.
       SELECT_ITEM:          new Set(['SHOW_MENU', 'VIEW_MENU', 'CANCEL', 'CONFIRM']),
       SUGGESTION_CONFIRM:   new Set(['CONFIRM', 'SHOW_MENU', 'CANCEL']),
       QUANTITY:             new Set([]), // expects free text — no valid buttons
@@ -2245,11 +2190,12 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
     // (e.g. restaurant SELECT_ITEM) received "MFQ_SWITCH_YES" as a menu item name,
     // producing "I couldn't find MFQ_SWITCH_YES on our menu." Fix: intercept MFQ
     // button responses HERE, before the passthrough block, so they always reach 15.1a.
-    // [FSI] FSI_SWITCH_YES/NO must be exempted the same way MFQ_SWITCH_YES/NO
-    // are above — otherwise an active flow's step handler (e.g. SELECT_ITEM)
-    // would receive "FSI_SWITCH_YES" as a menu item name instead of reaching
-    // the FSI handler below.
-    if (isInteractive && (upperMsg === 'MFQ_SWITCH_YES' || upperMsg === 'MFQ_SWITCH_NO' || upperMsg === 'MFQ_RESUME_FLOW' || upperMsg === 'FSI_SWITCH_YES' || upperMsg === 'FSI_SWITCH_NO')) {
+    // [FSI] FSI_SWITCH_YES/NO need the exact same exemption for the exact same
+    // reason — otherwise advance() would receive "FSI_SWITCH_YES" as flow input.
+    if (
+      (isInteractive && (upperMsg === 'MFQ_SWITCH_YES' || upperMsg === 'MFQ_SWITCH_NO' || upperMsg === 'MFQ_RESUME_FLOW')) ||
+      (isInteractive && (upperMsg === 'FSI_SWITCH_YES' || upperMsg === 'FSI_SWITCH_NO'))
+    ) {
       // Falls through to the 15.1a / 15.1b / FSI handlers below — do NOT call advance()
     } else
     // [FIX-BUG9] Flow-internal button IDs — bypass intent detection entirely
@@ -2287,10 +2233,30 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
     // The Booking-cancel DB write that used to live inline here has been moved into
     // cancelFlow() itself (core/conversations/flowEngine.js) so every caller gets it,
     // not just this one call site — see [FIX-CANCEL-3].
+    // [MERGE-NEGATION-2] The exact-match check below only catches literal button IDs
+    // or a bare typed "cancel". A customer typing "never mind, forget it" or "I don't
+    // want this anymore" mid-flow used to fall straight through to advance(), which
+    // doesn't recognise that phrasing either (each flow module's own cancel check is
+    // similarly exact-match-only — see e.g. bookingFlow.js) and just re-prompted the
+    // current step. Gated the same way _detectMidFlowSupportRequest is: typed text
+    // only (a button tap's ID should never be reinterpreted as free-form text), and
+    // never on genuinely free-text/date-time/payment-proof steps where a cancellation
+    // word could appear incidentally as part of a real answer.
+    const _cancelStep = (session.step || '').toUpperCase();
     if (
-      upperMsg === 'CANCEL' || upperMsg === 'CANCEL_BOOKING' || upperMsg === 'CANCEL_ORDER' ||
-      (!isInteractive && _detectMidFlowCancellationRequest(messageText, session))
+      !isInteractive &&
+      !MFQ_FREE_TEXT_STEPS.has(_cancelStep) &&
+      !MFQ_DATE_TIME_STEPS.has(_cancelStep) &&
+      _cancelStep !== 'PAYMENT_PROOF' &&
+      messageText.trim().length >= 3 &&
+      analyzeMessage(messageText).cancelled
     ) {
+      const { cancelFlow } = await import('../core/conversations/flowEngine.js');
+      const reply = await cancelFlow(session, business);
+      await dispatchMessage(from, reply, tenantDoc);
+      return;
+    }
+    if (upperMsg === 'CANCEL' || upperMsg === 'CANCEL_BOOKING' || upperMsg === 'CANCEL_ORDER') {
       const { cancelFlow } = await import('../core/conversations/flowEngine.js');
       const reply = await cancelFlow(session, business);
       await dispatchMessage(from, reply, tenantDoc);
@@ -2556,6 +2522,90 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
       }
     }
 
+    // ── [FSI] Handle FSI switch-prompt button responses ───────────────────
+    // YES = start the requested OTHER flow fresh via startFlow() (same entry
+    // point START_ORDER/START_BOOKING use). NO = restore the original flow's
+    // saved context and re-send its current step prompt, mirroring MFQ_SWITCH_NO
+    // above exactly, just with the _fsi* session keys instead of _mfq*.
+    //
+    // SESSION KEYS USED (set at intercept time, see the FSI trigger below):
+    //   session.data._fsiTargetFlow — the flow the customer asked to switch to
+    //   session.data._fsiResumeFlow — original flow name to restore on NO
+    //   session.data._fsiResumeStep — original step to restore on NO
+    //   session.data._fsiResumeData — original session.data snapshot to restore on NO
+    if (isInteractive) {
+      if (upperMsg === 'FSI_SWITCH_YES') {
+        const _fsiTargetFlow = session.data?._fsiTargetFlow || null;
+
+        if (!_fsiTargetFlow) {
+          // Defensive fallback — should never happen since this button is only
+          // ever shown right after _fsiTargetFlow is stored at intercept time.
+          const cfg = getModeConfig(business);
+          await dispatchMessage(from, {
+            type:    'buttons',
+            body:    '👇 What would you like to do?',
+            buttons: cfg.ui?.welcomeButtons || [],
+          }, tenantDoc);
+          return;
+        }
+
+        // Clear FSI bookkeeping so startFlow() (which resets session.data itself
+        // anyway) never sees stale switch-intercept keys.
+        const cleanData = { ...(session.data || {}) };
+        delete cleanData._fsiTargetFlow;
+        delete cleanData._fsiResumeFlow;
+        delete cleanData._fsiResumeStep;
+        delete cleanData._fsiResumeData;
+        await updateSession(from, tenantId, { data: cleanData });
+
+        const freshSess  = await getSession(from, tenantId) || session;
+        const startReply = await startFlow({
+          flowName: _fsiTargetFlow, session: freshSess, business, tenant: tenantDoc,
+        });
+        if (startReply) {
+          const sPayloads = Array.isArray(startReply) ? startReply : [startReply];
+          for (const sp of sPayloads) await dispatchMessage(from, sp, tenantDoc);
+        }
+        return;
+      }
+
+      if (upperMsg === 'FSI_SWITCH_NO') {
+        // Customer wants to continue their original flow. Restore session and
+        // re-send the current step, via the same saved-resume-context ->
+        // advance('') pattern MFQ_SWITCH_NO already uses above.
+        const _fsiResumeFlow = session.data?._fsiResumeFlow || session.currentFlow;
+        const resumeStep     = session.data?._fsiResumeStep || session.step;
+        const resumeData     = session.data?._fsiResumeData || {};
+
+        await updateSession(from, tenantId, {
+          currentFlow: _fsiResumeFlow,
+          step:        resumeStep,
+          data:        resumeData,
+        });
+
+        const freshSess   = await getSession(from, tenantId) || session;
+        const resumeReply = await advance({
+          session:       { ...freshSess, currentFlow: _fsiResumeFlow, step: resumeStep, data: resumeData },
+          message:       '',   // empty = re-send the step prompt
+          business,
+          tenant:        tenantDoc,
+          isInteractive: false,
+        });
+
+        if (resumeReply) {
+          const rPayloads = Array.isArray(resumeReply) ? resumeReply : [resumeReply];
+          for (const rp of rPayloads) await dispatchMessage(from, rp, tenantDoc);
+        } else {
+          const stepLabel = _mfqStepLabel(_fsiResumeFlow, resumeStep);
+          await dispatchMessage(from, {
+            type: 'text',
+            body: `👍 No problem! Let's continue — ${stepLabel}`,
+          }, tenantDoc);
+        }
+        return;
+      }
+    }
+
     // ── 15.1b: Handle MFQ_RESUME_FLOW button (re-enter the flow after question answered)
     if (isInteractive && upperMsg === 'MFQ_RESUME_FLOW') {
       const resumeFlow = session.postFlowData?.resumeFlow || null;
@@ -2606,6 +2656,20 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
     // Only fires for non-interactive (typed) text with no active flow passthrough.
     // Numeric inputs, pure emoji, and very short inputs are excluded — they are
     // almost certainly quantity/date answers, not questions.
+    //
+    // [FEAT-INSTANT-QA-1] Previously this asked "pause or continue?" and made the
+    // customer tap "❓ Answer My Question" before actually getting an answer — an
+    // extra round-trip for something they already typed out in full. Per the
+    // product decision that questions must be handled "at any time... even
+    // without tapping the button" (see PROJECT_POLICIES.md), this now answers
+    // immediately (same data-backed-lookup-then-AI-fallback logic MFQ_SWITCH_YES
+    // already used) and reuses the SAME resume mechanism (postFlowAck='MFQ_RESUME'
+    // + the MFQ_RESUME_FLOW button, also honoured by a plain typed follow-up per
+    // postFlowHandler.js's MFQ_RESUME case) so the flow-resume guarantee is
+    // unchanged — only the extra confirmation tap is removed.
+    // MFQ_SWITCH_YES/NO and the "pause or continue?" prompt are left in place
+    // (dead-but-harmless) as a fallback for any in-flight session that already
+    // has a pending question stored from before this change.
     if (
       !isInteractive &&
       messageText.length >= 4 &&
@@ -2615,107 +2679,79 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
     ) {
       const _mfqIsQuestionLike = _detectMidFlowQuestion(messageText, session);
       if (_mfqIsQuestionLike) {
-        // Describe the current step to the customer in plain language
-        const stepLabel    = _mfqStepLabel(session.currentFlow, session.step);
-        const questionFlow = session.currentFlow;
-        const questionStep = session.step;
-        const questionData = { ...(session.data || {}) };
+        const resumeFlow = session.currentFlow;
+        const resumeStep = session.step;
+        const resumeData = { ...(session.data || {}) };
+        delete resumeData._mfqPendingQuestion;
+        delete resumeData._mfqResumeFlow;
+        delete resumeData._mfqResumeStep;
+        delete resumeData._mfqResumeData;
 
-        // Sanitise internal MFQ keys from the snapshot so they don't persist recursively
-        delete questionData._mfqPendingQuestion;
-        delete questionData._mfqResumeFlow;
-        delete questionData._mfqResumeStep;
-        delete questionData._mfqResumeData;
-
-        // Store the pending question + resume context in session.data
+        // Clear the flow and stash resume context via the same postFlowAck='MFQ_RESUME'
+        // mechanism MFQ_SWITCH_YES already used — postFlowHandler.js's MFQ_RESUME case
+        // (and the MFQ_RESUME_FLOW button it offers) already know how to restore this.
         await updateSession(from, tenantId, {
-          // Keep the flow active so MFQ_SWITCH_NO can restore it correctly
-          data: {
-            ...questionData,
-            _mfqPendingQuestion: messageText,
-            _mfqResumeFlow:      questionFlow,
-            _mfqResumeStep:      questionStep,
-            _mfqResumeData:      questionData,
-          },
+          currentFlow:  null,
+          step:         null,
+          postFlowAck:  'MFQ_RESUME',
+          postFlowData: { resumeFlow, resumeStep, resumeData },
+          data:         {},
         });
 
-        await dispatchMessage(from, {
-          type:    'buttons',
-          body:
-            `💡 *Looks like you have a question!*\n\n` +
-            `You're currently ${stepLabel}.\n\n` +
-            `Would you like to *pause and get your question answered*, or *continue* where you left off?`,
-          buttons: [
-            { id: 'MFQ_SWITCH_YES', title: '❓ Answer My Question' },
-            { id: 'MFQ_SWITCH_NO',  title: '↩️ Continue'          },
-          ],
-        }, tenantDoc);
-        return;
-      }
-    }
+        // [AUDIT-FIX-12] Same read-only, data-backed whitelist MFQ_SWITCH_YES used —
+        // a genuinely answerable question like "do I have an active order?" gets
+        // live data instead of a generic AI Q&A line. Anything else falls back to
+        // the general AI reply.
+        const DATA_BACKED_MFQ_ACTIONS = new Set(['TRACK_ORDER']);
+        const flowlessSession = { ...session, currentFlow: null, step: null, data: {} };
 
-    // ── 15.1d: Handle FSI switch-prompt button responses ────────────────────
-    if (isInteractive) {
-      if (upperMsg === 'FSI_SWITCH_YES') {
-        // Customer confirmed — abandon the current flow and start the requested one fresh.
-        const _fsiTargetFlow = session.data?._fsiTargetFlow || null;
-        await updateSession(from, tenantId, {
-          currentFlow: null, step: null, data: {}, postFlowAck: null, postFlowData: null,
-        });
-        if (_fsiTargetFlow) {
-          const freshSessFsi = await getSession(from, tenantId) || session;
-          const switchReply = await startFlow({
-            flowName: _fsiTargetFlow, session: freshSessFsi, business, tenant: tenantDoc,
+        let dataReply = null;
+        try {
+          const pqResult = await detectIntent({
+            message: messageText, isInteractive: false, session: flowlessSession, business,
           });
-          if (switchReply) {
-            const switchPayloads = Array.isArray(switchReply) ? switchReply : [switchReply];
-            for (const payload of switchPayloads) await dispatchMessage(from, payload, tenantDoc);
-            return;
+          if (DATA_BACKED_MFQ_ACTIONS.has(pqResult.action) && pqResult.confidence !== 'LOW') {
+            dataReply = await route({
+              action: pqResult.action, intent: pqResult.intent, session: flowlessSession,
+              message: messageText, business, tenant: tenantDoc, isInteractive: false,
+              suggestion: pqResult.suggestion,
+            }).catch(() => null);
           }
+        } catch (err) {
+          logger.warn('[MFQ] instant-answer data routing failed', { err: err.message });
         }
-        const cfgFsiYes = getModeConfig(business);
+
+        const stepLabel      = _mfqStepLabel(resumeFlow, resumeStep);
+        const resumeButtons  = [
+          { id: 'MFQ_RESUME_FLOW', title: '↩️ Continue'  },
+          { id: 'QUESTION',        title: '❓ Ask Another' },
+          { id: 'SHOW_MENU',       title: '🔄 Main Menu'  },
+        ];
+        const resumeHint = `_When you're ready, tap below to continue — you were ${stepLabel}._`;
+
+        if (dataReply) {
+          const dataPayloads = Array.isArray(dataReply) ? dataReply : [dataReply];
+          for (const dp of dataPayloads) await dispatchMessage(from, dp, tenantDoc);
+          await dispatchMessage(from, { type: 'buttons', body: resumeHint, buttons: resumeButtons }, tenantDoc);
+          return;
+        }
+
+        const { getAIReply } = await import('../core/ai/providers/aiRouter.js');
+        const aiText = await getAIReply({ customerMessage: messageText, business, session, intent: 'QUESTION' }).catch(() => null);
+
         await dispatchMessage(from, {
           type:    'buttons',
-          body:    '👇 What would you like to do?',
-          buttons: cfgFsiYes.ui?.welcomeButtons || [],
+          body:    (aiText || 'Let me check that for you! 😊') + `\n\n${resumeHint}`,
+          buttons: resumeButtons,
         }, tenantDoc);
-        return;
-      }
-
-      if (upperMsg === 'FSI_SWITCH_NO') {
-        // Customer wants to continue their original flow — restore and re-send the current step.
-        const _fsiResumeFlow = session.data?._fsiResumeFlow || session.currentFlow;
-        const _fsiResumeStep = session.data?._fsiResumeStep || session.step;
-        const _fsiResumeData = session.data?._fsiResumeData || {};
-
-        await updateSession(from, tenantId, {
-          currentFlow: _fsiResumeFlow, step: _fsiResumeStep, data: _fsiResumeData,
-        });
-
-        const freshSessFsiNo = await getSession(from, tenantId) || session;
-        const fsiResumeReply = await advance({
-          session:       { ...freshSessFsiNo, currentFlow: _fsiResumeFlow, step: _fsiResumeStep, data: _fsiResumeData },
-          message:       '',
-          business, tenant: tenantDoc, isInteractive: false,
-        });
-        if (fsiResumeReply) {
-          const fsiPayloads = Array.isArray(fsiResumeReply) ? fsiResumeReply : [fsiResumeReply];
-          for (const payload of fsiPayloads) await dispatchMessage(from, payload, tenantDoc);
-        } else {
-          const stepLabelFsi = _mfqStepLabel(_fsiResumeFlow, _fsiResumeStep);
-          await dispatchMessage(from, {
-            type: 'text',
-            body: `👍 No problem! Let's continue — ${stepLabelFsi}`,
-          }, tenantDoc);
-        }
         return;
       }
     }
 
-    // ── 15.1e: Detect a mid-flow request to switch to the OTHER flow ────────
-    // Only fires for non-interactive (typed) text, mirroring the 15.1c question
-    // intercept's own guards — numeric/very-short input is quantity/date noise,
-    // not a switch request.
+    // ── [FSI] Detect mid-flow order/booking switch request ────────────────
+    // Runs AFTER the MFQ question intercept above (questions take priority —
+    // "do you deliver?" mid-booking should get the Q&A pause, not a switch
+    // prompt) and BEFORE the final advance() fallback below.
     if (
       !isInteractive &&
       messageText.length >= 4 &&
@@ -2725,43 +2761,44 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
     ) {
       const _fsiTargetFlow = _detectMidFlowSwitchRequest(messageText, session, business);
       if (_fsiTargetFlow) {
-        const stepLabelFsi = _mfqStepLabel(session.currentFlow, session.step);
-        const fsiSwitchFlow = session.currentFlow;
-        const fsiSwitchStep = session.step;
-        const fsiSwitchData = { ...(session.data || {}) };
+        const cfg = getModeConfig(business);
+        // [AUDIT-FIX-9] Mode-aware wording — source the button label from the
+        // business's own welcomeButtons config instead of hardcoding
+        // restaurant-only strings. welcomeButtons uses id 'ORDER' for the order
+        // button and id 'BOOK' for the booking button (see modules/*/configs
+        // index.js — never 'BOOKING'), consistently across every vertical.
+        const targetBtnId   = _fsiTargetFlow === 'BOOKING' ? 'BOOK' : 'ORDER';
+        const targetBtn      = (cfg.ui?.welcomeButtons || []).find(b => b.id === targetBtnId);
+        const targetLabel    = targetBtn?.title || _fsiTargetFlow;
+
+        const resumeFlow = session.currentFlow;
+        const resumeStep = session.step;
+        const resumeData = { ...(session.data || {}) };
+        delete resumeData._fsiTargetFlow;
+        delete resumeData._fsiResumeFlow;
+        delete resumeData._fsiResumeStep;
+        delete resumeData._fsiResumeData;
 
         await updateSession(from, tenantId, {
+          // Keep the flow active so FSI_SWITCH_NO can restore it correctly
           data: {
-            ...fsiSwitchData,
-            _fsiTargetFlow,
-            _fsiResumeFlow: fsiSwitchFlow,
-            _fsiResumeStep: fsiSwitchStep,
-            _fsiResumeData: fsiSwitchData,
+            ...resumeData,
+            _fsiTargetFlow: _fsiTargetFlow,
+            _fsiResumeFlow: resumeFlow,
+            _fsiResumeStep: resumeStep,
+            _fsiResumeData: resumeData,
           },
         });
-
-        // [AUDIT-FIX-9] Label must be mode-aware — a literal restaurant-only
-        // wording here read strangely once the [FIX-FSI-2] capability gate let
-        // non-restaurant verticals (salon, bakery, cosmetics, etc.) reach this
-        // branch too. Source it from the business's own mode config welcomeButtons
-        // instead of a hardcoded string.
-        const cfgFsi         = getModeConfig(business);
-        const targetBtnId   = _fsiTargetFlow === 'BOOKING' ? 'BOOK' : 'ORDER';
-        const targetBtn       = (cfgFsi.ui?.welcomeButtons || []).find(b => b.id === targetBtnId);
-        const targetLabel     = targetBtn?.title || (_fsiTargetFlow === 'BOOKING' ? '📅 Switch flow' : '🛒 Switch flow');
 
         await dispatchMessage(from, {
           type:    'buttons',
           body:
-            `👋 Looks like you'd like to switch things up — you're currently ${stepLabelFsi}.\n\n` +
-            `Would you like to *${targetLabel}* instead, or *continue* what you were doing?`,
+            `👋 Looks like you want to switch things up!\n\n` +
+            `You're currently ${_mfqStepLabel(resumeFlow, resumeStep)}. ` +
+            `Want to switch, or continue where you left off?`,
           buttons: [
-            // [AUDIT-FIX-FSI-BTNTITLE] WhatsApp interactive button titles are capped
-            // at 20 chars — an untruncated targetLabel (sourced from the business's
-            // own welcomeButtons config) could exceed that and get the whole
-            // interactive message rejected by Meta's API.
-            { id: 'FSI_SWITCH_YES', title: `✅ ${targetLabel}`.slice(0, 20) },
-            { id: 'FSI_SWITCH_NO',  title: '↩️ Continue'      },
+            { id: 'FSI_SWITCH_YES', title: targetLabel },
+            { id: 'FSI_SWITCH_NO',  title: '↩️ Continue' },
           ],
         }, tenantDoc);
         return;
@@ -2805,7 +2842,7 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
     session = { ...session, customerName: extractedName };
   }
 
-  const { action, intent, confidence, suggestion, clarification, businessInformationRequested, secondaryIntents, emotion: aiEmotion, hesitant } = await detectIntent({
+  const { action, intent, confidence, suggestion, aiSignals, hesitant } = await detectIntent({
     message: messageText, isInteractive, session, business,
   });
 
@@ -2829,81 +2866,84 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
   // back to the moduleRouter switch cases. moduleRouter now handles ENQUIRY/QUESTION with
   // a generic fallback prompt for modes that have no dedicated flow registered.
 
-  // [FEAT-EMOTION-WIRE-1] emotionEngine.js was fully built and unit-tested
-  // (src/tests/emotionEngine.test.mjs) but never actually invoked anywhere in
-  // the live pipeline — detectPreFlowEmotion()/applyEmotionTone() existed only
-  // in isolation, with zero effect on any customer-facing reply. Wiring it in
-  // here per the spec's "Emotional Understanding" section: deterministic regex
-  // detection runs first (zero cost, works on every message); the AI's own
-  // `emotion` field — only present when the AI-classify path already ran and
-  // paid that cost, see intentEngine.js step 7 — is used ONLY as a fallback
-  // when the regex found nothing (NEUTRAL), never overriding a concrete regex
-  // signal. Computed BEFORE route() (rather than after) specifically so
-  // urgency can influence the AI reply call inside route() itself — see
-  // [FEAT-URGENCY-3]. Emotion/urgency change tone and length only, per spec —
-  // never routing.
+  // [MERGE-FEAT-EMOTION-WIRE-1] emotionEngine.js is fully built and unit-tested
+  // (src/tests/emotionEngine.test.mjs) but was never actually invoked anywhere in
+  // the live pipeline — detectPreFlowEmotion()/applyEmotionTone() existed only in
+  // isolation, with zero effect on any customer-facing reply. Wired in here per
+  // spec's "Emotional Understanding": deterministic regex detection runs first
+  // (zero cost, every message); aiSignals.emotion (already captured by
+  // classifyIntentStructured but likewise never consumed) is used ONLY as a
+  // fallback when the regex found nothing (NEUTRAL), never overriding a concrete
+  // regex signal. Computed BEFORE route() specifically so urgency can influence
+  // the AI reply call inside route() itself (see [MERGE-FEAT-URGENCY-3]).
   let finalEmotion = 'NEUTRAL';
   try {
     const { detectPreFlowEmotion } = await import('../core/sentiment/emotionEngine.js');
     const preFlow = detectPreFlowEmotion(messageText);
     finalEmotion = preFlow.emotion;
-    if (finalEmotion === 'NEUTRAL' && aiEmotion) {
-      finalEmotion = AI_EMOTION_TO_TONE[aiEmotion] || 'NEUTRAL';
+    if (finalEmotion === 'NEUTRAL' && aiSignals?.emotion) {
+      finalEmotion = AI_EMOTION_TO_TONE[aiSignals.emotion] || 'NEUTRAL';
     }
   } catch (err) {
     logger.debug('[Webhook] emotion detection skipped', { err: err.message });
   }
 
-  let reply = await route({
+  const reply = await route({
     action, intent, session,
     message: messageText, business,
-    tenant: tenantDoc, isInteractive, suggestion, clarification, hesitant,
+    tenant: tenantDoc, isInteractive, suggestion, hesitant,
     urgent: finalEmotion === 'URGENT',
   });
 
-  // [FEAT-STRUCTURED-AI-8] Multi-intent secondary info — spec Part A "Multi-Intent
-  // Detection" (e.g. "I want two burgers and can you tell me if you deliver?" should
-  // start the order AND answer the delivery question, not drop one). Only ever
-  // populated by the AI-classify high-confidence path (see intentEngine.js step 7);
-  // answered here deterministically from known business fields — never a second AI
-  // call, never an invented fact (see groqProvider.js#formatBusinessInfoAnswer). A
-  // no-op whenever there's nothing to append, so every other action is unaffected.
-  if (reply && businessInformationRequested?.length) {
-    try {
-      const { formatBusinessInfoAnswer } = await import('../core/ai/providers/groqProvider.js');
-      const infoAnswer = formatBusinessInfoAnswer(business, businessInformationRequested);
-      if (infoAnswer) reply = appendBusinessInfoAnswer(reply, infoAnswer);
-    } catch (err) {
-      logger.debug('[Webhook] multi-intent info answer skipped', { err: err.message });
+  let payloads = reply ? (Array.isArray(reply) ? reply : [reply]) : [];
+
+  // [PHASE-3] Multi-intent: "I want two burgers and can you tell me if you deliver?"
+  // Primary intent (ORDER) already started/continued the flow above via route(). If the
+  // AI also flagged a secondary, information-seeking intent (e.g. a delivery question)
+  // alongside it, answer that too instead of silently dropping it — rather than forcing
+  // a second round-trip where the customer has to re-ask. Only fires when:
+  //   - the primary action actually came from the high-confidence AI step (source: 'ai'),
+  //   - the primary action itself is NOT already an informational one (no duplicate answers),
+  //   - a reply was actually produced (the flow genuinely started/continued).
+  if (payloads.length && confidence === 'AI' && aiSignals?.secondaryIntents?.length && !isInformationalIntent(intent)) {
+    const infoIntent = aiSignals.secondaryIntents.find(isInformationalIntent);
+    if (infoIntent) {
+      try {
+        const { getAIReply } = await import('../core/ai/providers/aiRouter.js');
+        const infoText = await getAIReply({ customerMessage: messageText, business, session, intent: infoIntent });
+        if (infoText) payloads = [...payloads, { type: 'text', body: infoText }];
+      } catch (err) {
+        logger.warn('[Webhook] Multi-intent secondary info reply failed', { err: err.message });
+      }
+    } else {
+      // [MERGE-FEAT-STRUCTURED-AI-1] The secondary intent isn't an informational
+      // question (already handled above) — it's a genuine second WORKFLOW request
+      // (e.g. "...and can you also book me a table later?"). The FSM only supports
+      // one active flow per session (redesigning that is out of scope), so rather
+      // than silently drop it, acknowledge it was heard and will be picked up next.
+      const secondaryNote = describeSecondaryIntents(aiSignals.secondaryIntents);
+      if (secondaryNote) payloads = appendToFirstTextPayload(payloads, secondaryNote);
     }
   }
 
-  // [FEAT-STRUCTURED-AI-10] secondaryIntents was previously returned by
-  // detectIntent() (AI high-confidence path) but never consumed anywhere —
-  // a second, genuine workflow request ("...and can you also book me a table
-  // later?") was silently dropped. The FSM only supports one active flow per
-  // session (redesigning that is out of scope), so this acknowledges the
-  // request in the same reply rather than pretending it wasn't heard.
-  if (reply && secondaryIntents?.length) {
-    const secondaryNote = describeSecondaryIntents(secondaryIntents);
-    if (secondaryNote) reply = appendBusinessInfoAnswer(reply, secondaryNote);
-  }
-
-  // Apply the tone prefix using the SAME finalEmotion computed above (before
-  // route()) — no need to re-detect. NEUTRAL/URGENT intentionally have no
-  // prefix (see emotionEngine.js TONE_PREFIX) so this is a no-op for those.
-  if (reply && finalEmotion !== 'NEUTRAL') {
+  // [MERGE-FEAT-EMOTION-WIRE-2] Apply the tone prefix using the SAME finalEmotion
+  // computed above (before route()) — no need to re-detect. applyEmotionTone()
+  // already handles string | {body} | array-of-those internally, including
+  // finding the first text-bearing payload, so `payloads` (always an array here)
+  // can be passed straight through. NEUTRAL/URGENT intentionally have no prefix
+  // (see emotionEngine.js TONE_PREFIX) so this is a no-op for those. Emotion/
+  // urgency change tone and length only — never routing.
+  if (payloads.length && finalEmotion !== 'NEUTRAL') {
     try {
       const { applyEmotionTone } = await import('../core/sentiment/emotionEngine.js');
-      reply = applyEmotionTone(reply, finalEmotion);
+      payloads = applyEmotionTone(payloads, finalEmotion);
     } catch (err) {
       logger.debug('[Webhook] emotion tone skipped', { err: err.message });
     }
   }
 
-  if (reply) {
+  if (payloads.length) {
     // reply can be an array (e.g. [imagePayload, buttonsPayload]) — dispatch each in order
-    const payloads = Array.isArray(reply) ? reply : [reply];
     for (const payload of payloads) {
       await dispatchMessage(from, payload, tenantDoc);
     }
@@ -3026,33 +3066,11 @@ export async function receiveWebhook(req, res) {
             // [META-CREDS] Per-tenant webhook HMAC verification.
             // Resolve the app secret: tenant-specific takes priority over global env fallback.
             // This runs after tenant resolution so we know which secret to use.
-            const sigCheck = _verifyTenantWebhookSignature(req, tenant);
-            if (!sigCheck.ok) {
-              // [AUDIT-FIX-SIG-DIAG] Log everything needed to tell "wrong/stale secret"
-              // apart from "rawBody didn't reach us intact" apart from "genuinely
-              // spoofed" — without ever logging the secret or the full signature.
+            if (!_verifyTenantWebhookSignature(req, tenant)) {
               logger.warn('[Webhook] ✗ Signature mismatch for tenant — message dropped', {
                 tenantId: String(tenant._id), phoneNumberId, ip: req.ip,
-                wamid: msg?.id, msgType: msg?.type,
-                ...sigCheck,
               });
-
-              // [AUDIT-FIX-SIG-SOFTFAIL] Opt-in, OFF by default. If mismatches are
-              // silently costing real customer messages while the root cause (secret
-              // rotation, proxy re-encoding, etc.) is being tracked down, set
-              // WEBHOOK_SIG_SOFT_FAIL=true to process anyway for tenants already
-              // resolved as ACTIVE in our own DB (the phoneNumberId lookup above
-              // already required a match — this does NOT bypass tenant resolution,
-              // only the extra HMAC check). This trades some spoofing protection for
-              // availability, so it must be a deliberate, temporary choice — not a
-              // silent default — and every bypass is logged loudly for audit.
-              if (process.env.WEBHOOK_SIG_SOFT_FAIL === 'true') {
-                logger.warn('[Webhook] ⚠ SOFT-FAIL MODE — processing despite signature mismatch', {
-                  tenantId: String(tenant._id), phoneNumberId, wamid: msg?.id,
-                });
-              } else {
-                continue; // Skip this message — possible spoofed request (default behavior)
-              }
+              continue; // Skip this message — possible spoofed request
             }
 
             await handleIncomingMessage({

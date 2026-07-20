@@ -144,9 +144,9 @@ export const SALON_CONFIG = {
   ui: {
     // Meta caps button messages at 3 buttons. ORDER is accessible via QUESTION or by typing.
     welcomeButtons: [
-      { id: 'BOOK',     title: '📅 Book Appointment'   },
-      { id: 'WALKIN',   title: '🚶 Join Walk-In Queue'  },
-      { id: 'QUESTION', title: '❓ Ask a Question'      },
+      { id: 'BOOK',     title: '📅 Book Appointment',   description: 'Schedule your visit'              },
+      { id: 'WALKIN',   title: '🚶 Join Walk-In Queue',  description: 'Get seen without an appointment'  },
+      { id: 'QUESTION', title: '❓ Ask a Question',      description: 'Get help from our team'           },
     ],
     fallbackButtons: [
       { id: 'BOOK',     title: '📅 Book'      },
@@ -178,9 +178,9 @@ export const BARBERSHOP_CONFIG = {
   },
   ui: {
     welcomeButtons: [
-      { id: 'BOOK',     title: '💈 Book Appointment'   },
-      { id: 'WALKIN',   title: '🚶 Join Walk-In Queue'  },
-      { id: 'QUESTION', title: '❓ Ask a Question'      },
+      { id: 'BOOK',     title: '💈 Book Appointment',   description: 'Schedule your visit'              },
+      { id: 'WALKIN',   title: '🚶 Join Walk-In Queue',  description: 'Get seen without an appointment'  },
+      { id: 'QUESTION', title: '❓ Ask a Question',      description: 'Get help from our team'           },
     ],
     fallbackButtons: [
       { id: 'BOOK',     title: '💈 Book'     },
@@ -516,6 +516,7 @@ export async function handleSalonWalkIn({ session, message, business, tenant, is
       const lc = await completeFlow(session, 'WALKIN', business, tenant);
       if (lc) return lc;
 
+      const nameStr = session.customerName ? `, *${session.customerName}*` : '';
       const shortRef = savedBooking?.shortId ? `\n🔖 *Ref:* #${savedBooking.shortId}` : '';
       const bizName  = business?.businessName || business?.name || (isBarbershop ? 'the barbershop' : 'the salon');
 
@@ -528,7 +529,7 @@ export async function handleSalonWalkIn({ session, message, business, tenant, is
             ? `👤 *${isBarbershop ? 'Barber' : 'Stylist'}:* ${data.stylist}\n`
             : '') +
           shortRef +
-          `\n\nPlease head to *${bizName}* — our team will message you to confirm your spot.\n\nSee you soon! 🙏`,
+          `\n\nPlease head to *${bizName}*${nameStr} — our team will message you to confirm your spot.\n\nSee you soon! 🙏`,
         buttons: [
           { id: 'BOOK',      title: '📅 Book Next Time'  },
           { id: 'QUESTION',  title: '❓ Ask a Question'   },

@@ -9,7 +9,9 @@
  *  - Request logging on auth failure for security auditing.
  */
 import crypto from 'crypto';
-import Tenant  from '../models/Tenant.js';
+import Tenant     from '../models/Tenant.js';
+import AdminUser  from '../models/AdminUser.js';
+import { verifySessionToken } from '../services/adminAuthService.js';
 import logger  from '../config/logger.js';
 
 /** Constant-time string comparison — prevents timing side-channel attacks.
@@ -36,13 +38,68 @@ function safeCompare(a, b) {
 }
 
 /**
- * requireApiKey — accepts either:
- *   a) SUPER_ADMIN_API_KEY (master key)
- *   b) A valid tenant API key (looked up by SHA-256 hash in Tenant collection)
+ * tryBearerAuth — checks for an `Authorization: Bearer <token>` header and,
+ * if present and valid, sets req.adminUser / req.tenantId / req.isSuperAdmin
+ * and returns true. Returns false (without touching res) for anything else —
+ * missing header, malformed token, expired/tampered signature, or an
+ * AdminUser that no longer exists / has been DISABLED since the token was
+ * issued — so the caller (requireApiKey) can fall through to the legacy
+ * x-api-key path rather than immediately failing the request.
  *
- * Sets req.tenant when a tenant key is used so downstream routes can use it.
+ * [FEATURE-MULTIADMIN-1] This is the missing half of the individual-admin-
+ * login feature: adminAuthService.js (session token sign/verify) and
+ * adminUserController.js/adminUserRoutes.js (login, invite, staff CRUD) were
+ * already fully built, but nothing ever actually verified the Bearer token
+ * on incoming requests — every route gated behind requireApiKey that expects
+ * req.adminUser (me(), requireRole()) would have silently seen req.adminUser
+ * as undefined forever.
+ */
+async function tryBearerAuth(req) {
+  const header = req.headers['authorization'];
+  if (!header || !header.startsWith('Bearer ')) return false;
+
+  const token   = header.slice('Bearer '.length).trim();
+  const payload = verifySessionToken(token);
+  if (!payload) return false;
+
+  try {
+    const admin = await AdminUser.findById(payload.sub).select('name role status tenantId').lean();
+    if (!admin || admin.status !== 'ACTIVE') return false;
+    // Defensive: the token embeds tenantId at issue time, but re-derive from
+    // the live AdminUser doc as the source of truth in case of a future
+    // cross-tenant transfer feature — never trust the token's copy alone for
+    // anything security-relevant beyond who this token was issued to.
+    if (String(admin.tenantId) !== String(payload.tenantId)) return false;
+
+    req.adminUser   = { id: String(admin._id), name: admin.name, role: admin.role };
+    req.tenantId    = String(admin.tenantId);
+    req.isSuperAdmin = false;
+    return true;
+  } catch (err) {
+    logger.error('[Auth] Bearer AdminUser lookup failed', { err: err.message });
+    return false;
+  }
+}
+
+/**
+ * requireApiKey — accepts either:
+ *   a) An `Authorization: Bearer <session token>` for an individual AdminUser
+ *      login (see services/adminAuthService.js, controllers/adminUserController.js)
+ *   b) SUPER_ADMIN_API_KEY (master key)
+ *   c) A valid tenant API key (looked up by SHA-256 hash in Tenant collection)
+ *
+ * Sets req.tenant when a tenant key is used, or req.adminUser when a Bearer
+ * session is used, so downstream routes can tell which kind of caller this is.
  */
 export async function requireApiKey(req, res, next) {
+  // [FEATURE-MULTIADMIN-1] Bearer checked first — an AdminUser session is the
+  // more specific, individually-revocable identity. Falls through to the
+  // legacy x-api-key path below on ANY failure (missing header, expired
+  // token, disabled account, etc.) rather than rejecting immediately, so a
+  // request bearing a stale Bearer token but a still-valid x-api-key isn't
+  // needlessly blocked.
+  if (await tryBearerAuth(req)) return next();
+
   const key = req.headers['x-api-key'];
   if (!key) {
     logger.warn('[Auth] Missing x-api-key', { path: req.path, ip: req.ip });
@@ -83,6 +140,31 @@ export async function requireApiKey(req, res, next) {
 
   logger.warn('[Auth] Invalid API key attempt', { path: req.path, ip: req.ip });
   return res.status(401).json({ error: 'Unauthorized' });
+}
+
+/**
+ * requireRole(...allowedRoles) — gates a route to specific AdminUser roles.
+ *
+ * [FEATURE-MULTIADMIN-1] Per adminUserRoutes.js's own documented policy: a
+ * legacy x-api-key caller (req.adminUser is unset — no individual identity)
+ * is treated as OWNER-equivalent for backward compatibility and always
+ * passes, since possession of the tenant's shared key already implies full
+ * access under the pre-existing auth model. An AdminUser Bearer session,
+ * however, is checked strictly against req.adminUser.role — no bypass.
+ *
+ * Must run AFTER requireApiKey (and enforceTenantScope) in the route's
+ * middleware chain, since it depends on req.adminUser / req.isSuperAdmin
+ * already being set.
+ */
+export function requireRole(...allowedRoles) {
+  return (req, res, next) => {
+    if (req.isSuperAdmin) return next();
+    if (!req.adminUser) return next(); // legacy x-api-key caller — OWNER-equivalent
+    if (!allowedRoles.includes(req.adminUser.role)) {
+      return res.status(403).json({ error: `Forbidden — requires one of: ${allowedRoles.join(', ')}` });
+    }
+    return next();
+  };
 }
 
 /**

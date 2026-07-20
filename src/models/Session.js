@@ -19,6 +19,30 @@ const sessionSchema = new mongoose.Schema({
   phone:         { type: String, required: true, index: true },
   customerPhone: { type: String, default: null },
   customerName:  { type: String, default: null },   // [v11] captured during flow
+
+  // [FIX-SESSION-SAVEDADDR] savedAddress is written by delivery/flows/index.js
+  // (DELIVERY_ADDRESS case, "Save address for future orders") and read directly
+  // off the session object in two places in the same file (the "deliver to your
+  // usual address?" shortcut and the USE_SAVED_ADDRESS button handler), but was
+  // never declared here — Mongoose strict mode silently dropped every write,
+  // so the entire "remember my address" feature has been a permanent no-op:
+  // every delivery customer was asked to retype their full address on every
+  // single order, and the USE_SAVED_ADDRESS button always failed its
+  // `session.savedAddress` truthy check.
+  savedAddress:  { type: String, default: null },
+
+  // [FIX-SESSION-CATQUEUE] pendingCatalogQueue backs the entire multi-line
+  // WhatsApp Commerce Catalog cart feature (see modules/catalog/waCatalogFlow.js
+  // [CATALOG-QUEUE-1] / drainCatalogQueue()) — when a customer places a
+  // multi-item WhatsApp Cart order, this holds the remaining unresolved lines
+  // so the bot can auto-advance them one at a time once the first item's flow
+  // completes. Same missing-schema-field bug as savedAddress above: never
+  // declared here, so Mongoose strict mode silently dropped every write —
+  // every multi-item WhatsApp Cart checkout has been silently collapsing down
+  // to just its first line item, with the rest disappearing with no error.
+  // Mixed type since queue entries carry a resolved menu item + optional
+  // variant/quantity, not a single primitive shape.
+  pendingCatalogQueue: { type: [mongoose.Schema.Types.Mixed], default: [] },
   phoneNumberId: { type: String, default: null },
 
   currentFlow: {
@@ -83,28 +107,14 @@ const sessionSchema = new mongoose.Schema({
   lastLoopMessage:  { type: String, default: null },
   lastLoopStep:     { type: String, default: null },
 
-  // [FEAT-SPAM-1] Rapid identical-message suppression (spec: "Ignore repeated
-  // identical messages ... respond once"). Distinct from loopCount above
-  // (multi-turn stuck-loop detection over many exchanges) and from the wamid
-  // dedup in webhookController.js (network-level duplicate delivery of the
-  // SAME event) — this throttles the same customer re-sending the exact same
-  // text within a few seconds.
+  // [MERGE-FEAT-SPAM-1] Rapid identical-message suppression (spec: "Ignore
+  // repeated identical messages ... respond once"). Distinct from loopCount
+  // above (multi-turn stuck-loop detection over many exchanges) and from the
+  // wamid dedup in webhookController.js (network-level duplicate delivery of
+  // the SAME event) — this throttles the same customer re-sending the exact
+  // same text within a few seconds.
   lastRapidMessage:   { type: String, default: null },
   lastRapidMessageAt: { type: Date,   default: null },
-
-  // [CONV-LIMIT-1] Consecutive post-completion conversational exchanges (thanks,
-  // compliments, questions, etc.) since the last completed activity or the last
-  // limit-reached nudge. Reset to 0 on a fresh GREET and whenever the limit is
-  // hit. Complaints never increment this — resolving a concern always takes
-  // priority over nudging the customer back to business options.
-  postFlowExchangeCount: { type: Number, default: 0 },
-
-  // [MERGE-LOOP-1] Consecutive FALLBACK/CLARIFY replies in a row (i.e. the bot
-  // didn't understand the customer, pre-flow or mid-flow). Reset to 0 the moment
-  // any other action fires. Once this hits the configured threshold, the router
-  // stops repeating the same generic reply and instead offers a human handoff —
-  // see moduleRouter.js's FALLBACK/CLARIFY case.
-  unclearStreak: { type: Number, default: 0 },
 
   // [FIX-ACK-THROTTLE] Tracks the last time we sent an order-status acknowledgement
   // reply so we don't repeat the same status text on every reaction emoji or filler word.

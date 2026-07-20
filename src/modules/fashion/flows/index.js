@@ -19,8 +19,8 @@ export const FASHION_CONFIG = {
   },
   ui: {
     welcomeButtons: [
-      { id: 'ORDER',    title: '👗 Shop Collection' },
-      { id: 'QUESTION', title: '❓ Style Help'       },
+      { id: 'ORDER',    title: '👗 Shop Collection', description: 'Browse our latest collection' },
+      { id: 'QUESTION', title: '❓ Style Help',       description: 'Get styling advice'           },
     ],
     fallbackButtons: [
       { id: 'ORDER',    title: '👗 Shop'     },
@@ -86,19 +86,36 @@ export async function handleFashionOrder({ session, message, business, tenant, i
       // Check if item has variants
       if (item.variants?.length) {
         await updateSession(session.customerPhone, session.tenantId, { step: 'SELECT_SIZE', data: { item } });
-        // Show up to 3 variants as buttons; if more, use a list
-        const variantButtons = item.variants.slice(0, 3).map(v => ({
-          id: `SIZE_${String(v).toUpperCase().replace(/\s+/g, '_')}`,
-          title: String(v),
-        }));
-        if (item.variants.length > 3) {
+        // [AUDIT-FIX-FASHION-CANCEL-1] Same bug class as bookingFlow.js's
+        // AUDIT-FIX-BOOKING-CANCEL-1/2: WhatsApp's hard 3-button cap means 3
+        // variants + a Cancel button is a structurally impossible 4-button
+        // fit — no slice/concat ordering can fix that, only routing exactly-3
+        // to the list format (which has room for a trailing Cancel row) can.
+        // Was `item.variants.length > 3`, so the button branch below ran for
+        // 1, 2, OR exactly 3 variants — the exactly-3 case always silently
+        // dropped CANCEL (3 variants + CANCEL = 4, then .slice(0,3) cut
+        // CANCEL off). Raised to >=3 so the button branch only ever runs for
+        // 1-2 variants, where CANCEL always fits in the remaining slot(s).
+        if (item.variants.length >= 3) {
+          const variantRows = item.variants.map(v => ({ id: `SIZE_${String(v).toUpperCase().replace(/\s+/g, '_')}`, title: String(v) }));
+          // [FIX-FASHION-LIST-CANCEL-ROW] Only append CANCEL when it's
+          // guaranteed to fit under dispatcher.js's 10-row-per-section cap —
+          // a customer facing a 10+-size list can still cancel by typing
+          // "cancel" (handled universally elsewhere).
+          const rows = variantRows.length < 10
+            ? [...variantRows, { id: 'CANCEL', title: '❌ Cancel' }]
+            : variantRows;
           return {
             type: 'list',
             body: `✨ *${item.name}*${item.price ? ` — ${business?.payment?.currency || 'D'}${item.price}` : ''}\n\nWhat *size* would you like?`,
             button: 'Choose size',
-            sections: [{ title: 'Available Sizes', rows: item.variants.map(v => ({ id: `SIZE_${String(v).toUpperCase().replace(/\s+/g, '_')}`, title: String(v) })) }],
+            sections: [{ title: 'Available Sizes', rows }],
           };
         }
+        const variantButtons = item.variants.map(v => ({
+          id: `SIZE_${String(v).toUpperCase().replace(/\s+/g, '_')}`,
+          title: String(v),
+        }));
         return {
           type: 'buttons',
           body: `✨ *${item.name}*${item.price ? ` — ${business?.payment?.currency || 'D'}${item.price}` : ''}\n\nWhat *size* would you like?`,

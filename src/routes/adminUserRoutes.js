@@ -64,9 +64,15 @@ router.post(
   claimOwner,
 );
 
+// [FIX-MULTIADMIN-ROLE-GAP] adminUserController.js's own header comment
+// documents this as "(OWNER, MANAGER)" only, but the requireRole gate was
+// never actually added here — any authenticated STAFF-role AdminUser session
+// could list the full admin roster (names, emails, roles) for their tenant,
+// including OWNER accounts. Every other admin-management route already had
+// its intended requireRole gate; this was the one omission.
 router.get(
   '/dashboard/:tenantId/admins',
-  requireApiKey, enforceTenantScope,
+  requireApiKey, enforceTenantScope, requireRole('OWNER', 'MANAGER'),
   listAdmins,
 );
 router.post(

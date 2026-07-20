@@ -34,9 +34,9 @@ export const RETAIL_CONFIG = {
   },
   ui: {
     welcomeButtons: [
-      { id: 'ORDER',     title: '🛍 Shop Now'          },
-      { id: 'SHOW_MENU', title: '📋 View All Products'  },
-      { id: 'QUESTION',  title: '❓ Product Query'      },
+      { id: 'ORDER',     title: '🛍 Shop Now',           description: 'Browse our products & shop' },
+      { id: 'SHOW_MENU', title: '📋 View All Products',  description: 'See our full catalog'       },
+      { id: 'QUESTION',  title: '❓ Product Query',      description: 'Ask about a product'         },
     ],
     fallbackButtons: [
       { id: 'ORDER',     title: '🛍 Shop'      },
@@ -242,22 +242,38 @@ export async function handleRetailOrder({ session, message, business, tenant, is
       }
 
       // Show variant picker
-      // [AUDIT-FIX-RETAIL-VARIANT] Mirrors fashion's size-picker pattern: ≤3
-      // variants get a button UI (CANCEL always preserved as a candidate for
-      // the visible 3), 4+ variants switch to a flat top-level `rows` list —
-      // built from the FULL variant set, not pre-sliced — for dispatcher.js's
-      // [FIX-LIST-TRUNC] chunking to handle. Previously variantKeys was sliced
-      // to 3 BEFORE CANCEL was appended, then re-sliced to 3 again — silently
-      // dropping both variants past #3 (no list fallback) and CANCEL itself.
-      if (variantKeys.length > 3) {
+      // [AUDIT-FIX-RETAIL-VARIANT] Original bug: variantKeys.slice(0, 3).map(...)
+      // .concat([CANCEL]).slice(0, 3) — slicing to 3 BEFORE appending CANCEL
+      // silently dropped both (a) any variant past the first 3 (no list
+      // fallback) and (b) CANCEL itself whenever there were already 3+ variants.
+      //
+      // [AUDIT-FIX-RETAIL-VARIANT-2] A first fix pass changed the threshold
+      // check to `variantKeys.length > 3` and built buttons from the FULL
+      // array before combining with CANCEL — but that still left the
+      // EXACTLY-3-variants case broken: 3 variant buttons + CANCEL is 4 items,
+      // and the final `.slice(0, 3)` safety-cap still cut CANCEL off (WhatsApp's
+      // 3-button limit makes 3 variants + Cancel a structurally impossible fit,
+      // not something any concat/slice ORDERING can solve). Same bug class
+      // independently found in bookingFlow.js and fashion/flows/index.js
+      // (AUDIT-FIX-BOOKING-CANCEL-1/2, AUDIT-FIX-FASHION-CANCEL-1). Fixed the
+      // same way: raise the list-format threshold to >=3, so the button
+      // branch only ever runs for 1-2 variants, where CANCEL always fits.
+      if (variantKeys.length >= 3) {
+        const variantRows = variantKeys.map(v => ({
+          id: `VAR_${v.toUpperCase().replace(/\s+/g, '_')}`,
+          title: v,
+        }));
+        // [FIX-RETAIL-LIST-CANCEL-ROW] Only append CANCEL when guaranteed to
+        // fit under dispatcher.js's 10-row-per-section cap — a customer
+        // facing a 10+-option list can still cancel by typing "cancel".
+        const rows = variantRows.length < 10
+          ? [...variantRows, { id: 'CANCEL', title: '❌ Cancel' }]
+          : variantRows;
         return {
           type: 'list',
           body: `🛍 *${item.name}*\n\nWhich option would you like?`,
           button: 'Choose option',
-          rows: variantKeys.map(v => ({
-            id: `VAR_${v.toUpperCase().replace(/\s+/g, '_')}`,
-            title: v,
-          })),
+          sections: [{ title: 'Available Options', rows }],
         };
       }
       return {

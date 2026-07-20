@@ -35,9 +35,9 @@ export const SERVICES_CONFIG = {
     // Fix: keep 3 buttons. QUESTION is accessible via the 'ENQUIRY' flow, free-text,
     // or by using a list-type welcome message (see welcomeList below).
     welcomeButtons: [
-      { id: 'ENQUIRY',      title: '📋 Get a Quote'        },
-      { id: 'BOOK',         title: '📅 Book Consultation'  },
-      { id: 'QUESTION',     title: '❓ Ask a Question'     },
+      { id: 'ENQUIRY',      title: '📋 Get a Quote',        description: 'Request a project quote'       },
+      { id: 'BOOK',         title: '📅 Book Consultation',  description: 'Schedule a call or site visit' },
+      { id: 'QUESTION',     title: '❓ Ask a Question',     description: 'Get a quick answer'             },
     ],
     // [FIX-4BTN-SVC] Full 4-option list for callers that use list-type messages.
     // Use this instead of welcomeButtons when the UI can support a list (no button cap).

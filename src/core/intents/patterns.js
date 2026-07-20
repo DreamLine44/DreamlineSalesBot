@@ -26,6 +26,14 @@ export const BUTTON_ID_MAP = {
   // into the reset/start-over action, so it never actually showed the menu.
   // Now a distinct action; see moduleRouter.js case 'VIEW_MENU'.
   'VIEW_MENU':          'VIEW_MENU',
+  // [FIX-CATALOG-BTN] BROWSE_CATALOG was created by waCatalogConfig.js's
+  // withCatalogWelcomeOption() but never mapped here — tapping the "🛍 Browse
+  // Catalog" welcome-menu button (once shown) would have fallen to the
+  // "interactive but unmapped ID" branch above (CONTINUE_FLOW with no active
+  // flow to continue), a dead end. moduleRouter.js's BROWSE_CATALOG case calls
+  // waCatalogFlow.js's browseCatalogExplicit(), which this button was always
+  // documented (in its own docstring) as the trigger for.
+  'BROWSE_CATALOG':     'BROWSE_CATALOG',
 
   // Flow control
   'CONFIRM':            'CONFIRM',
@@ -94,9 +102,8 @@ export const BUTTON_ID_MAP = {
   'JOIN_QUEUE':         'WALKIN',
   // [v14-PATTERNS] Salon/barbershop new button IDs
   // [AUDIT-FLOWS-RESCHEDULE] Was aliased straight to 'START_BOOKING', which just
-  // resets the session and starts a brand-new booking WITHOUT ever cancelling the
-  // customer's existing pending/confirmed appointment — silently duplicating it
-  // (and the admin confirm/decline alert) instead of rescheduling.
+  // starts a brand-new booking flow without ever touching the customer's existing
+  // pending/confirmed appointment — silently duplicating it instead of rescheduling.
   // Now routes to its own dedicated action; see moduleRouter.js's case 'RESCHEDULE'.
   'RESCHEDULE':         'RESCHEDULE',
   'CONSULTATION':       'QUESTION',        // consultation taps go to the QUESTION/AI flow

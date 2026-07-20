@@ -141,7 +141,7 @@ export async function handleOrderFlow({ session, message, business, tenant, isIn
           type:    'buttons',
           body:    `Hi there! 😊 You're in the ordering flow for *${business.name || 'our restaurant'}*.\n\nPlease type the *name of a dish* you'd like to order, or tap below to browse the full menu:`,
           buttons: [
-            { id: 'VIEW_MENU', title: '📋 View Menu' },
+            { id: 'VIEW_MENU', title: '📋 View Menu' }, // [AUDIT-FIX-VIEWMENU] was SHOW_MENU
             { id: 'CANCEL',    title: '❌ Cancel'    },
           ],
         };
@@ -265,9 +265,12 @@ export async function handleOrderFlow({ session, message, business, tenant, isIn
 
     // ────────────────────────────────────────────────────────────────────────
     case 'CONFIRM': {
-      // [FIX-CONFIRM-1] "yeah"/"yep" were missing here even though every other
-      // confirm-style step in this file (SUGGESTION_CONFIRM, UPSELL) accepts them.
-      const isConfirm = /^(yes|y|yeah|yep|confirm|ok|okay|sure|place|confirmed)$/i.test(clean);
+      // [AUDIT-FIX-CONFIRM-1] Was missing "yeah"/"yep" — every other confirm
+      // step in this file (SUGGESTION_CONFIRM, UPSELL) already accepts them.
+      // This is the step that actually SAVES the order, so a customer typing
+      // "yeah" here got the summary silently re-displayed instead of their
+      // order being placed.
+      const isConfirm = /^(yes|y|yep|yeah|confirm|ok|okay|sure|place|confirmed)$/i.test(clean);
       if (!isConfirm) {
         return buildOrderSummary({ item: data.item, qty: data.quantity, total: data.totalPrice, business });
       }
@@ -444,14 +447,14 @@ export async function handleOrderFlow({ session, message, business, tenant, isIn
 
 // ── Select item helper ────────────────────────────────────────────────────────
 async function _selectItem(item, session, business, data) {
-  // [AUDIT-FIX-ADDON-1] Previously the teaser here always advertised addOns[0],
-  // but the QUANTITY step's upsell prompt picked a DIFFERENT, RANDOM add-on from
-  // the same list — a customer could be told "*Soft Drink* pairs well with this"
-  // and then be asked "Would you like to add *Dessert*?" one message later. The
-  // add-on is now chosen ONCE here, pinned as data.pendingAddOn, and QUANTITY
-  // (which already prefers data.pendingAddOn over re-rolling) reuses that same
-  // pinned choice — so the teaser and the actual checkout offer always match.
-  const addOns       = business?.addOns || [];
+  const addOns = business?.addOns || [];
+  // [FIX-SELECTITEM-ADDON-1] Previously the teaser text always hardcoded
+  // addOns[0], while the later QUANTITY-step upsell prompt picks a RANDOM
+  // add-on (data.pendingAddOn || addOns[Math.floor(Math.random() * ...)]) —
+  // so a customer could be teased "Coke pairs well with this" and then get
+  // offered "Fries" moments later. Fix: pin the choice ONCE here and persist
+  // it as pendingAddOn so both the teaser and the actual upsell prompt (which
+  // already prefers data.pendingAddOn when present) reference the same item.
   const pendingAddOn = addOns.length ? addOns[Math.floor(Math.random() * addOns.length)] : null;
 
   await updateSession(session.customerPhone, session.tenantId, {
@@ -509,7 +512,7 @@ export async function handleRestaurantQuestion({ session, message, business, ten
       body: '❓ What would you like to know? Ask about our menu, hours, allergens, or anything else!',
       buttons: [
         { id: 'ORDER',     title: '🍔 Order Food'  },
-        { id: 'VIEW_MENU', title: '📋 View Menu'   },
+        { id: 'VIEW_MENU', title: '📋 View Menu'   }, // [AUDIT-FIX-VIEWMENU] was SHOW_MENU
       ],
     };
   }

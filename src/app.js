@@ -51,6 +51,7 @@ import businessRoutes    from './routes/businessRoutes.js';
 import dashboardRoutes   from './routes/dashboardRoutes.js';
 import tenantRoutes      from './routes/tenantRoutes.js';
 import adminRoutes                 from './routes/adminRoutes.js';
+import adminUserRoutes          from './routes/adminUserRoutes.js';
 import whatsappOnboardingRoutes from './routes/whatsappOnboardingRoutes.js';
 
 const app        = express();
@@ -136,6 +137,19 @@ if (!isProduction && process.env.SIMULATION_MODE === 'true') {
 
 // Business management
 app.use('/business', createRateLimiter(120), requireApiKey, businessRoutes);
+
+// [FIX-MOUNT-2] adminUserRoutes — Tenant Dashboard staff login (/dashboard/auth/*)
+// and admin management (/dashboard/:tenantId/admins/*). ORDER IS LOAD-BEARING,
+// same class of issue as the /admin/tenants-before-/admin note below: this
+// router declares its own full paths under /dashboard/* (mounted at '/', same
+// pattern as whatsappOnboardingRoutes above) and MUST be registered BEFORE the
+// broad `app.use('/dashboard', ...)` mount two lines down. That mount applies
+// requireApiKey to every /dashboard/* path — including /dashboard/auth/login and
+// /dashboard/auth/accept-invite, which are deliberately UNAUTHENTICATED (their
+// entire purpose is to hand out a session token to someone who doesn't have one
+// yet). Registering adminUserRoutes first ensures Express matches those two
+// specific paths here, before the blanket requireApiKey ever runs on them.
+app.use('/', adminUserRoutes);
 
 // Dashboard
 app.use('/dashboard', createRateLimiter(120), requireApiKey, dashboardRoutes);

@@ -53,8 +53,6 @@ const orderSchema = new mongoose.Schema({
   // dropped every write. Upsell add-on names were never persisted to the order record.
   addOns: { type: [String], default: [] },
 
-  totalPrice: { type: Number, default: null },
-
   // [MULTICART-v39 / FIX-CATALOG-CART-2] items[] — the multi-item cart
   // counterpart to the top-level item/quantity/addOns fields above (which
   // stay populated too, mirrored from items[0], for backward compat with
@@ -79,6 +77,18 @@ const orderSchema = new mongoose.Schema({
     }],
     default: [],
   },
+
+  totalPrice: { type: Number, default: null },
+
+  // [FIX-PROMO-WIRE-1] Persists what promoService.js actually applied, if
+  // anything. promoCode is stored normalised (uppercase, matching
+  // promoService's own normalisation) so dashboard reporting can group by it
+  // directly. originalTotal (the pre-discount subtotal) is kept alongside the
+  // already-discounted totalPrice above so a refund/dispute can see both
+  // numbers without recomputing anything.
+  promoCode:      { type: String, default: null },
+  discountAmount: { type: Number, default: 0 },
+  originalTotal:  { type: Number, default: null },
 
   status: {
     type: String,

@@ -84,25 +84,11 @@ function hasNegationOrSarcasm(m) {
  *
  * - Trusts a single confident regex match with zero added latency/cost, UNLESS
  *   that lone match is a gameable ACK/COMPLIMENT next to a negation/sarcasm hint.
- * - Falls back to groqProvider.classifyIntent() (the same negation-aware
- *   classifier intentEngine.js's postFlowHandler tiebreak already relied on
- *   — [AUDIT-FIX-CLASSIFY-2] upgraded it to return { intent, confidence }
- *   instead of a bare string) when regexes give zero or conflicting signals,
+ * - Falls back to groqProvider.classifyIntent() (the same lean one-word classifier
+ *   intentEngine.js already uses) when regexes give zero or conflicting signals,
  *   or the sole match looks gameable.
  * - Never throws — defaults to the safe 'UNRELATED' bucket on any AI failure.
  */
-// [CONV-LIMIT-1] Shared helper: once the post-completion conversation limit is
-// reached, append a gentle nudge and swap in the business's welcome buttons so
-// the customer has a clear path back to a new business activity. Never call
-// this for a complaint reply — complaints are never cut short.
-function withLimitNudge({ body, buttons, conversationLimitReached, welcomeBtns }) {
-  if (!conversationLimitReached) return { body, buttons };
-  return {
-    body:    `${body}\n\nI'd be happy to help with anything else whenever you're ready.`,
-    buttons: welcomeBtns,
-  };
-}
-
 async function classifyPostFlowSentiment(msg, business) {
   const mode = (business?.businessMode || 'RETAIL').toUpperCase();
 
@@ -121,8 +107,7 @@ async function classifyPostFlowSentiment(msg, business) {
   try {
     const { classifyIntent } = await import('../core/ai/providers/groqProvider.js');
     const result = await classifyIntent({ message: msg, validIntents: SENTIMENT_LABELS, mode });
-    // [AUDIT-FIX-CLASSIFY-2] classifyIntent() now returns { intent, confidence }.
-    return result && SENTIMENT_LABELS.includes(result.intent) ? result.intent : 'UNRELATED';
+    return SENTIMENT_LABELS.includes(result) ? result : 'UNRELATED';
   } catch (err) {
     logger.warn('[PostFlowHandler] classifyPostFlowSentiment AI tiebreak failed', { err: err.message });
     return 'UNRELATED';
@@ -158,12 +143,9 @@ export async function handlePostFlowMessage({
     { id: 'QUESTION', title: '❓ Ask a Question'   },
   ]).slice(0, 3);
 
-  // [NO-NAME-1] Name-based personalisation is disabled for now — every reply
-  // uses the same neutral phrasing regardless of whether a name is on file.
-  // May be reintroduced later; keep _rawName resolution in place so re-enabling
-  // is a one-line change.
+  // Resolve customer name safely
   const _rawName  = session.customerName || custCtx?.name || null;
-  const custName  = '';
+  const custName  = isValidName(_rawName) ? `, ${_rawName}` : '';
   const orderCount = custCtx?.orderCount || 0;
   const vipThreshold = business?.settings?.vipThreshold || 5;
   const isVIP     = orderCount >= vipThreshold;
@@ -177,34 +159,16 @@ export async function handlePostFlowMessage({
   const isComplaint   = sentiment === 'COMPLAINT';
   const isQuestion    = sentiment === 'QUESTION';
 
-  // [CONV-LIMIT-1] Post-completion conversation limit — the AI recommends when
-  // the threshold appears reached; the application enforces the actual number
-  // via business.settings.postFlowConversationLimit (default 3). Complaints
-  // never count toward the limit and are never cut short — resolving a
-  // customer's concern always takes priority over nudging back to business
-  // options (Section 3 outranks Section 5).
-  const limitThreshold = business?.settings?.postFlowConversationLimit || 3;
-  const priorExchangeCount = session.postFlowExchangeCount || 0;
-  const countsTowardLimit = !isComplaint;
-  const nextExchangeCount = countsTowardLimit ? priorExchangeCount + 1 : priorExchangeCount;
-  const conversationLimitReached = countsTowardLimit && nextExchangeCount >= limitThreshold;
-
   // [PFH-2] Clear postFlowAck first — consumed regardless of path taken below.
   // Each handler that needs to KEEP the ack context restores it explicitly.
-  // [CONV-LIMIT-1] Reset the exchange counter once we've nudged the customer
-  // back to business options, so the next post-completion chat gets a fresh
-  // window rather than being nudged on every subsequent message.
-  await updateSession(from, tenantId, {
-    postFlowAck: null, postFlowData: null,
-    postFlowExchangeCount: conversationLimitReached ? 0 : nextExchangeCount,
-  });
+  await updateSession(from, tenantId, { postFlowAck: null, postFlowData: null });
 
   switch (ackCtx) {
     case 'ORDER_CONFIRMED':
       return handleOrderConfirmed({
         msg, upper, isAck, isCompliment, isComplaint, isQuestion,
         flowData, session, business, tenantDoc, from, tenantId,
-        cfg, bizName, mode, welcomeBtns, custName, isVIP, conversationLimitReached,
+        cfg, bizName, mode, welcomeBtns, custName, isVIP,
       });
 
     case 'ORDER_REJECTED':
@@ -234,11 +198,11 @@ export async function handlePostFlowMessage({
         ...welcomeBtns.slice(0, 2),
       ].slice(0, 3);
       if (isAck || isCompliment) {
-        const { body, buttons } = withLimitNudge({
-          body: `You're welcome${custName}! 😊 Let us know if you have any other questions.`,
-          buttons: _qaBtns, conversationLimitReached, welcomeBtns,
-        });
-        await dispatchMessage(from, { type: 'buttons', body, buttons }, tenantDoc);
+        await dispatchMessage(from, {
+          type:    'buttons',
+          body:    `You're welcome${custName}! 😊 Let us know if you have any other questions.`,
+          buttons: _qaBtns,
+        }, tenantDoc);
         return true;
       }
       if (isComplaint) {
@@ -252,13 +216,11 @@ export async function handlePostFlowMessage({
       }
       // Follow-up question or general message — answer with AI
       const _followUp = await _qaAI({ customerMessage: msg, business, intent: 'QUESTION' });
-      {
-        const { body, buttons } = withLimitNudge({
-          body: _followUp || `Happy to help${custName}! 😊`,
-          buttons: _qaBtns, conversationLimitReached, welcomeBtns,
-        });
-        await dispatchMessage(from, { type: 'buttons', body, buttons }, tenantDoc);
-      }
+      await dispatchMessage(from, {
+        type:    'buttons',
+        body:    _followUp || `Happy to help${custName}! 😊`,
+        buttons: _qaBtns,
+      }, tenantDoc);
       return true;
     }
 
@@ -275,11 +237,11 @@ export async function handlePostFlowMessage({
         ...welcomeBtns.slice(0, 2),
       ].slice(0, 3);
       if (isAck || isCompliment) {
-        const { body, buttons } = withLimitNudge({
-          body: `You're welcome${custName}! 😊 Let me know if you have any other questions about the specs.`,
-          buttons: _specBtns, conversationLimitReached, welcomeBtns,
-        });
-        await dispatchMessage(from, { type: 'buttons', body, buttons }, tenantDoc);
+        await dispatchMessage(from, {
+          type:    'buttons',
+          body:    `You're welcome${custName}! 😊 Let me know if you have any other questions about the specs.`,
+          buttons: _specBtns,
+        }, tenantDoc);
         return true;
       }
       if (isComplaint) {
@@ -292,13 +254,11 @@ export async function handlePostFlowMessage({
         return true;
       }
       const _followUp = await _specAI({ customerMessage: msg, business, intent: 'SPEC_REQUEST' });
-      {
-        const { body, buttons } = withLimitNudge({
-          body: _followUp || `Happy to help${custName}! 😊`,
-          buttons: _specBtns, conversationLimitReached, welcomeBtns,
-        });
-        await dispatchMessage(from, { type: 'buttons', body, buttons }, tenantDoc);
-      }
+      await dispatchMessage(from, {
+        type:    'buttons',
+        body:    _followUp || `Happy to help${custName}! 😊`,
+        buttons: _specBtns,
+      }, tenantDoc);
       return true;
     }
 
@@ -309,11 +269,11 @@ export async function handlePostFlowMessage({
         ...welcomeBtns.slice(0, 2),
       ].slice(0, 3);
       if (isAck || isCompliment) {
-        const { body, buttons } = withLimitNudge({
-          body: `You're welcome${custName}! 😊 Let me know if you need anything else on warranty or after-sales.`,
-          buttons: _warrBtns, conversationLimitReached, welcomeBtns,
-        });
-        await dispatchMessage(from, { type: 'buttons', body, buttons }, tenantDoc);
+        await dispatchMessage(from, {
+          type:    'buttons',
+          body:    `You're welcome${custName}! 😊 Let me know if you need anything else on warranty or after-sales.`,
+          buttons: _warrBtns,
+        }, tenantDoc);
         return true;
       }
       if (isComplaint) {
@@ -326,13 +286,11 @@ export async function handlePostFlowMessage({
         return true;
       }
       const _followUp = await _warrAI({ customerMessage: msg, business, intent: 'WARRANTY' });
-      {
-        const { body, buttons } = withLimitNudge({
-          body: _followUp || `Happy to help${custName}! 😊`,
-          buttons: _warrBtns, conversationLimitReached, welcomeBtns,
-        });
-        await dispatchMessage(from, { type: 'buttons', body, buttons }, tenantDoc);
-      }
+      await dispatchMessage(from, {
+        type:    'buttons',
+        body:    _followUp || `Happy to help${custName}! 😊`,
+        buttons: _warrBtns,
+      }, tenantDoc);
       return true;
     }
 
@@ -340,7 +298,7 @@ export async function handlePostFlowMessage({
       return handleBookingConfirmed({
         msg, upper, isAck, isCompliment, isComplaint,
         flowData, business, tenantDoc, from, tenantId,
-        custName, conversationLimitReached, welcomeBtns,
+        custName,
       });
 
     case 'BOOKING_DECLINED':
@@ -810,7 +768,7 @@ export async function handlePostFlowMessage({
 async function handleOrderConfirmed({
   msg, upper, isAck, isCompliment, isComplaint, isQuestion,
   flowData, session, business, tenantDoc, from, tenantId,
-  cfg, bizName, mode, welcomeBtns, custName, isVIP, conversationLimitReached,
+  cfg, bizName, mode, welcomeBtns, custName, isVIP,
 }) {
   const { default: Order } = await import('../models/Order.js');
   const { getAIReply }     = await import('../core/ai/providers/aiRouter.js');
@@ -948,13 +906,10 @@ async function handleOrderConfirmed({
     const fallback = isVIP
       ? `That truly means a lot to us${custName}! 🙏 Your order is still being prepared — we'll have it ready shortly. ❤️`
       : `Thank you${custName}! 😊 We're working on your order — we'll let you know the moment it's ready!`;
-    const { body, buttons } = withLimitNudge({
-      body: aiReply || fallback, buttons: [], conversationLimitReached, welcomeBtns,
-    });
-    await dispatchMessage(from, conversationLimitReached
-      ? { type: 'buttons', body, buttons }
-      : { type: 'text', body },
-    tenantDoc);
+    await dispatchMessage(from, {
+      type: 'text',
+      body: aiReply || fallback,
+    }, tenantDoc);
     return true;
   }
 
@@ -1000,16 +955,9 @@ async function handleOrderConfirmed({
   }
 
   // [SPEC-4A] Simple ack while order is PREPARING — no buttons, no upsell
-  // [CONV-LIMIT-1] ...unless the post-completion conversation limit has been
-  // reached, in which case we nudge back to business options.
   const itemRef = flowData.item ? `*${flowData.item}*` : 'your order';
   const ackBody = `You're welcome${custName}! 😊 ${itemRef} is on its way to the kitchen. We'll let you know when it's ready!`;
-  if (conversationLimitReached) {
-    const { body, buttons } = withLimitNudge({ body: ackBody, buttons: [], conversationLimitReached, welcomeBtns });
-    await dispatchMessage(from, { type: 'buttons', body, buttons }, tenantDoc);
-  } else {
-    await dispatchMessage(from, { type: 'text', body: ackBody }, tenantDoc);
-  }
+  await dispatchMessage(from, { type: 'text', body: ackBody }, tenantDoc);
   return true;
 }
 
@@ -1202,7 +1150,7 @@ async function handleWalkInQueueAck({
 async function handleBookingConfirmed({
   msg, upper, isAck, isCompliment, isComplaint,
   flowData, business, tenantDoc, from, tenantId,
-  custName, conversationLimitReached, welcomeBtns,
+  custName,
 }) {
   const { getAIReply } = await import('../core/ai/providers/aiRouter.js');
   const mode          = (business?.businessMode || '').toUpperCase();
@@ -1279,11 +1227,11 @@ What date works best for you?`,
     const seeYouStr = isWalkIn
       ? `See you soon${staffStr}!`
       : `We're looking forward to seeing you${whenStr}${staffStr}.`;
-    const { body, buttons } = withLimitNudge({
-      body: `You're welcome${custName}! 😊 ${seeYouStr} If anything changes, just let us know!`,
-      buttons: _salonConfirmBtns, conversationLimitReached, welcomeBtns,
-    });
-    await dispatchMessage(from, { type: 'buttons', body, buttons }, tenantDoc);
+    await dispatchMessage(from, {
+      type:    'buttons',
+      body:    `You're welcome${custName}! 😊 ${seeYouStr} If anything changes, just let us know!`,
+      buttons: _salonConfirmBtns,
+    }, tenantDoc);
     return true;
   }
 

@@ -106,18 +106,18 @@ function buildPayload(to, ui) {
         rows:  (sec.rows || []).slice(0, 10).map(normalizeRow),
       })).filter(sec => sec.rows.length > 0);
     } else {
-      // [FIX-LIST-TRUNC] Flat rows format (every module in src/modules uses this).
-      // WhatsApp's real limit is 10 rows PER SECTION, with up to 10 sections (100
-      // rows total) — not 10 rows overall. Previously a single `.slice(0, 10)`
-      // silently dropped everything past the 10th item with no error, no log,
-      // and no visible sign anything was cut off. Chunk into multiple unlabelled
-      // sections instead, capped at the true 100-row ceiling.
-      const allRows = (ui.rows || []).slice(0, 100).map(normalizeRow);
+      // [FIX-LIST-TRUNC] Flat rows format (the shape every module in
+      // src/modules uses — restaurant menu, salon services, retail catalog,
+      // etc.) was truncated to `.slice(0, 10)` here, silently dropping every
+      // row past the 10th with no error or log. WhatsApp's real limit is 10
+      // rows PER SECTION with up to 10 sections (100 rows total), not 10 rows
+      // overall — so instead of slicing, chunk the flat list into sections of
+      // 10 and cap at 10 sections (the true 100-row ceiling).
+      const allRows = (ui.rows || []).map(normalizeRow);
       sections = [];
-      for (let i = 0; i < allRows.length; i += 10) {
+      for (let i = 0; i < allRows.length && sections.length < 10; i += 10) {
         sections.push({ rows: allRows.slice(i, i + 10) });
       }
-      if (!sections.length) sections = [{ rows: [] }];
     }
 
     if (!sections.length || !sections[0].rows.length) return null;
@@ -287,9 +287,13 @@ export async function dispatchMessage(to, ui, tenant) {
         err: err.slice(0, 300),
         tenantId: tenant?._id,
       });
-      // [FIX-DISPATCH-FALSE-SUCCESS] A Meta 4xx/5xx must not be handed back to
-      // callers as a truthy value — sendCatalogMessage() and friends treat any
-      // truthy return as "message actually sent" and skip fallback behavior.
+      // [AUDIT-FIX-DISPATCH-FALSE-SUCCESS] Previously fell through to
+      // `return resp;` unconditionally — a Response object is truthy even
+      // when resp.ok is false, so a 4xx/5xx from Meta looked identical to
+      // success to every caller (e.g. sendCatalogMessage() -> waCatalogFlow.js,
+      // which treats a truthy return as "catalog message actually sent" and
+      // never falls back to the normal ORDER flow). Return null so callers can
+      // tell success from failure.
       return null;
     }
     logger.debug('[Dispatch] ✓ Message sent via Meta API', {

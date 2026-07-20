@@ -195,6 +195,20 @@ export async function cancelFlow(session, business) {
  * gets a warm reply instead of the full welcome menu.
  * When business is provided, checks if lead capture should fire.
  */
+// [AUDIT-FIX-LEADCAP-1] Explicit allowlists for which completedFlow values map
+// to which lead-capture trigger bucket. Previously an "else" catch-all meant
+// only BOOKING/WALKIN mapped to AFTER_BOOKING, and EVERYTHING ELSE — including
+// QUESTION, ENQUIRY, ABOUT, SPEC_REQUEST, WARRANTY, SKINCARE_ADVICE,
+// QUOTE_FOLLOW (none of which are an order being placed) — silently mapped to
+// AFTER_ORDER. Any business configured with leadCapture.triggerOn='AFTER_ORDER'
+// would have gotten a "what's your name?" lead-capture prompt injected after
+// simply answering an FAQ or asking about warranty/skincare. A new
+// completedFlow value now must be consciously added to one of these sets (or
+// left out entirely, defaulting to no trigger) rather than silently inheriting
+// AFTER_ORDER.
+const ORDER_COMPLETING_FLOWS   = new Set(['ORDER']);
+const BOOKING_COMPLETING_FLOWS = new Set(['BOOKING', 'WALKIN']);
+
 export async function completeFlow(session, completedFlow, business = null, tenant = null) {
   await updateSession(session.customerPhone, session.tenantId, {
     currentFlow: null,
@@ -203,32 +217,18 @@ export async function completeFlow(session, completedFlow, business = null, tena
     postFlowAck: completedFlow.toUpperCase(),
   });
 
-  // Lead capture trigger — fire after ORDER or BOOKING if configured.
-  // [FIX-SALON-15] WALKIN uses saveBooking() just like BOOKING, so it should
-  // also trigger AFTER_BOOKING lead capture. Previously 'WALKIN' fell to the
-  // AFTER_ORDER branch (wrong trigger type) meaning any FIRST_MESSAGE-style
-  // lead-capture config would still work, but AFTER_BOOKING-only configs would
-  // never fire for walk-in customers.
-  // [AUDIT-FIX-LEADCAP-1] Previously used an "else" catch-all: only
-  // 'BOOKING'/'WALKIN' mapped to AFTER_BOOKING, and EVERYTHING ELSE
-  // (QUESTION, ENQUIRY, ABOUT, SPEC_REQUEST, WARRANTY, SKINCARE_ADVICE,
-  // QUOTE_FOLLOW — none of which are an order being placed) silently mapped
-  // to AFTER_ORDER. A business configured with leadCapture.triggerOn=
-  // 'AFTER_ORDER' would get a "what's your name?" prompt injected after
-  // simply answering an FAQ. Explicit allowlists force a conscious decision
-  // for any new completedFlow value instead of defaulting it into AFTER_ORDER.
-  const ORDER_COMPLETING_FLOWS   = new Set(['ORDER']);
-  const BOOKING_COMPLETING_FLOWS = new Set(['BOOKING', 'WALKIN']);
-
+  // Lead capture trigger — fire after ORDER or BOOKING ONLY if configured.
+  // trigger stays null (no lead capture at all) for any non-purchase
+  // completion (QUESTION, ENQUIRY, ABOUT, SPEC_REQUEST, WARRANTY,
+  // SKINCARE_ADVICE, QUOTE_FOLLOW, and any future addition not explicitly
+  // listed above).
   if (business) {
     try {
       const completedUpper = completedFlow.toUpperCase();
       let trigger = null;
-      if (ORDER_COMPLETING_FLOWS.has(completedUpper)) {
-        trigger = 'AFTER_ORDER';
-      } else if (BOOKING_COMPLETING_FLOWS.has(completedUpper)) {
-        trigger = 'AFTER_BOOKING';
-      }
+      if (ORDER_COMPLETING_FLOWS.has(completedUpper))        trigger = 'AFTER_ORDER';
+      else if (BOOKING_COMPLETING_FLOWS.has(completedUpper)) trigger = 'AFTER_BOOKING';
+
       if (trigger) {
         const { shouldCaptureLead, startLeadCapture } = await import('../../services/leadCaptureService.js');
         const freshSession = (await getSession(session.customerPhone, session.tenantId)) || session;

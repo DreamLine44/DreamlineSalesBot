@@ -18,6 +18,7 @@ import {
   getMenu, addMenuItem, updateMenuItem, deleteMenuItem,
   getServices, addService, updateService, deleteService,
   getFaqs, addFaq, updateFaq, deleteFaq,
+  getPromotions, addPromotion, updatePromotion, deletePromotion,
 } from '../controllers/dashboardController.js';
 import { uploadSingle } from '../middleware/uploadMiddleware.js';
 import { uploadMenuItemImage, removeMenuItemImage } from '../controllers/menuImageController.js';
@@ -98,5 +99,12 @@ r.get('/:tenantId/faqs',                              enforceTenantScope, getFaq
 r.post('/:tenantId/faqs',                             enforceTenantScope, addFaq);
 r.patch('/:tenantId/faqs/:faqId',                     enforceTenantScope, updateFaq);
 r.delete('/:tenantId/faqs/:faqId',                    enforceTenantScope, deleteFaq);
+
+// [FIX-PROMO-WIRE-4] Dashboard CRUD for promo codes — see promoService.js's
+// own header comment, which already assumed this existed.
+r.get('/:tenantId/promotions',                        enforceTenantScope, getPromotions);
+r.post('/:tenantId/promotions',                       enforceTenantScope, addPromotion);
+r.patch('/:tenantId/promotions/:promoId',              enforceTenantScope, updatePromotion);
+r.delete('/:tenantId/promotions/:promoId',             enforceTenantScope, deletePromotion);
 
 export default r;

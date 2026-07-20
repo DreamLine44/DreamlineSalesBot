@@ -15,9 +15,9 @@ export const RESTAURANT_CONFIG = {
 
   ui: {
     welcomeButtons: [
-      { id: 'ORDER',    title: '🍔 Order Food'    },
-      { id: 'BOOK',     title: '📅 Book a Table'  },
-      { id: 'QUESTION', title: '❓ Ask a Question' },
+      { id: 'ORDER',    title: '🍔 Order Food',    description: 'Browse our menu & place an order' },
+      { id: 'BOOK',     title: '📅 Book a Table',  description: 'Reserve a table in advance'        },
+      { id: 'QUESTION', title: '❓ Ask a Question', description: 'Get help from our team'            },
     ],
     fallbackButtons: [
       { id: 'ORDER',    title: '🍔 Order Food'    },

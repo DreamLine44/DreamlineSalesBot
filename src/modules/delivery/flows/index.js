@@ -45,14 +45,14 @@ export const DELIVERY_CONFIG = {
     // dropped by the dispatcher's .slice(0,3). Customers ordering delivery care most
     // about placing an order, viewing the menu, and tracking. SUPPORT handles questions.
     welcomeButtons: [
-      { id: 'ORDER',       title: '🚚 Order Now'      },
-      { id: 'VIEW_MENU',   title: '📋 View Menu'       },
-      { id: 'TRACK_ORDER', title: '📍 Track My Order'  },
+      { id: 'ORDER',       title: '🚚 Order Now',     description: 'Browse items & place an order' },
+      { id: 'VIEW_MENU',   title: '📋 View Menu',      description: 'See everything available'      }, // [AUDIT-FIX-VIEWMENU] was SHOW_MENU
+      { id: 'TRACK_ORDER', title: '📍 Track My Order', description: 'Check your delivery status'     },
     ],
     fallbackButtons: [
       { id: 'ORDER',       title: '🚚 Order Now'     },
       { id: 'TRACK_ORDER', title: '📍 Track Order'   },
-      { id: 'VIEW_MENU',   title: '📋 View Menu'     },
+      { id: 'VIEW_MENU',   title: '📋 View Menu'     }, // [AUDIT-FIX-VIEWMENU] was SHOW_MENU
     ],
     confirmButtons: [
       { id: 'CONFIRM', title: '✅ Confirm Order' },
@@ -122,7 +122,7 @@ export async function handleDeliveryOrder({ session, message, business, tenant, 
             body: `Did you mean *${m.name}*?`,
             buttons: [
               { id: 'CONFIRM',   title: '✅ Yes'         },
-              { id: 'VIEW_MENU', title: '📋 View Menu'   },
+              { id: 'VIEW_MENU', title: '📋 View Menu'   }, // [AUDIT-FIX-VIEWMENU] was SHOW_MENU
             ],
           };
         }
@@ -139,7 +139,7 @@ export async function handleDeliveryOrder({ session, message, business, tenant, 
           type: 'buttons',
           body: aiReply || `Hmm, I couldn't find *"${raw}"*. Here's what we deliver:`,
           buttons: [
-            { id: 'VIEW_MENU', title: '📋 View Menu'      },
+            { id: 'VIEW_MENU', title: '📋 View Menu'      }, // [AUDIT-FIX-VIEWMENU] was SHOW_MENU
             { id: 'QUESTION',  title: '❓ Ask a Question' },
           ],
         };

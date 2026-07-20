@@ -134,7 +134,25 @@ export function withCatalogWelcomeOption(buttons, business) {
   const base = buttons || [];
   if (!shouldShowCatalogButton(business)) return { buttons: base };
 
-  const combined = [...base, { id: 'BROWSE_CATALOG', title: '🛍 Browse Catalog' }];
+  const catalogOption = {
+    id: 'BROWSE_CATALOG', title: '🛍 Browse Catalog',
+    description: 'Shop our products & collections',
+  };
+
+  // [FIX-CATALOG-ORDER] Insert Browse Catalog before the final option rather
+  // than appending it after every other option — every vertical's
+  // welcomeButtons ends with its "help/question" action, and that reads best
+  // as the last item in the list, with the browsable/transactional options
+  // (order/book/catalog) grouped together ahead of it. Generic "before the
+  // last item" (rather than hunting for a specific id) keeps this correct
+  // even for verticals whose button order doesn't end in QUESTION.
+  const insertIdx = base.length > 0 ? base.length - 1 : 0;
+  const combined = [...base.slice(0, insertIdx), catalogOption, ...base.slice(insertIdx)];
+
   if (combined.length <= 3) return { buttons: combined };
-  return { rows: combined.map(b => ({ id: b.id, title: b.title })) };
+  // [FIX-CATALOG-DESC] Preserve each option's `description` (not just id/title)
+  // so the rendered WhatsApp list shows a helpful subtitle under every row —
+  // dropping it here silently degraded the list to bare titles even when the
+  // caller had supplied a description.
+  return { rows: combined.map(b => ({ id: b.id, title: b.title, description: b.description })) };
 }

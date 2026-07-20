@@ -16,6 +16,7 @@
  */
 import Order  from '../models/Order.js';
 import { recordOrderItem } from '../core/memory/customerMemory.js';
+import { validatePromoCode, applyPromoUsage } from './promoService.js';
 import { logAudit } from './auditService.js';
 import logger from '../config/logger.js';
 
@@ -75,14 +76,41 @@ export function resolveOrderFields({ item, quantity, totalPrice, addOns, items }
 // [FIX-SAVE-1] Added `notes` and `customerName` to destructure — previously both were
 // silently dropped because they weren't listed, even though notes IS in the Order schema
 // and all module callers pass it. customerName is also now in the Order schema.
-export async function saveOrder({ item, quantity, totalPrice, addOns, items, notes, customerName, customerPhone, tenantId, businessId, status }) {
+export async function saveOrder({ item, quantity, totalPrice, addOns, items, notes, customerName, customerPhone, tenantId, businessId, status, promoCode }) {
   const { hasCart, resolvedItem, resolvedQuantity, resolvedTotal, resolvedAddOns } =
     resolveOrderFields({ item, quantity, totalPrice, addOns, items });
+
+  // [FIX-PROMO-WIRE-2] promoService.js's own header comment already claimed
+  // "saveOrder() already accepts and applies a promoCode whenever a caller
+  // supplies one" — this was aspirational, not actual: saveOrder() didn't
+  // accept a promoCode parameter at all, and never called validatePromoCode/
+  // applyPromoUsage. No module flow prompts for a code today (that's a
+  // separate, larger per-module change — see promoService.js's own scope
+  // note), but the dashboard-created-order / future-flow-step / admin-tool
+  // callers this comment already promised support for now actually get it.
+  // A no-op (finalTotal === resolvedTotal, discountAmount 0) whenever no
+  // promoCode is supplied, or the supplied code fails validation — an invalid
+  // code never blocks the order itself, it just fails to discount it.
+  let finalTotal = resolvedTotal;
+  let discountAmount = 0;
+  let appliedPromoCode = null;
+
+  if (promoCode && resolvedTotal != null) {
+    const result = await validatePromoCode(tenantId, promoCode, resolvedTotal).catch(err => {
+      logger.warn('[OrderService] validatePromoCode failed (non-fatal)', { err: err.message, tenantId });
+      return { valid: false };
+    });
+    if (result.valid) {
+      finalTotal = result.newTotal;
+      discountAmount = result.discountAmount;
+      appliedPromoCode = promoCode.trim().toUpperCase();
+    }
+  }
 
   const order = await Order.create({
     item:          resolvedItem,
     quantity:      resolvedQuantity,
-    totalPrice:    resolvedTotal,
+    totalPrice:    finalTotal,
     addOns:        resolvedAddOns,
     ...(hasCart ? { items } : {}),
     notes:         notes         || null,
@@ -90,7 +118,21 @@ export async function saveOrder({ item, quantity, totalPrice, addOns, items, not
     customerPhone, tenantId, businessId,
     status:        status || 'pending',
     paymentStatus: 'unpaid',
+    promoCode:      appliedPromoCode,
+    discountAmount,
+    originalTotal:  appliedPromoCode ? resolvedTotal : null,
   });
+
+  // Consume the usage slot only after the order is safely persisted with the
+  // discount already applied — mirrors decrementStockForOrder's own ordering
+  // rationale (never mutate shared counters before the thing they gate has
+  // actually been created). Fire-and-forget, same as recordOrderItem below —
+  // a failed usage-counter increment must never roll back a real order.
+  if (appliedPromoCode) {
+    applyPromoUsage(tenantId, appliedPromoCode).catch(err =>
+      logger.debug('[OrderService] applyPromoUsage failed (non-fatal)', { err: err.message })
+    );
+  }
 
   // [FIX-BUG5] Update customer memory — fire-and-forget, never blocks order completion
   // [FIX-MEM-DOUBLECOUNT] countOrder:false — this fires on EVERY saveOrder() call,

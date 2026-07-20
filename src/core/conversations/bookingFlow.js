@@ -323,22 +323,45 @@ export async function handleBookingFlow({ session, message, business, tenant, is
     await updateSession(session.customerPhone, session.tenantId, { step: firstStep, data: { ...data } });
 
     if (firstStep === 'SELECT_SERVICE') {
-      if (services.length > 3) {
+      // [AUDIT-FIX-BOOKING-CANCEL-1] Was `services.length > 3`, so the button
+      // branch below ran for 1, 2, OR exactly 3 services. WhatsApp's hard
+      // 3-button cap means 3 services + a Cancel button is 4 buttons — a
+      // structurally impossible fit, not something any slice/concat ordering
+      // can fix. The previous code's .slice(0,3).map(...).concat([CANCEL]).
+      // slice(0,3) always silently dropped CANCEL in exactly this case.
+      // Fixed by routing services.length >= 3 to the list format (which has
+      // plenty of headroom for a trailing Cancel row) — the button branch
+      // now only ever runs for 1-2 services, where CANCEL always fits safely
+      // in the remaining slot(s).
+      if (services.length >= 3) {
+        // [FIX-BOOKING-LIST-CANCEL-ROW] dispatcher.js caps a single list
+        // section at 10 rows (WhatsApp's real per-section limit) — appending
+        // a CANCEL row unconditionally could itself be silently dropped by
+        // that same cap once there are 10+ services, defeating the point of
+        // this fix. Only append it when it's guaranteed to fit; a customer
+        // facing a 10+-item list can still cancel by typing "cancel" (handled
+        // universally by the CANCEL keyword / negation-guard cancellation
+        // path elsewhere), so no functionality is lost either way.
+        const serviceRows = services.map(s => ({
+          id: `SVC_${s.name.toUpperCase().replace(/\s+/g, '_')}`,
+          title: s.name.slice(0, 24),
+          description: [s.price ? `D${s.price}` : null, s.duration ? `${s.duration} min` : null].filter(Boolean).join(' · ') || undefined,
+        }));
+        const rows = serviceRows.length < 10
+          ? [...serviceRows, { id: 'CANCEL', title: '❌ Cancel' }]
+          : serviceRows;
+
         return {
           type: 'list',
           body: 'Which service would you like to book?',
           button: 'View services',
-          sections: [{ title: 'Our Services', rows: services.map(s => ({
-            id: `SVC_${s.name.toUpperCase().replace(/\s+/g, '_')}`,
-            title: s.name.slice(0, 24),
-            description: [s.price ? `D${s.price}` : null, s.duration ? `${s.duration} min` : null].filter(Boolean).join(' · ') || undefined,
-          }))}],
+          sections: [{ title: 'Our Services', rows }],
         };
       }
       return {
         type:    'buttons',
         body:    'Which service would you like to book?',
-        buttons: services.slice(0, 3).map(s => ({
+        buttons: services.map(s => ({
           id: `SVC_${s.name.toUpperCase().replace(/\s+/g, '_')}`,
           title: s.name.slice(0, 20),
         })).concat([{ id: 'CANCEL', title: '❌ Cancel' }]).slice(0, 3),
@@ -384,23 +407,33 @@ export async function handleBookingFlow({ session, message, business, tenant, is
       }
 
       if (!service) {
-        // Show as list for more than 3 services, buttons for ≤3
-        if (services.length > 3) {
+        // [AUDIT-FIX-BOOKING-CANCEL-2] Same fix as the SELECT_SERVICE entry
+        // prompt above — was `services.length > 3`, letting the button branch
+        // run for exactly 3 services too, where CANCEL was always silently
+        // dropped by the trailing .slice(0,3). Raised to >=3 so the button
+        // branch only ever runs for 1-2 services (CANCEL always fits).
+        if (services.length >= 3) {
+          const serviceRows = services.map(s => ({
+            id: `SVC_${s.name.toUpperCase().replace(/\s+/g, '_')}`,
+            title: s.name.slice(0, 24),
+            description: s.price ? `D${s.price}${s.duration ? ` · ${s.duration}min` : ''}` : undefined,
+          }));
+          // [FIX-BOOKING-LIST-CANCEL-ROW] Same 10-row-cap guard as above —
+          // only append CANCEL when it's guaranteed to fit.
+          const rows = serviceRows.length < 10
+            ? [...serviceRows, { id: 'CANCEL', title: '❌ Cancel' }]
+            : serviceRows;
           return {
             type: 'list',
             body: `Please choose a service:`,
             button: 'View services',
-            sections: [{ title: 'Our Services', rows: services.map(s => ({
-              id: `SVC_${s.name.toUpperCase().replace(/\s+/g, '_')}`,
-              title: s.name.slice(0, 24),
-              description: s.price ? `D${s.price}${s.duration ? ` · ${s.duration}min` : ''}` : undefined,
-            }))}],
+            sections: [{ title: 'Our Services', rows }],
           };
         }
         return {
           type:    'buttons',
           body:    `Please choose a service:`,
-          buttons: services.slice(0, 3).map(s => ({
+          buttons: services.map(s => ({
             id: `SVC_${s.name.toUpperCase().replace(/\s+/g, '_')}`,
             title: s.name.slice(0, 20),
           })).concat([{ id: 'CANCEL', title: '❌ Cancel' }]).slice(0, 3),
@@ -632,10 +665,11 @@ export async function handleBookingFlow({ session, message, business, tenant, is
         return cancelFlow(session, business);
       }
 
-      // [FIX-CONFIRM-1] "yeah"/"yep" were missing here even though DATE_CONFIRM
-      // and TIME_CONFIRM in this same file already accept them. This is the step
-      // that actually saves the booking, so it matters most.
-      if (!/^(yes|y|yeah|yep|confirm|ok|okay|sure)$/i.test(clean) && clean !== 'confirm') {
+      // [AUDIT-FIX-CONFIRM-1] Was missing "yeah"/"yep" — DATE_CONFIRM and
+      // TIME_CONFIRM in this same file already accept them, and this is the
+      // step that actually SAVES the booking, so the inconsistency mattered
+      // most here.
+      if (!/^(yes|y|yep|yeah|confirm|ok|okay|sure)$/i.test(clean) && clean !== 'confirm') {
         const { date, time, service, partySize, stylist, staff } = data;
         const staffDisplay2 = stylist || staff || null;
         const isBarbershopReprompt = (business?.businessMode || '').toUpperCase() === 'BARBERSHOP';
