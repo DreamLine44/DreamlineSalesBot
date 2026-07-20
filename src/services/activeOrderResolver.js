@@ -97,16 +97,13 @@ export async function resolveActiveOrder(customerPhone, tenantId, business = nul
         { paymentStatus: 'rejected' },
         // Proof submitted, still awaiting admin decision
         { paymentStatus: { $in: ['proof_received', 'payment_pending_verification'] } },
-        // [AUDIT-FIX-AOR-QUERY-REJECT] Admin-rejected orders written via
-        // adminCommandService.rejectPayment() land at status:'pending' +
-        // paymentStatus:'unpaid' (see [FIX-AOR-REJECT] / wasAdminRejected below) —
-        // the SAME shape the abandoned-cart clause above bounds to 24h. But a
-        // rejected order isn't an abandoned cart; it's awaiting explicit customer
-        // action (retry or give up), and an admin reviewing/rejecting more than
-        // 24h after the order was placed is routine, not a bug. Without this
-        // unbounded clause the query silently dropped the order once 24h had
-        // passed, even though _resolveState() below already knows how to turn it
-        // into a PAYMENT_REJECTED card with the rejection reason and a retry button.
+        // [AUDIT-FIX-AOR-QUERY-REJECT] Admin-rejected orders are written back as
+        // status:'pending' + paymentStatus:'unpaid' + paymentReviewedAt set (see
+        // the wasAdminRejected check below) — the SAME shape as an abandoned cart,
+        // so they were silently caught by the 24h-bounded 'pending' clause above
+        // and dropped once the admin took more than a day to review. A rejection
+        // is an order awaiting explicit customer action, not an abandoned cart, so
+        // this clause is intentionally left age-unbounded.
         { status: 'pending', paymentStatus: 'unpaid', paymentReviewedAt: { $ne: null } },
       ],
     })
@@ -142,7 +139,8 @@ function _resolveState(order, business, session) {
 
   const currency    = business?.payment?.currency || 'D';
   const adminPhone  = business?.adminPhone || null;
-  const custName    = session?.customerName ? `, ${session.customerName}` : '';
+  // [NO-NAME-1] Name-based personalisation disabled for now.
+  const custName    = '';
   const shortId     = order.shortId || '???';
   const itemSummary = `*${order.item}* × ${order.quantity}`;
   const priceStr    = order.totalPrice ? `${currency}${order.totalPrice}` : null;
@@ -309,7 +307,8 @@ function _resolveState(order, business, session) {
 
 function _preparingCard(order, business, session, stage) {
   const currency   = business?.payment?.currency || 'D';
-  const custName   = session?.customerName ? `, ${session.customerName}` : '';
+  // [NO-NAME-1] Name-based personalisation disabled for now.
+  const custName   = '';
   const shortId    = order.shortId || '???';
   const itemSummary = `*${order.item}* × ${order.quantity}`;
   const priceStr   = order.totalPrice ? `${currency}${order.totalPrice}` : null;
@@ -321,8 +320,8 @@ function _preparingCard(order, business, session, stage) {
   return {
     type: 'buttons',
     body:
-      `👋 *Welcome back${custName}!*\n\n` +
-      `Your order *#${shortId}* is currently in progress.\n\n` +
+      `📦 *You have an order in progress${custName}*\n\n` +
+      `Order *#${shortId}*:\n` +
       `🍽 ${itemSummary}` +
       (priceStr ? `\n💰 *${priceStr}*` : '') +
       `\n${statusLine}\n\n` +

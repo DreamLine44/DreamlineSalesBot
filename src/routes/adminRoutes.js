@@ -316,7 +316,9 @@ r.get('/sessions/:tenantId', overviewLimiter, async (req, res) => {
 
 /**
  * validateNotificationInput({ subject, body, severity })
- * Pure — no DB. Returns an error string, or null when the input is valid.
+ * Pure input validation, no DB — mirrors the AdminNotification schema's own
+ * constraints (maxlength 150/2000, severity enum) so a bad request gets a
+ * clear 400 instead of a raw Mongoose ValidationError.
  */
 export function validateNotificationInput({ subject, body, severity } = {}) {
   if (!subject || !String(subject).trim()) return 'subject is required';
@@ -330,18 +332,20 @@ export function validateNotificationInput({ subject, body, severity } = {}) {
 }
 
 /**
- * buildNotificationAccessFilter(req, query)
+ * buildNotificationAccessFilter(caller, query)
  * Pure — no DB. The security-critical piece: a tenant caller is ALWAYS
  * scoped to their own tenantId (never the query string's), and can never
  * filter by broadcastId (which would let them probe other tenants'
  * broadcast IDs). A super admin gets an unscoped filter by default, with
  * optional narrowing by any of the four query params.
  *
+ * caller: { isSuperAdmin, tenantId } — a plain object or req is fine, only
+ * these two properties are ever read.
  * @returns {{ filter?: object, error?: string }} exactly one of the two keys is set
  */
-export function buildNotificationAccessFilter(req, query = {}) {
-  const isSuperAdmin   = !!req?.isSuperAdmin;
-  const callerTenantId = req?.tenantId || null;
+export function buildNotificationAccessFilter(caller, query = {}) {
+  const isSuperAdmin   = !!caller?.isSuperAdmin;
+  const callerTenantId = caller?.tenantId || null;
 
   if (!isSuperAdmin && !callerTenantId) {
     return { error: 'Forbidden' };
@@ -353,8 +357,8 @@ export function buildNotificationAccessFilter(req, query = {}) {
     if (query.tenantId) filter.tenantId = query.tenantId;
   } else {
     // SECURITY: never honour a caller-supplied tenantId — a tenant admin's
-    // own req.tenantId (set by auth middleware, not the request) is the
-    // only tenantId they can ever be scoped to.
+    // own tenantId (set by auth middleware, not the request) is the only
+    // tenantId they can ever be scoped to.
     filter.tenantId = callerTenantId;
   }
 
@@ -383,6 +387,10 @@ export function buildNotificationAccessFilter(req, query = {}) {
  * do. Fire-and-forget: never blocks or fails the notification write.
  */
 async function pingTenantAdmin(tenant, notification) {
+  // [FIX-ADMIN-NOTIFY-PHONE] tenant.adminPhone is a top-level Tenant field
+  // (see models/Tenant.js) — an earlier version of this function looked for
+  // tenant.whatsapp.adminPhone / tenant.whatsapp.phoneNumberId, neither of
+  // which exists on the schema, so the WhatsApp nudge silently never fired.
   if (!tenant?.adminPhone) return false;
   try {
     await dispatchText(
@@ -400,7 +408,8 @@ async function pingTenantAdmin(tenant, notification) {
 // GET /notifications — list this caller's thread (scoped per buildNotificationAccessFilter)
 r.get('/notifications', overviewLimiter, async (req, res) => {
   try {
-    const { filter, error } = buildNotificationAccessFilter(req, req.query);
+    const caller = { isSuperAdmin: req.isSuperAdmin, tenantId: req.tenantId };
+    const { filter, error } = buildNotificationAccessFilter(caller, req.query);
     if (error) return res.status(403).json({ error });
 
     const limit = Math.min(Math.max(Number(req.query.limit) || 50, 1), 200);
@@ -423,11 +432,15 @@ r.get('/notifications', overviewLimiter, async (req, res) => {
 //   Super admin: { tenantId, subject, body, severity? } for a direct send, or
 //                { broadcast: true, subject, body, severity? } to fan out to
 //                every tenant (one AdminNotification doc per tenant, sharing
-//                a broadcastId).
+//                a broadcastId). [FIX-ADMIN-NOTIFY-BROADCAST] Requiring this
+//                explicit opt-in — rather than inferring "broadcast" from a
+//                simply-omitted tenantId — means a caller who forgets to pass
+//                tenantId gets a clear 400, not an accidental mass-send to
+//                every tenant on the platform.
 //   Tenant admin: sends TO_ADMIN, always scoped to their own tenantId.
 r.post('/notifications', async (req, res) => {
   try {
-    const { subject, body, severity, tenantId: bodyTenantId, broadcast } = req.body;
+    const { subject, body, severity, tenantId: bodyTenantId, broadcast } = req.body || {};
 
     const validationErr = validateNotificationInput({ subject, body, severity });
     if (validationErr) return res.status(400).json({ error: validationErr });
@@ -439,7 +452,8 @@ r.post('/notifications', async (req, res) => {
       const notification = await AdminNotification.create({
         tenantId:  req.tenantId,
         direction: 'TO_ADMIN',
-        fromLabel: 'Tenant Admin',
+        fromLabel: req.adminUser?.name || 'Tenant Admin',
+        fromAdminUserId: req.adminUser?._id || null,
         subject, body,
         ...(severity ? { severity } : {}),
       });
@@ -448,13 +462,14 @@ r.post('/notifications', async (req, res) => {
 
     // Super admin → TO_TENANT, direct or broadcast.
     if (broadcast) {
-      const tenants = await Tenant.find({}, { _id: 1, whatsapp: 1 }).lean();
+      const tenants = await Tenant.find({}, { _id: 1, adminPhone: 1 }).lean();
       const broadcastId = randomUUID();
       const docs = await AdminNotification.insertMany(
         tenants.map(t => ({
           tenantId: t._id,
           direction: 'TO_TENANT',
-          fromLabel: 'WhatSales Team',
+          fromLabel: req.adminUser?.name || 'WhatSales Team',
+          fromAdminUserId: req.adminUser?._id || null,
           broadcastId,
           subject, body,
           ...(severity ? { severity } : {}),
@@ -467,14 +482,15 @@ r.post('/notifications', async (req, res) => {
       return res.status(201).json({ notifications: docs, broadcastId });
     }
 
-    if (!bodyTenantId) return res.status(400).json({ error: 'tenantId is required for a direct message' });
+    if (!bodyTenantId) return res.status(400).json({ error: 'tenantId is required for a direct message (or pass broadcast: true)' });
     const tenant = await loadTenant(bodyTenantId);
     if (!tenant) return res.status(404).json({ error: 'Tenant not found' });
 
     const notification = await AdminNotification.create({
       tenantId:  bodyTenantId,
       direction: 'TO_TENANT',
-      fromLabel: 'WhatSales Team',
+      fromLabel: req.adminUser?.name || 'WhatSales Team',
+      fromAdminUserId: req.adminUser?._id || null,
       subject, body,
       ...(severity ? { severity } : {}),
     });
@@ -491,7 +507,8 @@ r.post('/notifications', async (req, res) => {
 // PATCH /notifications/:id/read — mark a single notification read.
 r.patch('/notifications/:id/read', async (req, res) => {
   try {
-    const { filter, error } = buildNotificationAccessFilter(req, {});
+    const caller = { isSuperAdmin: req.isSuperAdmin, tenantId: req.tenantId };
+    const { filter, error } = buildNotificationAccessFilter(caller, {});
     if (error) return res.status(403).json({ error });
 
     const notification = await AdminNotification.findOneAndUpdate(

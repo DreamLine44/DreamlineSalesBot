@@ -62,51 +62,69 @@ const COMPLIMENT_RE = /\b(amazing|excellent|fantastic|love|best|delicious|enjoye
 const COMPLAINT_RE  = /\b(bad|terrible|awful|horrible|disappoint|not\s*good|wrong|cold|late|missing|never|complain|refund|cheat|fraud|angry|upset|poor|issue|problem|unsatisfied|unhappy|rubbish|disgusting|unacceptable|worst)\b/i;
 const QUESTION_RE   = /[?]|^(how|when|where|what|why|can\s*you|do\s*you|is\s*there|will\s*you|could\s*you)\b/i;
 
-// [PFH-8] A lone ACK/COMPLIMENT regex match sitting next to a negation ("not amazing"),
-// a hedge ("hardly", "barely"), or a sarcasm marker (quoted word, clapping emoji, "lol")
-// is exactly the gap a tone-testing customer exploits — the regex sees the positive
-// word and ignores the qualifier flipping its meaning. Demote those to the AI tiebreak.
-const NEGATION_SARCASM_RE = /\b(not|never|hardly|barely|isn't|wasn't|aren't|weren't|no\s*way|yeah\s*right)\b|['"][^'"]{2,}['"]|👏|🙄|😏|\blol\b|\blmao\b/i;
-
+// [PFH-8] The five buckets classifyPostFlowSentiment() resolves every post-flow
+// message into. UNRELATED covers zero-signal messages that reach the AI tiebreak
+// and still come back ambiguous, plus the AI-unavailable/error fallback.
 const SENTIMENT_LABELS = ['ACK', 'COMPLIMENT', 'COMPLAINT', 'QUESTION', 'UNRELATED'];
 
+// [AUDIT-FIX-LIVE-3] A lone ACK/COMPLIMENT regex match next to a negation ("not
+// amazing") or a sarcasm hint (a quoted word, or 👏/🙄/😒) is exactly the gap a
+// tone-testing customer exploits — the regex fires on the positive word alone and
+// never sees the negation/sarcasm around it. Demote that specific case to the AI
+// tiebreak instead of trusting the instant fast path.
+const NEGATION_OR_SARCASM_RE = /\b(not|isn't|wasn't|didn't|don't|no|never)\b|["'“”‘’][^"'“”‘’]+["'“”‘’]|🙄|😒|👏/i;
+function hasNegationOrSarcasm(m) {
+  return NEGATION_OR_SARCASM_RE.test(m);
+}
+
 /**
- * classifyPostFlowSentiment — single source of truth for isAck/isCompliment/
- * isComplaint/isQuestion, replacing four independent (and sometimes conflicting)
- * regex tests.
+ * classifyPostFlowSentiment(msg, business)
+ * [PFH-8] Single source of truth for post-flow sentiment — replaces four
+ * independent, non-mutually-exclusive regex booleans with one classification call.
  *
- * [PFH-8] Trusts a single confident regex match with zero added latency/cost.
- * Falls back to the same lean one-word AI classifier intentEngine.js already
- * uses (groqProvider.classifyIntent) when the regexes give zero or conflicting
- * signals, or when the lone match looks gameable (negation/sarcasm nearby).
- * Defaults to the safe 'UNRELATED' bucket if the AI call fails or errors,
- * consistent with [PFH-2]'s existing unknown-ackCtx safe-fallback pattern.
- *
- * @param {string} msg      — trimmed customer message text
- * @param {object} business — BusinessConfig document (used for mode context)
- * @returns {Promise<'ACK'|'COMPLIMENT'|'COMPLAINT'|'QUESTION'|'UNRELATED'>}
+ * - Trusts a single confident regex match with zero added latency/cost, UNLESS
+ *   that lone match is a gameable ACK/COMPLIMENT next to a negation/sarcasm hint.
+ * - Falls back to groqProvider.classifyIntent() (the same negation-aware
+ *   classifier intentEngine.js's postFlowHandler tiebreak already relied on
+ *   — [AUDIT-FIX-CLASSIFY-2] upgraded it to return { intent, confidence }
+ *   instead of a bare string) when regexes give zero or conflicting signals,
+ *   or the sole match looks gameable.
+ * - Never throws — defaults to the safe 'UNRELATED' bucket on any AI failure.
  */
+// [CONV-LIMIT-1] Shared helper: once the post-completion conversation limit is
+// reached, append a gentle nudge and swap in the business's welcome buttons so
+// the customer has a clear path back to a new business activity. Never call
+// this for a complaint reply — complaints are never cut short.
+function withLimitNudge({ body, buttons, conversationLimitReached, welcomeBtns }) {
+  if (!conversationLimitReached) return { body, buttons };
+  return {
+    body:    `${body}\n\nI'd be happy to help with anything else whenever you're ready.`,
+    buttons: welcomeBtns,
+  };
+}
+
 async function classifyPostFlowSentiment(msg, business) {
   const mode = (business?.businessMode || 'RETAIL').toUpperCase();
 
   const matches = [];
-  if (ACK_RE.test(msg))        matches.push('ACK');
+  if (ACK_RE.test(msg)) matches.push('ACK');
   if (COMPLIMENT_RE.test(msg)) matches.push('COMPLIMENT');
-  if (COMPLAINT_RE.test(msg))  matches.push('COMPLAINT');
-  if (QUESTION_RE.test(msg))   matches.push('QUESTION');
+  if (COMPLAINT_RE.test(msg)) matches.push('COMPLAINT');
+  if (QUESTION_RE.test(msg)) matches.push('QUESTION');
 
-  const hasNegationOrSarcasm = NEGATION_SARCASM_RE.test(msg);
   const soleMatchIsGameable = matches.length === 1 &&
     (matches[0] === 'ACK' || matches[0] === 'COMPLIMENT') &&
-    hasNegationOrSarcasm;
+    hasNegationOrSarcasm(msg);
 
   if (matches.length === 1 && !soleMatchIsGameable) return matches[0];
 
   try {
     const { classifyIntent } = await import('../core/ai/providers/groqProvider.js');
-    const { intent } = await classifyIntent({ message: msg, validIntents: SENTIMENT_LABELS, mode });
-    return SENTIMENT_LABELS.includes(intent) ? intent : 'UNRELATED';
+    const result = await classifyIntent({ message: msg, validIntents: SENTIMENT_LABELS, mode });
+    // [AUDIT-FIX-CLASSIFY-2] classifyIntent() now returns { intent, confidence }.
+    return result && SENTIMENT_LABELS.includes(result.intent) ? result.intent : 'UNRELATED';
   } catch (err) {
+    logger.warn('[PostFlowHandler] classifyPostFlowSentiment AI tiebreak failed', { err: err.message });
     return 'UNRELATED';
   }
 }
@@ -140,9 +158,12 @@ export async function handlePostFlowMessage({
     { id: 'QUESTION', title: '❓ Ask a Question'   },
   ]).slice(0, 3);
 
-  // Resolve customer name safely
+  // [NO-NAME-1] Name-based personalisation is disabled for now — every reply
+  // uses the same neutral phrasing regardless of whether a name is on file.
+  // May be reintroduced later; keep _rawName resolution in place so re-enabling
+  // is a one-line change.
   const _rawName  = session.customerName || custCtx?.name || null;
-  const custName  = isValidName(_rawName) ? `, ${_rawName}` : '';
+  const custName  = '';
   const orderCount = custCtx?.orderCount || 0;
   const vipThreshold = business?.settings?.vipThreshold || 5;
   const isVIP     = orderCount >= vipThreshold;
@@ -150,22 +171,40 @@ export async function handlePostFlowMessage({
   const msg   = messageText.trim();
   const upper = msg.toUpperCase();
 
-  const sentiment = await classifyPostFlowSentiment(msg, business);
-  const isAck        = sentiment === 'ACK';
-  const isCompliment = sentiment === 'COMPLIMENT';
-  const isComplaint  = sentiment === 'COMPLAINT';
-  const isQuestion   = sentiment === 'QUESTION';
+  const sentiment     = await classifyPostFlowSentiment(msg, business);
+  const isAck         = sentiment === 'ACK';
+  const isCompliment  = sentiment === 'COMPLIMENT';
+  const isComplaint   = sentiment === 'COMPLAINT';
+  const isQuestion    = sentiment === 'QUESTION';
+
+  // [CONV-LIMIT-1] Post-completion conversation limit — the AI recommends when
+  // the threshold appears reached; the application enforces the actual number
+  // via business.settings.postFlowConversationLimit (default 3). Complaints
+  // never count toward the limit and are never cut short — resolving a
+  // customer's concern always takes priority over nudging back to business
+  // options (Section 3 outranks Section 5).
+  const limitThreshold = business?.settings?.postFlowConversationLimit || 3;
+  const priorExchangeCount = session.postFlowExchangeCount || 0;
+  const countsTowardLimit = !isComplaint;
+  const nextExchangeCount = countsTowardLimit ? priorExchangeCount + 1 : priorExchangeCount;
+  const conversationLimitReached = countsTowardLimit && nextExchangeCount >= limitThreshold;
 
   // [PFH-2] Clear postFlowAck first — consumed regardless of path taken below.
   // Each handler that needs to KEEP the ack context restores it explicitly.
-  await updateSession(from, tenantId, { postFlowAck: null, postFlowData: null });
+  // [CONV-LIMIT-1] Reset the exchange counter once we've nudged the customer
+  // back to business options, so the next post-completion chat gets a fresh
+  // window rather than being nudged on every subsequent message.
+  await updateSession(from, tenantId, {
+    postFlowAck: null, postFlowData: null,
+    postFlowExchangeCount: conversationLimitReached ? 0 : nextExchangeCount,
+  });
 
   switch (ackCtx) {
     case 'ORDER_CONFIRMED':
       return handleOrderConfirmed({
         msg, upper, isAck, isCompliment, isComplaint, isQuestion,
         flowData, session, business, tenantDoc, from, tenantId,
-        cfg, bizName, mode, welcomeBtns, custName, isVIP,
+        cfg, bizName, mode, welcomeBtns, custName, isVIP, conversationLimitReached,
       });
 
     case 'ORDER_REJECTED':
@@ -195,11 +234,11 @@ export async function handlePostFlowMessage({
         ...welcomeBtns.slice(0, 2),
       ].slice(0, 3);
       if (isAck || isCompliment) {
-        await dispatchMessage(from, {
-          type:    'buttons',
-          body:    `You're welcome${custName}! 😊 Let us know if you have any other questions.`,
-          buttons: _qaBtns,
-        }, tenantDoc);
+        const { body, buttons } = withLimitNudge({
+          body: `You're welcome${custName}! 😊 Let us know if you have any other questions.`,
+          buttons: _qaBtns, conversationLimitReached, welcomeBtns,
+        });
+        await dispatchMessage(from, { type: 'buttons', body, buttons }, tenantDoc);
         return true;
       }
       if (isComplaint) {
@@ -213,11 +252,87 @@ export async function handlePostFlowMessage({
       }
       // Follow-up question or general message — answer with AI
       const _followUp = await _qaAI({ customerMessage: msg, business, intent: 'QUESTION' });
-      await dispatchMessage(from, {
-        type:    'buttons',
-        body:    _followUp || `Happy to help${custName}! 😊`,
-        buttons: _qaBtns,
-      }, tenantDoc);
+      {
+        const { body, buttons } = withLimitNudge({
+          body: _followUp || `Happy to help${custName}! 😊`,
+          buttons: _qaBtns, conversationLimitReached, welcomeBtns,
+        });
+        await dispatchMessage(from, { type: 'buttons', body, buttons }, tenantDoc);
+      }
+      return true;
+    }
+
+    // [AUDIT-FIX-SPEC-WARRANTY] SPEC_REQUEST / WARRANTY postFlowAck — set by
+    // completeFlow('SPEC_REQUEST') / completeFlow('WARRANTY') in
+    // modules/electronics/flows/orderFlow.js. Previously fell to the default
+    // "unknown ackCtx" branch, logging a spurious warning for an entirely
+    // expected state and showing the generic welcome menu instead of a
+    // context-aware reply. Modeled directly on the QUESTION case above.
+    case 'SPEC_REQUEST': {
+      const { getAIReply: _specAI } = await import('../core/ai/providers/aiRouter.js');
+      const _specBtns = [
+        { id: 'SPEC_REQUEST', title: '❓ Ask Another' },
+        ...welcomeBtns.slice(0, 2),
+      ].slice(0, 3);
+      if (isAck || isCompliment) {
+        const { body, buttons } = withLimitNudge({
+          body: `You're welcome${custName}! 😊 Let me know if you have any other questions about the specs.`,
+          buttons: _specBtns, conversationLimitReached, welcomeBtns,
+        });
+        await dispatchMessage(from, { type: 'buttons', body, buttons }, tenantDoc);
+        return true;
+      }
+      if (isComplaint) {
+        const _r = await _specAI({ customerMessage: msg, business, intent: 'COMPLAINT' });
+        await dispatchMessage(from, {
+          type:    'buttons',
+          body:    _r || `We're sorry to hear that${custName}. 😔 Please speak to our team directly.`,
+          buttons: [{ id: 'SUPPORT', title: '💬 Speak to Team' }],
+        }, tenantDoc);
+        return true;
+      }
+      const _followUp = await _specAI({ customerMessage: msg, business, intent: 'SPEC_REQUEST' });
+      {
+        const { body, buttons } = withLimitNudge({
+          body: _followUp || `Happy to help${custName}! 😊`,
+          buttons: _specBtns, conversationLimitReached, welcomeBtns,
+        });
+        await dispatchMessage(from, { type: 'buttons', body, buttons }, tenantDoc);
+      }
+      return true;
+    }
+
+    case 'WARRANTY': {
+      const { getAIReply: _warrAI } = await import('../core/ai/providers/aiRouter.js');
+      const _warrBtns = [
+        { id: 'WARRANTY', title: '🛡 Ask Another' },
+        ...welcomeBtns.slice(0, 2),
+      ].slice(0, 3);
+      if (isAck || isCompliment) {
+        const { body, buttons } = withLimitNudge({
+          body: `You're welcome${custName}! 😊 Let me know if you need anything else on warranty or after-sales.`,
+          buttons: _warrBtns, conversationLimitReached, welcomeBtns,
+        });
+        await dispatchMessage(from, { type: 'buttons', body, buttons }, tenantDoc);
+        return true;
+      }
+      if (isComplaint) {
+        const _r = await _warrAI({ customerMessage: msg, business, intent: 'COMPLAINT' });
+        await dispatchMessage(from, {
+          type:    'buttons',
+          body:    _r || `We're sorry to hear that${custName}. 😔 Please speak to our team directly.`,
+          buttons: [{ id: 'SUPPORT', title: '💬 Speak to Team' }],
+        }, tenantDoc);
+        return true;
+      }
+      const _followUp = await _warrAI({ customerMessage: msg, business, intent: 'WARRANTY' });
+      {
+        const { body, buttons } = withLimitNudge({
+          body: _followUp || `Happy to help${custName}! 😊`,
+          buttons: _warrBtns, conversationLimitReached, welcomeBtns,
+        });
+        await dispatchMessage(from, { type: 'buttons', body, buttons }, tenantDoc);
+      }
       return true;
     }
 
@@ -225,7 +340,7 @@ export async function handlePostFlowMessage({
       return handleBookingConfirmed({
         msg, upper, isAck, isCompliment, isComplaint,
         flowData, business, tenantDoc, from, tenantId,
-        custName,
+        custName, conversationLimitReached, welcomeBtns,
       });
 
     case 'BOOKING_DECLINED':
@@ -675,79 +790,6 @@ export async function handlePostFlowMessage({
       return true;
     }
 
-    // [AUDIT-FIX-SPEC-WARRANTY] SPEC_REQUEST / WARRANTY postFlowAck — set by
-    // completeFlow('SPEC_REQUEST') / completeFlow('WARRANTY') in
-    // modules/electronics/flows/orderFlow.js. Previously fell to the default
-    // "unknown ackCtx" branch, showing the generic welcome menu instead of a
-    // context-aware reply right after a customer had just asked about specs or
-    // a warranty/repair claim. Modeled directly on the QUESTION case above, with
-    // a dedicated complaint branch (routes to SUPPORT rather than the welcome
-    // menu — a warranty complaint is exactly the case where escalation matters
-    // most) and an "Ask Another" quick-reply so the topic loop stays open.
-    case 'SPEC_REQUEST': {
-      const { getAIReply: _specAI } = await import('../core/ai/providers/aiRouter.js');
-      const _specBtns = [
-        { id: 'SPEC_REQUEST', title: '❓ Ask Another' },
-        ...welcomeBtns.slice(0, 2),
-      ].slice(0, 3);
-      if (isAck || isCompliment) {
-        await dispatchMessage(from, {
-          type:    'buttons',
-          body:    `You're welcome${custName}! 😊 Let me know if you have any other questions about the specs.`,
-          buttons: _specBtns,
-        }, tenantDoc);
-        return true;
-      }
-      if (isComplaint) {
-        const _r = await _specAI({ customerMessage: msg, business, session, intent: 'COMPLAINT' });
-        await dispatchMessage(from, {
-          type:    'buttons',
-          body:    _r || `We're sorry to hear that${custName}. 😔 Please speak to our team directly.`,
-          buttons: [{ id: 'SUPPORT', title: '💬 Speak to Team' }],
-        }, tenantDoc);
-        return true;
-      }
-      const _followUp = await _specAI({ customerMessage: msg, business, session, intent: 'SPEC_REQUEST' });
-      await dispatchMessage(from, {
-        type:    'buttons',
-        body:    _followUp || `Happy to help${custName}! 😊`,
-        buttons: _specBtns,
-      }, tenantDoc);
-      return true;
-    }
-
-    case 'WARRANTY': {
-      const { getAIReply: _warrAI } = await import('../core/ai/providers/aiRouter.js');
-      const _warrBtns = [
-        { id: 'WARRANTY', title: '🛡 Ask Another' },
-        ...welcomeBtns.slice(0, 2),
-      ].slice(0, 3);
-      if (isAck || isCompliment) {
-        await dispatchMessage(from, {
-          type:    'buttons',
-          body:    `You're welcome${custName}! 😊 Let me know if you need anything else on warranty or after-sales.`,
-          buttons: _warrBtns,
-        }, tenantDoc);
-        return true;
-      }
-      if (isComplaint) {
-        const _r = await _warrAI({ customerMessage: msg, business, session, intent: 'COMPLAINT' });
-        await dispatchMessage(from, {
-          type:    'buttons',
-          body:    _r || `We're sorry to hear that${custName}. 😔 Please speak to our team directly.`,
-          buttons: [{ id: 'SUPPORT', title: '💬 Speak to Team' }],
-        }, tenantDoc);
-        return true;
-      }
-      const _followUp = await _warrAI({ customerMessage: msg, business, session, intent: 'WARRANTY' });
-      await dispatchMessage(from, {
-        type:    'buttons',
-        body:    _followUp || `Happy to help${custName}! 😊`,
-        buttons: _warrBtns,
-      }, tenantDoc);
-      return true;
-    }
-
     default: {
       // [PFH-2] Unknown ackCtx — stale session or unhandled future state.
       // Clear it and show a gentle menu. Without this, the caller's intent detection
@@ -768,7 +810,7 @@ export async function handlePostFlowMessage({
 async function handleOrderConfirmed({
   msg, upper, isAck, isCompliment, isComplaint, isQuestion,
   flowData, session, business, tenantDoc, from, tenantId,
-  cfg, bizName, mode, welcomeBtns, custName, isVIP,
+  cfg, bizName, mode, welcomeBtns, custName, isVIP, conversationLimitReached,
 }) {
   const { default: Order } = await import('../models/Order.js');
   const { getAIReply }     = await import('../core/ai/providers/aiRouter.js');
@@ -906,10 +948,13 @@ async function handleOrderConfirmed({
     const fallback = isVIP
       ? `That truly means a lot to us${custName}! 🙏 Your order is still being prepared — we'll have it ready shortly. ❤️`
       : `Thank you${custName}! 😊 We're working on your order — we'll let you know the moment it's ready!`;
-    await dispatchMessage(from, {
-      type: 'text',
-      body: aiReply || fallback,
-    }, tenantDoc);
+    const { body, buttons } = withLimitNudge({
+      body: aiReply || fallback, buttons: [], conversationLimitReached, welcomeBtns,
+    });
+    await dispatchMessage(from, conversationLimitReached
+      ? { type: 'buttons', body, buttons }
+      : { type: 'text', body },
+    tenantDoc);
     return true;
   }
 
@@ -955,9 +1000,16 @@ async function handleOrderConfirmed({
   }
 
   // [SPEC-4A] Simple ack while order is PREPARING — no buttons, no upsell
+  // [CONV-LIMIT-1] ...unless the post-completion conversation limit has been
+  // reached, in which case we nudge back to business options.
   const itemRef = flowData.item ? `*${flowData.item}*` : 'your order';
   const ackBody = `You're welcome${custName}! 😊 ${itemRef} is on its way to the kitchen. We'll let you know when it's ready!`;
-  await dispatchMessage(from, { type: 'text', body: ackBody }, tenantDoc);
+  if (conversationLimitReached) {
+    const { body, buttons } = withLimitNudge({ body: ackBody, buttons: [], conversationLimitReached, welcomeBtns });
+    await dispatchMessage(from, { type: 'buttons', body, buttons }, tenantDoc);
+  } else {
+    await dispatchMessage(from, { type: 'text', body: ackBody }, tenantDoc);
+  }
   return true;
 }
 
@@ -1150,7 +1202,7 @@ async function handleWalkInQueueAck({
 async function handleBookingConfirmed({
   msg, upper, isAck, isCompliment, isComplaint,
   flowData, business, tenantDoc, from, tenantId,
-  custName,
+  custName, conversationLimitReached, welcomeBtns,
 }) {
   const { getAIReply } = await import('../core/ai/providers/aiRouter.js');
   const mode          = (business?.businessMode || '').toUpperCase();
@@ -1227,11 +1279,11 @@ What date works best for you?`,
     const seeYouStr = isWalkIn
       ? `See you soon${staffStr}!`
       : `We're looking forward to seeing you${whenStr}${staffStr}.`;
-    await dispatchMessage(from, {
-      type:    'buttons',
-      body:    `You're welcome${custName}! 😊 ${seeYouStr} If anything changes, just let us know!`,
-      buttons: _salonConfirmBtns,
-    }, tenantDoc);
+    const { body, buttons } = withLimitNudge({
+      body: `You're welcome${custName}! 😊 ${seeYouStr} If anything changes, just let us know!`,
+      buttons: _salonConfirmBtns, conversationLimitReached, welcomeBtns,
+    });
+    await dispatchMessage(from, { type: 'buttons', body, buttons }, tenantDoc);
     return true;
   }
 

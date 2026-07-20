@@ -40,7 +40,6 @@ import Tenant         from '../models/Tenant.js';
 import { getAnalyticsSummary, getAnalyticsTimeseries } from '../core/analytics/analyticsService.js';
 import { updateSession }       from '../core/sessions/sessionService.js';
 import { dispatchText, dispatchMessage } from '../core/whatsapp/dispatcher.js';
-import { scheduleWaCatalogSync } from '../modules/catalog/waCatalogSyncScheduler.js';
 import logger from '../config/logger.js';
 
 // [AUDIT-FIX-9] User-supplied search strings were interpolated directly into
@@ -58,6 +57,7 @@ function escapeRegex(str) {
   return String(str).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 import { uploadMenuImage, deleteMenuImage, CLOUDINARY_ENABLED } from '../config/cloudinary.js';
+import { scheduleWaCatalogSync } from '../modules/catalog/waCatalogSyncScheduler.js';
 
 // ── Helper: load tenant doc for WhatsApp dispatch ─────────────────────────────
 async function loadTenant(tenantId) {
@@ -227,6 +227,24 @@ export async function updateOrderStatus(req, res) {
           await dispatchText(order.customerPhone,
             `✅ *Your order is confirmed!*\n\n🍽 *${order.item}* × ${order.quantity}\n\nThank you for your patience! 😊`,
             tenant);
+
+          // [AUDIT-FIX-CATALOG-QUEUE] Mirrors the same wiring added to
+          // adminCommandService.confirmPayment() — this is the dashboard-triggered
+          // twin of that confirmation path (see [FIX-23] above), so it needs the
+          // same drainCatalogQueue() call to advance any queued WA Catalog cart
+          // lines. Without it, orders confirmed from the dashboard (rather than a
+          // WhatsApp APPROVE_ tap) would silently strand every line after the first.
+          try {
+            const { getSession }        = await import('../core/sessions/sessionService.js');
+            const { drainCatalogQueue } = await import('../modules/catalog/waCatalogFlow.js');
+            const drainSession = await getSession(order.customerPhone, String(tenantId));
+            const drainBusiness = await BusinessConfig.findOne({ tenantId }).lean();
+            if (drainSession && drainBusiness) {
+              await drainCatalogQueue({ session: drainSession, business: drainBusiness, tenant });
+            }
+          } catch (err) {
+            logger.warn('[Dashboard] updateOrderStatus: drainCatalogQueue failed', { err: err.message });
+          }
         } else if (status === 'cancelled' || status === 'rejected') {
           // [FIX-23] Set postFlowAck=ORDER_REJECTED so customer follow-up ("ok", "why?")
           // is handled with rejection-context empathy, not a generic welcome screen.
@@ -695,8 +713,6 @@ export async function addMenuItem(req, res) {
       { new: true },
     );
     if (!biz) return res.status(404).json({ error: 'Not found' });
-    // [CATALOG-AUTOSYNC-1] Fire-and-forget debounced WA Catalog sync — no-op
-    // for tenants who haven't enabled it (see waCatalogSyncScheduler.js).
     scheduleWaCatalogSync(tenantId);
     res.status(201).json({ menuItems: biz.menuItems });
   } catch (err) { logger.error('[Dashboard] Request failed', { err: err.message }); res.status(500).json({ error: err.message }); }

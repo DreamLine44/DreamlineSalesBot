@@ -93,13 +93,11 @@ export const BUTTON_ID_MAP = {
   'WALKIN_NOW':         'WALKIN',           // [FIX] Join Now variant button
   'JOIN_QUEUE':         'WALKIN',
   // [v14-PATTERNS] Salon/barbershop new button IDs
-  // [AUDIT-FLOWS-RESCHEDULE] Previously aliased straight to 'START_BOOKING', which just
-  // starts a brand-new booking flow without ever touching the customer's existing
-  // pending/confirmed appointment — silently duplicating it (old booking stays live,
-  // a second unrelated one gets created, plus a duplicate admin alert). Routes to its
-  // own dedicated 'RESCHEDULE' action now — see moduleRouter.js's case 'RESCHEDULE',
-  // which mirrors the already-correct postFlowHandler.js RESCHEDULE handling: cancel
-  // the old booking first, then start the new one.
+  // [AUDIT-FLOWS-RESCHEDULE] Was aliased straight to 'START_BOOKING', which just
+  // resets the session and starts a brand-new booking WITHOUT ever cancelling the
+  // customer's existing pending/confirmed appointment — silently duplicating it
+  // (and the admin confirm/decline alert) instead of rescheduling.
+  // Now routes to its own dedicated action; see moduleRouter.js's case 'RESCHEDULE'.
   'RESCHEDULE':         'RESCHEDULE',
   'CONSULTATION':       'QUESTION',        // consultation taps go to the QUESTION/AI flow
 

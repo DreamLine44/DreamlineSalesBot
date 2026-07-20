@@ -109,10 +109,10 @@ export async function handleCosmeticsOrderFlow({ session, message, business, ten
       }
       if (clean.length < 2) return _buildCosmeticsMenu(menu, business, data.skinType || null);
 
-      // [AUDIT-FIX-PARSEINT] parseInt("2 lipsticks", 10) === 2, not NaN —
-      // digit-prefixed mixed input would silently hijack menu[idx] once
-      // menuViewed was true. Only trust the index for a bare numeric reply
-      // or an interactive tap; anything else falls through to fuzzy matching.
+      // [AUDIT-FIX-PARSEINT] parseInt("2 red shirts", 10) === 2, not NaN — a bare
+      // leading digit used to silently hijack the menu index for ANY mixed
+      // alphanumeric reply once menuViewed was true. Only trust the parsed index
+      // for a genuinely bare number or an interactive tap (list row / button).
       const isPureNumeric = /^\d+$/.test(raw.trim());
       const numIdx = parseInt(raw, 10) - 1;
       let item = ((isInteractive || isPureNumeric) && !isNaN(numIdx) && numIdx >= 0 && menu[numIdx]) ? menu[numIdx] : null;

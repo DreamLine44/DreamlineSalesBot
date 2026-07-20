@@ -92,6 +92,20 @@ const sessionSchema = new mongoose.Schema({
   lastRapidMessage:   { type: String, default: null },
   lastRapidMessageAt: { type: Date,   default: null },
 
+  // [CONV-LIMIT-1] Consecutive post-completion conversational exchanges (thanks,
+  // compliments, questions, etc.) since the last completed activity or the last
+  // limit-reached nudge. Reset to 0 on a fresh GREET and whenever the limit is
+  // hit. Complaints never increment this — resolving a concern always takes
+  // priority over nudging the customer back to business options.
+  postFlowExchangeCount: { type: Number, default: 0 },
+
+  // [MERGE-LOOP-1] Consecutive FALLBACK/CLARIFY replies in a row (i.e. the bot
+  // didn't understand the customer, pre-flow or mid-flow). Reset to 0 the moment
+  // any other action fires. Once this hits the configured threshold, the router
+  // stops repeating the same generic reply and instead offers a human handoff —
+  // see moduleRouter.js's FALLBACK/CLARIFY case.
+  unclearStreak: { type: Number, default: 0 },
+
   // [FIX-ACK-THROTTLE] Tracks the last time we sent an order-status acknowledgement
   // reply so we don't repeat the same status text on every reaction emoji or filler word.
   lastOrderStatusAckAt: { type: Date, default: null },

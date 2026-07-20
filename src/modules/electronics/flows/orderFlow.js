@@ -197,10 +197,11 @@ export async function handleElectronicsOrder({
         return buildProductList(listMenu, business, data.category);
       }
 
-      // [AUDIT-FIX-PARSEINT] parseInt("2 spare cables", 10) === 2, not NaN —
-      // digit-prefixed mixed input would silently hijack listMenu[idx] once
-      // menuViewed was true. Only trust the index for a bare numeric reply
-      // or an interactive tap; anything else falls through to fuzzy matching.
+      // Numeric selection from list
+      // [AUDIT-FIX-PARSEINT] parseInt("2 red shirts", 10) === 2, not NaN — a bare
+      // leading digit used to silently hijack the menu index for ANY mixed
+      // alphanumeric reply once menuViewed was true. Only trust the parsed index
+      // for a genuinely bare number or an interactive tap (list row / button).
       const isPureNumeric = /^\d+$/.test(raw.trim());
       const numIdx = parseInt(raw, 10) - 1;
       let item = ((isInteractive || isPureNumeric) && !isNaN(numIdx) && listMenu[numIdx]) ? listMenu[numIdx] : null;

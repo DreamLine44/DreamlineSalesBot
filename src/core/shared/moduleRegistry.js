@@ -107,9 +107,33 @@ export async function registerAllModules() {
   registerFlow('GENERAL', 'ABOUT',    handleAbout);
 
   // ── Action handlers (module-registered) ───────────────────────────────────
-  registerAction('START_ORDER', async ({ session, message, business, tenant }) => {
+  // [CATALOG-REG-1] waCatalogFlow.js was built and unit-tested against this
+  // exact call shape (see its header comment) but this override was never
+  // added — offerCatalogOnStartOrder()/browseCatalogExplicit() were dead
+  // code, unreachable from any customer message. offerCatalogOnStartOrder()
+  // itself dispatches the catalog message directly and returns { offered }
+  // rather than a UIResponse; { offered: false } (disabled tenant, no
+  // catalogId, wrong mode, or any Graph API failure) falls through to the
+  // exact same startFlow() call every tenant used before this integration.
+  registerAction('START_ORDER', async ({ session, message, business, tenant, intent }) => {
     const { startFlow } = await import('../conversations/flowEngine.js');
+    try {
+      const { offerCatalogOnStartOrder } = await import('../../modules/catalog/waCatalogFlow.js');
+      const { offered } = await offerCatalogOnStartOrder({ session, business, tenant, intent });
+      if (offered) return null; // catalog message already dispatched
+    } catch (err) {
+      logger.warn('[Registry] WA Catalog offer failed — falling back to normal ORDER flow', { err: err.message });
+    }
     return startFlow({ flowName: 'ORDER', session, business, tenant });
+  });
+
+  // [CATALOG-REG-2] Explicit "🛍 Browse Catalog" welcome-menu button (see
+  // withCatalogWelcomeOption() in waCatalogConfig.js and its use in
+  // moduleRouter.js's GREET/SHOW_MENU cases) — needs a registered action to
+  // land on since it's a bare button id, not a classified intent.
+  registerAction('BROWSE_CATALOG', async ({ session, business, tenant }) => {
+    const { browseCatalogExplicit } = await import('../../modules/catalog/waCatalogFlow.js');
+    return browseCatalogExplicit({ session, business, tenant });
   });
 
   registerAction('START_BOOKING', async ({ session, message, business, tenant }) => {
@@ -231,31 +255,25 @@ export async function registerAllModules() {
     const lastItem = await getLastOrderItem(session.customerPhone, session.tenantId).catch(() => null);
     if (lastItem) {
       // [AUDIT-FIX-REPEAT-1] getLastOrderItem() only ever returns the stored item
-      // NAME (Order.item is a plain string) — the old `{ name: lastItem }` stub
-      // had no price at all. orderFlow.js's QUANTITY step computes
-      // `price = item?.price || 0`, so every repeated order silently totalled D0,
-      // and a totalPrice of 0 ALSO skips the payment step entirely for tenants
-      // with payment enabled (CONFIRM only collects payment when data.totalPrice
-      // is truthy) — treated as a free cash order with no admin verification
-      // prompt. Re-resolve the full menu item (with price/image/etc.) from the
-      // current menu by name so a repeat order behaves exactly like a fresh pick.
+      // NAME (Order.item is a plain string) — writing that straight into session
+      // data as { name: lastItem } gave the QUANTITY step no price to work with,
+      // silently totalling D0 and, since totalPrice:0 also skips the payment
+      // step, quietly treated every repeat order as a free cash order with no
+      // admin payment-verification prompt. Re-resolve the full menu item (with
+      // price/image/etc.) from the current menu by name, falling back to the
+      // name-only stub — with an explicit price-uncertainty notice — only when
+      // the item can no longer be found (e.g. it was removed from the menu).
       const fullItem = (business?.menuItems || []).find(
-        i => i.name?.toLowerCase() === lastItem.toLowerCase(),
-      );
+        mi => (mi.name || '').toLowerCase() === lastItem.toLowerCase()
+      ) || null;
 
       await updateSession(session.customerPhone, session.tenantId, {
         currentFlow: 'ORDER', step: 'QUANTITY',
         data: { item: fullItem || { name: lastItem } }, menuViewed: true,
       });
-
-      // The item may no longer be on the menu (discontinued, renamed) — fullItem
-      // stays undefined and we fall back to the name-only stub above, but the
-      // customer must be told the price/availability couldn't be confirmed
-      // rather than silently proceeding as if everything resolved normally.
       const priceNotice = !fullItem
-        ? `\n\n⚠️ We couldn't confirm this item's current price/availability — we'll follow up before finalizing your order.`
+        ? `\n\n⚠️ We couldn't confirm the current price for this item — we'll follow up with the exact total before your order is finalised.`
         : '';
-
       return {
         type: 'buttons',
         body: `🔁 *Repeat your last order*\n\nYou previously ordered *${lastItem}*.${priceNotice}\n\nHow many would you like this time?\n\n_(Enter a number or word — e.g. *1*, *2*, *three*)_`,

@@ -66,10 +66,10 @@ export async function handleFashionOrder({ session, message, business, tenant, i
         await updateSession(session.customerPhone, session.tenantId, { menuViewed: true });
         return buildCatalogUI(business);
       }
-      // [AUDIT-FIX-PARSEINT] parseInt("2 red dresses", 10) === 2, not NaN —
-      // digit-prefixed mixed input would silently hijack menu[idx] once
-      // menuViewed was true. Only trust the index for a bare numeric reply
-      // or an interactive tap; anything else falls through to fuzzy matching.
+      // [AUDIT-FIX-PARSEINT] parseInt("2 red shirts", 10) === 2, not NaN — a bare
+      // leading digit used to silently hijack the menu index for ANY mixed
+      // alphanumeric reply once menuViewed was true. Only trust the parsed index
+      // for a genuinely bare number or an interactive tap (list row / button).
       const isPureNumeric = /^\d+$/.test(raw.trim());
       const numIdx = parseInt(raw, 10) - 1;
       let item = ((isInteractive || isPureNumeric) && !isNaN(numIdx) && menu[numIdx]) ? menu[numIdx] : null;
