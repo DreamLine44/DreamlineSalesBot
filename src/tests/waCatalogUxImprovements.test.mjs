@@ -98,10 +98,11 @@ test('shouldShowCatalogButton is false when disabled, unconfigured, or nothing s
   assert.equal(shouldShowCatalogButton(makeBusiness({ menuItems: [{ _id: 'x', available: false }] })), false);
 });
 
-test('withCatalogWelcomeOption is a no-op for a tenant without WA Catalog', () => {
+test('withCatalogWelcomeOption always merges in Browse Catalog, even for a tenant without WA Catalog configured', () => {
   const buttons = [{ id: 'ORDER', title: '🛍 Shop' }];
   const business = makeBusiness({ waCatalog: { enabled: false } });
-  assert.deepEqual(withCatalogWelcomeOption(buttons, business), { buttons });
+  const result = withCatalogWelcomeOption(buttons, business);
+  assert.ok(result.buttons.some(b => b.id === 'BROWSE_CATALOG'));
 });
 
 test('withCatalogWelcomeOption adds a real button when there is room (<=3 total), inserted before the final option', () => {

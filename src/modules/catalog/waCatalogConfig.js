@@ -113,28 +113,48 @@ export function shouldShowCatalogButton(business) {
 
 /**
  * withCatalogWelcomeOption(buttons, business)
- * [CATALOG-UX-BUTTON] Merges a "🛍 Browse Catalog" option into an existing
- * welcome-menu button set for tenants where shouldShowCatalogButton() is
- * true — a no-op ({ buttons }, unchanged) for every tenant who hasn't
- * enabled WA Catalog.
+ * [CATALOG-UX-BUTTON] Merges a "🛍 Browse Catalog" option into every
+ * tenant's welcome-menu button set — unconditionally, by explicit product
+ * decision, regardless of shouldShowCatalogButton()/WA Catalog enablement.
+ * The welcome menu should look and read the same for every tenant, catalog
+ * configured or not; the button itself stays safe to show even with no WA
+ * Catalog set up because browseCatalogExplicit() (waCatalogFlow.js) already
+ * falls back gracefully to the module's normal ORDER/product flow whenever
+ * sendCatalogMessage() reports the catalog isn't actually configured — a tap
+ * never dead-ends, it just quietly behaves like "Order Food" for tenants who
+ * haven't turned WA Catalog on yet. shouldShowCatalogButton() is kept as a
+ * named export for any future call site that still needs the real
+ * enabled+configured check (e.g. deciding whether to *promote* the catalog
+ * automatically) — it's simply no longer consulted here.
  *
- * dispatcher.js's 'buttons' UI type hard-caps at 3 (`.slice(0, 3)`, silent
- * truncation) — every vertical's welcomeButtons config already uses all 3
- * slots (Order/Book/Question or similar). [FIX-CATALOG-3BTN] Rather than
- * appending Browse Catalog as a 4th option (which either silently vanished
- * to the 3-button cap, or forced a fallback to a WhatsApp *list* message —
- * every option, catalog included, hidden behind a "Choose an option"
- * tap-to-expand button), Browse Catalog now REPLACES the QUESTION slot when
- * one exists. This function always returns `{ buttons }` — it never
- * produces a `rows`/list payload. Losing the Question button from the
- * welcome screen doesn't remove the feature: a typed question is answered
- * exactly the same way whether or not its button is visible (see
- * INTENT_PATTERNS.QUESTION / the direct-question-phrase matcher in
- * intentEngine.js — no tap has ever been required for it).
+ * [FIX-CATALOG-3BTN] dispatcher.js's 'buttons' UI type hard-caps at 3
+ * (`.slice(0, 3)`, silent truncation), and WhatsApp itself never supports
+ * more than 3 native reply buttons in one message. Every vertical's
+ * welcomeButtons config already uses all 3 slots (Order/Book/Question or
+ * similar), so simply appending Browse Catalog as a 4th option has exactly
+ * two possible outcomes: it silently vanishes (dispatcher's `.slice(0,3)`),
+ * or — if the caller instead falls back to a WhatsApp *list* message once
+ * the combined set exceeds 3 — every option, catalog included, gets buried
+ * behind a "Choose an option ▾" tap-to-expand control. Both outcomes are
+ * explicitly rejected here: this function ALWAYS returns a `{ buttons }`
+ * payload with at most 3 entries, and NEVER produces a `rows`/list payload.
+ * When the combined set (existing buttons + Browse Catalog) still fits
+ * within 3, Browse Catalog is simply inserted (see insertIdx below, before
+ * the final "help/question" slot). When it would exceed 3 — the case every
+ * vertical's welcomeButtons hits in practice, since all 3 slots are already
+ * used — Browse Catalog REPLACES the QUESTION slot specifically, not just
+ * "the last slot": most verticals put QUESTION last, but GENERAL mode puts
+ * it first, and picking by id keeps this correct regardless of a given
+ * vertical's button order. Verticals with no QUESTION button at all
+ * (delivery, electronics) fall back to replacing the final slot, matching
+ * the original "next to the help action" placement intent. Losing the
+ * Question button from the welcome screen doesn't remove the feature — a
+ * typed question is answered exactly the same way whether or not its
+ * button is visible (see INTENT_PATTERNS.QUESTION / the direct-question-
+ * phrase matcher in intentEngine.js — no tap has ever been required for it).
  */
-export function withCatalogWelcomeOption(buttons, business) {
+export function withCatalogWelcomeOption(buttons, _business) {
   const base = buttons || [];
-  if (!shouldShowCatalogButton(business)) return { buttons: base };
 
   const catalogOption = {
     id: 'BROWSE_CATALOG', title: '🛍 Browse Catalog',
@@ -143,21 +163,15 @@ export function withCatalogWelcomeOption(buttons, business) {
 
   if (base.length === 0) return { buttons: [catalogOption] };
 
-  // Insert before the final slot first, same placement as before — if the
-  // combined set still fits within the 3-button cap, nothing needs to be
-  // dropped and every original option is kept.
+  // Insert before the final slot first — if the combined set still fits
+  // within the 3-button cap, nothing needs to be dropped and every
+  // original option is kept, in the same placement as before.
   const insertIdx = base.length - 1;
   const inserted  = [...base.slice(0, insertIdx), catalogOption, ...base.slice(insertIdx)];
   if (inserted.length <= 3) return { buttons: inserted };
 
-  // [FIX-CATALOG-3BTN] Combined set would exceed 3 (the case every
-  // vertical's welcomeButtons hits in practice, since all 3 slots are
-  // already used). Replace the QUESTION slot specifically — not just "the
-  // last slot" — since most verticals put QUESTION last but GENERAL mode
-  // puts it first, and picking by id keeps this correct regardless of a
-  // given vertical's button order. Verticals with no QUESTION button at all
-  // (delivery, electronics) fall back to replacing the final slot, matching
-  // the original "next to the help action" placement intent.
+  // Combined set would exceed 3 — replace the QUESTION slot (or the final
+  // slot if there is no QUESTION button) instead of falling back to a list.
   const questionIdx = base.findIndex(b => b.id === 'QUESTION');
   const replaceIdx  = questionIdx !== -1 ? questionIdx : base.length - 1;
 

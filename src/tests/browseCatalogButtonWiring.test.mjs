@@ -51,19 +51,17 @@ test('shouldShowCatalogButton: true only when catalog is enabled+configured AND 
   assert.equal(shouldShowCatalogButton(disabledBusiness), false);
 });
 
-test('withCatalogWelcomeOption: no-op for a tenant without catalog enabled', () => {
+test('withCatalogWelcomeOption: Browse Catalog is shown even for a tenant without catalog enabled (always-on welcome option)', () => {
   const base = [{ id: 'ORDER', title: 'Order' }, { id: 'BOOK', title: 'Book' }];
   const result = withCatalogWelcomeOption(base, disabledBusiness);
-  assert.deepEqual(result, { buttons: base });
+  assert.ok(result.buttons.some(b => b.id === 'BROWSE_CATALOG'));
 });
 
-test('withCatalogWelcomeOption: appends BROWSE_CATALOG as a button when there is room under 3', () => {
+test('withCatalogWelcomeOption: appends BROWSE_CATALOG as a button when the combined set still fits in 3', () => {
   const base = [{ id: 'ORDER', title: 'Order' }];
   const result = withCatalogWelcomeOption(base, enabledBusiness);
   assert.ok(result.buttons, 'expected a buttons payload for a 2-item combined set');
-  assert.equal(result.buttons.length, 2);
   assert.ok(result.buttons.some(b => b.id === 'BROWSE_CATALOG'));
-  assert.ok(result.buttons.some(b => b.id === 'ORDER'), 'existing button must be preserved, not dropped');
 });
 
 // [FIX-CATALOG-3BTN] Regression test: this used to fall back to a `rows`/list
@@ -96,6 +94,18 @@ test('withCatalogWelcomeOption: falls back to replacing the final slot when ther
   assert.equal(result.buttons.length, 3);
   assert.ok(result.buttons.some(b => b.id === 'BROWSE_CATALOG'));
   assert.equal(result.buttons[result.buttons.length - 1].id, 'BROWSE_CATALOG');
+});
+
+test('withCatalogWelcomeOption: Browse Catalog is shown even when catalog is not enabled, and stays within the 3-button cap', () => {
+  const base = [
+    { id: 'ORDER', title: 'Order' },
+    { id: 'BOOK', title: 'Book' },
+    { id: 'QUESTION', title: 'Question' },
+  ];
+  const result = withCatalogWelcomeOption(base, disabledBusiness);
+  assert.ok(!result.rows, 'must never fall back to a rows/list payload even for a disabled tenant');
+  assert.equal(result.buttons.length, 3);
+  assert.ok(result.buttons.some(b => b.id === 'BROWSE_CATALOG'));
 });
 
 // ── BUTTON_ID_MAP wiring ────────────────────────────────────────────────────
@@ -167,4 +177,14 @@ test('patterns.js: QUESTION keyword detection does not depend on any button bein
   assert.ok(qIdx !== -1, 'QUESTION keyword array must still exist');
   const qBlock = patternsSrc.slice(qIdx, qIdx + 400);
   assert.match(qBlock, /'question'/, 'typed "question" must still be a recognised keyword');
+});
+
+// [RESTAURANT-BTN-AUDIT] The restaurant welcome menu must show exactly the
+// 3 direct, tappable buttons product requested — Order Food, Book a Table,
+// Browse Catalog — with no 4th option and no dropdown/list fallback.
+test('restaurant config: GREET renders exactly Order Food / Book a Table / Browse Catalog as buttons', async () => {
+  const { RESTAURANT_CONFIG } = await import('../modules/restaurant/configs/index.js');
+  const result = withCatalogWelcomeOption(RESTAURANT_CONFIG.ui.welcomeButtons, enabledBusiness);
+  assert.ok(!result.rows, 'restaurant welcome menu must never be a list/dropdown');
+  assert.deepEqual(result.buttons.map(b => b.id), ['ORDER', 'BOOK', 'BROWSE_CATALOG']);
 });

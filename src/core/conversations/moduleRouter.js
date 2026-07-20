@@ -328,14 +328,12 @@ export async function route({ action, intent, session, message, business, tenant
       // decides how/when it should surface (e.g. only after explicit opt-in).
       const body = customWelcome || cfg.messages?.welcome || '👋 Welcome! How can I help you today?';
 
-      // [FIX-CATALOG-BTN] Merge in the "🛍 Browse Catalog" welcome option for
-      // tenants with WA Catalog enabled + sellable products (see
-      // waCatalogConfig.js#withCatalogWelcomeOption). A no-op for every
-      // tenant who hasn't enabled it. [FIX-CATALOG-3BTN] Always renders as
-      // native reply buttons now — withCatalogWelcomeOption() replaces a
-      // slot (QUESTION when present) rather than appending a 4th option, so
-      // this never falls back to a WhatsApp list message / "Choose an
-      // option" tap-to-expand button.
+      // [FIX-CATALOG-BTN] Merge in the "🛍 Browse Catalog" welcome option (see
+      // waCatalogConfig.js#withCatalogWelcomeOption). [FIX-CATALOG-3BTN]
+      // Always renders as native reply buttons — withCatalogWelcomeOption()
+      // replaces a slot (QUESTION when present) rather than appending a 4th
+      // option, so this never falls back to a WhatsApp list message /
+      // "Choose an option" tap-to-expand button.
       const { withCatalogWelcomeOption } = await import('../../modules/catalog/waCatalogConfig.js');
       const greetMenu = withCatalogWelcomeOption(cfg.ui?.welcomeButtons || [], business);
       return { type: 'buttons', body, buttons: greetMenu.buttons };
