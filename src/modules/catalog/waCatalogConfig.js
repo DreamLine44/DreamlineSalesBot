@@ -113,10 +113,19 @@ export function shouldShowCatalogButton(business) {
 
 /**
  * withCatalogWelcomeOption(buttons, business)
- * [CATALOG-UX-BUTTON] Merges a "🛍 Browse Catalog" option into an existing
- * welcome-menu button set for tenants where shouldShowCatalogButton() is
- * true — a no-op ({ buttons }, unchanged) for every tenant who hasn't
- * enabled WA Catalog.
+ * [CATALOG-UX-BUTTON] Merges a "🛍 Browse Catalog" option into every
+ * tenant's welcome-menu button set — unconditionally, by explicit product
+ * decision, regardless of shouldShowCatalogButton()/WA Catalog enablement.
+ * The welcome menu should look and read the same for every tenant, catalog
+ * configured or not; the button itself stays safe to show even with no WA
+ * Catalog set up because browseCatalogExplicit() (waCatalogFlow.js) already
+ * falls back gracefully to the module's normal ORDER/product flow whenever
+ * sendCatalogMessage() reports the catalog isn't actually configured — a tap
+ * never dead-ends, it just quietly behaves like "Order Food" for tenants who
+ * haven't turned WA Catalog on yet. shouldShowCatalogButton() is kept as a
+ * named export for any future call site that still needs the real
+ * enabled+configured check (e.g. deciding whether to *promote* the catalog
+ * automatically) — it's simply no longer consulted here.
  *
  * dispatcher.js's 'buttons' UI type hard-caps at 3 (`.slice(0, 3)`, silent
  * truncation) — every vertical's welcomeButtons config already uses all 3
@@ -130,9 +139,8 @@ export function shouldShowCatalogButton(business) {
  * identical either way, so BUTTON_ID_MAP / numeric shortcuts keep working
  * regardless of which shape a given tenant ends up rendering.
  */
-export function withCatalogWelcomeOption(buttons, business) {
+export function withCatalogWelcomeOption(buttons, _business) {
   const base = buttons || [];
-  if (!shouldShowCatalogButton(business)) return { buttons: base };
 
   const catalogOption = {
     id: 'BROWSE_CATALOG', title: '🛍 Browse Catalog',

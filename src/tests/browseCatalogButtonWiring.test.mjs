@@ -51,10 +51,10 @@ test('shouldShowCatalogButton: true only when catalog is enabled+configured AND 
   assert.equal(shouldShowCatalogButton(disabledBusiness), false);
 });
 
-test('withCatalogWelcomeOption: no-op for a tenant without catalog enabled', () => {
+test('withCatalogWelcomeOption: Browse Catalog is shown even for a tenant without catalog enabled (always-on welcome option)', () => {
   const base = [{ id: 'ORDER', title: 'Order' }, { id: 'BOOK', title: 'Book' }];
   const result = withCatalogWelcomeOption(base, disabledBusiness);
-  assert.deepEqual(result, { buttons: base });
+  assert.ok(result.buttons.some(b => b.id === 'BROWSE_CATALOG'));
 });
 
 test('withCatalogWelcomeOption: appends BROWSE_CATALOG as a button when the combined set still fits in 3', () => {
