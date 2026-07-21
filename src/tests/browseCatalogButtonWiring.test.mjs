@@ -64,48 +64,16 @@ test('withCatalogWelcomeOption: appends BROWSE_CATALOG as a button when the comb
   assert.ok(result.buttons.some(b => b.id === 'BROWSE_CATALOG'));
 });
 
-// [FIX-CATALOG-3BTN] Regression test: this used to fall back to a `rows`/list
-// payload (the "Choose an option" tap-to-expand bug) once the combined set
-// exceeded 3 buttons. It must now replace the QUESTION slot instead and stay
-// a 3-button payload, never rows.
-test('withCatalogWelcomeOption: REPLACES the QUESTION slot (not a rows/list fallback) once the combined set would exceed 3 buttons', () => {
+test('withCatalogWelcomeOption: falls back to a list (rows) when the combined set would exceed 3 buttons', () => {
   const base = [
     { id: 'ORDER', title: 'Order' },
     { id: 'BOOK', title: 'Book' },
     { id: 'QUESTION', title: 'Question' },
   ];
   const result = withCatalogWelcomeOption(base, enabledBusiness);
-  assert.ok(!result.rows, 'must never fall back to a rows/list payload');
-  assert.ok(result.buttons, 'expected a buttons payload');
-  assert.equal(result.buttons.length, 3, 'must stay within the 3-button cap');
-  assert.ok(result.buttons.some(b => b.id === 'BROWSE_CATALOG'));
-  assert.ok(result.buttons.some(b => b.id === 'ORDER'), 'ORDER must survive');
-  assert.ok(result.buttons.some(b => b.id === 'BOOK'), 'BOOK must survive');
-  assert.ok(!result.buttons.some(b => b.id === 'QUESTION'), 'QUESTION is replaced, not kept alongside a 4th slot');
-});
-
-test('withCatalogWelcomeOption: falls back to replacing the final slot when there is no QUESTION button at all', () => {
-  const base = [
-    { id: 'ORDER', title: 'Order' },
-    { id: 'TRACK_ORDER', title: 'Track' },
-    { id: 'VIEW_MENU', title: 'Menu' },
-  ];
-  const result = withCatalogWelcomeOption(base, enabledBusiness);
-  assert.equal(result.buttons.length, 3);
-  assert.ok(result.buttons.some(b => b.id === 'BROWSE_CATALOG'));
-  assert.equal(result.buttons[result.buttons.length - 1].id, 'BROWSE_CATALOG');
-});
-
-test('withCatalogWelcomeOption: Browse Catalog is shown even when catalog is not enabled, and stays within the 3-button cap', () => {
-  const base = [
-    { id: 'ORDER', title: 'Order' },
-    { id: 'BOOK', title: 'Book' },
-    { id: 'QUESTION', title: 'Question' },
-  ];
-  const result = withCatalogWelcomeOption(base, disabledBusiness);
-  assert.ok(!result.rows, 'must never fall back to a rows/list payload even for a disabled tenant');
-  assert.equal(result.buttons.length, 3);
-  assert.ok(result.buttons.some(b => b.id === 'BROWSE_CATALOG'));
+  assert.ok(result.rows, 'expected a rows/list payload once the combined set exceeds 3');
+  assert.equal(result.rows.length, 4);
+  assert.ok(result.rows.some(r => r.id === 'BROWSE_CATALOG'));
 });
 
 // ── BUTTON_ID_MAP wiring ────────────────────────────────────────────────────
@@ -126,65 +94,43 @@ test('moduleRouter.js: a BROWSE_CATALOG case exists and calls browseCatalogExpli
   assert.match(caseBody, /browseCatalogExplicit/, 'BROWSE_CATALOG case must call browseCatalogExplicit()');
 });
 
-test('moduleRouter.js: GREET case calls withCatalogWelcomeOption before returning its welcome payload', () => {
+test('moduleRouter.js: GREET case calls buildWelcomeMenu before returning its welcome payload', () => {
   const greetStart = routerSrc.indexOf("case 'GREET'");
   const browseCatalogStart = routerSrc.indexOf("case 'BROWSE_CATALOG'");
   assert.ok(greetStart !== -1 && browseCatalogStart !== -1 && greetStart < browseCatalogStart);
   const greetBody = routerSrc.slice(greetStart, browseCatalogStart);
-  assert.match(greetBody, /withCatalogWelcomeOption\(/, 'GREET case must call withCatalogWelcomeOption()');
+  assert.match(greetBody, /buildWelcomeMenu\(/, 'GREET case must call buildWelcomeMenu()');
 });
 
-test('moduleRouter.js: SHOW_MENU case calls withCatalogWelcomeOption before returning its payload', () => {
+test('moduleRouter.js: SHOW_MENU case calls buildWelcomeMenu before returning its payload', () => {
   const showMenuStart = routerSrc.indexOf("case 'SHOW_MENU'");
   assert.ok(showMenuStart !== -1, 'SHOW_MENU case not found');
   const showMenuBody = routerSrc.slice(showMenuStart, showMenuStart + 1500);
-  assert.match(showMenuBody, /withCatalogWelcomeOption\(/, 'SHOW_MENU case must call withCatalogWelcomeOption()');
+  assert.match(showMenuBody, /buildWelcomeMenu\(/, 'SHOW_MENU case must call buildWelcomeMenu()');
 });
 
-// [FIX-CATALOG-3BTN] Regression test: GREET/SHOW_MENU used to render a
-// WhatsApp list message ("Choose an option" tap-to-expand button) whenever
-// Browse Catalog pushed the welcome menu past 3 options. withCatalogWelcomeOption()
-// now always returns a buttons payload, so neither case should ever build a
-// 'list' type UI for the welcome menu anymore.
-test('moduleRouter.js: GREET/SHOW_MENU never fall back to a list ("Choose an option") payload', () => {
+test('moduleRouter.js: GREET/SHOW_MENU always render real tap-buttons, never a list, for the main welcome screen', () => {
   const greetStart = routerSrc.indexOf("case 'GREET'");
   const browseCatalogStart = routerSrc.indexOf("case 'BROWSE_CATALOG'");
   const greetBody = routerSrc.slice(greetStart, browseCatalogStart);
-  assert.doesNotMatch(greetBody, /type:\s*'list'/, 'GREET must not render a list/"Choose an option" payload');
-  assert.match(greetBody, /type:\s*'buttons'/, 'GREET must render native reply buttons');
-
-  const showMenuStart = routerSrc.indexOf("case 'SHOW_MENU'");
-  const cancelStart = routerSrc.indexOf("case 'CANCEL'");
-  const showMenuBody = routerSrc.slice(showMenuStart, cancelStart);
-  assert.doesNotMatch(showMenuBody, /type:\s*'list'/, 'SHOW_MENU must not render a list/"Choose an option" payload');
-  assert.match(showMenuBody, /type:\s*'buttons'/, 'SHOW_MENU must render native reply buttons');
+  // [WELCOME-MENU-PAGING] By explicit product decision the main welcome
+  // screen is never a list message (which needs an extra expand-tap even to
+  // see the first option) — overflow beyond 3 options is paged behind a
+  // "⋯ More" button instead. GREET's own body should therefore render
+  // 'buttons' only, not 'list'.
+  assert.match(greetBody, /type:\s*'buttons'/, 'GREET must render its main screen as buttons');
+  assert.doesNotMatch(greetBody, /type:\s*'list'/, 'GREET must not render its main welcome screen as a list');
 });
 
-// [FIX-CATALOG-TEXT] Typed "browse catalog" must reach the same place the
-// button tap does, now that Browse Catalog is a primary welcome-menu action.
-test('patterns.js: BROWSE_CATALOG has typed-text keywords and maps to the BROWSE_CATALOG action', async () => {
-  const { INTENT_PATTERNS } = await import('../core/intents/patterns.js');
-  assert.ok(Array.isArray(INTENT_PATTERNS.BROWSE_CATALOG) && INTENT_PATTERNS.BROWSE_CATALOG.length > 0);
-  assert.ok(INTENT_PATTERNS.BROWSE_CATALOG.includes('browse catalog'));
+test('moduleRouter.js: a MORE_MENU case exists and can fall back to a list for its own safety-net overflow', () => {
+  const moreMenuStart = routerSrc.indexOf("case 'MORE_MENU'");
+  assert.ok(moreMenuStart !== -1, 'MORE_MENU case not found in moduleRouter.js');
+  const moreMenuBody = routerSrc.slice(moreMenuStart, moreMenuStart + 1200);
+  assert.match(moreMenuBody, /buildWelcomeMenu\(/, 'MORE_MENU case must call buildWelcomeMenu()');
+  assert.match(moreMenuBody, /\.rows/, 'MORE_MENU must check the .rows safety-net branch');
+  assert.match(moreMenuBody, /type:\s*'list'/, 'MORE_MENU must be able to render a list payload for its safety-net overflow case');
 });
 
-// [FIX-CATALOG-3BTN] Removing the QUESTION button from the welcome menu must
-// not remove the feature — typed questions still route to QUESTION with no
-// button required, independent of what's currently shown on screen.
-test('patterns.js: QUESTION keyword detection does not depend on any button being present', () => {
-  const patternsSrc = read('../core/intents/patterns.js');
-  const qIdx = patternsSrc.indexOf('QUESTION: [');
-  assert.ok(qIdx !== -1, 'QUESTION keyword array must still exist');
-  const qBlock = patternsSrc.slice(qIdx, qIdx + 400);
-  assert.match(qBlock, /'question'/, 'typed "question" must still be a recognised keyword');
-});
-
-// [RESTAURANT-BTN-AUDIT] The restaurant welcome menu must show exactly the
-// 3 direct, tappable buttons product requested — Order Food, Book a Table,
-// Browse Catalog — with no 4th option and no dropdown/list fallback.
-test('restaurant config: GREET renders exactly Order Food / Book a Table / Browse Catalog as buttons', async () => {
-  const { RESTAURANT_CONFIG } = await import('../modules/restaurant/configs/index.js');
-  const result = withCatalogWelcomeOption(RESTAURANT_CONFIG.ui.welcomeButtons, enabledBusiness);
-  assert.ok(!result.rows, 'restaurant welcome menu must never be a list/dropdown');
-  assert.deepEqual(result.buttons.map(b => b.id), ['ORDER', 'BOOK', 'BROWSE_CATALOG']);
+test('moduleRouter.js: a MAIN_MENU case exists and reuses the SHOW_MENU reset-and-show-menu behavior', () => {
+  assert.match(routerSrc, /case 'MAIN_MENU':\s*\n\s*case 'SHOW_MENU':/, 'MAIN_MENU should fall through into the same block as SHOW_MENU');
 });

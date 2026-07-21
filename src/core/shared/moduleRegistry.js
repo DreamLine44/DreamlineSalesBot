@@ -107,35 +107,17 @@ export async function registerAllModules() {
   registerFlow('GENERAL', 'ABOUT',    handleAbout);
 
   // ── Action handlers (module-registered) ───────────────────────────────────
-  registerAction('START_ORDER', async ({ session, message, business, tenant, intent, isInteractive }) => {
-    // [FIX-ORDER-BTN-CATALOG] A direct tap on the "🍔 Order Food" welcome button
-    // must always open the module's own menu — never get silently swapped out
-    // for the WA Catalog message. Previously offerCatalogOnStartOrder() ran for
-    // EVERY 'ORDER'-intent START_ORDER, button tap or typed text alike, so any
-    // tenant with WA Catalog enabled (AI_DECIDES/ALWAYS_OFFER — the defaults)
-    // had their "Order Food" button silently hijacked into the catalog flow,
-    // and the real "View Menu" content the customer tapped for never appeared.
-    // Now that every tenant also has a dedicated "🛍 Browse Catalog" button
-    // (see waCatalogConfig.js#withCatalogWelcomeOption), a direct tap on
-    // "Order Food" is exactly as unambiguous a signal as a direct tap on
-    // "Browse Catalog" already is (see browseCatalogExplicit()'s own docstring:
-    // "independent of waCatalog.mode/AI intent classification, since a direct
-    // tap is an unambiguous signal on its own") — it means "show me the real
-    // menu", full stop. The catalog auto-offer still applies exactly as before
-    // for typed/AI-classified 'order' text (e.g. "I want to order", "shop"),
-    // where there's no explicit button to disambiguate intent.
-    if (!isInteractive) {
-      // [CATALOG-REG-1] offerCatalogOnStartOrder was fully built and documented
-      // (see waCatalogFlow.js's own header: "Called from the moduleRegistry.js
-      // START_ORDER action override") but never actually wired in here — every
-      // WA-Catalog-enabled tenant's customers always saw the module's own
-      // text/list product browser instead, regardless of waCatalog.mode.
-      // Returns { offered: false } for every tenant who hasn't opted in (or on
-      // any failure) — startFlow() below runs exactly as it always did for them.
-      const { offerCatalogOnStartOrder } = await import('../../modules/catalog/waCatalogFlow.js');
-      const { offered } = await offerCatalogOnStartOrder({ session, business, tenant, intent }).catch(() => ({ offered: false }));
-      if (offered) return null; // catalog message already dispatched — nothing further to send
-    }
+  registerAction('START_ORDER', async ({ session, message, business, tenant, intent }) => {
+    // [CATALOG-REG-1] offerCatalogOnStartOrder was fully built and documented
+    // (see waCatalogFlow.js's own header: "Called from the moduleRegistry.js
+    // START_ORDER action override") but never actually wired in here — every
+    // WA-Catalog-enabled tenant's customers always saw the module's own
+    // text/list product browser instead, regardless of waCatalog.mode.
+    // Returns { offered: false } for every tenant who hasn't opted in (or on
+    // any failure) — startFlow() below runs exactly as it always did for them.
+    const { offerCatalogOnStartOrder } = await import('../../modules/catalog/waCatalogFlow.js');
+    const { offered } = await offerCatalogOnStartOrder({ session, business, tenant, intent }).catch(() => ({ offered: false }));
+    if (offered) return null; // catalog message already dispatched — nothing further to send
 
     const { startFlow } = await import('../conversations/flowEngine.js');
     return startFlow({ flowName: 'ORDER', session, business, tenant });

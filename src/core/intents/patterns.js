@@ -34,6 +34,11 @@ export const BUTTON_ID_MAP = {
   // waCatalogFlow.js's browseCatalogExplicit(), which this button was always
   // documented (in its own docstring) as the trigger for.
   'BROWSE_CATALOG':     'BROWSE_CATALOG',
+  // [WELCOME-MENU-PAGING] "⋯ More" (welcome-menu overflow) and "🏠 Main Menu"
+  // (the way back from that screen) — see buildWelcomeMenu() in
+  // waCatalogConfig.js and moduleRouter.js's MORE_MENU / MAIN_MENU cases.
+  'MORE_MENU':          'MORE_MENU',
+  'MAIN_MENU':          'MAIN_MENU',
 
   // Flow control
   'CONFIRM':            'CONFIRM',
@@ -242,17 +247,6 @@ export const INTENT_PATTERNS = {
     'hi', 'hello', 'hey', 'good morning', 'good afternoon', 'good evening',
     'start', 'begin', 'hiya', 'howdy', 'greetings', 'salaam', 'salam',
     'yo', 'sup', 'whatsup', 'what sup', 'assalamu alaikum',
-  ],
-
-  // [FIX-CATALOG-TEXT] BROWSE_CATALOG previously had zero typed-text keywords —
-  // only BUTTON_ID_MAP mapped it, so it could only ever be triggered by tapping
-  // the "🛍 Browse Catalog" button. Now that it's a primary welcome-menu button
-  // (see waCatalogConfig.js#withCatalogWelcomeOption), a customer typing what
-  // the button says must reach the same handler a tap would.
-  BROWSE_CATALOG: [
-    'browse catalog', 'view catalog', 'see catalog', 'show catalog',
-    'catalog', 'shop catalog', 'see the catalog', 'open catalog',
-    'browse the catalog', 'show me the catalog', 'see products catalog',
   ],
 
   ORDER: [

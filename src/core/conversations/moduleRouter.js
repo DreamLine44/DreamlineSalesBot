@@ -328,15 +328,12 @@ export async function route({ action, intent, session, message, business, tenant
       // decides how/when it should surface (e.g. only after explicit opt-in).
       const body = customWelcome || cfg.messages?.welcome || '👋 Welcome! How can I help you today?';
 
-      // [FIX-CATALOG-BTN] Merge in the "🛍 Browse Catalog" welcome option (see
-      // waCatalogConfig.js#withCatalogWelcomeOption). [FIX-CATALOG-3BTN]
-      // Always renders as native reply buttons — withCatalogWelcomeOption()
-      // replaces a slot (QUESTION when present) rather than appending a 4th
-      // option, so this never falls back to a WhatsApp list message /
-      // "Choose an option" tap-to-expand button.
-      const { withCatalogWelcomeOption } = await import('../../modules/catalog/waCatalogConfig.js');
-      const greetMenu = withCatalogWelcomeOption(cfg.ui?.welcomeButtons || [], business);
-      return { type: 'buttons', body, buttons: greetMenu.buttons };
+      // [WELCOME-MENU-PAGING] Merge in "🛍 Browse Catalog" and split into a
+      // 2-button + "⋯ More" main screen — see buildWelcomeMenu() in
+      // waCatalogConfig.js for the full rationale (never a list/expand-tap).
+      const { buildWelcomeMenu } = await import('../../modules/catalog/waCatalogConfig.js');
+      const greetMenu = buildWelcomeMenu(cfg.ui?.welcomeButtons || [], business);
+      return { type: 'buttons', body, buttons: greetMenu.main.buttons };
     }
 
     case 'BROWSE_CATALOG': {
@@ -362,6 +359,7 @@ export async function route({ action, intent, session, message, business, tenant
     case 'VIEW_MENU':
       return startFlow({ flowName: 'ORDER', session, business, tenant });
 
+    case 'MAIN_MENU':
     case 'SHOW_MENU': {
       const cfg = getModeConfig(business);
       await updateSession(session.customerPhone, session.tenantId, {
@@ -372,15 +370,39 @@ export async function route({ action, intent, session, message, business, tenant
       // again — that's jarring and feels like the bot forgot the conversation.
       // SHOW_MENU shows a short "what else can I help with?" prompt + action buttons.
       // GREET (first message / fresh start) shows the full branded welcome.
+      // MAIN_MENU (the "🏠 Main Menu" button on the MORE_MENU screen, see below)
+      // reuses this exact same block — returning to the main menu is the same
+      // reset-and-show-options behavior regardless of which button triggered it.
       const showMenuBody = cfg.messages?.showMenuPrompt || '👇 What would you like to do?';
 
-      // [FIX-CATALOG-BTN] Same catalog-option merge as GREET above — a
-      // returning-to-menu customer should see the same options a fresh
-      // greeting would show, catalog button included. [FIX-CATALOG-3BTN]
-      // Always renders as native reply buttons — see withCatalogWelcomeOption().
-      const { withCatalogWelcomeOption } = await import('../../modules/catalog/waCatalogConfig.js');
-      const showMenuMenu = withCatalogWelcomeOption(cfg.ui?.welcomeButtons || [], business);
-      return { type: 'buttons', body: showMenuBody, buttons: showMenuMenu.buttons };
+      // [WELCOME-MENU-PAGING] Same buildWelcomeMenu() split as GREET above —
+      // a returning-to-menu customer sees the same real tap buttons a fresh
+      // greeting would show, Browse Catalog included, no list/expand-tap.
+      const { buildWelcomeMenu } = await import('../../modules/catalog/waCatalogConfig.js');
+      const showMenuMenu = buildWelcomeMenu(cfg.ui?.welcomeButtons || [], business);
+      return { type: 'buttons', body: showMenuBody, buttons: showMenuMenu.main.buttons };
+    }
+
+    case 'MORE_MENU': {
+      // [WELCOME-MENU-PAGING] Second screen reached by tapping "⋯ More" on
+      // the main welcome/menu screen. Recomputed fresh from the tenant's own
+      // config on every tap — no session state tracks which screen the
+      // customer is on, so this works identically whether they arrived via
+      // GREET or SHOW_MENU/MAIN_MENU. See buildWelcomeMenu() in
+      // waCatalogConfig.js for the full rationale.
+      const cfg = getModeConfig(business);
+      const { buildWelcomeMenu } = await import('../../modules/catalog/waCatalogConfig.js');
+      const moreMenu = buildWelcomeMenu(cfg.ui?.welcomeButtons || [], business);
+      const moreBody = cfg.messages?.moreMenuPrompt || 'What else would you like to do?';
+      if (moreMenu.more.rows) {
+        // Safety-net path only — see buildWelcomeMenu()'s docstring. Not hit
+        // by any vertical's current config.
+        return {
+          type: 'list', body: moreBody, button: 'Choose an option',
+          sections: [{ title: 'Options', rows: moreMenu.more.rows }],
+        };
+      }
+      return { type: 'buttons', body: moreBody, buttons: moreMenu.more.buttons };
     }
 
     case 'CANCEL': {

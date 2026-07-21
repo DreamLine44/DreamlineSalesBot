@@ -127,31 +127,17 @@ export function shouldShowCatalogButton(business) {
  * enabled+configured check (e.g. deciding whether to *promote* the catalog
  * automatically) — it's simply no longer consulted here.
  *
- * [FIX-CATALOG-3BTN] dispatcher.js's 'buttons' UI type hard-caps at 3
- * (`.slice(0, 3)`, silent truncation), and WhatsApp itself never supports
- * more than 3 native reply buttons in one message. Every vertical's
- * welcomeButtons config already uses all 3 slots (Order/Book/Question or
- * similar), so simply appending Browse Catalog as a 4th option has exactly
- * two possible outcomes: it silently vanishes (dispatcher's `.slice(0,3)`),
- * or — if the caller instead falls back to a WhatsApp *list* message once
- * the combined set exceeds 3 — every option, catalog included, gets buried
- * behind a "Choose an option ▾" tap-to-expand control. Both outcomes are
- * explicitly rejected here: this function ALWAYS returns a `{ buttons }`
- * payload with at most 3 entries, and NEVER produces a `rows`/list payload.
- * When the combined set (existing buttons + Browse Catalog) still fits
- * within 3, Browse Catalog is simply inserted (see insertIdx below, before
- * the final "help/question" slot). When it would exceed 3 — the case every
- * vertical's welcomeButtons hits in practice, since all 3 slots are already
- * used — Browse Catalog REPLACES the QUESTION slot specifically, not just
- * "the last slot": most verticals put QUESTION last, but GENERAL mode puts
- * it first, and picking by id keeps this correct regardless of a given
- * vertical's button order. Verticals with no QUESTION button at all
- * (delivery, electronics) fall back to replacing the final slot, matching
- * the original "next to the help action" placement intent. Losing the
- * Question button from the welcome screen doesn't remove the feature — a
- * typed question is answered exactly the same way whether or not its
- * button is visible (see INTENT_PATTERNS.QUESTION / the direct-question-
- * phrase matcher in intentEngine.js — no tap has ever been required for it).
+ * dispatcher.js's 'buttons' UI type hard-caps at 3 (`.slice(0, 3)`, silent
+ * truncation) — every vertical's welcomeButtons config already uses all 3
+ * slots (Order/Book/Question or similar), so simply appending a 4th button
+ * would silently vanish, which is worse than not adding it at all (looks
+ * like a bug, not a missing feature). When the combined set fits in 3, it's
+ * returned as `buttons` (unchanged rendering). When it doesn't,
+ * `rows` is returned instead — the caller renders a 'list' message
+ * (dispatcher.js's list type, used throughout this codebase for >3 options),
+ * which shows every option with nothing silently dropped. Button IDs are
+ * identical either way, so BUTTON_ID_MAP / numeric shortcuts keep working
+ * regardless of which shape a given tenant ends up rendering.
  */
 export function withCatalogWelcomeOption(buttons, _business) {
   const base = buttons || [];
@@ -161,20 +147,77 @@ export function withCatalogWelcomeOption(buttons, _business) {
     description: 'Shop our products & collections',
   };
 
-  if (base.length === 0) return { buttons: [catalogOption] };
+  // [FIX-CATALOG-ORDER] Insert Browse Catalog before the final option rather
+  // than appending it after every other option — every vertical's
+  // welcomeButtons ends with its "help/question" action, and that reads best
+  // as the last item in the list, with the browsable/transactional options
+  // (order/book/catalog) grouped together ahead of it. Generic "before the
+  // last item" (rather than hunting for a specific id) keeps this correct
+  // even for verticals whose button order doesn't end in QUESTION.
+  const insertIdx = base.length > 0 ? base.length - 1 : 0;
+  const combined = [...base.slice(0, insertIdx), catalogOption, ...base.slice(insertIdx)];
 
-  // Insert before the final slot first — if the combined set still fits
-  // within the 3-button cap, nothing needs to be dropped and every
-  // original option is kept, in the same placement as before.
-  const insertIdx = base.length - 1;
-  const inserted  = [...base.slice(0, insertIdx), catalogOption, ...base.slice(insertIdx)];
-  if (inserted.length <= 3) return { buttons: inserted };
-
-  // Combined set would exceed 3 — replace the QUESTION slot (or the final
-  // slot if there is no QUESTION button) instead of falling back to a list.
-  const questionIdx = base.findIndex(b => b.id === 'QUESTION');
-  const replaceIdx  = questionIdx !== -1 ? questionIdx : base.length - 1;
-
-  const combined = base.map((b, i) => (i === replaceIdx ? catalogOption : b));
-  return { buttons: combined };
+  if (combined.length <= 3) return { buttons: combined };
+  // [FIX-CATALOG-DESC] Preserve each option's `description` (not just id/title)
+  // so the rendered WhatsApp list shows a helpful subtitle under every row —
+  // dropping it here silently degraded the list to bare titles even when the
+  // caller had supplied a description.
+  return { rows: combined.map(b => ({ id: b.id, title: b.title, description: b.description })) };
 }
+
+// [WELCOME-MENU-PAGING] How many options show directly on the main welcome
+// screen before the rest get tucked behind "⋯ More". Meta's WhatsApp
+// Business Cloud API hard-caps reply-button messages at 3 buttons per
+// message — reserving the 3rd primary slot for "⋯ More" keeps every screen
+// this produces at or under that cap.
+const MAIN_MENU_PRIMARY_COUNT = 2;
+
+/**
+ * buildWelcomeMenu(buttons, business)
+ * [WELCOME-MENU-PAGING] Wraps withCatalogWelcomeOption() so the welcome
+ * screen (GREET / SHOW_MENU) ALWAYS renders as real, directly-tappable
+ * WhatsApp reply buttons — by explicit product decision, never a list
+ * message, because a list always requires an extra "expand" tap (Meta's
+ * own list-message UI) even just to see the first option, which is exactly
+ * the friction this was built to remove.
+ *
+ * - Combined option count <= 3: returned as one screen, `{ main: { buttons } }`.
+ * - Combined option count > 3 (the common case once Browse Catalog is
+ *   merged in): split into two stateless screens —
+ *     main: the first 2 options + a "⋯ More" button (3 buttons total)
+ *     more: the remaining options + a "🏠 Main Menu" button back (see
+ *           moduleRouter.js's MORE_MENU / MAIN_MENU cases)
+ *   Every current vertical's combined count is exactly 4 (3 base buttons +
+ *   Browse Catalog), so `more` is always exactly 3 buttons too — no page
+ *   ever needs more than one tap to reach or exceeds the button cap. If a
+ *   future vertical's welcomeButtons ever grows large enough that `more`
+ *   would exceed 3, it falls back to a list message there (never silently
+ *   drops an option) — a safety net, not the expected path today.
+ *
+ * Both screens are recomputed fresh from the tenant's own config on every
+ * tap rather than cached on the session — MORE_MENU / MAIN_MENU work
+ * identically however the customer got there, with no extra session state
+ * to keep in sync.
+ */
+export function buildWelcomeMenu(buttons, business) {
+  const merged = withCatalogWelcomeOption(buttons, business);
+  const combined = merged.rows || merged.buttons;
+
+  if (combined.length <= 3) return { main: { buttons: combined } };
+
+  const primary = combined.slice(0, MAIN_MENU_PRIMARY_COUNT);
+  const secondary = [
+    ...combined.slice(MAIN_MENU_PRIMARY_COUNT),
+    { id: 'MAIN_MENU', title: '🏠 Main Menu' },
+  ];
+
+  const more = secondary.length <= 3
+    ? { buttons: secondary }
+    : { rows: secondary.map(b => ({ id: b.id, title: b.title, description: b.description })) };
+
+  return {
+    main: { buttons: [...primary, { id: 'MORE_MENU', title: '⋯ More' }] },
+    more,
+  };
+}
+
