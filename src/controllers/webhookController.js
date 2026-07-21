@@ -2187,6 +2187,63 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
       const validSet = STEP_VALID_BUTTONS[currentStep];
       // Only enforce when the set is non-empty (empty means free-text step, no valid buttons)
       if (validSet.size > 0 && !validSet.has(upperMsg) && !isFlowPassthroughId(upperMsg)) {
+        // [FIX-NAV-SWITCH-BTN] Top-level welcome-menu buttons ("🍔 Order Food",
+        // "📅 Book a Table", "🛍 Browse Catalog", "🚶 Join Walk-In Queue") are NOT
+        // flow-internal step buttons, so none of them were ever in
+        // STEP_VALID_BUTTONS for any step — and none of them are in
+        // FLOW_PASSTHROUGH_IDS either (adding them there would feed the raw id
+        // into advance() as free-text flow input — the same class of bug
+        // [FIX-P1] fixed for CONFIRM/COLLECT/etc.). Result: a customer already
+        // mid-ORDER (say) who tapped "📅 Book a Table" or "🛍 Browse Catalog" —
+        // exactly the scenario the FSI mid-flow-switch system exists to handle
+        // for TYPED text — got the generic "that option is no longer available"
+        // reject here, before FSI's own detector (_detectMidFlowSwitchRequest,
+        // which only runs on free-text further down) was ever reached. WALKIN
+        // has the identical gap for the same reason.
+        //
+        // A direct tap on another top-level action's own button is unambiguous —
+        // more so than typed text, which is why FSI still asks "did you mean to
+        // switch?" for a phrase but a tap doesn't need that confirmation. This
+        // mirrors the "a direct tap is unambiguous" reasoning already used by
+        // browseCatalogExplicit() and the START_ORDER isInteractive gate.
+        //
+        // ORDER/BOOK/WALKIN switch immediately via startFlow() — same call
+        // FSI_SWITCH_YES itself makes — gated on the target flow actually being
+        // supported by this vertical (getModeConfig(business).flows). Catalog
+        // browsing isn't a flowName in FLOW_REGISTRY and isn't gated the same
+        // way — isCatalogEnabled()/hasSellableProducts() (checked internally by
+        // sendAndArmCatalog/browseCatalogExplicit, with its own graceful
+        // fallback to the ORDER flow) is the right gate there, so the session's
+        // stale flow state is just cleared first, the same reset SHOW_MENU/
+        // MAIN_MENU already perform, before handing off.
+        const NAV_SWITCH_FLOW_TARGET = { ORDER: 'ORDER', BOOK: 'BOOKING', WALKIN: 'WALKIN' };
+        const navTargetFlow = NAV_SWITCH_FLOW_TARGET[upperMsg];
+        const navSupported  = navTargetFlow && (getModeConfig(business)?.flows || []).includes(navTargetFlow);
+        if (navTargetFlow && navTargetFlow !== (session.currentFlow || '').toUpperCase() && navSupported) {
+          const switchSession = (await getSession(from, tenantId)) || session;
+          const switchReply = await startFlow({ flowName: navTargetFlow, session: switchSession, business, tenant: tenantDoc });
+          if (switchReply) {
+            const payloads = Array.isArray(switchReply) ? switchReply : [switchReply];
+            for (const payload of payloads) {
+              await dispatchMessage(from, payload, tenantDoc);
+            }
+          }
+          return;
+        }
+        if (upperMsg === 'BROWSE_CATALOG') {
+          await updateSession(from, tenantId, { currentFlow: null, step: null, data: {} });
+          const { browseCatalogExplicit } = await import('../modules/catalog/waCatalogFlow.js');
+          const catalogSession = (await getSession(from, tenantId)) || session;
+          const catalogReply = await browseCatalogExplicit({ session: catalogSession, business, tenant: tenantDoc });
+          if (catalogReply) {
+            const payloads = Array.isArray(catalogReply) ? catalogReply : [catalogReply];
+            for (const payload of payloads) {
+              await dispatchMessage(from, payload, tenantDoc);
+            }
+          }
+          return;
+        }
+
         await dispatchMessage(from, {
           type: 'text',
           body: "⚠️ That option is no longer available at this stage of your order.\n\nPlease follow the current prompt, or type *CANCEL* if you'd like to start over.",
@@ -3091,6 +3148,12 @@ export async function receiveWebhook(req, res) {
         }
 
         for (const msg of value.messages || []) {
+          // [FIX-SILENT-FAIL] Hoisted out of the try block (was `const tenant`
+          // declared inside try, so unreachable from catch below) so the catch
+          // block can still tell the customer *something* went wrong, instead
+          // of the customer getting zero reply whenever any bug anywhere deep
+          // in handleIncomingMessage's ~3000-line pipeline throws.
+          let tenant = null;
           try {
             const from   = msg.from;
             const msgType = msg.type || 'unknown';
@@ -3102,7 +3165,7 @@ export async function receiveWebhook(req, res) {
               wamid: msg.id,
             });
 
-            const tenant = await Tenant.findOne({ 'whatsapp.phoneNumberId': phoneNumberId, status: 'ACTIVE' }).lean();
+            tenant = await Tenant.findOne({ 'whatsapp.phoneNumberId': phoneNumberId, status: 'ACTIVE' }).lean();
 
             // [LOG-1d] No ACTIVE tenant for this phoneNumberId — the most common
             // cause of total silence. Warn so the operator knows immediately.
@@ -3122,6 +3185,7 @@ export async function receiveWebhook(req, res) {
               logger.warn('[Webhook] ✗ Signature mismatch for tenant — message dropped', {
                 tenantId: String(tenant._id), phoneNumberId, ip: req.ip,
               });
+              tenant = null; // [FIX-SILENT-FAIL] don't send a fallback reply for an unverified/spoofed request
               continue; // Skip this message — possible spoofed request
             }
 
@@ -3136,6 +3200,30 @@ export async function receiveWebhook(req, res) {
               from: msg?.from,
               phoneNumberId,
             });
+            // [FIX-SILENT-FAIL] Previously this catch only logged server-side —
+            // any bug anywhere in handleIncomingMessage's pipeline (a bad DB
+            // call, a null-pointer in a flow handler, an unhandled edge case —
+            // and across ~3000 lines and a dozen modules, that surface area is
+            // real) left the customer with zero reply and no way to know
+            // whether their message even arrived. Best-effort generic apology
+            // instead — only when the tenant was already resolved and the
+            // request's signature already verified (both happen before
+            // handleIncomingMessage is called), so this never fires for an
+            // unknown/unverified sender. Wrapped in its own try/catch so a
+            // failure here (e.g. Meta API down) can't mask the original error
+            // or crash the outer loop.
+            if (tenant && msg?.from) {
+              try {
+                await dispatchMessage(msg.from, {
+                  type: 'text',
+                  body: "⚠️ Sorry, something went wrong on our end processing that. Please try again in a moment, or type *CANCEL* to start over.",
+                }, tenant);
+              } catch (dispatchErr) {
+                logger.error('[Webhook] ✗ Fallback error-reply dispatch also failed', {
+                  err: dispatchErr.message, from: msg?.from, phoneNumberId,
+                });
+              }
+            }
           }
         }
       }
