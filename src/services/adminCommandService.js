@@ -102,6 +102,8 @@ import BusinessConfig from '../models/BusinessConfig.js';
 import { updateSession } from '../core/sessions/sessionService.js';
 import { dispatchText, dispatchMessage } from '../core/whatsapp/dispatcher.js';
 import { getModeConfig } from '../config/modes.js';
+import { buildWelcomeMenu } from '../modules/catalog/waCatalogConfig.js';
+import { logAudit } from './auditService.js';
 import logger            from '../config/logger.js';
 
 const MAX_INPUT_LENGTH = 500; // guard against absurdly long button IDs / command strings
@@ -363,6 +365,13 @@ async function confirmPayment(shortId, tenantId, adminPhone, tenantDoc, business
       return `⚠️ Order #${shortId} can't be confirmed — current status is *${existing.status}*.`;
     }
 
+    // [AUDIT-WIRE-2] AuditLog.js's docstring has documented confirmPayment() as the
+    // payment_approved call site since the model was written; never actually called.
+    logAudit({
+      tenantId, orderId: order._id, actor: 'admin', actorId: adminPhone,
+      action: 'payment_approved', metadata: { shortId },
+    });
+
     // [FIX-AWAIT] Check if this is a cash order (AWAIT_ADMIN_CONFIRM) so we can
     // send the right confirmation message — "order confirmed" instead of "payment verified".
     const { getSession: _getSession } = await import('../core/sessions/sessionService.js');
@@ -438,6 +447,23 @@ async function confirmPayment(shortId, tenantId, adminPhone, tenantDoc, business
       postFlowData: { item: order.item, quantity: order.quantity, shortId: order.shortId || shortId },
       lastAorInterceptAt: null,
     }).catch(() => {});
+
+    // [AUDIT-FIX-CATALOG-QUEUE] drainCatalogQueue() (modules/catalog/waCatalogFlow.js)
+    // was fully built — pops the next queued WA Catalog cart line and auto-starts its
+    // own ORDER flow — but had no call site anywhere in the codebase, so a multi-item
+    // WA Catalog order (for tenants without multiItemCart.enabled) would confirm only
+    // its FIRST line; every other queued line sat in session.pendingCatalogQueue
+    // forever, silently dropped. This is the moment a queued line should advance: the
+    // just-confirmed line is done, so pull the next one. No-ops (drained:false) for
+    // every order that never went through WA Catalog or had nothing left queued.
+    try {
+      const { getSession }       = await import('../core/sessions/sessionService.js');
+      const { drainCatalogQueue } = await import('../modules/catalog/waCatalogFlow.js');
+      const drainSession = await getSession(order.customerPhone, tenantId);
+      if (drainSession) await drainCatalogQueue({ session: drainSession, business, tenant: tenantDoc });
+    } catch (err) {
+      logger.warn('[AdminCmd] confirmPayment: drainCatalogQueue failed', { err: err.message });
+    }
 
     // [PFH-5 / MEM-FIX-1] Record confirmed order in customer memory — only fires on
     // actual admin confirmation, not on saveOrder(), so memory reflects real completed
@@ -552,16 +578,25 @@ async function rejectPayment(shortId, tenantId, adminPhone, tenantDoc, business,
 
       if (!updated) return `ℹ️ Order #${shortId} was already handled.`;
 
+      // [AUDIT-WIRE-3] payment_rejected — cash-order branch (order is cancelled outright).
+      logAudit({
+        tenantId, orderId: updated._id, actor: 'admin', actorId: adminPhone,
+        action: 'payment_rejected', metadata: { shortId, rejectReason, cashOrder: true },
+      });
+
       await updateSession(order.customerPhone, tenantId, {
         currentFlow: null, step: null, data: {},
         postFlowAck:  'ORDER_REJECTED',
         postFlowData: { item: order.item, shortId: order.shortId || shortId, rejectReason },
       });
       const modeCfg = getModeConfig(business);
-      const custBtns = (modeCfg.ui?.welcomeButtons || [
+      // [WIRING-AUDIT-MENU-1] was raw modeCfg.ui?.welcomeButtons.slice(0,3) — same bug
+      // class as webhookController.js's _mainMenuButtons(): silently dropped
+      // "🛍 Browse Catalog" from this customer-facing screen.
+      const custBtns = buildWelcomeMenu(modeCfg.ui?.welcomeButtons || [
         { id: 'ORDER',    title: '🛒 Place New Order' },
         { id: 'QUESTION', title: '❓ Ask a Question'  },
-      ]).slice(0, 3);
+      ], business).main.buttons.slice(0, 3);
       await dispatchMessage(order.customerPhone, {
         type:    'buttons',
         body:
@@ -593,6 +628,12 @@ async function rejectPayment(shortId, tenantId, adminPhone, tenantDoc, business,
     }}, { new: true }).lean();
 
     if (!updated) return `ℹ️ Order #${shortId} was already handled.`;
+
+    // [AUDIT-WIRE-3] payment_rejected — retry-window branch.
+    logAudit({
+      tenantId, orderId: updated._id, actor: 'admin', actorId: adminPhone,
+      action: 'payment_rejected', metadata: { shortId, rejectReason, cashOrder: false },
+    });
 
     // [FIX-CMD-8] Await the session update — if this fails the customer's session won't
     // point to PAYMENT_PROOF and they won't be able to send a retry screenshot.
@@ -819,7 +860,7 @@ async function declineBooking(shortId, reason, tenantId, adminPhone, tenantDoc) 
             { id: 'QUESTION', title: '❓ Ask a Question'   },
           ]
         : [
-            { id: 'BOOK',     title: '📅 Different Date'    },
+            { id: 'BOOK',     title: '📅 Try Different Date' },
             { id: 'QUESTION', title: '❓ Ask a Question'      },
           ],
     },
@@ -885,7 +926,7 @@ async function markOrderReady(shortId, tenantId, adminPhone, tenantDoc, business
         `Please collect your order at the counter 😊\n\n` +
         `Thank you for choosing *${bizName}*!`,
       buttons: [
-        { id: `COLLECTED_${order.shortId || shortId}`, title: '✅ Collected — Thanks' },
+        { id: `COLLECTED_${order.shortId || shortId}`, title: '✅ Collected — Thanks!' },
         { id: 'SUPPORT', title: '❓ Need Help' },
       ],
     }, tenantDoc).catch(err => logger.warn('[AdminCmd] markOrderReady: customer dispatch failed', {

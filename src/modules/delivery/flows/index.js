@@ -45,9 +45,9 @@ export const DELIVERY_CONFIG = {
     // dropped by the dispatcher's .slice(0,3). Customers ordering delivery care most
     // about placing an order, viewing the menu, and tracking. SUPPORT handles questions.
     welcomeButtons: [
-      { id: 'ORDER',       title: '🚚 Order Now'      },
-      { id: 'VIEW_MENU',   title: '📋 View Menu'       }, // [AUDIT-FIX-VIEWMENU] was SHOW_MENU
-      { id: 'TRACK_ORDER', title: '📍 Track My Order'  },
+      { id: 'ORDER',       title: '🚚 Order Now',     description: 'Browse items & place an order' },
+      { id: 'VIEW_MENU',   title: '📋 View Menu',      description: 'See everything available'      }, // [AUDIT-FIX-VIEWMENU] was SHOW_MENU
+      { id: 'TRACK_ORDER', title: '📍 Track My Order', description: 'Check your delivery status'     },
     ],
     fallbackButtons: [
       { id: 'ORDER',       title: '🚚 Order Now'     },

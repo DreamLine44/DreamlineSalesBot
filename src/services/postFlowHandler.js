@@ -29,6 +29,7 @@
 import { updateSession }  from '../core/sessions/sessionService.js';
 import { getModeConfig }  from '../config/modes.js';
 import { dispatchMessage } from '../core/whatsapp/dispatcher.js';
+import { buildWelcomeMenu } from '../modules/catalog/waCatalogConfig.js';
 import logger from '../config/logger.js';
 
 // ── Name validation (duplicated from webhookController — avoids circular import) ──
@@ -138,10 +139,17 @@ export async function handlePostFlowMessage({
   const cfg       = getModeConfig(business);
   const bizName   = business?.name || 'us';
   const mode      = (business?.businessMode || 'RETAIL').toUpperCase();
-  const welcomeBtns = (cfg.ui?.welcomeButtons || [
+  // [WIRING-AUDIT-MENU-1] Was raw `cfg.ui?.welcomeButtons.slice(0,3)` — same bug as
+  // webhookController.js's _mainMenuButtons(): silently dropped "🛍 Browse Catalog"
+  // (and the "⋯ More" pagination it triggers) from every post-flow acknowledgment
+  // screen in this file, even though moduleRouter.js's GREET/SHOW_MENU already show
+  // it. buildWelcomeMenu().main.buttons is already <=3 buttons (2 primary + "⋯ More"
+  // once paginated), so the trailing .slice(0,3) is no longer needed — kept as a
+  // defensive no-op in case a future vertical's welcomeButtons config changes shape.
+  const welcomeBtns = buildWelcomeMenu(cfg.ui?.welcomeButtons || [
     { id: 'ORDER',    title: '🛒 Place an Order'   },
     { id: 'QUESTION', title: '❓ Ask a Question'   },
-  ]).slice(0, 3);
+  ], business).main.buttons.slice(0, 3);
 
   // Resolve customer name safely
   const _rawName  = session.customerName || custCtx?.name || null;
@@ -824,7 +832,9 @@ async function handleOrderConfirmed({
     await dispatchMessage(from, {
       type:    'buttons',
       body:    `❌ Your order has been cancelled.\n\nWhat would you like to do next?`,
-      buttons: cfg.ui?.welcomeButtons || [{ id: 'ORDER', title: '🛒 Place New Order' }],
+      // [WIRING-AUDIT-MENU-1] was raw cfg.ui?.welcomeButtons — use the already-computed
+      // Browse-Catalog-aware welcomeBtns (see top of this function) for consistency.
+      buttons: welcomeBtns,
     }, tenantDoc);
     return true;
   }
@@ -1049,8 +1059,8 @@ async function handleOrderReady({
       type:    'buttons',
       body:    `You're welcome${custName}! 😊 ${itemRef} is ready and waiting for you at the counter.`,
       buttons: collectedBtnId
-        ? [{ id: collectedBtnId, title: '✅ Collected — Thanks' }]
-        : [{ id: 'SUPPORT',      title: '✅ Collected — Thanks' }],
+        ? [{ id: collectedBtnId, title: '✅ Collected — Thanks!' }]
+        : [{ id: 'SUPPORT',      title: '✅ Collected — Thanks!' }],
     }, tenantDoc);
     return true;
   }

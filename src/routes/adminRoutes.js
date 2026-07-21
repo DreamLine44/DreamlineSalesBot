@@ -231,7 +231,7 @@ r.patch('/orders/:id/status', async (req, res) => {
             body:
               `🍽️ *Your Order is Ready!*\n\n📦  *${order.item}* × ${order.quantity}\n🔖  Reference: *#${order.shortId}*\n\nPlease collect your order at the counter 😊`,
             buttons: [
-              { id: `COLLECTED_${order.shortId}`, title: '✅ Collected — Thanks' },
+              { id: `COLLECTED_${order.shortId}`, title: '✅ Collected — Thanks!' },
               { id: 'SUPPORT',                     title: '❓ Need Help'           },
             ],
           }, tenant);

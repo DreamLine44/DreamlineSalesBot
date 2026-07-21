@@ -181,11 +181,14 @@ export async function cancelFlow(session, business) {
   // [FIX] Return mode-appropriate welcome buttons so the customer has somewhere to go
   // without needing to type anything.
   const { getModeConfig } = await import('../../config/modes.js');
+  const { buildWelcomeMenu } = await import('../../modules/catalog/waCatalogConfig.js');
   const cfg = getModeConfig(business);
   return {
     type:    'buttons',
     body:    CANCEL_MSGS[mode] || '✅ Cancelled.',
-    buttons: cfg.ui?.welcomeButtons || [{ id: 'SHOW_MENU', title: '🔄 Start Over' }],
+    // [WIRING-AUDIT-MENU-1] was raw cfg.ui?.welcomeButtons — same bug class as
+    // webhookController.js's _mainMenuButtons(): silently dropped "🛍 Browse Catalog".
+    buttons: buildWelcomeMenu(cfg.ui?.welcomeButtons || [], business).main.buttons,
   };
 }
 

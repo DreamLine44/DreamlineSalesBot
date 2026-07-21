@@ -326,18 +326,14 @@ export async function route({ action, intent, session, message, business, tenant
       // — only the greeting text itself is generic for now.
       // TODO: re-enable name-based greeting personalisation once product
       // decides how/when it should surface (e.g. only after explicit opt-in).
-      const body = customWelcome || (business?.name
-        ? `👋 Welcome to ${business.name}!\n\nWhat would you like to do today?`
-        : (cfg.messages?.welcome || '👋 Welcome! How can I help you today?'));
+      const body = customWelcome || cfg.messages?.welcome || '👋 Welcome! How can I help you today?';
 
-      // [FIX-CATALOG-BTN] Merge in the "🛍 Browse Catalog" welcome option for
-      // tenants with WA Catalog enabled + sellable products (see
-      // waCatalogConfig.js#withCatalogWelcomeOption for the 3-button-cap /
-      // "⋯ More" pagination rationale). A no-op for every tenant who hasn't
-      // enabled it.
-      const { withCatalogWelcomeOption } = await import('../../modules/catalog/waCatalogConfig.js');
-      const greetMenu = withCatalogWelcomeOption(cfg.ui?.welcomeList || cfg.ui?.welcomeButtons || [], business);
-      return { type: 'buttons', body, buttons: greetMenu.buttons };
+      // [WELCOME-MENU-PAGING] Merge in "🛍 Browse Catalog" and split into a
+      // 2-button + "⋯ More" main screen — see buildWelcomeMenu() in
+      // waCatalogConfig.js for the full rationale (never a list/expand-tap).
+      const { buildWelcomeMenu } = await import('../../modules/catalog/waCatalogConfig.js');
+      const greetMenu = buildWelcomeMenu(cfg.ui?.welcomeButtons || [], business);
+      return { type: 'buttons', body, buttons: greetMenu.main.buttons };
     }
 
     case 'BROWSE_CATALOG': {
@@ -363,6 +359,7 @@ export async function route({ action, intent, session, message, business, tenant
     case 'VIEW_MENU':
       return startFlow({ flowName: 'ORDER', session, business, tenant });
 
+    case 'MAIN_MENU':
     case 'SHOW_MENU': {
       const cfg = getModeConfig(business);
       await updateSession(session.customerPhone, session.tenantId, {
@@ -373,35 +370,39 @@ export async function route({ action, intent, session, message, business, tenant
       // again — that's jarring and feels like the bot forgot the conversation.
       // SHOW_MENU shows a short "what else can I help with?" prompt + action buttons.
       // GREET (first message / fresh start) shows the full branded welcome.
+      // MAIN_MENU (the "🏠 Main Menu" button on the MORE_MENU screen, see below)
+      // reuses this exact same block — returning to the main menu is the same
+      // reset-and-show-options behavior regardless of which button triggered it.
       const showMenuBody = cfg.messages?.showMenuPrompt || '👇 What would you like to do?';
 
-      // [FIX-CATALOG-BTN] Same catalog-option merge as GREET above — a
-      // returning-to-menu customer should see the same options a fresh
-      // greeting would show, catalog button included.
-      const { withCatalogWelcomeOption } = await import('../../modules/catalog/waCatalogConfig.js');
-      const showMenuMenu = withCatalogWelcomeOption(cfg.ui?.welcomeList || cfg.ui?.welcomeButtons || [], business);
-      return { type: 'buttons', body: showMenuBody, buttons: showMenuMenu.buttons };
+      // [WELCOME-MENU-PAGING] Same buildWelcomeMenu() split as GREET above —
+      // a returning-to-menu customer sees the same real tap buttons a fresh
+      // greeting would show, Browse Catalog included, no list/expand-tap.
+      const { buildWelcomeMenu } = await import('../../modules/catalog/waCatalogConfig.js');
+      const showMenuMenu = buildWelcomeMenu(cfg.ui?.welcomeButtons || [], business);
+      return { type: 'buttons', body: showMenuBody, buttons: showMenuMenu.main.buttons };
     }
 
-    // [FIX-3BTN-CAP] "⋯ More" tap from the welcome/main-menu screen — shows
-    // the remaining options (beyond the first 2 + More) as a second 3-button
-    // screen, per waCatalogConfig.js#withCatalogWelcomeOption's pagination.
-    // Recomputes from cfg + business rather than persisting any state — the
-    // option set is fully deterministic from those two inputs, so there's
-    // nothing to store between the first screen and this tap.
     case 'MORE_MENU': {
+      // [WELCOME-MENU-PAGING] Second screen reached by tapping "⋯ More" on
+      // the main welcome/menu screen. Recomputed fresh from the tenant's own
+      // config on every tap — no session state tracks which screen the
+      // customer is on, so this works identically whether they arrived via
+      // GREET or SHOW_MENU/MAIN_MENU. See buildWelcomeMenu() in
+      // waCatalogConfig.js for the full rationale.
       const cfg = getModeConfig(business);
-      const { withCatalogWelcomeOption } = await import('../../modules/catalog/waCatalogConfig.js');
-      const moreMenu = withCatalogWelcomeOption(cfg.ui?.welcomeList || cfg.ui?.welcomeButtons || [], business);
-      // No second page was actually needed (e.g. catalog got disabled between
-      // the first screen being sent and this tap) — fall back gracefully to
-      // the main menu instead of an empty/broken screen.
-      const moreButtons = moreMenu.more?.buttons || moreMenu.buttons;
-      return {
-        type:    'buttons',
-        body:    'What else would you like to do?',
-        buttons: moreButtons,
-      };
+      const { buildWelcomeMenu } = await import('../../modules/catalog/waCatalogConfig.js');
+      const moreMenu = buildWelcomeMenu(cfg.ui?.welcomeButtons || [], business);
+      const moreBody = cfg.messages?.moreMenuPrompt || 'What else would you like to do?';
+      if (moreMenu.more.rows) {
+        // Safety-net path only — see buildWelcomeMenu()'s docstring. Not hit
+        // by any vertical's current config.
+        return {
+          type: 'list', body: moreBody, button: 'Choose an option',
+          sections: [{ title: 'Options', rows: moreMenu.more.rows }],
+        };
+      }
+      return { type: 'buttons', body: moreBody, buttons: moreMenu.more.buttons };
     }
 
     case 'CANCEL': {
@@ -874,7 +875,25 @@ export async function route({ action, intent, session, message, business, tenant
       // route() was ever called, which blocked SERVICES/GENERAL from reaching their flows.
       const enquiryHandler = ACTION_REGISTRY.get('ENQUIRY');
       if (enquiryHandler) return enquiryHandler({ session, message, business, tenant, intent, isInteractive, suggestion });
-      // Generic fallback: set the ENQUIRY flow state and prompt
+
+      // [FEAT-INSTANT-QA-3] If the customer already typed their actual question (this
+      // fires from a real typed message, not just the "❓ Ask a Question" button tap
+      // with no text yet), answer it right away instead of discarding it and asking
+      // them to type it again — that "type your question below" prompt used to fire
+      // unconditionally even when `message` already WAS the question.
+      if (message && message.trim().length >= 4) {
+        const { getAIReply } = await import('../ai/providers/aiRouter.js');
+        const aiText = await getAIReply({ customerMessage: message, business, session, intent: 'QUESTION' }).catch(() => null);
+        const cfgEnq = getModeConfig(business);
+        return {
+          type:    'buttons',
+          body:    aiText || cfgEnq.messages?.fallback || 'How can I help you? 😊',
+          buttons: [{ id: 'QUESTION', title: '❓ Ask Another' }, { id: 'SHOW_MENU', title: '🔄 Main Menu' }],
+        };
+      }
+
+      // Generic fallback: no question text yet (bare button tap) — set the ENQUIRY
+      // flow state and prompt for it.
       await updateSession(session.customerPhone, session.tenantId, {
         currentFlow: 'ENQUIRY', step: 'AWAITING_QUESTION',
       });
@@ -891,6 +910,22 @@ export async function route({ action, intent, session, message, business, tenant
       // ACTION_REGISTRY before this case runs. All other modes fall through here.
       const questionHandler = ACTION_REGISTRY.get('QUESTION');
       if (questionHandler) return questionHandler({ session, message, business, tenant, intent, isInteractive, suggestion });
+
+      // [FEAT-INSTANT-QA-3] Same fix as ENQUIRY above — answer immediately when the
+      // customer's message already IS the question (typed free-text, or the
+      // deterministic pre-flow direct-question detector in intentEngine.js), rather
+      // than discarding it and prompting them to type it again.
+      if (message && message.trim().length >= 4) {
+        const { getAIReply } = await import('../ai/providers/aiRouter.js');
+        const aiText = await getAIReply({ customerMessage: message, business, session, intent: 'QUESTION' }).catch(() => null);
+        const cfgQ = getModeConfig(business);
+        return {
+          type:    'buttons',
+          body:    aiText || cfgQ.messages?.fallback || 'How can I help you? 😊',
+          buttons: [{ id: 'QUESTION', title: '❓ Ask Another' }, { id: 'SHOW_MENU', title: '🔄 Main Menu' }],
+        };
+      }
+
       // Generic fallback: same as ENQUIRY — start the generic question-capture flow
       await updateSession(session.customerPhone, session.tenantId, {
         currentFlow: 'ENQUIRY', step: 'AWAITING_QUESTION',

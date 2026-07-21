@@ -9,6 +9,7 @@
  *   3. Greeting patterns        → instant
  *   4. Exact keyword map        → instant
  *   4.5 Direct ORDER/BOOKING phrase (pre-flow only) → instant
+ *   4.6 Direct QUESTION phrase (pre-flow only, see FEAT-INSTANT-QA-2) → instant
  *   4.7 Complaint / cancellation guards → instant, any time [MERGE-FEAT-NEGATION-1]
  *   4.8 Correction / confirmation guard → instant, in-flow only [MERGE-FEAT-NEGATION-2]
  *   5. Levenshtein suggestion   → "did you mean?" only, never auto-execute
@@ -65,6 +66,36 @@ export const DIRECT_INTENT_EXCLUDE_RE = new RegExp(
 // word "order"/"book" (e.g. "give me 2 burgers", "table for tonight").
 export const ORDER_DIRECT_RE   = /\b(order|buy|purchase|shopping|can i get|can i have|i ll have|i ll take|give me|get me|i want|i d like|craving)\b/;
 export const BOOKING_DIRECT_RE = /\b(book|reserve|reservation|appointment|table for|party of|table at|table tonight|come in|slot for|availability for)\b/;
+
+// [FEAT-INSTANT-QA-2] Pre-flow direct-question detection, mirroring
+// [UPGRADE-DIRECT-INTENT] above but for QUESTION/ENQUIRY rather than
+// ORDER/BOOKING. A natural question ("do you guys deliver to Bakau on
+// weekends?") doesn't literally equal a step-4 exact-keyword entry and is
+// too far in edit distance for Levenshtein — without this it fell through
+// to AI classify, which only answers confidently on a HIGH-confidence read;
+// anything below that landed on CLARIFY, a needlessly uncertain response for
+// what was actually just a normal question. This runs whether or not the
+// customer ever taps "❓ Ask a Question" — per product policy (see
+// PROJECT_POLICIES.md, [FEAT-INSTANT-QA-1/2/3]), a typed question must be
+// answered the same way regardless of how it arrived. Checked AFTER the
+// order/booking direct-phrase step above so genuine order/booking requests
+// are never misread as questions about them.
+export const DIRECT_QUESTION_KEYWORDS = new Set([
+  'question', 'questions', 'i have a question', 'i want to ask', 'i want to ask a question',
+  'can i ask', 'can i ask something', 'let me ask', 'i need to know',
+  'i need to ask', 'quick question', 'one question', 'just a question',
+  'need some info', 'need information', 'just wondering',
+  'how much', 'how long does', 'how long will', 'how long is',
+  'what is your', 'what are your', 'what time do you',
+  'do you have', 'do you offer', 'can you tell me',
+  'is it possible', 'are you able', 'can you help me',
+  'opening hours', 'what time do you open', 'when do you open', 'when do you close',
+  'where are you', 'where are you located',
+  'do you deliver', 'do you do delivery',
+  'how do i pay', 'payment options',
+  'tell me more about', 'can you explain',
+]);
+export const DIRECT_QUESTION_RE = /^(wh(at|o|y|en|ere|ich)|how|can|is|are|do|does|would|could|will|shall|may|might)\b/i;
 
 // ── Normalise ─────────────────────────────────────────────────────────────────
 export const normalise = (text = '') =>
@@ -244,6 +275,38 @@ export async function detectIntent({ message, isInteractive = false, session, bu
     }
     if (ORDER_DIRECT_RE.test(clean)) {
       return { action: 'START_ORDER', intent: 'ORDER', confidence: 'HIGH', source: 'direct-phrase' };
+    }
+  }
+
+  // ── 4.6 Direct QUESTION phrase match [FEAT-INSTANT-QA-2] ──────────────────
+  // Pre-flow only, same reasoning as 4.5 above but for questions. Fires whether
+  // or not the customer tapped "❓ Ask a Question" — a typed question gets
+  // answered the same way either way. Length gate (>=15) on the generic
+  // wh-word regex mirrors the mid-flow question detector in
+  // webhookController.js so a bare "Which" (e.g. the start of a menu item
+  // name) is never misread as a question.
+  //
+  // [FIX-QA-SUPPORT-PRECEDENCE] Some DIRECT_QUESTION_KEYWORDS entries ("can you
+  // help me", "can you tell me") are genuinely ambiguous with a human-escalation
+  // request ("can you help me, I want to speak to someone"). The complaint guard
+  // below only catches specific complaint phrasing, not a bare help request, so
+  // without this exclusion a message containing real SUPPORT-flavored language
+  // (checked the same "contains" way _detectMidFlowSupportRequest checks it)
+  // would be forced to QUESTION here, before Levenshtein/AI-classify ever got a
+  // chance to read it as SUPPORT instead.
+  if (!session?.currentFlow) {
+    const _supportWords = clean.split(' ');
+    const looksLikeSupport = (INTENT_PATTERNS.SUPPORT || []).some(kw =>
+      kw.includes(' ') ? clean.includes(kw) : _supportWords.includes(kw)
+    );
+    const isDirectQuestion = !looksLikeSupport && (
+      DIRECT_QUESTION_KEYWORDS.has(clean) ||
+      [...DIRECT_QUESTION_KEYWORDS].some(kw => kw.includes(' ') && clean.includes(kw)) ||
+      raw.trim().endsWith('?') ||
+      (DIRECT_QUESTION_RE.test(clean) && clean.length >= 15)
+    );
+    if (isDirectQuestion) {
+      return { action: 'QUESTION', intent: 'QUESTION', confidence: 'HIGH', source: 'direct-question' };
     }
   }
 

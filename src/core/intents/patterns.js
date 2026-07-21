@@ -34,12 +34,11 @@ export const BUTTON_ID_MAP = {
   // waCatalogFlow.js's browseCatalogExplicit(), which this button was always
   // documented (in its own docstring) as the trigger for.
   'BROWSE_CATALOG':     'BROWSE_CATALOG',
-  // [FIX-3BTN-CAP] "⋯ More" — shown on the welcome/main-menu screen whenever
-  // there are more than 3 top-level options (WhatsApp buttons hard-cap at 3).
-  // See waCatalogConfig.js#withCatalogWelcomeOption and moduleRouter.js's
-  // 'MORE_MENU' case, which renders the remaining options as a second
-  // 3-button screen ending in "🏠 Main Menu".
+  // [WELCOME-MENU-PAGING] "⋯ More" (welcome-menu overflow) and "🏠 Main Menu"
+  // (the way back from that screen) — see buildWelcomeMenu() in
+  // waCatalogConfig.js and moduleRouter.js's MORE_MENU / MAIN_MENU cases.
   'MORE_MENU':          'MORE_MENU',
+  'MAIN_MENU':          'MAIN_MENU',
 
   // Flow control
   'CONFIRM':            'CONFIRM',

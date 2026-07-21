@@ -144,9 +144,9 @@ export const SALON_CONFIG = {
   ui: {
     // Meta caps button messages at 3 buttons. ORDER is accessible via QUESTION or by typing.
     welcomeButtons: [
-      { id: 'BOOK',     title: '📅 Book Appointment'   },
-      { id: 'WALKIN',   title: '🚶 Join Walk-In'       },
-      { id: 'QUESTION', title: '❓ Ask a Question'      },
+      { id: 'BOOK',     title: '📅 Book Appointment',   description: 'Schedule your visit'              },
+      { id: 'WALKIN',   title: '🚶 Join Walk-In Queue',  description: 'Get seen without an appointment'  },
+      { id: 'QUESTION', title: '❓ Ask a Question',      description: 'Get help from our team'           },
     ],
     fallbackButtons: [
       { id: 'BOOK',     title: '📅 Book'      },
@@ -178,9 +178,9 @@ export const BARBERSHOP_CONFIG = {
   },
   ui: {
     welcomeButtons: [
-      { id: 'BOOK',     title: '💈 Book Appointment'   },
-      { id: 'WALKIN',   title: '🚶 Join Walk-In'       },
-      { id: 'QUESTION', title: '❓ Ask a Question'      },
+      { id: 'BOOK',     title: '💈 Book Appointment',   description: 'Schedule your visit'              },
+      { id: 'WALKIN',   title: '🚶 Join Walk-In Queue',  description: 'Get seen without an appointment'  },
+      { id: 'QUESTION', title: '❓ Ask a Question',      description: 'Get help from our team'           },
     ],
     fallbackButtons: [
       { id: 'BOOK',     title: '💈 Book'     },

@@ -250,7 +250,7 @@ function _resolveState(order, business, session) {
         // Previously only 'Contact Business' and 'Order Again' were shown — no way to
         // acknowledge collection, so orders stayed in 'ready' state forever in the DB.
         buttons: [
-          { id: shortId ? `COLLECTED_${shortId}` : 'SUPPORT', title: '✅ Collected — Thanks' },
+          { id: shortId ? `COLLECTED_${shortId}` : 'SUPPORT', title: '✅ Collected — Thanks!' },
           { id: 'SUPPORT', title: '💬 Contact Business' },
         ],
       },

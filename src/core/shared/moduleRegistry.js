@@ -128,6 +128,15 @@ export async function registerAllModules() {
     return startFlow({ flowName: 'BOOKING', session, business, tenant });
   });
 
+  // [CATALOG-REG-2] Explicit "🛍 Browse Catalog" welcome-menu button (see
+  // withCatalogWelcomeOption() in waCatalogConfig.js and its use in
+  // moduleRouter.js's GREET/SHOW_MENU cases) — needs a registered action to
+  // land on since it's a bare button id, not a classified intent.
+  registerAction('BROWSE_CATALOG', async ({ session, business, tenant }) => {
+    const { browseCatalogExplicit } = await import('../../modules/catalog/waCatalogFlow.js');
+    return browseCatalogExplicit({ session, business, tenant });
+  });
+
   // WALKIN action — salon/barbershop walk-in queue (no date/time needed)
   registerAction('WALKIN', async ({ session, message, business, tenant }) => {
     const { startFlow } = await import('../conversations/flowEngine.js');
