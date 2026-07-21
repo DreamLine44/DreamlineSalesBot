@@ -15,9 +15,24 @@ export const RESTAURANT_CONFIG = {
 
   ui: {
     welcomeButtons: [
-      { id: 'ORDER',    title: '🍔 Order Food',    description: 'Browse our menu & place an order' },
-      { id: 'BOOK',     title: '📅 Book a Table',  description: 'Reserve a table in advance'        },
-      { id: 'QUESTION', title: '❓ Ask a Question', description: 'Get help from our team'            },
+      { id: 'ORDER',    title: '🍔 Order Food'    },
+      { id: 'BOOK',     title: '📅 Book a Table'  },
+      { id: 'QUESTION', title: '❓ Ask a Question' },
+    ],
+    // [FIX-WELCOME-LIST] Full 4-option welcome menu, always rendered as a
+    // WhatsApp interactive *list* (header + per-row description), never the
+    // 3-button chip UI — a 4th chip would silently vanish (dispatcher.js
+    // hard-caps 'buttons' at 3). Used by moduleRouter.js's GREET/SHOW_MENU
+    // cases instead of welcomeButtons. "🛍️ Browse Catalog" is shown here
+    // unconditionally — it's a real, always-visible menu option even for
+    // tenants who haven't configured the WA Commerce Catalog backend yet;
+    // tapping it falls back gracefully to the normal ordering flow in that
+    // case (see catalog/waCatalogFlow.js#browseCatalogExplicit).
+    welcomeList: [
+      { id: 'ORDER',          title: '🍔 Order Food',      description: 'Browse our menu & place an order' },
+      { id: 'BOOK',           title: '📅 Book a Table',    description: 'Reserve a table in advance'        },
+      { id: 'BROWSE_CATALOG', title: '🛍️ Browse Catalog',  description: 'Shop our products & collections'   },
+      { id: 'QUESTION',       title: '❓ Ask a Question',  description: 'Get help from our team'            },
     ],
     fallbackButtons: [
       { id: 'ORDER',    title: '🍔 Order Food'    },

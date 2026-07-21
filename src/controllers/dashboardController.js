@@ -193,7 +193,7 @@ export async function updateOrderStatus(req, res) {
               `Please collect your order at the counter 😊\n\n` +
               `Thank you for choosing *${bizName}*!`,
             buttons: [
-              { id: `COLLECTED_${order.shortId}`, title: '✅ Collected — Thanks!' },
+              { id: `COLLECTED_${order.shortId}`, title: '✅ Collected — Thanks' },
               { id: 'SUPPORT',                     title: '❓ Need Help'           },
             ],
           }, tenant);
@@ -233,24 +233,6 @@ export async function updateOrderStatus(req, res) {
           await dispatchText(order.customerPhone,
             `✅ *Your order is confirmed!*\n\n🍽 *${order.item}* × ${order.quantity}\n\nThank you for your patience! 😊`,
             tenant);
-
-          // [AUDIT-FIX-CATALOG-QUEUE] Mirrors the same wiring added to
-          // adminCommandService.confirmPayment() — this is the dashboard-triggered
-          // twin of that confirmation path (see [FIX-23] above), so it needs the
-          // same drainCatalogQueue() call to advance any queued WA Catalog cart
-          // lines. Without it, orders confirmed from the dashboard (rather than a
-          // WhatsApp APPROVE_ tap) would silently strand every line after the first.
-          try {
-            const { getSession }        = await import('../core/sessions/sessionService.js');
-            const { drainCatalogQueue } = await import('../modules/catalog/waCatalogFlow.js');
-            const drainSession = await getSession(order.customerPhone, String(tenantId));
-            const drainBusiness = await BusinessConfig.findOne({ tenantId }).lean();
-            if (drainSession && drainBusiness) {
-              await drainCatalogQueue({ session: drainSession, business: drainBusiness, tenant });
-            }
-          } catch (err) {
-            logger.warn('[Dashboard] updateOrderStatus: drainCatalogQueue failed', { err: err.message });
-          }
         } else if (status === 'cancelled' || status === 'rejected') {
           // [FIX-23] Set postFlowAck=ORDER_REJECTED so customer follow-up ("ok", "why?")
           // is handled with rejection-context empathy, not a generic welcome screen.
@@ -354,7 +336,7 @@ export async function notifyOrderReady(req, res) {
           `Please collect your order at the counter 😊\n\n` +
           `Thank you for choosing *${bizName}*!`,
         buttons: [
-          { id: `COLLECTED_${order.shortId}`, title: '✅ Collected — Thanks!' },
+          { id: `COLLECTED_${order.shortId}`, title: '✅ Collected — Thanks' },
           { id: 'SUPPORT',                     title: '❓ Need Help'           },
         ],
       }, tenant);

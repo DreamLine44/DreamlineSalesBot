@@ -1049,8 +1049,8 @@ async function handleOrderReady({
       type:    'buttons',
       body:    `You're welcome${custName}! 😊 ${itemRef} is ready and waiting for you at the counter.`,
       buttons: collectedBtnId
-        ? [{ id: collectedBtnId, title: '✅ Collected — Thanks!' }]
-        : [{ id: 'SUPPORT',      title: '✅ Collected — Thanks!' }],
+        ? [{ id: collectedBtnId, title: '✅ Collected — Thanks' }]
+        : [{ id: 'SUPPORT',      title: '✅ Collected — Thanks' }],
     }, tenantDoc);
     return true;
   }

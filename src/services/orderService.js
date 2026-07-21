@@ -17,7 +17,6 @@
 import Order  from '../models/Order.js';
 import { recordOrderItem } from '../core/memory/customerMemory.js';
 import { validatePromoCode, applyPromoUsage } from './promoService.js';
-import { logAudit } from './auditService.js';
 import logger from '../config/logger.js';
 
 // [AUDIT-FIX-MULTICART-2] Hard ceiling on items[] length — saveOrder() itself
@@ -145,16 +144,6 @@ export async function saveOrder({ item, quantity, totalPrice, addOns, items, not
   recordOrderItem(customerPhone, String(tenantId), resolvedItem, { countOrder: false }).catch(err =>
     logger.debug('[OrderService] recordOrderItem failed (non-fatal)', { err: err.message })
   );
-
-  // [AUDIT-WIRE-1] AuditLog.js's own docstring has documented this as the
-  // order_created call site since the model was written — auditService.js's
-  // logAudit() existed and was fully unit-tested, but nothing anywhere ever
-  // called it, so AuditLog was pure dead schema with zero rows ever written.
-  // Fire-and-forget, matching auditService's own contract.
-  logAudit({
-    tenantId, orderId: order._id, actor: 'customer', actorId: customerPhone,
-    action: 'order_created', metadata: { item: resolvedItem, quantity: resolvedQuantity, status: order.status },
-  });
 
   return order;
 }

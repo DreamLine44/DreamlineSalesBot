@@ -36,9 +36,9 @@ export const GENERAL_CONFIG = {
     // which is caught by intent detection, or via the ENQUIRY flow. The 3 most-used CTAs
     // (QUESTION, ENQUIRY, BOOK) are retained.
     welcomeButtons: [
-      { id: 'QUESTION',   title: '❓ Ask a Question',   description: 'Get help from our team'    },
-      { id: 'ENQUIRY',    title: '📬 Send an Enquiry',  description: 'Tell us what you need'     },
-      { id: 'BOOK',       title: '📅 Book Appointment', description: 'Schedule a visit'          },
+      { id: 'QUESTION',   title: '❓ Ask a Question'    },
+      { id: 'ENQUIRY',    title: '📬 Send an Enquiry'   },
+      { id: 'BOOK',       title: '📅 Book Appointment'  },
     ],
     fallbackButtons: [
       { id: 'QUESTION', title: '❓ Ask'         },

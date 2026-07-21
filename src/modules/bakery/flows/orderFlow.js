@@ -430,7 +430,7 @@ function _buildPickupTimeUI(business) {
     body:   `⏰ *When would you like it?*`,
     button: 'Choose time',
     sections: [{
-      title: 'Collection / Delivery Window',
+      title: 'Collection / Delivery',
       rows: [
         { id: 'SLOT_MORNING',   title: '🌅 Morning',    description: '8:00 AM – 12:00 PM'  },
         { id: 'SLOT_AFTERNOON', title: '☀️ Afternoon',  description: '12:00 PM – 4:00 PM'  },

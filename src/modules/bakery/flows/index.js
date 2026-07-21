@@ -20,9 +20,9 @@ export const BAKERY_CONFIG = {
   },
   ui: {
     welcomeButtons: [
-      { id: 'ORDER',    title: '🧁 Place an Order',      description: 'Browse our bakes & place an order' },
-      { id: 'BOOK',     title: '📅 Schedule Collection', description: 'Reserve a pickup time'              },
-      { id: 'QUESTION', title: '❓ Ask a Question',      description: 'Get help from our team'             },
+      { id: 'ORDER',    title: '🧁 Place an Order'  },
+      { id: 'BOOK',     title: '📅 Schedule Pickup' },
+      { id: 'QUESTION', title: '❓ Ask a Question'   },
     ],
     fallbackButtons: [
       { id: 'ORDER',    title: '🧁 Order'    },

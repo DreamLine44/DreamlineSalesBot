@@ -113,19 +113,10 @@ export function shouldShowCatalogButton(business) {
 
 /**
  * withCatalogWelcomeOption(buttons, business)
- * [CATALOG-UX-BUTTON] Merges a "🛍 Browse Catalog" option into every
- * tenant's welcome-menu button set — unconditionally, by explicit product
- * decision, regardless of shouldShowCatalogButton()/WA Catalog enablement.
- * The welcome menu should look and read the same for every tenant, catalog
- * configured or not; the button itself stays safe to show even with no WA
- * Catalog set up because browseCatalogExplicit() (waCatalogFlow.js) already
- * falls back gracefully to the module's normal ORDER/product flow whenever
- * sendCatalogMessage() reports the catalog isn't actually configured — a tap
- * never dead-ends, it just quietly behaves like "Order Food" for tenants who
- * haven't turned WA Catalog on yet. shouldShowCatalogButton() is kept as a
- * named export for any future call site that still needs the real
- * enabled+configured check (e.g. deciding whether to *promote* the catalog
- * automatically) — it's simply no longer consulted here.
+ * [CATALOG-UX-BUTTON] Merges a "🛍 Browse Catalog" option into an existing
+ * welcome-menu button set for tenants where shouldShowCatalogButton() is
+ * true — a no-op ({ buttons }, unchanged) for every tenant who hasn't
+ * enabled WA Catalog.
  *
  * dispatcher.js's 'buttons' UI type hard-caps at 3 (`.slice(0, 3)`, silent
  * truncation) — every vertical's welcomeButtons config already uses all 3
@@ -139,85 +130,41 @@ export function shouldShowCatalogButton(business) {
  * identical either way, so BUTTON_ID_MAP / numeric shortcuts keep working
  * regardless of which shape a given tenant ends up rendering.
  */
-export function withCatalogWelcomeOption(buttons, _business) {
+export function withCatalogWelcomeOption(buttons, business) {
   const base = buttons || [];
+  const alreadyHasCatalogOption = base.some(b => b.id === 'BROWSE_CATALOG');
 
-  const catalogOption = {
-    id: 'BROWSE_CATALOG', title: '🛍 Browse Catalog',
-    description: 'Shop our products & collections',
-  };
-
-  // [FIX-CATALOG-ORDER] Insert Browse Catalog before the final option rather
-  // than appending it after every other option — every vertical's
-  // welcomeButtons ends with its "help/question" action, and that reads best
-  // as the last item in the list, with the browsable/transactional options
-  // (order/book/catalog) grouped together ahead of it. Generic "before the
-  // last item" (rather than hunting for a specific id) keeps this correct
-  // even for verticals whose button order doesn't end in QUESTION.
-  const insertIdx = base.length > 0 ? base.length - 1 : 0;
-  const combined = [...base.slice(0, insertIdx), catalogOption, ...base.slice(insertIdx)];
+  // [FIX-CATALOG-BTN-DEDUPE] Some module configs (e.g. restaurant's
+  // welcomeList) now include "🛍️ Browse Catalog" as a static, always-shown
+  // option regardless of WA Catalog backend enablement — don't append a
+  // second one just because the tenant also has the backend feature enabled.
+  let combined = base;
+  if (!alreadyHasCatalogOption && shouldShowCatalogButton(business)) {
+    combined = [...base, { id: 'BROWSE_CATALOG', title: '🛍 Browse Catalog' }];
+  }
 
   if (combined.length <= 3) return { buttons: combined };
-  // [FIX-CATALOG-DESC] Preserve each option's `description` (not just id/title)
-  // so the rendered WhatsApp list shows a helpful subtitle under every row —
-  // dropping it here silently degraded the list to bare titles even when the
-  // caller had supplied a description.
-  return { rows: combined.map(b => ({ id: b.id, title: b.title, description: b.description })) };
-}
 
-// [WELCOME-MENU-PAGING] How many options show directly on the main welcome
-// screen before the rest get tucked behind "⋯ More". Meta's WhatsApp
-// Business Cloud API hard-caps reply-button messages at 3 buttons per
-// message — reserving the 3rd primary slot for "⋯ More" keeps every screen
-// this produces at or under that cap.
-const MAIN_MENU_PRIMARY_COUNT = 2;
-
-/**
- * buildWelcomeMenu(buttons, business)
- * [WELCOME-MENU-PAGING] Wraps withCatalogWelcomeOption() so the welcome
- * screen (GREET / SHOW_MENU) ALWAYS renders as real, directly-tappable
- * WhatsApp reply buttons — by explicit product decision, never a list
- * message, because a list always requires an extra "expand" tap (Meta's
- * own list-message UI) even just to see the first option, which is exactly
- * the friction this was built to remove.
- *
- * - Combined option count <= 3: returned as one screen, `{ main: { buttons } }`.
- * - Combined option count > 3 (the common case once Browse Catalog is
- *   merged in): split into two stateless screens —
- *     main: the first 2 options + a "⋯ More" button (3 buttons total)
- *     more: the remaining options + a "🏠 Main Menu" button back (see
- *           moduleRouter.js's MORE_MENU / MAIN_MENU cases)
- *   Every current vertical's combined count is exactly 4 (3 base buttons +
- *   Browse Catalog), so `more` is always exactly 3 buttons too — no page
- *   ever needs more than one tap to reach or exceeds the button cap. If a
- *   future vertical's welcomeButtons ever grows large enough that `more`
- *   would exceed 3, it falls back to a list message there (never silently
- *   drops an option) — a safety net, not the expected path today.
- *
- * Both screens are recomputed fresh from the tenant's own config on every
- * tap rather than cached on the session — MORE_MENU / MAIN_MENU work
- * identically however the customer got there, with no extra session state
- * to keep in sync.
- */
-export function buildWelcomeMenu(buttons, business) {
-  const merged = withCatalogWelcomeOption(buttons, business);
-  const combined = merged.rows || merged.buttons;
-
-  if (combined.length <= 3) return { main: { buttons: combined } };
-
-  const primary = combined.slice(0, MAIN_MENU_PRIMARY_COUNT);
-  const secondary = [
-    ...combined.slice(MAIN_MENU_PRIMARY_COUNT),
-    { id: 'MAIN_MENU', title: '🏠 Main Menu' },
-  ];
-
-  const more = secondary.length <= 3
-    ? { buttons: secondary }
-    : { rows: secondary.map(b => ({ id: b.id, title: b.title, description: b.description })) };
+  // [FIX-3BTN-CAP] WhatsApp's Cloud API hard-caps "button" interactive
+  // messages at exactly 3 reply buttons — a 4th button is rejected by Meta's
+  // API outright (this is a hard platform limit, not a client-side display
+  // quirk like list-row truncation). Once the option set exceeds 3, split it
+  // across two button screens instead of ever building a 4-button payload:
+  // the first 2 real options + a trailing "⋯ More" button, then the
+  // remaining options + a trailing "🏠 Main Menu" button to return.
+  //
+  // Only ever reached with 4 total options today (3 base + Browse Catalog),
+  // which splits evenly into two screens of 2+nav. If a tenant's base set
+  // ever grows past 4, the extras beyond the 4th are dropped here rather
+  // than adding further "More" pages — nothing in this codebase currently
+  // produces more than 4, so a 3rd page isn't built out.
+  const primaryOptions   = combined.slice(0, 2);
+  const secondaryOptions = combined.slice(2, 4);
 
   return {
-    main: { buttons: [...primary, { id: 'MORE_MENU', title: '⋯ More' }] },
-    more,
+    buttons: [...primaryOptions, { id: 'MORE_MENU', title: '⋯ More' }],
+    more: {
+      buttons: [...secondaryOptions, { id: 'SHOW_MENU', title: '🏠 Main Menu' }],
+    },
   };
 }
-

@@ -19,8 +19,8 @@ export const FASHION_CONFIG = {
   },
   ui: {
     welcomeButtons: [
-      { id: 'ORDER',    title: '👗 Shop Collection', description: 'Browse our latest collection' },
-      { id: 'QUESTION', title: '❓ Style Help',       description: 'Get styling advice'           },
+      { id: 'ORDER',    title: '👗 Shop Collection' },
+      { id: 'QUESTION', title: '❓ Style Help'       },
     ],
     fallbackButtons: [
       { id: 'ORDER',    title: '👗 Shop'     },

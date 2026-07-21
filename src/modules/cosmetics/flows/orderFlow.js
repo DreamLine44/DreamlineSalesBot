@@ -232,7 +232,7 @@ export async function handleCosmeticsOrderFlow({ session, message, business, ten
         type: 'buttons',
         body: `🎁 Any special requests?\n_(e.g. "Gift wrap", "Include a card", "Fragrance-free packaging")_`,
         buttons: [
-          { id: 'GIFT_NONE', title: '✅ No special requests' },
+          { id: 'GIFT_NONE', title: '✅ No Requests'          },
           { id: 'CANCEL',    title: '❌ Cancel'               },
         ],
         footer: 'Or type your request and send',

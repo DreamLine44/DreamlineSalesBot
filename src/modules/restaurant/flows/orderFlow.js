@@ -115,11 +115,17 @@ export async function handleOrderFlow({ session, message, business, tenant, isIn
       }
 
       // Too short — show a gentle nudge instead of just dumping the menu again
+      // [FIX-NUDGE-BTN-MISMATCH] This text told the customer to tap "View Menu",
+      // but the button was labeled "🔄 Start Over" with id SHOW_MENU — which
+      // resets the session and shows the generic top-level welcome list, not
+      // the actual food menu. Fixed to a VIEW_MENU button so the button matches
+      // the instruction and actually renders the menu (see moduleRouter.js's
+      // VIEW_MENU case → startFlow('ORDER') → buildMenuUI()).
       if (clean.length < 3) {
         return {
           type:    'buttons',
           body:    `Please type the name of what you'd like to order, or tap *View Menu* to see all options:`,
-          buttons: [{ id: 'SHOW_MENU', title: '🔄 Start Over' }],
+          buttons: [{ id: 'VIEW_MENU', title: '📋 View Menu' }],
         };
       }
 
