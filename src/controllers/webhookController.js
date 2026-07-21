@@ -123,12 +123,10 @@
  */
 
 import { getSession, createSession, updateSession } from '../core/sessions/sessionService.js';
-import { detectIntent, extractCustomerName, isInformationalIntent, ORDER_DIRECT_RE, BOOKING_DIRECT_RE, DIRECT_INTENT_EXCLUDE_RE, normalise as normaliseFsi } from '../core/intents/intentEngine.js';
-import { findBestMatch } from '../utils/matchEngine.js';
-import { analyzeMessage }                            from '../core/intents/negationGuard.js';
+import { detectIntent, extractCustomerName }         from '../core/intents/intentEngine.js';
 import { INTENT_PATTERNS }                           from '../core/intents/patterns.js';
 import { updateName as persistCustomerName }         from '../core/memory/customerMemory.js';
-import { advance, startFlow }                        from '../core/conversations/flowEngine.js';
+import { advance }                                   from '../core/conversations/flowEngine.js';
 import { route }                                     from '../core/conversations/moduleRouter.js';
 import { dispatchMessage }                           from '../core/whatsapp/dispatcher.js';
 import { getModeConfig }                             from '../config/modes.js';
@@ -155,25 +153,6 @@ import ProcessedMessage from '../models/ProcessedMessage.js';
 import Order            from '../models/Order.js';
 import logger           from '../config/logger.js';
 import crypto           from 'crypto';
-import { buildWelcomeMenu } from '../modules/catalog/waCatalogConfig.js';
-
-// [WIRING-AUDIT-MENU-1] Every place in this file that renders the top-level
-// "what would you like to do?" button set (loop-fallback, order-cancelled
-// screens, the typed "menu"/"0"/"show menu" shortcut, FSI switch/resume
-// fallbacks) used to build its buttons directly from `cfg.ui?.welcomeButtons`,
-// bypassing buildWelcomeMenu()/withCatalogWelcomeOption() entirely. That meant
-// "🛍 Browse Catalog" (and the "⋯ More" pagination it triggers once the combined
-// option count exceeds 3) only ever appeared when the screen was reached via
-// moduleRouter.js's GREET/SHOW_MENU/MORE_MENU cases — every other entry point
-// silently showed a different, catalog-less menu. This mirrors the exact class
-// of bug documented in buildWelcomeMenu()'s own docstring (waCatalogConfig.js)
-// and moduleRouter.js's [WELCOME-MENU-PAGING] comments, just at call sites
-// those files don't control. Centralized here so every entry point renders the
-// identical, Browse-Catalog-aware, paginated option set moduleRouter.js does.
-function _mainMenuButtons(business) {
-  const cfg = getModeConfig(business);
-  return buildWelcomeMenu(cfg.ui?.welcomeButtons || [], business).main.buttons;
-}
 
 // ── [META-CREDS] Per-tenant webhook HMAC signature verification ───────────────
 // Verifies X-Hub-Signature-256 using the tenant's own Meta App Secret.
@@ -416,11 +395,6 @@ const FLOW_PASSTHROUGH_IDS = new Set([
   // detection, which would otherwise misclassify MFQ_SWITCH_YES as FALLBACK.
   'MFQ_SWITCH_YES',
   'MFQ_SWITCH_NO',
-  // ── [FSI] Mid-Flow Order/Booking-Switch intercept response buttons ────────
-  // Same rationale as MFQ_SWITCH_YES/NO above — must bypass intent detection
-  // so they reach the FSI handler block, not get misclassified as FALLBACK.
-  'FSI_SWITCH_YES',
-  'FSI_SWITCH_NO',
   // [MFQ] Resume-flow button shown after Q&A is complete — lets the customer jump
   // back into the paused flow. Must bypass intent detection so it reaches the
   // MFQ_RESUME_FLOW handler at step 15.1b, not GREET or FALLBACK.
@@ -544,13 +518,13 @@ async function checkAndHandleLoop(session, messageText, tenantId, business) {
         loopCount: 0, lastLoopMessage: null, lastLoopStep: null,
         lastAorInterceptAt: null,
       });
+      const cfg = getModeConfig(business);
       const loopMsg = business?.customMessages?.loopFallback
         || "I noticed we keep going in circles! Let me take you back to the main menu. 😊";
       return {
         type:    'buttons',
         body:    loopMsg,
-        // [WIRING-AUDIT-MENU-1] was raw cfg.ui?.welcomeButtons — see helper docstring above.
-        buttons: _mainMenuButtons(business),
+        buttons: cfg.ui?.welcomeButtons || [{ id: 'SHOW_MENU', title: '🔄 Start Over' }],
       };
     }
     // Not yet at limit — persist the incremented count
@@ -586,74 +560,7 @@ function extractMessage(msgObj) {
   if (type === 'button')
     return { text: (msgObj.button?.payload || '').trim(), isInteractive: true, isListReply: false, imageUrl: null };
 
-  // [CATALOG-WIRE-1] Meta sends type='order' when a customer completes checkout
-  // from inside the native WhatsApp Catalog UI (waCatalogFlow.js's docstring
-  // describes this as the trigger for handleCatalogOrderMessage(), but nothing
-  // ever actually surfaced the payload here — every catalog checkout was silently
-  // dropped by the final `return { text: '' ... }` fallback below). No text/image,
-  // so it's threaded through as its own field rather than forced into `text`.
-  if (type === 'order')
-    return { text: '', imageUrl: null, isInteractive: false, isListReply: false, catalogOrder: msgObj.order || null };
-
   return { text: '', imageUrl: null, isInteractive: false, isListReply: false };
-}
-
-/**
- * [MERGE-FEAT-EMOTION-WIRE-3] Maps classifyIntentStructured()'s ([GROQ-STRUCT-1])
- * emotion vocabulary onto emotionEngine.js's existing tone enum, so aiSignals.emotion
- * can serve as a fallback signal when the regex-based detectPreFlowEmotion() found
- * nothing. 'urgent' maps to URGENT deliberately even though URGENT has no tone
- * prefix in TONE_PREFIX (urgency is served by brevity — see [MERGE-FEAT-URGENCY-1]
- * — not an added line) — mapping it still lets `finalEmotion === 'URGENT'` reach
- * route() correctly. Emotions with no sensible tone-prefix equivalent (satisfied,
- * angry, curious, apologetic, disappointed, grateful) are deliberately left
- * unmapped rather than guessed.
- */
-const AI_EMOTION_TO_TONE = {
-  frustrated: 'FRUSTRATED',
-  confused:   'CONFUSED',
-  excited:    'EXCITED',
-  happy:      'EXCITED',
-  urgent:     'URGENT',
-};
-
-/**
- * [MERGE-FEAT-STRUCTURED-AI-2] Human-readable labels for classifyIntentStructured()'s
- * secondaryIntents field when it names a genuine second WORKFLOW request (not an
- * informational question — those are already answered directly, see the multi-intent
- * block above). The FSM only supports one active flow per session at a time, so a
- * second workflow can't actually be started in parallel; acknowledging it here means
- * it's never silently dropped.
- */
-const SECONDARY_INTENT_LABEL = {
-  ORDER: 'placing your order', BOOKING: 'booking a table', WALKIN: 'your walk-in',
-  QUESTION: 'your question', SUPPORT: 'getting you support', PAYMENT: 'your payment',
-  TRACK_ORDER: 'tracking your order',
-};
-
-function describeSecondaryIntents(secondaryIntents = []) {
-  const labels = (Array.isArray(secondaryIntents) ? secondaryIntents : [])
-    .map(i => SECONDARY_INTENT_LABEL[i])
-    .filter(Boolean);
-  return labels.length ? `(I'll help with ${labels.join(' and ')} right after this! 👍)` : null;
-}
-
-/**
- * appendToFirstTextPayload(payloads, extraText)
- * Appends a short line to the first text-bearing payload in a payloads array,
- * without touching any other field (buttons, type, images, etc.). Mirrors the
- * string | {body} payload handling already used by emotionEngine.js#applyEmotionTone.
- */
-function appendToFirstTextPayload(payloads, extraText) {
-  if (!extraText || !payloads?.length) return payloads;
-  const idx = payloads.findIndex(p => typeof p === 'string' || (p && typeof p.body === 'string'));
-  if (idx === -1) return payloads;
-  const next = [...payloads];
-  const target = next[idx];
-  next[idx] = typeof target === 'string'
-    ? `${target}\n\n${extraText}`
-    : { ...target, body: `${target.body}\n\n${extraText}` };
-  return next;
 }
 
 // ── [MFQ] Mid-Flow Question helpers ──────────────────────────────────────────
@@ -747,13 +654,6 @@ const MFQ_QUESTION_RE = /^(wh(at|o|y|en|ere|ich)|how|can|is|are|do|does|would|co
 // Uses the same SUPPORT keyword list as top-level intent detection (single source
 // of truth in core/intents/patterns.js) so adding a new admin phrase there also
 // fixes mid-flow escalation with no other code change needed.
-//
-// [MERGE-NEGATION-2] The SUPPORT keyword list above is deliberately narrow (admin/
-// human-escalation phrasing). It does NOT cover free-form complaint phrasing like
-// "the food arrived cold" or "an item was missing" — a customer typing that mid-flow
-// used to just get the current step's generic re-prompt. analyzeMessage().complaint
-// (negationGuard.js — the same deterministic complaint detector intentEngine.js's
-// own pre-flow guard uses) is now OR'd in below to close that gap.
 function _detectMidFlowSupportRequest(text, session) {
   const step  = (session.step || '').toUpperCase();
   const clean = text.toLowerCase().replace(/[^\w\s]/g, ' ').replace(/\s+/g, ' ').trim();
@@ -763,8 +663,6 @@ function _detectMidFlowSupportRequest(text, session) {
   if (MFQ_FREE_TEXT_STEPS.has(step) || MFQ_DATE_TIME_STEPS.has(step)) return false;
   if (step === 'PAYMENT_PROOF') return false;
   if (!clean || clean.length < 3) return false;
-
-  if (analyzeMessage(text).complaint) return true;
 
   const words = clean.split(' ');
   for (const kw of (INTENT_PATTERNS.SUPPORT || [])) {
@@ -845,72 +743,6 @@ function _detectMidFlowQuestion(text, session) {
   return false;
 }
 
-// ── [FSI] Mid-Flow Order/Booking-Switch detector ─────────────────────────────
-//
-// PROBLEM: a customer already inside an active BOOKING flow (or ORDER flow)
-// who deliberately types a request for the OTHER flow (e.g. "I want to order
-// food" while mid-booking) previously had that message silently swallowed by
-// the current step's handler (which just re-showed its existing prompt) —
-// the exact same infinite-loop shape as the SUPPORT/STATUS/MFQ-question gaps
-// above, just for switching between the platform's two core flows.
-//
-// Reuses ORDER_DIRECT_RE / BOOKING_DIRECT_RE / DIRECT_INTENT_EXCLUDE_RE — the
-// exact same regexes the no-flow direct-phrase step (intentEngine.js step 4.5)
-// already uses — so "does this text look like an order/booking request" has a
-// single source of truth whether or not a flow is active.
-//
-// [FIX-FSI-1] Item-name collision guard: if the CURRENT flow's own catalog
-// (menuItems for ORDER, services for BOOKING — never the other flow's
-// catalog) has a HIGH-confidence findBestMatch() hit for this exact text,
-// it's naming an item/service, not requesting a switch — e.g. a restaurant
-// selling a dish literally called "Reserve Cabernet". Only a HIGH match
-// suppresses the switch; a LOW/typo match still allows it through.
-//
-// [FIX-FSI-2] Capability gate: never offer a switch into a flow the business
-// vertical doesn't actually support (checked via getModeConfig(business).flows
-// — e.g. RETAIL/FASHION/ELECTRONICS/DELIVERY have no BOOKING flow at all).
-function _detectMidFlowSwitchRequest(text, session, business) {
-  const flow = (session.currentFlow || '').toUpperCase();
-  if (flow !== 'ORDER' && flow !== 'BOOKING') return null;
-
-  const step = (session.step || '').toUpperCase();
-  if (MFQ_FREE_TEXT_STEPS.has(step) || MFQ_DATE_TIME_STEPS.has(step)) return null;
-  if (step === 'PAYMENT_PROOF') return null;
-
-  const clean = normaliseFsi(text || '');
-  if (!clean || clean.length < 4 || /^\d+$/.test(clean)) return null;
-
-  // Negation/cancellation/status phrasing must never trigger a switch prompt —
-  // "I don't want to order anymore" must not be read as an order request.
-  if (DIRECT_INTENT_EXCLUDE_RE.test(clean)) return null;
-
-  // Check the OTHER flow's regex first — a phrase like "I want to book a
-  // table" mid-ORDER matches BOTH ORDER_DIRECT_RE ("i want") and
-  // BOOKING_DIRECT_RE ("book"), but the customer is clearly asking to book,
-  // not to order. Prioritising same-flow's own regex would misread this as
-  // "still ordering" and never offer the switch.
-  let targetFlow = null;
-  if (flow === 'ORDER') {
-    if (BOOKING_DIRECT_RE.test(clean))    targetFlow = 'BOOKING';
-    else if (ORDER_DIRECT_RE.test(clean)) targetFlow = 'ORDER';
-  } else {
-    if (ORDER_DIRECT_RE.test(clean))        targetFlow = 'ORDER';
-    else if (BOOKING_DIRECT_RE.test(clean)) targetFlow = 'BOOKING';
-  }
-  if (!targetFlow || targetFlow === flow) return null;
-
-  // [FIX-FSI-2] Capability gate.
-  const supportedFlows = getModeConfig(business)?.flows || [];
-  if (!supportedFlows.includes(targetFlow)) return null;
-
-  // [FIX-FSI-1] Item-name collision guard — only the CURRENT flow's own catalog.
-  const catalog = flow === 'ORDER' ? (business?.menuItems || []) : (business?.services || []);
-  const match   = findBestMatch(catalog, text);
-  if (match.confidenceLevel === 'HIGH') return null;
-
-  return targetFlow;
-}
-
 // _mfqStepLabel(flow, step)
 //   Returns a human-readable description of the current flow + step.
 //   Used in the intercept message: "You're currently [stepLabel]."
@@ -977,7 +809,7 @@ function _mfqStepLabel(flow, step) {
 
 // ── Main handler ──────────────────────────────────────────────────────────────
 export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj, phoneNumberId }) {
-  const { text: messageText, imageUrl, isInteractive, isListReply, catalogOrder } = extractMessage(msgObj);
+  const { text: messageText, imageUrl, isInteractive, isListReply } = extractMessage(msgObj);
   const wamid = msgObj?.id;
 
   logger.debug('[Webhook] handleIncomingMessage', {
@@ -1011,9 +843,7 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
   }
 
   // ── 2. Empty guard ────────────────────────────────────────────────────────
-  // [CATALOG-WIRE-2] A WA Catalog checkout ('order' message) has no text and
-  // no image — it would have been dropped right here before this fix.
-  if (!messageText && !imageUrl && !catalogOrder) {
+  if (!messageText && !imageUrl) {
     logger.debug('[Webhook] Message has no text and no image — skipping', {
       from, tenantId, msgType: msgObj?.type,
     });
@@ -1090,47 +920,6 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
     lastSeen:      new Date(),
     phoneNumberId: phoneNumberId || session.phoneNumberId,
   }, { messageCount: 1 }).catch(err => logger.warn('[Webhook] Non-critical session update failed', { err: err.message, from }));
-
-  // [USAGE-WIRE-1] usageService.js's incrementTenantUsage() was fully built —
-  // Tenant.usage.messagesThisMonth/Tenant.limits have existed in the schema
-  // since early on — but nothing ever called it, so plan usage was pure dead
-  // schema and the dashboard usage widget had no real data to show. Fire-and-
-  // forget per the service's own contract: never awaited, never blocks or
-  // fails message delivery.
-  import('../services/usageService.js')
-    .then(({ incrementTenantUsage }) => incrementTenantUsage(tenantId))
-    .catch(err => logger.debug('[Webhook] Usage tracking skipped', { err: err.message }));
-
-  // ── 4.5 [MERGE-FEAT-SPAM-1] Rapid identical-message suppression ────────────
-  // Spec: "Ignore repeated identical messages (e.g. 'hello' sent 4 times) —
-  // respond once." Distinct from the wamid dedup above (network-level duplicate
-  // delivery of the SAME event, different customer intent) and from
-  // checkAndHandleLoop (many-turn stuck-loop detection across a whole
-  // conversation) — this specifically catches the same customer re-sending the
-  // exact same text within a few seconds (flaky connection triggering a resend,
-  // an impatient double-tap, etc.). Text messages only — interactive taps
-  // (buttons/lists) are legitimate to repeat (e.g. tapping "+1" twice in a row)
-  // and are deliberately excluded, as are very short/numeric messages (already
-  // handled as CONTINUE_FLOW quantity/digit input elsewhere).
-  if (!isInteractive && messageText && messageText.trim().length > 1 && !/^\d+$/.test(messageText.trim())) {
-    const RAPID_DUPLICATE_WINDOW_MS = 6000; // 6 seconds
-    const cleanText   = messageText.trim().toLowerCase();
-    const lastText    = (session.lastRapidMessage || '').trim().toLowerCase();
-    const lastAt      = session.lastRapidMessageAt ? new Date(session.lastRapidMessageAt) : null;
-    const isDuplicate = Boolean(cleanText && lastAt && cleanText === lastText
-      && (Date.now() - lastAt.getTime()) < RAPID_DUPLICATE_WINDOW_MS);
-
-    if (isDuplicate) {
-      logger.debug('[Webhook] Rapid duplicate text — responding once, skipping repeat reply', {
-        from, tenantId, textPreview: messageText.slice(0, 60),
-      });
-      return;
-    }
-
-    updateSession(from, tenantId, {
-      lastRapidMessage: messageText.trim(), lastRapidMessageAt: new Date().toISOString(),
-    }).catch(() => {});
-  }
 
   // ── 5. [FIX-BUG3] Business hours enforcement ──────────────────────────────
   // Apply to ALL message types — button taps during closed hours must also be blocked.
@@ -1281,34 +1070,6 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
     return;
   }
 
-  // ── 7.5. [CATALOG-WIRE-3] WA Catalog checkout ─────────────────────────────
-  // handleCatalogOrderMessage() (waCatalogFlow.js) and its own tests have
-  // existed since the WA Catalog integration was built, but this call site —
-  // documented in that file's header comment as "webhookController.js section
-  // 7.5" — was never actually added, so a customer's catalog checkout could
-  // never reach it. Placed after the humanMode gate (an admin-silenced
-  // customer shouldn't get an automated catalog reply either) and before loop
-  // prevention / intent detection, since this message carries structured data,
-  // not text to classify.
-  if (catalogOrder) {
-    try {
-      const { handleCatalogOrderMessage } = await import('../modules/catalog/waCatalogFlow.js');
-      const catalogReply = await handleCatalogOrderMessage({ session, business, tenant: tenantDoc, catalogOrder });
-      if (catalogReply) {
-        const payloads = Array.isArray(catalogReply) ? catalogReply : [catalogReply];
-        for (const payload of payloads) {
-          await dispatchMessage(from, payload, tenantDoc);
-        }
-        const lastPayload = payloads[payloads.length - 1];
-        const body = typeof lastPayload === 'string' ? lastPayload : lastPayload?.body;
-        if (body) updateSession(from, tenantId, { lastBotMessage: body }).catch(() => {});
-      }
-    } catch (err) {
-      logger.error('[Webhook] WA Catalog order handling failed', { from, tenantId, err: err.message });
-    }
-    return;
-  }
-
   // ── 8. [FIX-BUG4] Loop prevention (text AND button taps) ─────────────────
   // Previously this only ran for !isInteractive — button loops were unchecked.
   // [FIX-LOOP-3] Guard skips active flows: a customer legitimately typing the
@@ -1416,11 +1177,11 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
         { sort: { createdAt: -1 } }
       ).catch(() => {});
       await updateSession(from, tenantId, { currentFlow: null, step: null, data: {} });
+      const cfg = getModeConfig(business);
       await dispatchMessage(from, {
         type:    'buttons',
         body:    '❌ Your order has been cancelled.\n\nWhat would you like to do next?',
-        // [WIRING-AUDIT-MENU-1] was raw cfg.ui?.welcomeButtons — see helper docstring above.
-        buttons: _mainMenuButtons(business),
+        buttons: cfg.ui?.welcomeButtons || [{ id: 'ORDER', title: '🛒 Place New Order' }],
       }, tenantDoc);
       return;
     }
@@ -1487,11 +1248,11 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
         { sort: { createdAt: -1 } }
       ).catch(() => {});
       await updateSession(from, tenantId, { currentFlow: null, step: null, data: {} });
+      const cfg = getModeConfig(business);
       await dispatchMessage(from, {
         type:    'buttons',
         body:    '❌ Your order has been cancelled.\n\nWhat would you like to do?',
-        // [WIRING-AUDIT-MENU-1] was raw cfg.ui?.welcomeButtons — see helper docstring above.
-        buttons: _mainMenuButtons(business),
+        buttons: cfg.ui?.welcomeButtons || [{ id: 'ORDER', title: '🛒 Place New Order' }],
       }, tenantDoc);
       return;
     }
@@ -1566,11 +1327,11 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
           { $set: { status: 'cancelled', paymentStatus: 'cancelled', cancelledBy: 'customer', cancelledAt: new Date() } }
         ).catch(() => {});
         await updateSession(from, tenantId, { currentFlow: null, step: null, data: {} });
+        const cfgPOL = getModeConfig(business);
         await dispatchMessage(from, {
           type:    'buttons',
           body:    `❌ Your order *#${pendingOrder.shortId}* has been cancelled.\n\nWhat would you like to do next?`,
-          // [WIRING-AUDIT-MENU-1] was raw cfgPOL.ui?.welcomeButtons — see helper docstring above.
-          buttons: _mainMenuButtons(business),
+          buttons: cfgPOL.ui?.welcomeButtons || [{ id: 'ORDER', title: '🛒 Place New Order' }],
         }, tenantDoc);
         return;
       }
@@ -2134,11 +1895,7 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
     // anything outside that set gets a "that option has passed" reply.
     const STEP_VALID_BUTTONS = {
       // ── Generic steps (used by restaurant / bakery / retail etc.) ──────────
-      // [AUDIT-FIX-VIEWMENU] VIEW_MENU added — restaurant/flows/orderFlow.js and
-      // delivery/flows/index.js both show a "📋 View Menu" button (id VIEW_MENU)
-      // at this step; without this entry the tap failed STEP_VALID_BUTTONS
-      // validation before ever reaching the VIEW_MENU intercept below.
-      SELECT_ITEM:          new Set(['SHOW_MENU', 'VIEW_MENU', 'CANCEL', 'CONFIRM']),
+      SELECT_ITEM:          new Set(['SHOW_MENU', 'CANCEL', 'CONFIRM']),
       SUGGESTION_CONFIRM:   new Set(['CONFIRM', 'SHOW_MENU', 'CANCEL']),
       QUANTITY:             new Set([]), // expects free text — no valid buttons
       UPSELL:               new Set(['UPSELL_YES', 'UPSELL_NO']),
@@ -2187,71 +1944,6 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
       const validSet = STEP_VALID_BUTTONS[currentStep];
       // Only enforce when the set is non-empty (empty means free-text step, no valid buttons)
       if (validSet.size > 0 && !validSet.has(upperMsg) && !isFlowPassthroughId(upperMsg)) {
-        // [FIX-NAV-SWITCH-BTN] Top-level welcome-menu buttons ("🍔 Order Food",
-        // "📅 Book a Table", "🛍 Browse Catalog", "🚶 Join Walk-In Queue") are NOT
-        // flow-internal step buttons, so none of them were ever in
-        // STEP_VALID_BUTTONS for any step — and none of them are in
-        // FLOW_PASSTHROUGH_IDS either (adding them there would feed the raw id
-        // into advance() as free-text flow input — the same class of bug
-        // [FIX-P1] fixed for CONFIRM/COLLECT/etc.). Result: a customer already
-        // mid-ORDER (say) who tapped "📅 Book a Table" or "🛍 Browse Catalog" —
-        // exactly the scenario the FSI mid-flow-switch system exists to handle
-        // for TYPED text — got the generic "that option is no longer available"
-        // reject here, before FSI's own detector (_detectMidFlowSwitchRequest,
-        // which only runs on free-text further down) was ever reached. WALKIN
-        // has the identical gap for the same reason.
-        //
-        // A direct tap on another top-level action's own button is unambiguous —
-        // more so than typed text, which is why FSI still asks "did you mean to
-        // switch?" for a phrase but a tap doesn't need that confirmation. This
-        // mirrors the "a direct tap is unambiguous" reasoning already used by
-        // browseCatalogExplicit() and the START_ORDER isInteractive gate.
-        //
-        // ORDER/BOOK/WALKIN switch immediately via startFlow() — same call
-        // FSI_SWITCH_YES itself makes — gated on the target flow actually being
-        // supported by this vertical (getModeConfig(business).flows). Catalog
-        // browsing isn't a flowName in FLOW_REGISTRY and isn't gated the same
-        // way — isCatalogEnabled()/hasSellableProducts() (checked internally by
-        // sendAndArmCatalog/browseCatalogExplicit, with its own graceful
-        // fallback to the ORDER flow) is the right gate there, so the session's
-        // stale flow state is just cleared first, the same reset SHOW_MENU/
-        // MAIN_MENU already perform, before handing off.
-        // [FIX-NAV-SWITCH-STUCK] Originally gated on `navTargetFlow !== session.currentFlow`,
-        // which meant a customer already IN (and stuck at an invalid step of) the same
-        // flow — e.g. an abandoned ORDER session — got no reset when re-tapping "Order
-        // Food": the condition was false, so this block was skipped entirely and the tap
-        // fell through to the generic "that option is no longer available" rejection a
-        // few lines below. A top-level nav tap is an explicit restart request regardless
-        // of whether the target flow matches the current one, so the same-flow case must
-        // also reset + restart, not just the cross-flow switch case.
-        const NAV_SWITCH_FLOW_TARGET = { ORDER: 'ORDER', BOOK: 'BOOKING', WALKIN: 'WALKIN' };
-        const navTargetFlow = NAV_SWITCH_FLOW_TARGET[upperMsg];
-        const navSupported  = navTargetFlow && (getModeConfig(business)?.flows || []).includes(navTargetFlow);
-        if (navTargetFlow && navSupported) {
-          const switchSession = (await getSession(from, tenantId)) || session;
-          const switchReply = await startFlow({ flowName: navTargetFlow, session: switchSession, business, tenant: tenantDoc });
-          if (switchReply) {
-            const payloads = Array.isArray(switchReply) ? switchReply : [switchReply];
-            for (const payload of payloads) {
-              await dispatchMessage(from, payload, tenantDoc);
-            }
-          }
-          return;
-        }
-        if (upperMsg === 'BROWSE_CATALOG') {
-          await updateSession(from, tenantId, { currentFlow: null, step: null, data: {} });
-          const { browseCatalogExplicit } = await import('../modules/catalog/waCatalogFlow.js');
-          const catalogSession = (await getSession(from, tenantId)) || session;
-          const catalogReply = await browseCatalogExplicit({ session: catalogSession, business, tenant: tenantDoc });
-          if (catalogReply) {
-            const payloads = Array.isArray(catalogReply) ? catalogReply : [catalogReply];
-            for (const payload of payloads) {
-              await dispatchMessage(from, payload, tenantDoc);
-            }
-          }
-          return;
-        }
-
         await dispatchMessage(from, {
           type: 'text',
           body: "⚠️ That option is no longer available at this stage of your order.\n\nPlease follow the current prompt, or type *CANCEL* if you'd like to start over.",
@@ -2268,52 +1960,14 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
     // causing the bot to go completely silent for typed messages inside active flows.
     const freshSession = await getSession(from, tenantId) || session;
 
-    // [FIX-FLOW-INIT-RACE] flowEngine.js's startFlow() writes the session in two
-    // steps: (1) an immediate reset — `currentFlow: 'ORDER', step: null` — then
-    // (2) the flow handler's own INIT branch (called with message: null) writes
-    // the real first step, e.g. `step: 'SELECT_ITEM'`. Between those two awaited
-    // writes there is a real window where the DB has currentFlow truthy AND
-    // step null at the same time.
-    //
-    // If a second webhook event for the same customer (an impatient double-tap
-    // on the very button that just started the flow — very common when there's
-    // any perceived lag, and each tap is a genuinely distinct wamid so the
-    // dedup guard at the top of handleIncomingMessage does not catch it) lands
-    // in that window, freshSession.step reads back null. The STEP_VALID_BUTTONS
-    // guard above only runs `if (currentStep && ...)`, so a null step silently
-    // skips it, and the tap falls straight through to the final advance() call
-    // below with the raw button id/title as the message. Flow handlers default
-    // a null step to their first step internally (e.g. handleOrderFlow's
-    // `step = session.step || 'SELECT_ITEM'`) and treat that raw button text as
-    // free-text menu-item input — producing "I couldn't find 'Order Food' on
-    // our menu" instead of the real menu the customer just tapped for.
-    //
-    // No legitimate steady state has currentFlow truthy with step falsy —
-    // completeFlow()/cancelFlow() always null both together — so this
-    // combination reliably means "flow is mid-initialization," never a valid
-    // step to route on. Ask the customer to tap again rather than
-    // misinterpreting the tap as flow input.
-    if (isInteractive && freshSession.currentFlow && !freshSession.step) {
-      await dispatchMessage(from, {
-        type: 'text',
-        body: '⏳ One moment — still getting that ready. Please tap the button again.',
-      }, tenantDoc);
-      return;
-    }
-
     // [FIX-MFQ-BTN] MFQ response buttons (MFQ_SWITCH_YES, MFQ_SWITCH_NO, MFQ_RESUME_FLOW)
     // were listed in FLOW_PASSTHROUGH_IDS which caused them to be routed to advance()
     // BEFORE the MFQ intercept block at 15.1a could handle them. The flow engine
     // (e.g. restaurant SELECT_ITEM) received "MFQ_SWITCH_YES" as a menu item name,
     // producing "I couldn't find MFQ_SWITCH_YES on our menu." Fix: intercept MFQ
     // button responses HERE, before the passthrough block, so they always reach 15.1a.
-    // [FSI] FSI_SWITCH_YES/NO need the exact same exemption for the exact same
-    // reason — otherwise advance() would receive "FSI_SWITCH_YES" as flow input.
-    if (
-      (isInteractive && (upperMsg === 'MFQ_SWITCH_YES' || upperMsg === 'MFQ_SWITCH_NO' || upperMsg === 'MFQ_RESUME_FLOW')) ||
-      (isInteractive && (upperMsg === 'FSI_SWITCH_YES' || upperMsg === 'FSI_SWITCH_NO'))
-    ) {
-      // Falls through to the 15.1a / 15.1b / FSI handlers below — do NOT call advance()
+    if (isInteractive && (upperMsg === 'MFQ_SWITCH_YES' || upperMsg === 'MFQ_SWITCH_NO' || upperMsg === 'MFQ_RESUME_FLOW')) {
+      // Falls through to the 15.1a / 15.1b handlers below — do NOT call advance()
     } else
     // [FIX-BUG9] Flow-internal button IDs — bypass intent detection entirely
     if (isInteractive && isFlowPassthroughId(upperMsg)) {
@@ -2350,69 +2004,20 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
     // The Booking-cancel DB write that used to live inline here has been moved into
     // cancelFlow() itself (core/conversations/flowEngine.js) so every caller gets it,
     // not just this one call site — see [FIX-CANCEL-3].
-    // [MERGE-NEGATION-2] The exact-match check below only catches literal button IDs
-    // or a bare typed "cancel". A customer typing "never mind, forget it" or "I don't
-    // want this anymore" mid-flow used to fall straight through to advance(), which
-    // doesn't recognise that phrasing either (each flow module's own cancel check is
-    // similarly exact-match-only — see e.g. bookingFlow.js) and just re-prompted the
-    // current step. Gated the same way _detectMidFlowSupportRequest is: typed text
-    // only (a button tap's ID should never be reinterpreted as free-form text), and
-    // never on genuinely free-text/date-time/payment-proof steps where a cancellation
-    // word could appear incidentally as part of a real answer.
-    const _cancelStep = (session.step || '').toUpperCase();
-    if (
-      !isInteractive &&
-      !MFQ_FREE_TEXT_STEPS.has(_cancelStep) &&
-      !MFQ_DATE_TIME_STEPS.has(_cancelStep) &&
-      _cancelStep !== 'PAYMENT_PROOF' &&
-      messageText.trim().length >= 3 &&
-      analyzeMessage(messageText).cancelled
-    ) {
-      const { cancelFlow } = await import('../core/conversations/flowEngine.js');
-      const reply = await cancelFlow(session, business);
-      await dispatchMessage(from, reply, tenantDoc);
-      return;
-    }
     if (upperMsg === 'CANCEL' || upperMsg === 'CANCEL_BOOKING' || upperMsg === 'CANCEL_ORDER') {
       const { cancelFlow } = await import('../core/conversations/flowEngine.js');
       const reply = await cancelFlow(session, business);
       await dispatchMessage(from, reply, tenantDoc);
       return;
     }
-    // [AUDIT-FIX-VIEWMENU] "View Menu" (button id VIEW_MENU, or typed "menu" /
-    // "show menu" / "view menu" / "see menu" / "main menu" / "back to menu")
-    // used to fall into the SHOW_MENU branch below, which wipes currentFlow/step
-    // and dumps the customer on the generic welcome buttons — never showing any
-    // menu content, despite the button label promising exactly that.
-    //
-    // Fix: while inside an ORDER flow, re-render the real menu via
-    // startFlow('ORDER') (reuses each module's own INIT step / buildMenuUI)
-    // instead of resetting to the unrelated top-level buttons. Outside an
-    // ORDER flow (e.g. mid-booking) there's no menu concept to show, so it
-    // falls back to the same safe reset behavior as SHOW_MENU.
-    if (upperMsg === 'VIEW_MENU' || upperMsg === 'MENU' || upperMsg === 'SHOW MENU'
-        || upperMsg === 'VIEW MENU' || upperMsg === 'SEE MENU' || upperMsg === 'MAIN MENU'
-        || upperMsg === 'BACK TO MENU') {
-      if ((session.currentFlow || '').toUpperCase() === 'ORDER') {
-        const { startFlow } = await import('../core/conversations/flowEngine.js');
-        const reply = await startFlow({ flowName: 'ORDER', session, business, tenant: tenantDoc });
-        if (reply) await dispatchMessage(from, reply, tenantDoc);
-        return;
-      }
-      // Not in an order-capable flow — no menu to show, fall through to the
-      // same reset behavior as SHOW_MENU/HOME/0 below.
-    }
-
-    if (upperMsg === '0' || upperMsg === 'SHOW_MENU' || upperMsg === 'MENU' || upperMsg === 'HOME'
-        || upperMsg === 'VIEW_MENU' || upperMsg === 'SHOW MENU' || upperMsg === 'VIEW MENU'
-        || upperMsg === 'SEE MENU' || upperMsg === 'MAIN MENU' || upperMsg === 'BACK TO MENU') {
+    if (upperMsg === '0' || upperMsg === 'SHOW_MENU' || upperMsg === 'MENU' || upperMsg === 'HOME') {
       await updateSession(from, tenantId, { currentFlow: null, step: null, postFlowAck: null });
+      const cfg = getModeConfig(business);
       // [FIX] Mid-session "Start Over" tap → short prompt, NOT full welcome greeting
       await dispatchMessage(from, {
         type:    'buttons',
         body:    '👇 What would you like to do?',
-        // [WIRING-AUDIT-MENU-1] was raw cfg.ui?.welcomeButtons — see helper docstring above.
-        buttons: _mainMenuButtons(business),
+        buttons: cfg.ui?.welcomeButtons || [],
       }, tenantDoc);
       return;
     }
@@ -2639,90 +2244,6 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
       }
     }
 
-    // ── [FSI] Handle FSI switch-prompt button responses ───────────────────
-    // YES = start the requested OTHER flow fresh via startFlow() (same entry
-    // point START_ORDER/START_BOOKING use). NO = restore the original flow's
-    // saved context and re-send its current step prompt, mirroring MFQ_SWITCH_NO
-    // above exactly, just with the _fsi* session keys instead of _mfq*.
-    //
-    // SESSION KEYS USED (set at intercept time, see the FSI trigger below):
-    //   session.data._fsiTargetFlow — the flow the customer asked to switch to
-    //   session.data._fsiResumeFlow — original flow name to restore on NO
-    //   session.data._fsiResumeStep — original step to restore on NO
-    //   session.data._fsiResumeData — original session.data snapshot to restore on NO
-    if (isInteractive) {
-      if (upperMsg === 'FSI_SWITCH_YES') {
-        const _fsiTargetFlow = session.data?._fsiTargetFlow || null;
-
-        if (!_fsiTargetFlow) {
-          // Defensive fallback — should never happen since this button is only
-          // ever shown right after _fsiTargetFlow is stored at intercept time.
-          await dispatchMessage(from, {
-            type:    'buttons',
-            body:    '👇 What would you like to do?',
-            // [WIRING-AUDIT-MENU-1] was raw cfg.ui?.welcomeButtons — see helper docstring above.
-            buttons: _mainMenuButtons(business),
-          }, tenantDoc);
-          return;
-        }
-
-        // Clear FSI bookkeeping so startFlow() (which resets session.data itself
-        // anyway) never sees stale switch-intercept keys.
-        const cleanData = { ...(session.data || {}) };
-        delete cleanData._fsiTargetFlow;
-        delete cleanData._fsiResumeFlow;
-        delete cleanData._fsiResumeStep;
-        delete cleanData._fsiResumeData;
-        await updateSession(from, tenantId, { data: cleanData });
-
-        const freshSess  = await getSession(from, tenantId) || session;
-        const startReply = await startFlow({
-          flowName: _fsiTargetFlow, session: freshSess, business, tenant: tenantDoc,
-        });
-        if (startReply) {
-          const sPayloads = Array.isArray(startReply) ? startReply : [startReply];
-          for (const sp of sPayloads) await dispatchMessage(from, sp, tenantDoc);
-        }
-        return;
-      }
-
-      if (upperMsg === 'FSI_SWITCH_NO') {
-        // Customer wants to continue their original flow. Restore session and
-        // re-send the current step, via the same saved-resume-context ->
-        // advance('') pattern MFQ_SWITCH_NO already uses above.
-        const _fsiResumeFlow = session.data?._fsiResumeFlow || session.currentFlow;
-        const resumeStep     = session.data?._fsiResumeStep || session.step;
-        const resumeData     = session.data?._fsiResumeData || {};
-
-        await updateSession(from, tenantId, {
-          currentFlow: _fsiResumeFlow,
-          step:        resumeStep,
-          data:        resumeData,
-        });
-
-        const freshSess   = await getSession(from, tenantId) || session;
-        const resumeReply = await advance({
-          session:       { ...freshSess, currentFlow: _fsiResumeFlow, step: resumeStep, data: resumeData },
-          message:       '',   // empty = re-send the step prompt
-          business,
-          tenant:        tenantDoc,
-          isInteractive: false,
-        });
-
-        if (resumeReply) {
-          const rPayloads = Array.isArray(resumeReply) ? resumeReply : [resumeReply];
-          for (const rp of rPayloads) await dispatchMessage(from, rp, tenantDoc);
-        } else {
-          const stepLabel = _mfqStepLabel(_fsiResumeFlow, resumeStep);
-          await dispatchMessage(from, {
-            type: 'text',
-            body: `👍 No problem! Let's continue — ${stepLabel}`,
-          }, tenantDoc);
-        }
-        return;
-      }
-    }
-
     // ── 15.1b: Handle MFQ_RESUME_FLOW button (re-enter the flow after question answered)
     if (isInteractive && upperMsg === 'MFQ_RESUME_FLOW') {
       const resumeFlow = session.postFlowData?.resumeFlow || null;
@@ -2749,22 +2270,22 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
           const rPayloads2 = Array.isArray(resumeReply2) ? resumeReply2 : [resumeReply2];
           for (const rp2 of rPayloads2) await dispatchMessage(from, rp2, tenantDoc);
         } else {
+          const cfg = getModeConfig(business);
           await dispatchMessage(from, {
             type:    'buttons',
             body:    '👇 What would you like to do?',
-            // [WIRING-AUDIT-MENU-1] was raw cfg.ui?.welcomeButtons — see helper docstring above.
-            buttons: _mainMenuButtons(business),
+            buttons: cfg.ui?.welcomeButtons || [],
           }, tenantDoc);
         }
         return;
       }
       // No resume context — fall through to main menu
       await updateSession(from, tenantId, { postFlowAck: null, postFlowData: null });
+      const cfg = getModeConfig(business);
       await dispatchMessage(from, {
         type:    'buttons',
         body:    '👇 What would you like to do?',
-        // [WIRING-AUDIT-MENU-1] was raw cfg.ui?.welcomeButtons — see helper docstring above.
-        buttons: _mainMenuButtons(business),
+        buttons: cfg.ui?.welcomeButtons || [],
       }, tenantDoc);
       return;
     }
@@ -2773,20 +2294,6 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
     // Only fires for non-interactive (typed) text with no active flow passthrough.
     // Numeric inputs, pure emoji, and very short inputs are excluded — they are
     // almost certainly quantity/date answers, not questions.
-    //
-    // [FEAT-INSTANT-QA-1] Previously this asked "pause or continue?" and made the
-    // customer tap "❓ Answer My Question" before actually getting an answer — an
-    // extra round-trip for something they already typed out in full. Per the
-    // product decision that questions must be handled "at any time... even
-    // without tapping the button" (see PROJECT_POLICIES.md), this now answers
-    // immediately (same data-backed-lookup-then-AI-fallback logic MFQ_SWITCH_YES
-    // already used) and reuses the SAME resume mechanism (postFlowAck='MFQ_RESUME'
-    // + the MFQ_RESUME_FLOW button, also honoured by a plain typed follow-up per
-    // postFlowHandler.js's MFQ_RESUME case) so the flow-resume guarantee is
-    // unchanged — only the extra confirmation tap is removed.
-    // MFQ_SWITCH_YES/NO and the "pause or continue?" prompt are left in place
-    // (dead-but-harmless) as a fallback for any in-flight session that already
-    // has a pending question stored from before this change.
     if (
       !isInteractive &&
       messageText.length >= 4 &&
@@ -2796,126 +2303,39 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
     ) {
       const _mfqIsQuestionLike = _detectMidFlowQuestion(messageText, session);
       if (_mfqIsQuestionLike) {
-        const resumeFlow = session.currentFlow;
-        const resumeStep = session.step;
-        const resumeData = { ...(session.data || {}) };
-        delete resumeData._mfqPendingQuestion;
-        delete resumeData._mfqResumeFlow;
-        delete resumeData._mfqResumeStep;
-        delete resumeData._mfqResumeData;
+        // Describe the current step to the customer in plain language
+        const stepLabel    = _mfqStepLabel(session.currentFlow, session.step);
+        const questionFlow = session.currentFlow;
+        const questionStep = session.step;
+        const questionData = { ...(session.data || {}) };
 
-        // Clear the flow and stash resume context via the same postFlowAck='MFQ_RESUME'
-        // mechanism MFQ_SWITCH_YES already used — postFlowHandler.js's MFQ_RESUME case
-        // (and the MFQ_RESUME_FLOW button it offers) already know how to restore this.
+        // Sanitise internal MFQ keys from the snapshot so they don't persist recursively
+        delete questionData._mfqPendingQuestion;
+        delete questionData._mfqResumeFlow;
+        delete questionData._mfqResumeStep;
+        delete questionData._mfqResumeData;
+
+        // Store the pending question + resume context in session.data
         await updateSession(from, tenantId, {
-          currentFlow:  null,
-          step:         null,
-          postFlowAck:  'MFQ_RESUME',
-          postFlowData: { resumeFlow, resumeStep, resumeData },
-          data:         {},
-        });
-
-        // [AUDIT-FIX-12] Same read-only, data-backed whitelist MFQ_SWITCH_YES used —
-        // a genuinely answerable question like "do I have an active order?" gets
-        // live data instead of a generic AI Q&A line. Anything else falls back to
-        // the general AI reply.
-        const DATA_BACKED_MFQ_ACTIONS = new Set(['TRACK_ORDER']);
-        const flowlessSession = { ...session, currentFlow: null, step: null, data: {} };
-
-        let dataReply = null;
-        try {
-          const pqResult = await detectIntent({
-            message: messageText, isInteractive: false, session: flowlessSession, business,
-          });
-          if (DATA_BACKED_MFQ_ACTIONS.has(pqResult.action) && pqResult.confidence !== 'LOW') {
-            dataReply = await route({
-              action: pqResult.action, intent: pqResult.intent, session: flowlessSession,
-              message: messageText, business, tenant: tenantDoc, isInteractive: false,
-              suggestion: pqResult.suggestion,
-            }).catch(() => null);
-          }
-        } catch (err) {
-          logger.warn('[MFQ] instant-answer data routing failed', { err: err.message });
-        }
-
-        const stepLabel      = _mfqStepLabel(resumeFlow, resumeStep);
-        const resumeButtons  = [
-          { id: 'MFQ_RESUME_FLOW', title: '↩️ Continue'  },
-          { id: 'QUESTION',        title: '❓ Ask Another' },
-          { id: 'SHOW_MENU',       title: '🔄 Main Menu'  },
-        ];
-        const resumeHint = `_When you're ready, tap below to continue — you were ${stepLabel}._`;
-
-        if (dataReply) {
-          const dataPayloads = Array.isArray(dataReply) ? dataReply : [dataReply];
-          for (const dp of dataPayloads) await dispatchMessage(from, dp, tenantDoc);
-          await dispatchMessage(from, { type: 'buttons', body: resumeHint, buttons: resumeButtons }, tenantDoc);
-          return;
-        }
-
-        const { getAIReply } = await import('../core/ai/providers/aiRouter.js');
-        const aiText = await getAIReply({ customerMessage: messageText, business, session, intent: 'QUESTION' }).catch(() => null);
-
-        await dispatchMessage(from, {
-          type:    'buttons',
-          body:    (aiText || 'Let me check that for you! 😊') + `\n\n${resumeHint}`,
-          buttons: resumeButtons,
-        }, tenantDoc);
-        return;
-      }
-    }
-
-    // ── [FSI] Detect mid-flow order/booking switch request ────────────────
-    // Runs AFTER the MFQ question intercept above (questions take priority —
-    // "do you deliver?" mid-booking should get the Q&A pause, not a switch
-    // prompt) and BEFORE the final advance() fallback below.
-    if (
-      !isInteractive &&
-      messageText.length >= 4 &&
-      !/^\d+$/.test(messageText.trim()) &&
-      session.currentFlow &&
-      session.step
-    ) {
-      const _fsiTargetFlow = _detectMidFlowSwitchRequest(messageText, session, business);
-      if (_fsiTargetFlow) {
-        const cfg = getModeConfig(business);
-        // [AUDIT-FIX-9] Mode-aware wording — source the button label from the
-        // business's own welcomeButtons config instead of hardcoding
-        // restaurant-only strings. welcomeButtons uses id 'ORDER' for the order
-        // button and id 'BOOK' for the booking button (see modules/*/configs
-        // index.js — never 'BOOKING'), consistently across every vertical.
-        const targetBtnId   = _fsiTargetFlow === 'BOOKING' ? 'BOOK' : 'ORDER';
-        const targetBtn      = (cfg.ui?.welcomeButtons || []).find(b => b.id === targetBtnId);
-        const targetLabel    = targetBtn?.title || _fsiTargetFlow;
-
-        const resumeFlow = session.currentFlow;
-        const resumeStep = session.step;
-        const resumeData = { ...(session.data || {}) };
-        delete resumeData._fsiTargetFlow;
-        delete resumeData._fsiResumeFlow;
-        delete resumeData._fsiResumeStep;
-        delete resumeData._fsiResumeData;
-
-        await updateSession(from, tenantId, {
-          // Keep the flow active so FSI_SWITCH_NO can restore it correctly
+          // Keep the flow active so MFQ_SWITCH_NO can restore it correctly
           data: {
-            ...resumeData,
-            _fsiTargetFlow: _fsiTargetFlow,
-            _fsiResumeFlow: resumeFlow,
-            _fsiResumeStep: resumeStep,
-            _fsiResumeData: resumeData,
+            ...questionData,
+            _mfqPendingQuestion: messageText,
+            _mfqResumeFlow:      questionFlow,
+            _mfqResumeStep:      questionStep,
+            _mfqResumeData:      questionData,
           },
         });
 
         await dispatchMessage(from, {
           type:    'buttons',
           body:
-            `👋 Looks like you want to switch things up!\n\n` +
-            `You're currently ${_mfqStepLabel(resumeFlow, resumeStep)}. ` +
-            `Want to switch, or continue where you left off?`,
+            `💡 *Looks like you have a question!*\n\n` +
+            `You're currently ${stepLabel}.\n\n` +
+            `Would you like to *pause and get your question answered*, or *continue* where you left off?`,
           buttons: [
-            { id: 'FSI_SWITCH_YES', title: targetLabel },
-            { id: 'FSI_SWITCH_NO',  title: '↩️ Continue' },
+            { id: 'MFQ_SWITCH_YES', title: '❓ Answer My Question' },
+            { id: 'MFQ_SWITCH_NO',  title: '↩️ Continue'          },
           ],
         }, tenantDoc);
         return;
@@ -2959,7 +2379,7 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
     session = { ...session, customerName: extractedName };
   }
 
-  const { action, intent, confidence, suggestion, aiSignals, hesitant } = await detectIntent({
+  const { action, intent, confidence, suggestion } = await detectIntent({
     message: messageText, isInteractive, session, business,
   });
 
@@ -2983,84 +2403,15 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
   // back to the moduleRouter switch cases. moduleRouter now handles ENQUIRY/QUESTION with
   // a generic fallback prompt for modes that have no dedicated flow registered.
 
-  // [MERGE-FEAT-EMOTION-WIRE-1] emotionEngine.js is fully built and unit-tested
-  // (src/tests/emotionEngine.test.mjs) but was never actually invoked anywhere in
-  // the live pipeline — detectPreFlowEmotion()/applyEmotionTone() existed only in
-  // isolation, with zero effect on any customer-facing reply. Wired in here per
-  // spec's "Emotional Understanding": deterministic regex detection runs first
-  // (zero cost, every message); aiSignals.emotion (already captured by
-  // classifyIntentStructured but likewise never consumed) is used ONLY as a
-  // fallback when the regex found nothing (NEUTRAL), never overriding a concrete
-  // regex signal. Computed BEFORE route() specifically so urgency can influence
-  // the AI reply call inside route() itself (see [MERGE-FEAT-URGENCY-3]).
-  let finalEmotion = 'NEUTRAL';
-  try {
-    const { detectPreFlowEmotion } = await import('../core/sentiment/emotionEngine.js');
-    const preFlow = detectPreFlowEmotion(messageText);
-    finalEmotion = preFlow.emotion;
-    if (finalEmotion === 'NEUTRAL' && aiSignals?.emotion) {
-      finalEmotion = AI_EMOTION_TO_TONE[aiSignals.emotion] || 'NEUTRAL';
-    }
-  } catch (err) {
-    logger.debug('[Webhook] emotion detection skipped', { err: err.message });
-  }
-
   const reply = await route({
     action, intent, session,
     message: messageText, business,
-    tenant: tenantDoc, isInteractive, suggestion, hesitant,
-    urgent: finalEmotion === 'URGENT',
+    tenant: tenantDoc, isInteractive, suggestion,
   });
 
-  let payloads = reply ? (Array.isArray(reply) ? reply : [reply]) : [];
-
-  // [PHASE-3] Multi-intent: "I want two burgers and can you tell me if you deliver?"
-  // Primary intent (ORDER) already started/continued the flow above via route(). If the
-  // AI also flagged a secondary, information-seeking intent (e.g. a delivery question)
-  // alongside it, answer that too instead of silently dropping it — rather than forcing
-  // a second round-trip where the customer has to re-ask. Only fires when:
-  //   - the primary action actually came from the high-confidence AI step (source: 'ai'),
-  //   - the primary action itself is NOT already an informational one (no duplicate answers),
-  //   - a reply was actually produced (the flow genuinely started/continued).
-  if (payloads.length && confidence === 'AI' && aiSignals?.secondaryIntents?.length && !isInformationalIntent(intent)) {
-    const infoIntent = aiSignals.secondaryIntents.find(isInformationalIntent);
-    if (infoIntent) {
-      try {
-        const { getAIReply } = await import('../core/ai/providers/aiRouter.js');
-        const infoText = await getAIReply({ customerMessage: messageText, business, session, intent: infoIntent });
-        if (infoText) payloads = [...payloads, { type: 'text', body: infoText }];
-      } catch (err) {
-        logger.warn('[Webhook] Multi-intent secondary info reply failed', { err: err.message });
-      }
-    } else {
-      // [MERGE-FEAT-STRUCTURED-AI-1] The secondary intent isn't an informational
-      // question (already handled above) — it's a genuine second WORKFLOW request
-      // (e.g. "...and can you also book me a table later?"). The FSM only supports
-      // one active flow per session (redesigning that is out of scope), so rather
-      // than silently drop it, acknowledge it was heard and will be picked up next.
-      const secondaryNote = describeSecondaryIntents(aiSignals.secondaryIntents);
-      if (secondaryNote) payloads = appendToFirstTextPayload(payloads, secondaryNote);
-    }
-  }
-
-  // [MERGE-FEAT-EMOTION-WIRE-2] Apply the tone prefix using the SAME finalEmotion
-  // computed above (before route()) — no need to re-detect. applyEmotionTone()
-  // already handles string | {body} | array-of-those internally, including
-  // finding the first text-bearing payload, so `payloads` (always an array here)
-  // can be passed straight through. NEUTRAL/URGENT intentionally have no prefix
-  // (see emotionEngine.js TONE_PREFIX) so this is a no-op for those. Emotion/
-  // urgency change tone and length only — never routing.
-  if (payloads.length && finalEmotion !== 'NEUTRAL') {
-    try {
-      const { applyEmotionTone } = await import('../core/sentiment/emotionEngine.js');
-      payloads = applyEmotionTone(payloads, finalEmotion);
-    } catch (err) {
-      logger.debug('[Webhook] emotion tone skipped', { err: err.message });
-    }
-  }
-
-  if (payloads.length) {
+  if (reply) {
     // reply can be an array (e.g. [imagePayload, buttonsPayload]) — dispatch each in order
+    const payloads = Array.isArray(reply) ? reply : [reply];
     for (const payload of payloads) {
       await dispatchMessage(from, payload, tenantDoc);
     }
@@ -3156,12 +2507,6 @@ export async function receiveWebhook(req, res) {
         }
 
         for (const msg of value.messages || []) {
-          // [FIX-SILENT-FAIL] Hoisted out of the try block (was `const tenant`
-          // declared inside try, so unreachable from catch below) so the catch
-          // block can still tell the customer *something* went wrong, instead
-          // of the customer getting zero reply whenever any bug anywhere deep
-          // in handleIncomingMessage's ~3000-line pipeline throws.
-          let tenant = null;
           try {
             const from   = msg.from;
             const msgType = msg.type || 'unknown';
@@ -3173,7 +2518,7 @@ export async function receiveWebhook(req, res) {
               wamid: msg.id,
             });
 
-            tenant = await Tenant.findOne({ 'whatsapp.phoneNumberId': phoneNumberId, status: 'ACTIVE' }).lean();
+            const tenant = await Tenant.findOne({ 'whatsapp.phoneNumberId': phoneNumberId, status: 'ACTIVE' }).lean();
 
             // [LOG-1d] No ACTIVE tenant for this phoneNumberId — the most common
             // cause of total silence. Warn so the operator knows immediately.
@@ -3193,7 +2538,6 @@ export async function receiveWebhook(req, res) {
               logger.warn('[Webhook] ✗ Signature mismatch for tenant — message dropped', {
                 tenantId: String(tenant._id), phoneNumberId, ip: req.ip,
               });
-              tenant = null; // [FIX-SILENT-FAIL] don't send a fallback reply for an unverified/spoofed request
               continue; // Skip this message — possible spoofed request
             }
 
@@ -3208,30 +2552,6 @@ export async function receiveWebhook(req, res) {
               from: msg?.from,
               phoneNumberId,
             });
-            // [FIX-SILENT-FAIL] Previously this catch only logged server-side —
-            // any bug anywhere in handleIncomingMessage's pipeline (a bad DB
-            // call, a null-pointer in a flow handler, an unhandled edge case —
-            // and across ~3000 lines and a dozen modules, that surface area is
-            // real) left the customer with zero reply and no way to know
-            // whether their message even arrived. Best-effort generic apology
-            // instead — only when the tenant was already resolved and the
-            // request's signature already verified (both happen before
-            // handleIncomingMessage is called), so this never fires for an
-            // unknown/unverified sender. Wrapped in its own try/catch so a
-            // failure here (e.g. Meta API down) can't mask the original error
-            // or crash the outer loop.
-            if (tenant && msg?.from) {
-              try {
-                await dispatchMessage(msg.from, {
-                  type: 'text',
-                  body: "⚠️ Sorry, something went wrong on our end processing that. Please try again in a moment, or type *CANCEL* to start over.",
-                }, tenant);
-              } catch (dispatchErr) {
-                logger.error('[Webhook] ✗ Fallback error-reply dispatch also failed', {
-                  err: dispatchErr.message, from: msg?.from, phoneNumberId,
-                });
-              }
-            }
           }
         }
       }
