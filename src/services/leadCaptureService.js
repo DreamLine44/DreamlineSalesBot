@@ -192,15 +192,12 @@ async function finaliseLead({ session, lead, business, tenantDoc }) {
   });
 
   const { getModeConfig } = await import('../config/modes.js');
-  const { buildWelcomeMenu } = await import('../modules/catalog/waCatalogConfig.js');
   const modeCfg = getModeConfig(business);
 
   const thankYou = cfg.thankYouMsg || `✅ All set! We'll remember you next time at *${bizName}*. 😊`;
   return {
     type:    'buttons',
     body:    thankYou,
-    // [WIRING-AUDIT-MENU-1] was raw modeCfg.ui?.welcomeButtons — same bug class as
-    // webhookController.js's _mainMenuButtons(): silently dropped "🛍 Browse Catalog".
-    buttons: buildWelcomeMenu(modeCfg.ui?.welcomeButtons || [], business).main.buttons,
+    buttons: modeCfg.ui?.welcomeButtons || [{ id: 'SHOW_MENU', title: '🔄 Start Over' }],
   };
 }

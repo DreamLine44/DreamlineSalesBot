@@ -62,20 +62,18 @@ export async function getReply({ customerMessage, business, intent = 'FALLBACK',
   };
 }
 
-// [NO-MEMORY-1] Templates must read the same for a first-time and a returning
-// customer — no "welcome back" or other history-implying phrasing.
 export async function generateGreeting({ business, customerName }) {
   const name = customerName ? `, ${customerName}` : '';
   const mode = (business?.businessMode || 'RETAIL').toUpperCase();
   const greetings = {
-    RESTAURANT: `👋 Hello${name}! Ready to order?`,
+    RESTAURANT: `👋 Welcome back${name}! Ready to order?`,
     SALON:      `👋 Great to hear from you${name}! Looking to book?`,
-    BAKERY:     `🥐 Hello${name}! What freshly baked goodness can we get you?`,
-    FASHION:    `✨ Hello${name}! Checking out the collection?`,
-    COSMETICS:  `💄 Hello${name}! Ready to glow?`,
-    ELECTRONICS:`📱 Hello${name}! Looking for something new?`,
+    BAKERY:     `🥐 Welcome back${name}! What freshly baked goodness can we get you?`,
+    FASHION:    `✨ Welcome back${name}! Checking out the new collection?`,
+    COSMETICS:  `💄 Welcome back${name}! Ready to glow?`,
+    ELECTRONICS:`📱 Welcome back${name}! Looking for something new?`,
   };
-  return { text: greetings[mode] || `👋 Hello${name}!`, source: 'mock' };
+  return { text: greetings[mode] || `👋 Welcome back${name}!`, source: 'mock' };
 }
 
 export const healthCheck = async () => ({ ok: true, model: 'mock', latencyMs: 0 });

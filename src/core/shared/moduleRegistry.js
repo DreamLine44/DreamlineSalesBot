@@ -107,36 +107,7 @@ export async function registerAllModules() {
   registerFlow('GENERAL', 'ABOUT',    handleAbout);
 
   // ── Action handlers (module-registered) ───────────────────────────────────
-  registerAction('START_ORDER', async ({ session, message, business, tenant, intent, isInteractive }) => {
-    // [FIX-ORDER-BTN-CATALOG] A direct tap on the "🍔 Order Food" welcome button
-    // must always open the module's own menu — never get silently swapped out
-    // for the WA Catalog message. Previously offerCatalogOnStartOrder() ran for
-    // EVERY 'ORDER'-intent START_ORDER, button tap or typed text alike, so any
-    // tenant with WA Catalog enabled (AI_DECIDES/ALWAYS_OFFER — the defaults)
-    // had their "Order Food" button silently hijacked into the catalog flow,
-    // and the real "View Menu" content the customer tapped for never appeared.
-    // Now that every tenant also has a dedicated "🛍 Browse Catalog" button
-    // (see waCatalogConfig.js#buildWelcomeMenu), a direct tap on "Order Food"
-    // is exactly as unambiguous a signal as a direct tap on "Browse Catalog"
-    // already is (see browseCatalogExplicit()'s own docstring: "independent of
-    // waCatalog.mode/AI intent classification, since a direct tap is an
-    // unambiguous signal on its own") — it means "show me the real menu", full
-    // stop. The catalog auto-offer still applies exactly as before for
-    // typed/AI-classified 'order' text (e.g. "I want to order", "shop"), where
-    // there's no explicit button to disambiguate intent.
-    if (!isInteractive) {
-      // [CATALOG-REG-1] offerCatalogOnStartOrder was fully built and documented
-      // (see waCatalogFlow.js's own header: "Called from the moduleRegistry.js
-      // START_ORDER action override") but never actually wired in here — every
-      // WA-Catalog-enabled tenant's customers always saw the module's own
-      // text/list product browser instead, regardless of waCatalog.mode.
-      // Returns { offered: false } for every tenant who hasn't opted in (or on
-      // any failure) — startFlow() below runs exactly as it always did for them.
-      const { offerCatalogOnStartOrder } = await import('../../modules/catalog/waCatalogFlow.js');
-      const { offered } = await offerCatalogOnStartOrder({ session, business, tenant, intent }).catch(() => ({ offered: false }));
-      if (offered) return null; // catalog message already dispatched — nothing further to send
-    }
-
+  registerAction('START_ORDER', async ({ session, message, business, tenant }) => {
     const { startFlow } = await import('../conversations/flowEngine.js');
     return startFlow({ flowName: 'ORDER', session, business, tenant });
   });
@@ -144,15 +115,6 @@ export async function registerAllModules() {
   registerAction('START_BOOKING', async ({ session, message, business, tenant }) => {
     const { startFlow } = await import('../conversations/flowEngine.js');
     return startFlow({ flowName: 'BOOKING', session, business, tenant });
-  });
-
-  // [CATALOG-REG-2] Explicit "🛍 Browse Catalog" welcome-menu button (see
-  // withCatalogWelcomeOption() in waCatalogConfig.js and its use in
-  // moduleRouter.js's GREET/SHOW_MENU cases) — needs a registered action to
-  // land on since it's a bare button id, not a classified intent.
-  registerAction('BROWSE_CATALOG', async ({ session, business, tenant }) => {
-    const { browseCatalogExplicit } = await import('../../modules/catalog/waCatalogFlow.js');
-    return browseCatalogExplicit({ session, business, tenant });
   });
 
   // WALKIN action — salon/barbershop walk-in queue (no date/time needed)
@@ -268,32 +230,29 @@ export async function registerAllModules() {
 
     const lastItem = await getLastOrderItem(session.customerPhone, session.tenantId).catch(() => null);
     if (lastItem) {
-      // [FIX-REPEAT-ORDER-1] Previously wrote a bare { name: lastItem } stub
-      // with no price — every downstream step (order total, confirmation
-      // card, WhatsApp Catalog retailer_id lookup) that reads item.price
-      // silently treated a repeat order as free. Re-resolve the item against
-      // the CURRENT menu (prices/availability can change since the last
-      // order) so a genuinely found item carries its real price forward.
-      // Falls back to the name-only stub only when the item can no longer be
-      // found on the menu (removed/renamed since the last order) — in that
-      // case the customer is warned rather than silently proceeding with an
-      // unpriced item.
+      // [AUDIT-FIX-REPEAT-1] getLastOrderItem() only ever returns the stored item
+      // NAME (Order.item is a plain string) — writing that straight into session
+      // data as { name: lastItem } gave the QUANTITY step no price to work with,
+      // silently totalling D0 and, since totalPrice:0 also skips the payment
+      // step, quietly treated every repeat order as a free cash order with no
+      // admin payment-verification prompt. Re-resolve the full menu item (with
+      // price/image/etc.) from the current menu by name, falling back to the
+      // name-only stub — with an explicit price-uncertainty notice — only when
+      // the item can no longer be found (e.g. it was removed from the menu).
       const fullItem = (business?.menuItems || []).find(
-        it => it.name?.toLowerCase() === lastItem.toLowerCase()
-      );
+        mi => (mi.name || '').toLowerCase() === lastItem.toLowerCase()
+      ) || null;
 
       await updateSession(session.customerPhone, session.tenantId, {
         currentFlow: 'ORDER', step: 'QUANTITY',
         data: { item: fullItem || { name: lastItem } }, menuViewed: true,
       });
-
-      const priceWarning = !fullItem
-        ? `\n\n_⚠️ We couldn't confirm the current price for this item — it may have changed or is no longer available. We'll check with you before finalising your order._`
+      const priceNotice = !fullItem
+        ? `\n\n⚠️ We couldn't confirm the current price for this item — we'll follow up with the exact total before your order is finalised.`
         : '';
-
       return {
         type: 'buttons',
-        body: `🔁 *Repeat your last order*\n\nYou previously ordered *${lastItem}*.${priceWarning}\n\nHow many would you like this time?\n\n_(Enter a number or word — e.g. *1*, *2*, *three*)_`,
+        body: `🔁 *Repeat your last order*\n\nYou previously ordered *${lastItem}*.${priceNotice}\n\nHow many would you like this time?\n\n_(Enter a number or word — e.g. *1*, *2*, *three*)_`,
         buttons: [{ id: 'CANCEL', title: '❌ Cancel' }],
       };
     }

@@ -11,6 +11,8 @@
  *   5. Admin alerts carry fulfilment mode (pickup vs delivery)
  */
 
+import { buildWhatsAppImageUrl } from '../../../config/cloudinary.js';
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Category UI
 // ─────────────────────────────────────────────────────────────────────────────
@@ -55,10 +57,13 @@ export function buildProductList(items, business, categoryLabel = null) {
     ? `${categoryLabel} — ${business?.name || 'Products'}`
     : business?.name || 'Products';
   const currency = business?.payment?.currency || 'D';
-  const total    = items.length;
-  const shown    = items.slice(0, 10);
 
-  const rows = shown.map((item, i) => {
+  // [AUDIT-FIX-LISTCAP] No build-time slice — dispatcher.js chunks a flat
+  // `rows` array across multiple WhatsApp sections (10/section, up to the
+  // real 100-row ceiling) instead of truncating, see [FIX-LIST-TRUNC] in
+  // core/whatsapp/dispatcher.js. Previously items past #10 were silently
+  // invisible with only a "Showing 10 of N" note as a hint.
+  const rows = items.map((item, i) => {
     const priceStr = item.price ? `${currency}${item.price}` : '';
     const specStr  = item.specs?.short || item.description || '';
     const detail   = [priceStr, specStr].filter(Boolean).join(' · ').slice(0, 72);
@@ -69,16 +74,12 @@ export function buildProductList(items, business, categoryLabel = null) {
     };
   });
 
-  const overflowNote = total > 10
-    ? `\n\n_(Showing 10 of ${total} items — type a product name to search)_`
-    : '';
-
   return {
     type:        'list',
     header,
-    body:        (categoryLabel
+    body:        categoryLabel
       ? `Here are our *${categoryLabel}* products:`
-      : "Here's our full product range — tap to view details:") + overflowNote,
+      : "Here's our full product range — tap to view details:",
     buttonLabel: 'Browse Products',
     rows,
   };
@@ -120,7 +121,7 @@ export function buildItemDetail(item, currency = 'D') {
 
   lines.push('\nWould you like to order this item?');
 
-  return {
+  const detailCard = {
     type: 'buttons',
     body: lines.join('\n'),
     buttons: [
@@ -129,6 +130,22 @@ export function buildItemDetail(item, currency = 'D') {
       { id: 'SHOW_MENU',    title: '🔄 Browse More'       },
     ],
   };
+
+  // [FEAT-CATALOG-IMAGES] Same pattern as restaurant/retail/fashion — the
+  // tenant's uploaded photo is stored correctly regardless of vertical, but
+  // electronics never actually sent it to the customer before.
+  const imageUrl = item?.image?.url;
+  if (imageUrl && item?.showImageOnSelect !== false) {
+    return [
+      {
+        type:    'image',
+        url:     buildWhatsAppImageUrl(imageUrl),
+        caption: `*${item.name}*${item.price ? ` — ${currency}${item.price}` : ''}`,
+      },
+      detailCard,
+    ];
+  }
+  return detailCard;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

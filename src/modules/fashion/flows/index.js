@@ -9,18 +9,19 @@ import { saveOrder }      from '../../../services/orderService.js';
 import { parseQuantity }  from '../../../utils/parseQuantity.js';
 import { trackOrderAnalytics } from '../../../core/analytics/analyticsService.js';
 import logger             from '../../../config/logger.js';
+import { buildWhatsAppImageUrl } from '../../../config/cloudinary.js';
 
 export const FASHION_CONFIG = {
   businessMode: 'FASHION',
   flows: ['ORDER'],
   persona: 'stylish fashion consultant who helps customers find the perfect fit',
   steps: {
-    ORDER: ['SELECT_ITEM', 'SELECT_SIZE', 'SELECT_COLOR', 'QUANTITY', 'CONFIRM'],
+    ORDER: ['BROWSE_CATEGORY', 'SELECT_ITEM', 'SELECT_SIZE', 'SELECT_COLOR', 'QUANTITY', 'CONFIRM'],
   },
   ui: {
     welcomeButtons: [
-      { id: 'ORDER',    title: '👗 Shop Collection', description: 'Browse our latest collection' },
-      { id: 'QUESTION', title: '❓ Style Help',       description: 'Get styling advice'           },
+      { id: 'ORDER',    title: '👗 Shop Collection' },
+      { id: 'QUESTION', title: '❓ Style Help'       },
     ],
     fallbackButtons: [
       { id: 'ORDER',    title: '👗 Shop'     },
@@ -49,30 +50,77 @@ export async function handleFashionOrder({ session, message, business, tenant, i
 
   if (message === null) {
     // [FIX-FLOW-STUCK] Clear flow if collection is empty so session is not permanently stuck.
-    const catalog = buildCatalogUI(business);
-    if (!(business?.menuItems || []).filter(i => i.available !== false).length) {
+    if (!menu.length) {
       await updateSession(session.customerPhone, session.tenantId, {
         currentFlow: null, step: null, data: {},
       });
-      return catalog;
+      return buildCatalogUI(business);
     }
-    await updateSession(session.customerPhone, session.tenantId, { step: 'SELECT_ITEM', data: {}, menuViewed: false });
-    return catalog;
+    // [FEAT-FASHION-CATEGORY] Category-first browsing — only shown when the
+    // tenant has actually set 2+ distinct categories on their items (real
+    // data, not a forced step). Mirrors retail's exact pattern.
+    const categories = _getCategories(menu);
+    if (categories.length > 1) {
+      await updateSession(session.customerPhone, session.tenantId, {
+        step: 'BROWSE_CATEGORY', data: {}, menuViewed: false,
+      });
+      return buildCategoryUI(categories, business);
+    }
+    await updateSession(session.customerPhone, session.tenantId, { step: 'SELECT_ITEM', data: {}, menuViewed: true });
+    return buildCatalogUI(business);
   }
 
   switch (step) {
+    // ── BROWSE_CATEGORY ─────────────────────────────────────────────────────
+    case 'BROWSE_CATEGORY': {
+      const categories = _getCategories(menu);
+      const catMatch = categories.find(c => raw.toUpperCase() === `CAT_${c.toUpperCase().replace(/\s+/g, '_')}`);
+      if (catMatch) {
+        const filtered = menu.filter(i => (i.category || 'General') === catMatch);
+        await updateSession(session.customerPhone, session.tenantId, {
+          step: 'SELECT_ITEM',
+          data: { category: catMatch },
+          menuViewed: true,
+        });
+        return buildCatalogUI(business, filtered, catMatch);
+      }
+      if (clean.length >= 2) {
+        // Typed text while browsing categories — treat as a full-catalogue
+        // search. Recurse into SELECT_ITEM with the same message so its
+        // existing fuzzy-match + variant-picker logic runs unchanged instead
+        // of duplicating it here.
+        await updateSession(session.customerPhone, session.tenantId, {
+          step: 'SELECT_ITEM', data: {}, menuViewed: true,
+        });
+        return handleFashionOrder({
+          session: { ...session, step: 'SELECT_ITEM', data: {}, menuViewed: true },
+          message, business, tenant, isInteractive,
+        });
+      }
+      return buildCategoryUI(categories, business);
+    }
+
     case 'SELECT_ITEM': {
+      // [FEAT-FASHION-CATEGORY] Scope numeric/interactive taps to the same
+      // filtered list that was rendered — same fix class as
+      // [AUDIT-FIX-RETAIL-SCOPEDINDEX], applied here from the start so
+      // category browsing never ships with the mismatch bug.
+      const scopedMenu = data.category
+        ? menu.filter(i => (i.category || 'General') === data.category)
+        : menu;
+
       if (!isInteractive && !session.menuViewed && /^\d+$/.test(raw)) {
         await updateSession(session.customerPhone, session.tenantId, { menuViewed: true });
-        return buildCatalogUI(business);
+        return buildCatalogUI(business, scopedMenu, data.category || null);
       }
-      // [AUDIT-FIX-PARSEINT] parseInt("2 red shirts", 10) === 2, not NaN — a bare
-      // leading digit used to silently hijack the menu index for ANY mixed
-      // alphanumeric reply once menuViewed was true. Only trust the parsed index
-      // for a genuinely bare number or an interactive tap (list row / button).
+      // [AUDIT-FIX-PARSEINT] parseInt("2 red shirts", 10) === 2, NOT NaN — so any
+      // message merely STARTING with a digit silently hijacked the menu index
+      // once menuViewed was true (the normal case). Only trust the parsed index
+      // for a bare number or an interactive tap; everything else falls through
+      // to fuzzy name matching below.
       const isPureNumeric = /^\d+$/.test(raw.trim());
-      const numIdx = parseInt(raw, 10) - 1;
-      let item = ((isInteractive || isPureNumeric) && !isNaN(numIdx) && menu[numIdx]) ? menu[numIdx] : null;
+      const numIdx = (isInteractive || isPureNumeric) ? parseInt(raw, 10) - 1 : NaN;
+      let item = (!isNaN(numIdx) && scopedMenu[numIdx]) ? scopedMenu[numIdx] : null;
       if (!item) {
         const { item: matched, confidenceLevel } = findBestMatch(menu, clean);
         if (confidenceLevel === 'HIGH') item = matched;
@@ -81,58 +129,60 @@ export async function handleFashionOrder({ session, message, business, tenant, i
             buttons: [{ id: 'CONFIRM', title: `✅ Yes, ${matched.name}` }, { id: 'SHOW_MENU', title: '🔄 Start Over' }] };
         }
       }
-      if (!item) return buildCatalogUI(business);
+      if (!item) return buildCatalogUI(business, scopedMenu, data.category || null);
 
       // Check if item has variants
+      let nextPrompt;
       if (item.variants?.length) {
         await updateSession(session.customerPhone, session.tenantId, { step: 'SELECT_SIZE', data: { item } });
-        // [AUDIT-FIX-FASHION-CANCEL-1] Same bug class as bookingFlow.js's
-        // AUDIT-FIX-BOOKING-CANCEL-1/2: WhatsApp's hard 3-button cap means 3
-        // variants + a Cancel button is a structurally impossible 4-button
-        // fit — no slice/concat ordering can fix that, only routing exactly-3
-        // to the list format (which has room for a trailing Cancel row) can.
-        // Was `item.variants.length > 3`, so the button branch below ran for
-        // 1, 2, OR exactly 3 variants — the exactly-3 case always silently
-        // dropped CANCEL (3 variants + CANCEL = 4, then .slice(0,3) cut
-        // CANCEL off). Raised to >=3 so the button branch only ever runs for
-        // 1-2 variants, where CANCEL always fits in the remaining slot(s).
-        if (item.variants.length >= 3) {
-          const variantRows = item.variants.map(v => ({ id: `SIZE_${String(v).toUpperCase().replace(/\s+/g, '_')}`, title: String(v) }));
-          // [FIX-FASHION-LIST-CANCEL-ROW] Only append CANCEL when it's
-          // guaranteed to fit under dispatcher.js's 10-row-per-section cap —
-          // a customer facing a 10+-size list can still cancel by typing
-          // "cancel" (handled universally elsewhere).
-          const rows = variantRows.length < 10
-            ? [...variantRows, { id: 'CANCEL', title: '❌ Cancel' }]
-            : variantRows;
-          return {
-            type: 'list',
-            body: `✨ *${item.name}*${item.price ? ` — ${business?.payment?.currency || 'D'}${item.price}` : ''}\n\nWhat *size* would you like?`,
-            button: 'Choose size',
-            sections: [{ title: 'Available Sizes', rows }],
-          };
-        }
-        const variantButtons = item.variants.map(v => ({
+        // Show up to 3 variants as buttons; if more, use a list
+        const variantButtons = item.variants.slice(0, 3).map(v => ({
           id: `SIZE_${String(v).toUpperCase().replace(/\s+/g, '_')}`,
           title: String(v),
         }));
-        return {
+        if (item.variants.length > 3) {
+          nextPrompt = {
+            type: 'list',
+            body: `✨ *${item.name}*${item.price ? ` — ${business?.payment?.currency || 'D'}${item.price}` : ''}\n\nWhat *size* would you like?`,
+            button: 'Choose size',
+            sections: [{ title: 'Available Sizes', rows: item.variants.map(v => ({ id: `SIZE_${String(v).toUpperCase().replace(/\s+/g, '_')}`, title: String(v) })) }],
+          };
+        } else {
+          nextPrompt = {
+            type: 'buttons',
+            body: `✨ *${item.name}*${item.price ? ` — ${business?.payment?.currency || 'D'}${item.price}` : ''}\n\nWhat *size* would you like?`,
+            buttons: [...variantButtons, { id: 'CANCEL', title: '❌ Cancel' }].slice(0, 3),
+          };
+        }
+      } else {
+        await updateSession(session.customerPhone, session.tenantId, { step: 'QUANTITY', data: { item } });
+        nextPrompt = {
           type: 'buttons',
-          body: `✨ *${item.name}*${item.price ? ` — ${business?.payment?.currency || 'D'}${item.price}` : ''}\n\nWhat *size* would you like?`,
-          buttons: [...variantButtons, { id: 'CANCEL', title: '❌ Cancel' }].slice(0, 3),
+          body: `✨ *${item.name}* selected!\n\nHow many would you like?`,
+          buttons: [
+            { id: 'QTY_1', title: '1️⃣  1' },
+            { id: 'QTY_2', title: '2️⃣  2' },
+            { id: 'QTY_3', title: '3️⃣  3' },
+          ],
+          footer: 'Or type any number e.g. 4, 5',
         };
       }
-      await updateSession(session.customerPhone, session.tenantId, { step: 'QUANTITY', data: { item } });
-      return {
-        type: 'buttons',
-        body: `✨ *${item.name}* selected!\n\nHow many would you like?`,
-        buttons: [
-          { id: 'QTY_1', title: '1️⃣  1' },
-          { id: 'QTY_2', title: '2️⃣  2' },
-          { id: 'QTY_3', title: '3️⃣  3' },
-        ],
-        footer: 'Or type any number e.g. 4, 5',
-      };
+
+      // [FEAT-CATALOG-IMAGES] Same pattern as restaurant/flows/orderFlow.js —
+      // the tenant's uploaded photo is stored correctly regardless of
+      // vertical, but fashion never actually sent it to the customer before.
+      const imageUrl = item?.image?.url;
+      if (imageUrl && item?.showImageOnSelect !== false) {
+        return [
+          {
+            type:    'image',
+            url:     buildWhatsAppImageUrl(imageUrl),
+            caption: `*${item.name}*${item.price ? ` — ${business?.payment?.currency || 'D'}${item.price}` : ''}`,
+          },
+          nextPrompt,
+        ];
+      }
+      return nextPrompt;
     }
 
     case 'SELECT_SIZE': {
@@ -373,8 +423,34 @@ export async function handleFashionOrder({ session, message, business, tenant, i
   }
 }
 
-function buildCatalogUI(business) {
-  const items = (business?.menuItems || []).filter(i => i.available !== false);
+function _getCategories(menu) {
+  return [...new Set(menu.map(i => i.category).filter(Boolean))];
+}
+
+function buildCategoryUI(categories, business) {
+  // [FEAT-FASHION-CATEGORY] Single "Categories" section capped at 9 rows +
+  // one reserved "Browse All" row — mirrors retail's _buildCategoryUI cap.
+  const shown    = categories.slice(0, 9);
+  const overflow = categories.length > 9;
+  return {
+    type:   'list',
+    body:   `✨ *${business?.name || 'Our Collection'}*\n\nWhat are you shopping for today?`,
+    button: 'Choose category',
+    sections: [{
+      title: 'Categories',
+      rows: shown.map(c => ({
+        id:    `CAT_${c.toUpperCase().replace(/\s+/g, '_')}`,
+        title: c,
+      })).concat([{ id: 'SHOW_MENU', title: '📋 Browse All' }]),
+    }],
+    footer: overflow
+      ? `Showing ${shown.length} of ${categories.length} categories — tap "Browse All" or type what you're looking for`
+      : 'Tap a category or type what you\'re looking for',
+  };
+}
+
+function buildCatalogUI(business, itemsOverride = null, category = null) {
+  const items = itemsOverride || (business?.menuItems || []).filter(i => i.available !== false);
   if (!items.length) {
     return {
       type:    'buttons',
@@ -386,5 +462,6 @@ function buildCatalogUI(business) {
     id: String(i + 1), title: item.name.slice(0, 24),
     description: [item.description, item.price ? `${business?.payment?.currency || 'D'}${item.price}` : ''].filter(Boolean).join(' — ').slice(0, 72),
   }));
-  return { type: 'list', header: business?.name || 'Collection', body: "Our latest collection — choose an item:", button: 'View Collection', rows };
+  const header = category ? `✨ ${category}` : (business?.name || 'Collection');
+  return { type: 'list', header, body: "Our latest collection — choose an item:", button: 'View Collection', rows };
 }

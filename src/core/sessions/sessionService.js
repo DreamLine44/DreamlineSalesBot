@@ -141,19 +141,12 @@ export const createSession = async (customerPhone, tenantId, data = {}) => {
         stepHistory:     [],
         upsellSent:      false,
         pendingAddOn:    null,
-        // [FIX-SES-9] postFlowAck/postFlowData were previously omitted from this
-        // $set block. createSession() upserts onto the SAME document (matched by
-        // the phone+tenantId composite key) rather than deleting the old expired
-        // doc first — Mongo's $set only touches the fields it lists, so any field
-        // omitted here silently survives from the expired session into the "new"
-        // one. webhookController's step-14 postFlowAck state machine reads
-        // session.postFlowAck directly off the freshly (re)created session, so a
-        // customer starting a brand-new conversation days later could have their
-        // first message misrouted through handlePostFlowMessage using stale
-        // postFlowData referencing a long-gone order/shortId. Always reset on
-        // every call — unlike customerName/humanMode above, there is no
-        // legitimate case for carrying a post-flow acknowledgement state across
-        // a full session reset.
+        // [FIX-SES-9] Explicitly reset — createSession upserts onto the SAME doc
+        // (matched by phone+tenantId) without deleting the expired one first, so
+        // Mongo's $set only touches fields it lists and any field omitted here
+        // silently survives from the expired session. A stale postFlowAck/
+        // postFlowData from before expiry could otherwise misroute the customer's
+        // first message in a brand-new conversation through handlePostFlowMessage.
         postFlowAck:     null,
         postFlowData:    null,
         // [SES-3] Preserve name if provided; don't wipe on re-create

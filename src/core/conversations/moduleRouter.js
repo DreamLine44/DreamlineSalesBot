@@ -47,7 +47,7 @@ export function registerAction(action, handler) {
   ACTION_REGISTRY.set(action.toUpperCase(), handler);
 }
 
-export async function route({ action, intent, session, message, business, tenant, isInteractive, suggestion, hesitant, urgent }) {
+export async function route({ action, intent, session, message, business, tenant, isInteractive, suggestion }) {
   const upper = (action || 'FALLBACK').toUpperCase();
   const mode  = (business?.businessMode || 'RETAIL').toUpperCase();
 
@@ -261,105 +261,49 @@ export async function route({ action, intent, session, message, business, tenant
         logger.debug('[Router] Greeting gate check failed (non-fatal)', { err: _gateErr.message });
       }
       // ── No active order/booking — proceed to normal welcome ──────────────
-      // [FIX-GREET-1] Pull persistent customer context from UserProfile (customerMemory)
-      // rather than relying on session.data.lastItem which is cleared on every new flow.
-      // This gives new vs returning awareness, real last-order data, and order count —
-      // all of which survive session TTL expiry between visits.
-      const { getCustomerContext } = await import('../../core/memory/customerMemory.js');
-      const custCtx    = await getCustomerContext(session.customerPhone, session.tenantId).catch(() => ({
-        name: null, topItem: null, lastItem: null, orderCount: 0, isReturning: false,
-      }));
-
-      // [FIX-NAME-8] Expanded validation — matches webhookController and leadCaptureService.
-      // Min 3 chars per word, per-word vowel check, per-word repeated-char check,
-      // expanded NOISE set covering everything intentEngine's BAD_NAME_WORDS covers.
-      const _rawNameG = session?.customerName || custCtx.name || null;
-      const _isValidNameG = (n) => {
-        if (!n || n.length < 3 || n.length > 40) return false;
-        if (!/^[a-zA-Z\s]+$/.test(n)) return false;
-        if (!/[aeiou]/i.test(n)) return false;
-        const lower = n.toLowerCase();
-        const NOISE = new Set([
-          'hi','hey','hello','hiya','yo','ok','okay','sure','yes','no','nope',
-          'thanks','thank','fine','done','good','great','nice','ready','here',
-          'home','work','busy','free','waiting','coming','hungry','back','soon',
-          'now','out','away','test','hhhh','lol','haha','hihi','hehe',
-        ]);
-        if (NOISE.has(lower)) return false;
-        const words = lower.split(/\s+/);
-        return words.every(w => {
-          if (w.length < 3) return false;
-          if (!/[aeiou]/i.test(w)) return false;
-          if (NOISE.has(w)) return false;
-          const freq = {};
-          for (const c of w) freq[c] = (freq[c] || 0) + 1;
-          if (Object.values(freq).some(v => v / w.length > 0.5)) return false;
-          return true;
-        });
-      };
-      const existingName = _isValidNameG(_rawNameG) ? _rawNameG : null;
-
+      //
+      // ╔═══════════════════════════════════════════════════════════════════╗
+      // ║ [NO-MEMORY-1] — PERMANENT PROJECT RULE — DO NOT REVERT            ║
+      // ║                                                                     ║
+      // ║ The GREET welcome message must NEVER reference the customer's      ║
+      // ║ order/booking history (no "last time you ordered X", no "shall we  ║
+      // ║ do that again", no favourite-item nudges) and must NOT use the     ║
+      // ║ customer's name, for now. This applies regardless of what other    ║
+      // ║ branches this file gets merged from — a merge that brings back a   ║
+      // ║ memory-based/personalised greeting (e.g. via customerMemory.js /   ║
+      // ║ getCustomerContext / generateGreeting) violates this rule and must ║
+      // ║ be stripped back out, not treated as a legitimate feature to keep. ║
+      // ║ Any AI or developer editing this file, at any time, must preserve  ║
+      // ║ this rule. If genuinely unsure whether a change here re-introduces ║
+      // ║ memory-based greeting content, ask before merging it in.           ║
+      // ╚═══════════════════════════════════════════════════════════════════╝
+      //
+      // Greeting is intentionally the same generic branded welcome for every
+      // customer, new or returning — no DB lookups, no name, no history.
       const cfg = getModeConfig(business);
       const customWelcome = business?.customMessages?.welcomeMessage;
 
       await updateSession(session.customerPhone, session.tenantId, {
         currentFlow:  null, step: null, data: {},
         postFlowAck:  null, menuViewed: false, upsellSent: false,
-        // [FIX-NAME-5] If the stored name failed validation, clear it from the
-        // session now so it never surfaces again. Valid name is preserved as-is.
-        customerName: existingName || null,
       });
 
-      // [NO-MEMORY-1] Greeting is intentionally identical for new and returning
-      // customers, and never references order/booking history, order counts, or
-      // VIP/regular status — per the no-unsolicited-memory policy: the bot must
-      // not proactively remind a customer of past activity just to sound
-      // personable.
-      // [NO-MEMORY-2] Also intentionally NOT name-personalised for now, even
-      // though `existingName` may be known (from this session or recalled from
-      // customerMemory). Surfacing a remembered name on the very first message
-      // of a session reads the same as surfacing order history — it implies
-      // "I recognise you" before the customer has said anything this
-      // conversation. Name capture/validation above is left in place — it still
-      // feeds session.customerName for in-flow personalisation later (e.g.
-      // postFlowHandler acknowledgements once the customer is mid-conversation)
-      // — only the greeting text itself is generic for now.
-      // TODO: re-enable name-based greeting personalisation once product
-      // decides how/when it should surface (e.g. only after explicit opt-in).
       const body = customWelcome || cfg.messages?.welcome || '👋 Welcome! How can I help you today?';
 
-      // [WELCOME-MENU-PAGING] Merge in "🛍 Browse Catalog" and split into a
-      // 2-button + "⋯ More" main screen — see buildWelcomeMenu() in
-      // waCatalogConfig.js for the full rationale (never a list/expand-tap).
-      const { buildWelcomeMenu } = await import('../../modules/catalog/waCatalogConfig.js');
-      const greetMenu = buildWelcomeMenu(cfg.ui?.welcomeButtons || [], business);
-      return { type: 'buttons', body, buttons: greetMenu.main.buttons };
-    }
-
-    case 'BROWSE_CATALOG': {
-      // [FIX-CATALOG-BTN] Explicit trigger for the welcome-menu "🛍 Browse
-      // Catalog" button — see waCatalogFlow.js#browseCatalogExplicit's own
-      // docstring, which already documented this exact call site as its
-      // intended caller. Can legitimately return null (catalog message
-      // already dispatched directly inside browseCatalogExplicit) — this is
-      // the same already-tested falsy-reply contract every other route()
-      // case relies on (see "still dispatches nothing" test coverage in
-      // webhookController's own test suite).
-      const { browseCatalogExplicit } = await import('../../modules/catalog/waCatalogFlow.js');
-      return browseCatalogExplicit({ session, business, tenant });
+      return { type: 'buttons', body, buttons: cfg.ui?.welcomeButtons || [] };
     }
 
     // [AUDIT-FIX-VIEWMENU] VIEW_MENU is distinct from SHOW_MENU (see patterns.js).
     // Previously "View Menu" buttons/typed phrases were mapped to the SHOW_MENU
     // action below, which only resets the session and re-shows the generic
     // welcome buttons — never the actual menu. Routing through startFlow('ORDER')
+    // reuses each module's existing ORDER-flow INIT step (message === null),
     // which already builds and returns the real menu/product list for that
     // business (restaurant, delivery, retail, bakery, etc.) — no per-module
     // menu-rendering duplication needed here.
     case 'VIEW_MENU':
       return startFlow({ flowName: 'ORDER', session, business, tenant });
 
-    case 'MAIN_MENU':
     case 'SHOW_MENU': {
       const cfg = getModeConfig(business);
       await updateSession(session.customerPhone, session.tenantId, {
@@ -370,39 +314,56 @@ export async function route({ action, intent, session, message, business, tenant
       // again — that's jarring and feels like the bot forgot the conversation.
       // SHOW_MENU shows a short "what else can I help with?" prompt + action buttons.
       // GREET (first message / fresh start) shows the full branded welcome.
-      // MAIN_MENU (the "🏠 Main Menu" button on the MORE_MENU screen, see below)
-      // reuses this exact same block — returning to the main menu is the same
-      // reset-and-show-options behavior regardless of which button triggered it.
-      const showMenuBody = cfg.messages?.showMenuPrompt || '👇 What would you like to do?';
-
-      // [WELCOME-MENU-PAGING] Same buildWelcomeMenu() split as GREET above —
-      // a returning-to-menu customer sees the same real tap buttons a fresh
-      // greeting would show, Browse Catalog included, no list/expand-tap.
-      const { buildWelcomeMenu } = await import('../../modules/catalog/waCatalogConfig.js');
-      const showMenuMenu = buildWelcomeMenu(cfg.ui?.welcomeButtons || [], business);
-      return { type: 'buttons', body: showMenuBody, buttons: showMenuMenu.main.buttons };
+      return {
+        type:    'buttons',
+        body:    cfg.messages?.showMenuPrompt || '👇 What would you like to do?',
+        buttons: cfg.ui?.welcomeButtons || [],
+      };
     }
 
-    case 'MORE_MENU': {
-      // [WELCOME-MENU-PAGING] Second screen reached by tapping "⋯ More" on
-      // the main welcome/menu screen. Recomputed fresh from the tenant's own
-      // config on every tap — no session state tracks which screen the
-      // customer is on, so this works identically whether they arrived via
-      // GREET or SHOW_MENU/MAIN_MENU. See buildWelcomeMenu() in
-      // waCatalogConfig.js for the full rationale.
-      const cfg = getModeConfig(business);
-      const { buildWelcomeMenu } = await import('../../modules/catalog/waCatalogConfig.js');
-      const moreMenu = buildWelcomeMenu(cfg.ui?.welcomeButtons || [], business);
-      const moreBody = cfg.messages?.moreMenuPrompt || 'What else would you like to do?';
-      if (moreMenu.more.rows) {
-        // Safety-net path only — see buildWelcomeMenu()'s docstring. Not hit
-        // by any vertical's current config.
-        return {
-          type: 'list', body: moreBody, button: 'Choose an option',
-          sections: [{ title: 'Options', rows: moreMenu.more.rows }],
-        };
-      }
-      return { type: 'buttons', body: moreBody, buttons: moreMenu.more.buttons };
+    // [AUDIT-FLOWS-RESCHEDULE] The "📅 Reschedule" button (shown from GREET for a
+    // customer with an active booking) previously aliased straight to START_BOOKING
+    // via patterns.js's BUTTON_ID_MAP — that reset the session and started a brand
+    // new booking WITHOUT ever cancelling the existing pending/confirmed appointment,
+    // silently duplicating it. This mirrors postFlowHandler.js's existing RESCHEDULE
+    // handling: cancel the most recent active, non-walk-in booking, then land the
+    // customer on step 'DATE' with the previous service/stylist carried over.
+    case 'RESCHEDULE': {
+      let _previousBooking = null;
+      try {
+        const { default: _ReschBooking } = await import('../../models/Booking.js');
+        _previousBooking = await _ReschBooking.findOneAndUpdate(
+          {
+            customerPhone: session.customerPhone,
+            tenantId:      session.tenantId,
+            status:        { $in: ['pending', 'confirmed'] },
+            // Never touch a walk-in queue entry — only a real dated appointment.
+            bookingType:   { $ne: 'walkin' },
+          },
+          {
+            $set: {
+              status:      'cancelled',
+              cancelledBy: 'customer',
+              cancelledAt: new Date(),
+            },
+          },
+          { sort: { createdAt: -1 } }
+        ).catch(() => null);
+      } catch (_) { /* non-fatal */ }
+
+      await updateSession(session.customerPhone, session.tenantId, {
+        currentFlow: 'BOOKING', step: 'DATE', postFlowAck: null,
+        data: {
+          service:         _previousBooking?.service || null,
+          selectedService: _previousBooking?.service || null,
+          stylist:         _previousBooking?.staff    || null,
+        },
+      });
+
+      return {
+        type: 'text',
+        body: `📅 *Reschedule Appointment*\n\nNo problem! Let's find a new time${_previousBooking?.service ? ` for your *${_previousBooking.service}*` : ''}.\n\nWhat date works best for you?`,
+      };
     }
 
     case 'CANCEL': {
@@ -460,16 +421,14 @@ export async function route({ action, intent, session, message, business, tenant
           {
             customerPhone: session.customerPhone,
             tenantId:      session.tenantId,
-            // [AUDIT-FIX-CANCEL-CONFIRMED-GUARD] status:'confirmed' orders used to be
-            // included here, relying on paymentStatus to exclude ones that shouldn't be
-            // touched — but dashboardController.updateOrderStatus() sets status:'confirmed'
-            // without ever touching paymentStatus, and cash orders accepted via
-            // AWAIT_ADMIN_CONFIRM never set paymentStatus:'confirmed' either. Both slipped
-            // through the old paymentStatus filter, letting a customer silently cancel an
-            // order an admin had already accepted for prep. status:'confirmed' is itself the
-            // authoritative "order accepted" signal in this codebase (same reasoning as
-            // activeOrderResolver's [AUDIT-AOR-CONFIRMED]), so only truly pending orders are
-            // self-cancellable now.
+            // [AUDIT-FIX-CANCEL-CONFIRMED-GUARD] status:'confirmed' is the
+            // authoritative "order accepted" signal in this codebase (see
+            // activeOrderResolver's [AUDIT-AOR-CONFIRMED]) — dashboardController's
+            // updateOrderStatus() and the cash-order AWAIT_ADMIN_CONFIRM path both
+            // set status:'confirmed' WITHOUT ever touching paymentStatus, so relying
+            // on paymentStatus alone let an already-accepted order slip through and
+            // be self-cancelled by the customer. Only truly 'pending' orders — never
+            // accepted by an admin — are self-cancellable here.
             status:        'pending',
             // [FIX-CANCEL-REJECTED] 'rejected' was previously in this $nin exclusion list,
             // meaning a customer whose payment was rejected — the EXACT scenario where
@@ -531,16 +490,16 @@ export async function route({ action, intent, session, message, business, tenant
           {
             customerPhone: session.customerPhone,
             tenantId:      session.tenantId,
-            // [AUDIT-FIX-CANCEL-ALL-CONFIRMED-GUARD] Previously matched status:'confirmed'
-            // and 'preparing' directly, with a paymentStatus exclusion list that didn't even
-            // exclude 'confirmed'/'paid' — so a customer could bulk-cancel an already-paid
-            // order that was already being prepared in the kitchen with a single "cancel all".
-            // Same reasoning as the single-order CANCEL case above: status:'confirmed' is the
-            // authoritative "order accepted" signal, so only truly pending orders are
-            // bulk-cancellable now, and the paymentStatus list also excludes confirmed/paid.
+            // [AUDIT-FIX-CANCEL-ALL-CONFIRMED-GUARD] Same guard as the single-order
+            // CANCEL case above — status:'confirmed'/'preparing' orders are already
+            // accepted by an admin and must not be bulk-cancellable by the customer.
             status:        'pending',
-            // [FIX-CANCEL-REJECTED] 'rejected' must not be excluded, or rejected-payment orders
-            // can never be bulk-cancelled either and keep re-appearing in the MULTIPLE_ACTIVE_ORDERS list.
+            // [FIX-CANCEL-REJECTED] Same fix as the single-order CANCEL case above —
+            // 'rejected' must not be excluded, or rejected-payment orders can never be
+            // bulk-cancelled either and keep re-appearing in the MULTIPLE_ACTIVE_ORDERS list.
+            // [AUDIT-FIX-CANCEL-ALL-CONFIRMED-GUARD] 'confirmed'/'paid' added — the old
+            // list only excluded 'cancelled'/'refunded', so an already-paid order could
+            // still be bulk-cancelled with a single "cancel all".
             paymentStatus: { $nin: ['cancelled', 'refunded', 'confirmed', 'paid'] },
           },
           {
@@ -570,56 +529,6 @@ export async function route({ action, intent, session, message, business, tenant
         return {
           type:    'buttons',
           body:    '⚠️ Something went wrong cancelling your orders. Please contact support.',
-          buttons: [{ id: 'SUPPORT', title: '💬 Contact Support' }],
-        };
-      }
-    }
-
-    // [AUDIT-FLOWS-RESCHEDULE] Was aliased to the generic 'START_BOOKING' action,
-    // which resets the session and starts a brand-new booking WITHOUT ever touching
-    // the customer's existing pending/confirmed appointment — silently duplicating it
-    // (and the admin confirm/decline alert) instead of rescheduling. This mirrors
-    // services/postFlowHandler.js's already-correct RESCHEDULE handling: cancel the
-    // most recent active, non-walk-in booking, then land on step 'DATE' with the
-    // previous service/stylist carried over.
-    case 'RESCHEDULE': {
-      try {
-        const { default: _ReschBooking } = await import('../../models/Booking.js');
-        const _prevBooking = await _ReschBooking.findOneAndUpdate(
-          {
-            customerPhone: session.customerPhone,
-            tenantId:      session.tenantId,
-            status:        { $in: ['pending', 'confirmed'] },
-            bookingType:   { $ne: 'walkin' },
-          },
-          {
-            $set: {
-              status:      'cancelled',
-              cancelledBy: 'customer',
-              cancelledAt: new Date(),
-            },
-          },
-          { sort: { createdAt: -1 } }
-        ).catch(() => null);
-
-        await updateSession(session.customerPhone, session.tenantId, {
-          currentFlow: 'BOOKING', step: 'DATE', postFlowAck: null,
-          data: {
-            service:         _prevBooking?.service || null,
-            selectedService: _prevBooking?.service || null,
-            stylist:         _prevBooking?.staff    || null,
-          },
-        });
-
-        return {
-          type: 'text',
-          body: `📅 *Reschedule Appointment*\n\nNo problem! Let's find a new time${_prevBooking?.service ? ` for your *${_prevBooking.service}*` : ''}.\n\nWhat date works best for you?`,
-        };
-      } catch (err) {
-        logger.error('[Router] RESCHEDULE failed', { err: err.message });
-        return {
-          type:    'buttons',
-          body:    '⚠️ Something went wrong starting your reschedule. Please contact support.',
           buttons: [{ id: 'SUPPORT', title: '💬 Contact Support' }],
         };
       }
@@ -742,15 +651,7 @@ export async function route({ action, intent, session, message, business, tenant
         };
       }
 
-      const aiText = await getAIReply({
-        customerMessage: message, business, session, intent, urgent,
-        // [MERGE-FEAT-NEGATION-4] Hesitation Detection ("maybe", "just browsing",
-        // "not sure yet") — spec: "don't push the sale, offer helpful information
-        // instead". Never changes the action, only the AI reply's tone.
-        sessionContext: hesitant
-          ? 'Customer sounds hesitant/unsure — be informational and low-pressure, do not push a sale.'
-          : undefined,
-      });
+      const aiText = await getAIReply({ customerMessage: message, business, session, intent });
       // [FIX-BUG1] cfg.messages.fallback not cfg.labels.fallback
       const fallbackMsg = business?.customMessages?.fallback || cfg.messages?.fallback;
       const body = aiText || fallbackMsg || 'How can I help you? 😊';
@@ -875,25 +776,7 @@ export async function route({ action, intent, session, message, business, tenant
       // route() was ever called, which blocked SERVICES/GENERAL from reaching their flows.
       const enquiryHandler = ACTION_REGISTRY.get('ENQUIRY');
       if (enquiryHandler) return enquiryHandler({ session, message, business, tenant, intent, isInteractive, suggestion });
-
-      // [FEAT-INSTANT-QA-3] If the customer already typed their actual question (this
-      // fires from a real typed message, not just the "❓ Ask a Question" button tap
-      // with no text yet), answer it right away instead of discarding it and asking
-      // them to type it again — that "type your question below" prompt used to fire
-      // unconditionally even when `message` already WAS the question.
-      if (message && message.trim().length >= 4) {
-        const { getAIReply } = await import('../ai/providers/aiRouter.js');
-        const aiText = await getAIReply({ customerMessage: message, business, session, intent: 'QUESTION' }).catch(() => null);
-        const cfgEnq = getModeConfig(business);
-        return {
-          type:    'buttons',
-          body:    aiText || cfgEnq.messages?.fallback || 'How can I help you? 😊',
-          buttons: [{ id: 'QUESTION', title: '❓ Ask Another' }, { id: 'SHOW_MENU', title: '🔄 Main Menu' }],
-        };
-      }
-
-      // Generic fallback: no question text yet (bare button tap) — set the ENQUIRY
-      // flow state and prompt for it.
+      // Generic fallback: set the ENQUIRY flow state and prompt
       await updateSession(session.customerPhone, session.tenantId, {
         currentFlow: 'ENQUIRY', step: 'AWAITING_QUESTION',
       });
@@ -910,22 +793,6 @@ export async function route({ action, intent, session, message, business, tenant
       // ACTION_REGISTRY before this case runs. All other modes fall through here.
       const questionHandler = ACTION_REGISTRY.get('QUESTION');
       if (questionHandler) return questionHandler({ session, message, business, tenant, intent, isInteractive, suggestion });
-
-      // [FEAT-INSTANT-QA-3] Same fix as ENQUIRY above — answer immediately when the
-      // customer's message already IS the question (typed free-text, or the
-      // deterministic pre-flow direct-question detector in intentEngine.js), rather
-      // than discarding it and prompting them to type it again.
-      if (message && message.trim().length >= 4) {
-        const { getAIReply } = await import('../ai/providers/aiRouter.js');
-        const aiText = await getAIReply({ customerMessage: message, business, session, intent: 'QUESTION' }).catch(() => null);
-        const cfgQ = getModeConfig(business);
-        return {
-          type:    'buttons',
-          body:    aiText || cfgQ.messages?.fallback || 'How can I help you? 😊',
-          buttons: [{ id: 'QUESTION', title: '❓ Ask Another' }, { id: 'SHOW_MENU', title: '🔄 Main Menu' }],
-        };
-      }
-
       // Generic fallback: same as ENQUIRY — start the generic question-capture flow
       await updateSession(session.customerPhone, session.tenantId, {
         currentFlow: 'ENQUIRY', step: 'AWAITING_QUESTION',

@@ -90,7 +90,15 @@ test('BusinessConfig schema stores waCatalog.syncedItemHashes as a String map de
 
 test('businessController.syncWaCatalog surfaces the deleted count in its response', () => {
   const src = read('../controllers/businessController.js');
-  assert.match(src, /res\.json\(\{ ok: true, synced: result\.synced, deleted: result\.deleted \|\| 0 \}\)/);
+  const idx = src.indexOf('export async function syncWaCatalog');
+  const body = src.slice(idx, idx + 2600);
+  // [AUDIT-FIX-CATALOG-INVISIBLE-SKIPS] Response now also surfaces
+  // skippedInvalid (items excluded from sync for missing image/invalid
+  // price) — the field this test guards for (deleted) is still present,
+  // just formatted across multiple lines instead of one.
+  assert.match(body, /synced:\s*result\.synced,/);
+  assert.match(body, /deleted:\s*result\.deleted \|\| 0,/);
+  assert.match(body, /skippedInvalid:\s*result\.invalidSkipped \|\| 0,/);
 });
 
 test('the autosync scheduler logs the deleted count on a successful debounced sync', () => {

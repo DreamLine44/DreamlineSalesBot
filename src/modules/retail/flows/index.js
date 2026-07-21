@@ -18,6 +18,7 @@ import { updateSession }  from '../../../core/sessions/sessionService.js';
 import { completeFlow }   from '../../../core/conversations/flowEngine.js';
 import { getAIReply }     from '../../../core/ai/providers/aiRouter.js';
 import { findBestMatch }  from '../../../utils/matchEngine.js';
+import { buildWhatsAppImageUrl } from '../../../config/cloudinary.js';
 import { saveOrder }      from '../../../services/orderService.js';
 import { parseQuantity }  from '../../../utils/parseQuantity.js';
 import { trackOrderAnalytics } from '../../../core/analytics/analyticsService.js';
@@ -34,13 +35,13 @@ export const RETAIL_CONFIG = {
   },
   ui: {
     welcomeButtons: [
-      { id: 'ORDER',     title: '🛍 Shop Now',           description: 'Browse our products & shop' },
-      { id: 'VIEW_MENU', title: '📋 View All Products',  description: 'See our full catalog'       },
-      { id: 'QUESTION',  title: '❓ Product Query',      description: 'Ask about a product'         },
+      { id: 'ORDER',     title: '🛍 Shop Now'          },
+      { id: 'SHOW_MENU', title: '📋 View All Products'  },
+      { id: 'QUESTION',  title: '❓ Product Query'      },
     ],
     fallbackButtons: [
       { id: 'ORDER',     title: '🛍 Shop'      },
-      { id: 'VIEW_MENU', title: '📋 Products'  },
+      { id: 'SHOW_MENU', title: '📋 Products'  },
       { id: 'QUESTION',  title: '❓ Ask'        },
     ],
     confirmButtons: [
@@ -123,7 +124,7 @@ export async function handleRetailOrder({ session, message, business, tenant, is
         return {
           type: 'buttons',
           body: `🔍 Searching for *"${raw}"*...\n\nHere's what we have:`,
-          buttons: [{ id: 'VIEW_MENU', title: '📋 All Products' }, { id: 'CANCEL', title: '❌ Cancel' }],
+          buttons: [{ id: 'SHOW_MENU', title: '📋 All Products' }, { id: 'CANCEL', title: '❌ Cancel' }],
         };
       }
 
@@ -132,20 +133,34 @@ export async function handleRetailOrder({ session, message, business, tenant, is
 
     // ── SELECT_ITEM ───────────────────────────────────────────────────────────
     case 'SELECT_ITEM': {
+      // [AUDIT-FIX-RETAIL-SCOPEDINDEX] When a category is active, row ids in
+      // _buildProductList are 1-based positions WITHIN that filtered list —
+      // but the old code always resolved numeric taps against the full,
+      // unfiltered `menu`. A customer inside "Shoes" tapping row 2 could
+      // silently receive the 2nd item of the ENTIRE catalogue instead of the
+      // 2nd shoe — wrong item, wrong price, wrong order. Numeric/interactive
+      // taps now resolve against the same scoped list that was rendered;
+      // free-text search still searches the full catalogue (a customer may
+      // legitimately type an item from a different category).
+      const scopedMenu = data.category
+        ? menu.filter(i => (i.category || 'General') === data.category)
+        : menu;
+
       // Guard: number without viewing catalog
       if (!isInteractive && !session.menuViewed && /^\d+$/.test(raw)) {
         await updateSession(session.customerPhone, session.tenantId, { menuViewed: true });
-        return _buildProductList(menu, business);
+        return _buildProductList(scopedMenu, business, data.category || null);
       }
-      if (clean.length < 2) return _buildProductList(menu, business);
+      if (clean.length < 2) return _buildProductList(scopedMenu, business, data.category || null);
 
-      // [AUDIT-FIX-PARSEINT] parseInt("2 red shirts", 10) === 2, not NaN — a bare
-      // leading digit used to silently hijack the menu index for ANY mixed
-      // alphanumeric reply once menuViewed was true. Only trust the parsed index
-      // for a genuinely bare number or an interactive tap (list row / button).
+      // [AUDIT-FIX-PARSEINT] parseInt("2 red shirts", 10) === 2, NOT NaN — so any
+      // message merely STARTING with a digit silently hijacked the menu index
+      // once menuViewed was true (the normal case). Only trust the parsed index
+      // for a bare number or an interactive tap; everything else falls through
+      // to fuzzy name matching below.
       const isPureNumeric = /^\d+$/.test(raw.trim());
-      const numIdx = parseInt(raw, 10) - 1;
-      let item = ((isInteractive || isPureNumeric) && !isNaN(numIdx) && menu[numIdx]) ? menu[numIdx] : null;
+      const numIdx = (isInteractive || isPureNumeric) ? parseInt(raw, 10) - 1 : NaN;
+      let item = (!isNaN(numIdx) && scopedMenu[numIdx]) ? scopedMenu[numIdx] : null;
 
       if (!item) {
         const { item: m, confidenceLevel } = findBestMatch(menu, clean);
@@ -157,7 +172,7 @@ export async function handleRetailOrder({ session, message, business, tenant, is
             body: `Did you mean *${m?.name}*?`,
             buttons: [
               { id: 'CONFIRM',   title: '✅ Yes'         },
-              { id: 'VIEW_MENU', title: '🔄 Browse All'  },
+              { id: 'SHOW_MENU', title: '🔄 Browse All'  },
             ],
           };
         }
@@ -175,7 +190,7 @@ export async function handleRetailOrder({ session, message, business, tenant, is
           type: 'buttons',
           body: aiReply || `I couldn't find *"${raw}"* — here's what we have in stock:`,
           buttons: [
-            { id: 'VIEW_MENU', title: '📋 Browse All'    },
+            { id: 'SHOW_MENU', title: '📋 Browse All'    },
             { id: 'QUESTION',  title: '❓ Ask About Stock' },
           ],
         };
@@ -242,38 +257,22 @@ export async function handleRetailOrder({ session, message, business, tenant, is
       }
 
       // Show variant picker
-      // [AUDIT-FIX-RETAIL-VARIANT] Original bug: variantKeys.slice(0, 3).map(...)
-      // .concat([CANCEL]).slice(0, 3) — slicing to 3 BEFORE appending CANCEL
-      // silently dropped both (a) any variant past the first 3 (no list
-      // fallback) and (b) CANCEL itself whenever there were already 3+ variants.
-      //
-      // [AUDIT-FIX-RETAIL-VARIANT-2] A first fix pass changed the threshold
-      // check to `variantKeys.length > 3` and built buttons from the FULL
-      // array before combining with CANCEL — but that still left the
-      // EXACTLY-3-variants case broken: 3 variant buttons + CANCEL is 4 items,
-      // and the final `.slice(0, 3)` safety-cap still cut CANCEL off (WhatsApp's
-      // 3-button limit makes 3 variants + Cancel a structurally impossible fit,
-      // not something any concat/slice ORDERING can solve). Same bug class
-      // independently found in bookingFlow.js and fashion/flows/index.js
-      // (AUDIT-FIX-BOOKING-CANCEL-1/2, AUDIT-FIX-FASHION-CANCEL-1). Fixed the
-      // same way: raise the list-format threshold to >=3, so the button
-      // branch only ever runs for 1-2 variants, where CANCEL always fits.
-      if (variantKeys.length >= 3) {
-        const variantRows = variantKeys.map(v => ({
-          id: `VAR_${v.toUpperCase().replace(/\s+/g, '_')}`,
-          title: v,
-        }));
-        // [FIX-RETAIL-LIST-CANCEL-ROW] Only append CANCEL when guaranteed to
-        // fit under dispatcher.js's 10-row-per-section cap — a customer
-        // facing a 10+-option list can still cancel by typing "cancel".
-        const rows = variantRows.length < 10
-          ? [...variantRows, { id: 'CANCEL', title: '❌ Cancel' }]
-          : variantRows;
+      // [AUDIT-FIX-RETAIL-VARIANT] ≤3 variants: build the FULL button array
+      // (all variantKeys + CANCEL) THEN slice to 3 — the old code sliced
+      // variantKeys to 3 first and re-sliced after appending CANCEL, which
+      // silently dropped CANCEL for any item with 3+ variants. 4+ variants:
+      // switch to a flat top-level `rows` list (unsliced — dispatcher.js
+      // chunks it, see [FIX-LIST-TRUNC]) instead of only ever offering the
+      // first 3 options with no way to reach the rest.
+      if (variantKeys.length > 3) {
         return {
           type: 'list',
-          body: `🛍 *${item.name}*\n\nWhich option would you like?`,
+          body:   `🛍 *${item.name}*\n\nWhich option would you like?`,
           button: 'Choose option',
-          sections: [{ title: 'Available Options', rows }],
+          rows: variantKeys.map(v => ({
+            id:    `VAR_${v.toUpperCase().replace(/\s+/g, '_')}`,
+            title: v,
+          })),
         };
       }
       return {
@@ -544,7 +543,7 @@ export async function handleProductQuery({ session, message, business, tenant })
     body: aiReply || "Great question! Let me point you to the right product.",
     buttons: [
       { id: 'ORDER',     title: '🛍 Shop Now'    },
-      { id: 'VIEW_MENU', title: '📋 View All'    },
+      { id: 'SHOW_MENU', title: '📋 View All'    },
     ],
   };
 }
@@ -557,24 +556,27 @@ function _getCategories(menu) {
 }
 
 function _buildCategoryUI(categories, business) {
-  // [FIX-CAT-LIST-CAP] Cap at 9 rows — the 10th row is reserved for the
-  // trailing "Browse All" row so the total never exceeds WhatsApp's 10-row
-  // list-section ceiling. Unlike electronics/fashion (whose lists have no
-  // trailing row and can rely on dispatcher.js's [FIX-LIST-TRUNC] chunking),
-  // this list always appends one extra row, so it needs its own cap + notice.
+  // [AUDIT-FIX-CATCAP] This is a single labelled "Categories" section, capped
+  // at WhatsApp's real 10-row-per-section limit — unlike a flat product list
+  // (which dispatcher.js now chunks across sections, see [FIX-LIST-TRUNC]),
+  // a category picker reads best as one section. The "📋 Browse All" row
+  // always needs its own slot, so categories are capped at 9 to reserve it.
+  const shown    = categories.slice(0, 9);
+  const overflow = categories.length > 9;
+
   return {
     type: 'list',
-    body: `🛍 *${business?.name || 'Our Store'}*\n\nWhat are you shopping for today?`,
+    body:   `🛍 *${business?.name || 'Our Store'}*\n\nWhat are you shopping for today?`,
     button: 'Choose category',
     sections: [{
       title: 'Categories',
-      rows: categories.slice(0, 9).map(c => ({
+      rows: shown.map(c => ({
         id:    `CAT_${c.toUpperCase().replace(/\s+/g, '_')}`,
         title: c,
-      })).concat([{ id: 'VIEW_MENU', title: '📋 Browse All' }]),
+      })).concat([{ id: 'SHOW_MENU', title: '📋 Browse All' }]),
     }],
-    footer: categories.length > 9
-      ? `Showing 9 of ${categories.length} categories — tap Browse All to see everything`
+    footer: overflow
+      ? `Showing ${shown.length} of ${categories.length} categories — tap "Browse All" or type what you're looking for`
       : 'Tap a category or type what you\'re looking for',
   };
 }
@@ -591,11 +593,16 @@ function _buildProductList(items, business, category = null) {
     return {
       type:    'buttons',
       body:    `${header}\n\nNo products available in this category right now.`,
-      buttons: [{ id: 'VIEW_MENU', title: '🔄 All Categories' }, { id: 'CANCEL', title: '❌ Cancel' }],
+      buttons: [{ id: 'SHOW_MENU', title: '🔄 All Categories' }, { id: 'CANCEL', title: '❌ Cancel' }],
     };
   }
 
-  const rows = items.slice(0, 10).map((item, idx) => ({
+  // [AUDIT-FIX-LISTCAP] No build-time slice — dispatcher.js chunks a flat
+  // `rows` array across multiple WhatsApp sections (10/section, up to the
+  // real 100-row ceiling) instead of truncating, see [FIX-LIST-TRUNC] in
+  // core/whatsapp/dispatcher.js. A category with 15 products now shows all
+  // 15 across two sections instead of silently hiding the last 5.
+  const rows = items.map((item, idx) => ({
     id:          String(idx + 1),
     title:       item.name.slice(0, 24),
     description: [
@@ -605,12 +612,11 @@ function _buildProductList(items, business, category = null) {
   }));
 
   return {
-    type:   'list',
+    type: 'list',
     header,
     body:   'Tap a product to select it, or type what you\'re looking for:',
     button: 'View Products',
     rows,
-    footer: items.length > 10 ? `Showing ${rows.length} of ${items.length} — type a name to search` : undefined,
   };
 }
 
@@ -621,13 +627,32 @@ function _buildItemDetail(item, business) { // [FIX-RETAIL-BUSINESS-SCOPE] busin
     ? `\n📐 *Options:* ${item.variants.map(v => v.name || v).join(', ')}\n`
     : '';
 
-  return {
+  const detailPrompt = {
     type: 'buttons',
     body: `🛍 *${item.name}*\n${desc}${price}${variants}\nWould you like to order this item?`,
     buttons: [
       { id: 'CONFIRM',   title: '🛍 Yes, I want this' },
-      { id: 'VIEW_MENU', title: '🔄 Browse Others'    },
+      { id: 'SHOW_MENU', title: '🔄 Browse Others'    },
       { id: 'CANCEL',    title: '❌ Cancel'            },
     ],
   };
+
+  // [FEAT-CATALOG-IMAGES] Same pattern as restaurant/flows/orderFlow.js's
+  // item-detail image send — the only vertical that had this before. A
+  // tenant's uploaded product photo is stored correctly (Cloudinary +
+  // BusinessConfig.menuItems[].image.url) regardless of vertical, but
+  // nothing outside restaurant ever actually sent it to the customer in
+  // this fallback (non-Meta-Catalog) chat tier.
+  const imageUrl = item?.image?.url;
+  if (imageUrl && item?.showImageOnSelect !== false) {
+    return [
+      {
+        type:    'image',
+        url:     buildWhatsAppImageUrl(imageUrl),
+        caption: `*${item.name}*${item.price ? ` — ${item.currency || business?.payment?.currency || 'D'}${item.price}` : ''}`,
+      },
+      detailPrompt,
+    ];
+  }
+  return detailPrompt;
 }

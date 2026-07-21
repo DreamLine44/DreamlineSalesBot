@@ -18,6 +18,7 @@ import { findBestMatch }  from '../../../utils/matchEngine.js';
 import { parseQuantity }  from '../../../utils/parseQuantity.js';
 import { saveOrder }      from '../../../services/orderService.js';
 import { trackOrderAnalytics } from '../../../core/analytics/analyticsService.js';
+import { buildWhatsAppImageUrl } from '../../../config/cloudinary.js';
 import logger             from '../../../config/logger.js';
 
 const norm = (s = '') => s.toLowerCase().replace(/[^\w\s]/g, ' ').replace(/\s+/g, ' ').trim();
@@ -41,29 +42,75 @@ export async function handleBakeryOrderFlow({ session, message, business, tenant
 
   // ── INIT ──────────────────────────────────────────────────────────────────
   if (message === null) {
+    // [FEAT-BAKERY-CATEGORY] Only shown when the tenant has 2+ distinct
+    // categories set (e.g. "Bread", "Cakes", "Pastries") — real data, not a
+    // forced step. Mirrors retail/fashion's exact pattern.
+    const categories = _getCategories(menu);
+    if (categories.length > 1) {
+      await updateSession(session.customerPhone, session.tenantId, {
+        step: 'BROWSE_CATEGORY', data: {}, menuViewed: false, upsellSent: false,
+      });
+      return _buildCategoryUI(categories, business);
+    }
     await updateSession(session.customerPhone, session.tenantId, {
-      step: 'SELECT_ITEM', data: {}, menuViewed: false, upsellSent: false,
+      step: 'SELECT_ITEM', data: {}, menuViewed: true, upsellSent: false,
     });
     return _buildBakeryMenu(menu, business);
   }
 
   switch (step) {
 
+    // ── BROWSE_CATEGORY ───────────────────────────────────────────────────────
+    case 'BROWSE_CATEGORY': {
+      const categories = _getCategories(menu);
+      const catMatch = categories.find(c => raw.toUpperCase() === `CAT_${c.toUpperCase().replace(/\s+/g, '_')}`);
+      if (catMatch) {
+        const filtered = menu.filter(i => (i.category || 'General') === catMatch);
+        await updateSession(session.customerPhone, session.tenantId, {
+          step: 'SELECT_ITEM',
+          data: { category: catMatch },
+          menuViewed: true,
+        });
+        return _buildBakeryMenu(filtered, business, catMatch);
+      }
+      if (clean.length >= 2) {
+        // Typed text while browsing categories — recurse into SELECT_ITEM
+        // with the same message so its existing fuzzy-match logic runs
+        // unchanged instead of duplicating it here.
+        await updateSession(session.customerPhone, session.tenantId, {
+          step: 'SELECT_ITEM', data: {}, menuViewed: true,
+        });
+        return handleBakeryOrderFlow({
+          session: { ...session, step: 'SELECT_ITEM', data: {}, menuViewed: true },
+          message, business, tenant, isInteractive,
+        });
+      }
+      return _buildCategoryUI(categories, business);
+    }
+
     // ── SELECT_ITEM ──────────────────────────────────────────────────────────
     case 'SELECT_ITEM': {
+      // [FEAT-BAKERY-CATEGORY] Scope numeric/interactive taps to the
+      // category-filtered list actually rendered — same fix class as
+      // [AUDIT-FIX-RETAIL-SCOPEDINDEX], applied here from the start.
+      const scopedMenu = data.category
+        ? menu.filter(i => (i.category || 'General') === data.category)
+        : menu;
+
       if (!isInteractive && !session.menuViewed && /^\d+$/.test(raw)) {
         await updateSession(session.customerPhone, session.tenantId, { menuViewed: true });
-        return _buildBakeryMenu(menu, business);
+        return _buildBakeryMenu(scopedMenu, business, data.category || null);
       }
-      if (clean.length < 2) return _buildBakeryMenu(menu, business);
+      if (clean.length < 2) return _buildBakeryMenu(scopedMenu, business, data.category || null);
 
-      // [AUDIT-FIX-PARSEINT] parseInt("2 red shirts", 10) === 2, not NaN — a bare
-      // leading digit used to silently hijack the menu index for ANY mixed
-      // alphanumeric reply once menuViewed was true. Only trust the parsed index
-      // for a genuinely bare number or an interactive tap (list row / button).
+      // [AUDIT-FIX-PARSEINT] parseInt("2 red buns", 10) === 2, NOT NaN — so any
+      // message merely STARTING with a digit silently hijacked the menu index
+      // once menuViewed was true (the normal case). Only trust the parsed index
+      // for a bare number or an interactive tap; everything else falls through
+      // to fuzzy name matching below.
       const isPureNumeric = /^\d+$/.test(raw.trim());
-      const numIdx = parseInt(raw, 10) - 1;
-      let item = ((isInteractive || isPureNumeric) && !isNaN(numIdx) && numIdx >= 0 && menu[numIdx]) ? menu[numIdx] : null;
+      const numIdx = (isInteractive || isPureNumeric) ? parseInt(raw, 10) - 1 : NaN;
+      let item = (!isNaN(numIdx) && numIdx >= 0 && scopedMenu[numIdx]) ? scopedMenu[numIdx] : null;
 
       if (!item) {
         const { item: matched, confidenceLevel } = findBestMatch(menu, clean);
@@ -81,7 +128,7 @@ export async function handleBakeryOrderFlow({ session, message, business, tenant
         }
       }
 
-      if (!item) return _buildBakeryMenu(menu, business);
+      if (!item) return _buildBakeryMenu(scopedMenu, business, data.category || null);
 
       const price = item.price ? ` — ${item.currency || 'D'}${item.price}` : '';
       const desc  = item.description ? `\n_${item.description}_` : '';
@@ -89,7 +136,7 @@ export async function handleBakeryOrderFlow({ session, message, business, tenant
         step: 'QUANTITY', data: { item }, menuViewed: true,
       });
 
-      return {
+      const qtyPrompt = {
         type: 'buttons',
         body: `🧁 *${item.name}*${price}${desc}\n\nHow many would you like?`,
         buttons: [
@@ -99,6 +146,22 @@ export async function handleBakeryOrderFlow({ session, message, business, tenant
         ],
         footer: 'Or type any number e.g. 6, 12, 24',
       };
+
+      // [FEAT-CATALOG-IMAGES] Same pattern as restaurant/retail/fashion/
+      // electronics/cosmetics — the tenant's uploaded photo is stored
+      // correctly regardless of vertical, but bakery never sent it before.
+      const imageUrl = item?.image?.url;
+      if (imageUrl && item?.showImageOnSelect !== false) {
+        return [
+          {
+            type:    'image',
+            url:     buildWhatsAppImageUrl(imageUrl),
+            caption: `*${item.name}*${item.price ? ` — ${item.currency || 'D'}${item.price}` : ''}`,
+          },
+          qtyPrompt,
+        ];
+      }
+      return qtyPrompt;
     }
 
     // ── QUANTITY ──────────────────────────────────────────────────────────────
@@ -397,7 +460,34 @@ export async function handleBakeryOrderFlow({ session, message, business, tenant
 
 // ── UI Helpers ────────────────────────────────────────────────────────────────
 
-function _buildBakeryMenu(menu, business) {
+function _getCategories(menu) {
+  return [...new Set(menu.map(i => i.category).filter(Boolean))];
+}
+
+function _buildCategoryUI(categories, business) {
+  const name = business?.businessName || business?.name || 'Bakery';
+  // Single "Categories" section capped at 9 rows + one reserved "Browse All"
+  // row — mirrors retail's _buildCategoryUI cap.
+  const shown    = categories.slice(0, 9);
+  const overflow = categories.length > 9;
+  return {
+    type:   'list',
+    body:   `🥐 *${name}*\n\nWhat would you like today?`,
+    button: 'Choose category',
+    sections: [{
+      title: 'Categories',
+      rows: shown.map(c => ({
+        id:    `CAT_${c.toUpperCase().replace(/\s+/g, '_')}`,
+        title: c,
+      })).concat([{ id: 'SHOW_MENU', title: '📋 Browse All' }]),
+    }],
+    footer: overflow
+      ? `Showing ${shown.length} of ${categories.length} categories — tap "Browse All" or type what you're looking for`
+      : 'Tap a category or type what you\'re looking for',
+  };
+}
+
+function _buildBakeryMenu(menu, business, category = null) {
   const name = business?.businessName || business?.name || 'Bakery';
   if (!menu.length) {
     return {
@@ -406,7 +496,12 @@ function _buildBakeryMenu(menu, business) {
       buttons: [{ id: 'SUPPORT', title: '💬 Contact Us' }],
     };
   }
-  const rows = menu.slice(0, 10).map((item, i) => ({
+  // [AUDIT-FIX-LISTCAP] No build-time slice — dispatcher.js chunks a flat
+  // `rows` array across multiple WhatsApp sections (10/section, up to the
+  // real 100-row ceiling) instead of truncating, see [FIX-LIST-TRUNC] in
+  // core/whatsapp/dispatcher.js. Previously items past #10 were silently
+  // invisible with only a "Showing 10 of N" footer as a hint.
+  const rows = menu.map((item, i) => ({
     id:          String(i + 1),
     title:       item.name.slice(0, 24),
     description: [
@@ -416,11 +511,10 @@ function _buildBakeryMenu(menu, business) {
   }));
   return {
     type:   'list',
-    header: `🥐 ${name}`,
+    header: category ? `🥐 ${category}` : `🥐 ${name}`,
     body:   'Fresh baked daily — what would you like?',
     button: 'View Menu',
     rows,
-    footer: menu.length > 10 ? `Showing ${rows.length} of ${menu.length} items` : undefined,
   };
 }
 

@@ -25,6 +25,7 @@ import { parseQuantity }  from '../../../utils/parseQuantity.js';
 import { saveOrder }      from '../../../services/orderService.js';
 import { trackOrderAnalytics } from '../../../core/analytics/analyticsService.js';
 import logger             from '../../../config/logger.js';
+import { buildWhatsAppImageUrl } from '../../../config/cloudinary.js';
 
 const norm = (s = '') => s.toLowerCase().replace(/[^\w\s]/g, ' ').replace(/\s+/g, ' ').trim();
 
@@ -109,13 +110,14 @@ export async function handleCosmeticsOrderFlow({ session, message, business, ten
       }
       if (clean.length < 2) return _buildCosmeticsMenu(menu, business, data.skinType || null);
 
-      // [AUDIT-FIX-PARSEINT] parseInt("2 red shirts", 10) === 2, not NaN — a bare
-      // leading digit used to silently hijack the menu index for ANY mixed
-      // alphanumeric reply once menuViewed was true. Only trust the parsed index
-      // for a genuinely bare number or an interactive tap (list row / button).
+      // [AUDIT-FIX-PARSEINT] parseInt("2 red shirts", 10) === 2, NOT NaN — so any
+      // message merely STARTING with a digit silently hijacked the menu index
+      // once menuViewed was true (the normal case). Only trust the parsed index
+      // for a bare number or an interactive tap; everything else falls through
+      // to fuzzy name matching below.
       const isPureNumeric = /^\d+$/.test(raw.trim());
-      const numIdx = parseInt(raw, 10) - 1;
-      let item = ((isInteractive || isPureNumeric) && !isNaN(numIdx) && numIdx >= 0 && menu[numIdx]) ? menu[numIdx] : null;
+      const numIdx = (isInteractive || isPureNumeric) ? parseInt(raw, 10) - 1 : NaN;
+      let item = (!isNaN(numIdx) && numIdx >= 0 && menu[numIdx]) ? menu[numIdx] : null;
 
       if (!item) {
         const { item: matched, confidenceLevel } = findBestMatch(menu, clean);
@@ -148,22 +150,39 @@ export async function handleCosmeticsOrderFlow({ session, message, business, ten
         menuViewed: true,
       });
 
+      let nextPrompt;
       if (item.shades?.length) {
-        return _buildShadeUI(item);
+        nextPrompt = _buildShadeUI(item);
+      } else {
+        const price = item.price ? ` — ${item.currency || 'D'}${item.price}` : '';
+        const desc  = item.description ? `\n_${item.description}_` : '';
+        nextPrompt = {
+          type: 'buttons',
+          body: `💄 *${item.name}*${price}${desc}\n\nHow many would you like?`,
+          buttons: [
+            { id: 'QTY_1', title: '1️⃣  1' },
+            { id: 'QTY_2', title: '2️⃣  2' },
+            { id: 'QTY_3', title: '3️⃣  3' },
+          ],
+          footer: 'Or type any number',
+        };
       }
 
-      const price = item.price ? ` — ${item.currency || 'D'}${item.price}` : '';
-      const desc  = item.description ? `\n_${item.description}_` : '';
-      return {
-        type: 'buttons',
-        body: `💄 *${item.name}*${price}${desc}\n\nHow many would you like?`,
-        buttons: [
-          { id: 'QTY_1', title: '1️⃣  1' },
-          { id: 'QTY_2', title: '2️⃣  2' },
-          { id: 'QTY_3', title: '3️⃣  3' },
-        ],
-        footer: 'Or type any number',
-      };
+      // [FEAT-CATALOG-IMAGES] Same pattern as restaurant/retail/fashion/
+      // electronics — the tenant's uploaded photo is stored correctly
+      // regardless of vertical, but cosmetics never sent it before.
+      const imageUrl = item?.image?.url;
+      if (imageUrl && item?.showImageOnSelect !== false) {
+        return [
+          {
+            type:    'image',
+            url:     buildWhatsAppImageUrl(imageUrl),
+            caption: `*${item.name}*${item.price ? ` — ${item.currency || 'D'}${item.price}` : ''}`,
+          },
+          nextPrompt,
+        ];
+      }
+      return nextPrompt;
     }
 
     // ── SELECT_SHADE ──────────────────────────────────────────────────────────
@@ -403,7 +422,11 @@ function _buildCosmeticsMenu(items, business, skinType = null) {
     };
   }
 
-  const rows = items.slice(0, 10).map((item, i) => ({
+  // [AUDIT-FIX-LISTCAP] No build-time slice — dispatcher.js chunks a flat
+  // `rows` array across multiple WhatsApp sections (10/section, up to the
+  // real 100-row ceiling) instead of truncating, see [FIX-LIST-TRUNC] in
+  // core/whatsapp/dispatcher.js.
+  const rows = items.map((item, i) => ({
     id:          String(i + 1),
     title:       item.name.slice(0, 24),
     description: [
@@ -441,7 +464,7 @@ function _buildShadeUI(item) {
     button: 'Choose shade',
     sections: [{
       title: 'Available Shades',
-      rows: shades.slice(0, 10).map(s => ({
+      rows: shades.map(s => ({
         id:    `SHADE_${String(s).toUpperCase().replace(/\s+/g, '_')}`,
         title: String(s),
       })),

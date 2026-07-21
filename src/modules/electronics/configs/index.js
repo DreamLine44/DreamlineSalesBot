@@ -34,9 +34,9 @@ export const ELECTRONICS_CONFIG = {
 
   ui: {
     welcomeButtons: [
-      { id: 'ORDER',        title: '🛒 Shop Products',    description: 'Browse our products & shop'   },
-      { id: 'SPEC_REQUEST', title: '📋 Tech Specs / Help', description: 'Get specs or technical help'  },
-      { id: 'COMPARE',      title: '⚖️ Compare Products',  description: 'Compare items side by side'   },
+      { id: 'ORDER',        title: '🛒 Shop Products'    },
+      { id: 'SPEC_REQUEST', title: '📋 Tech Specs / Help' },
+      { id: 'COMPARE',      title: '⚖️ Compare Products'  },
     ],
     fallbackButtons: [
       { id: 'ORDER',        title: '🛒 Shop'       },

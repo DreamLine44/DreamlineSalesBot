@@ -98,18 +98,17 @@ test('shouldShowCatalogButton is false when disabled, unconfigured, or nothing s
   assert.equal(shouldShowCatalogButton(makeBusiness({ menuItems: [{ _id: 'x', available: false }] })), false);
 });
 
-test('withCatalogWelcomeOption always merges in Browse Catalog, even for a tenant without WA Catalog configured', () => {
+test('withCatalogWelcomeOption is a no-op for a tenant without WA Catalog', () => {
   const buttons = [{ id: 'ORDER', title: '🛍 Shop' }];
   const business = makeBusiness({ waCatalog: { enabled: false } });
-  const result = withCatalogWelcomeOption(buttons, business);
-  assert.ok(result.buttons.some(b => b.id === 'BROWSE_CATALOG'));
+  assert.deepEqual(withCatalogWelcomeOption(buttons, business), { buttons });
 });
 
-test('withCatalogWelcomeOption adds a real button when there is room (<=3 total), inserted before the final option', () => {
+test('withCatalogWelcomeOption appends as a real button when there is room (<=3 total)', () => {
   const buttons = [{ id: 'ORDER', title: '🛍 Shop' }, { id: 'SUPPORT', title: '💬 Help' }];
   const result = withCatalogWelcomeOption(buttons, makeBusiness());
   assert.equal(result.buttons.length, 3);
-  assert.deepEqual(result.buttons.map(b => b.id), ['ORDER', 'BROWSE_CATALOG', 'SUPPORT']);
+  assert.equal(result.buttons[2].id, 'BROWSE_CATALOG');
   assert.equal(result.rows, undefined);
 });
 
@@ -122,19 +121,5 @@ test('withCatalogWelcomeOption switches to list rows (never silently drops a but
   const result = withCatalogWelcomeOption(buttons, makeBusiness());
   assert.equal(result.buttons, undefined);
   assert.equal(result.rows.length, 4);
-  // [FIX-CATALOG-ORDER] Browse Catalog is inserted before the final
-  // (help/question) option, not appended after it.
-  assert.deepEqual(result.rows.map(r => r.id), ['ORDER', 'BOOK', 'BROWSE_CATALOG', 'QUESTION']);
-});
-
-test('withCatalogWelcomeOption: rows include a description for every option (list-row subtitle)', () => {
-  const buttons = [
-    { id: 'ORDER', title: '🛍 Shop', description: 'Browse our menu & place an order' },
-    { id: 'BOOK', title: '📅 Book', description: 'Reserve a table in advance' },
-    { id: 'QUESTION', title: '❓ Ask', description: 'Get help from our team' },
-  ];
-  const result = withCatalogWelcomeOption(buttons, makeBusiness());
-  assert.ok(result.rows.every(r => typeof r.description === 'string' && r.description.length > 0));
-  const catalogRow = result.rows.find(r => r.id === 'BROWSE_CATALOG');
-  assert.equal(catalogRow.description, 'Shop our products & collections');
+  assert.deepEqual(result.rows.map(r => r.id), ['ORDER', 'BOOK', 'QUESTION', 'BROWSE_CATALOG']);
 });

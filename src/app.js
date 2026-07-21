@@ -1,5 +1,5 @@
 /**
- * WhatSalesAgent2 — app.js (Production)
+ * WhatSales E-Commerce Store Bot — app.js (Production)
  * AI-powered WhatsApp Business Assistant Platform
  *
  * Architecture: Intent Engine → Module Router → Flow Engine → AI Fallback
@@ -51,7 +51,6 @@ import businessRoutes    from './routes/businessRoutes.js';
 import dashboardRoutes   from './routes/dashboardRoutes.js';
 import tenantRoutes      from './routes/tenantRoutes.js';
 import adminRoutes                 from './routes/adminRoutes.js';
-import adminUserRoutes          from './routes/adminUserRoutes.js';
 import whatsappOnboardingRoutes from './routes/whatsappOnboardingRoutes.js';
 
 const app        = express();
@@ -117,14 +116,14 @@ app.set('trust proxy', 1);
 // ── Routes ────────────────────────────────────────────────────────────────────
 app.get('/health', (_req, res) => res.json({
   status: 'ok',
-  platform: 'WhatSalesAgent2',
+  platform: 'WhatSales E-Commerce Store Bot',
   version,
   uptime: Math.floor(process.uptime()),
   timestamp: new Date().toISOString(),
   environment: process.env.NODE_ENV,
 }));
 
-app.get('/', (_req, res) => res.json({ platform: 'WhatSalesAgent2', version, status: 'running' }));
+app.get('/', (_req, res) => res.json({ platform: 'WhatSales E-Commerce Store Bot', version, status: 'running' }));
 
 // WhatsApp webhook (Meta) — signature verification on POST only
 app.use('/webhook', webhookLimiter, webhookRoutes);
@@ -137,19 +136,6 @@ if (!isProduction && process.env.SIMULATION_MODE === 'true') {
 
 // Business management
 app.use('/business', createRateLimiter(120), requireApiKey, businessRoutes);
-
-// [FIX-MOUNT-2] adminUserRoutes — Tenant Dashboard staff login (/dashboard/auth/*)
-// and admin management (/dashboard/:tenantId/admins/*). ORDER IS LOAD-BEARING,
-// same class of issue as the /admin/tenants-before-/admin note below: this
-// router declares its own full paths under /dashboard/* (mounted at '/', same
-// pattern as whatsappOnboardingRoutes above) and MUST be registered BEFORE the
-// broad `app.use('/dashboard', ...)` mount two lines down. That mount applies
-// requireApiKey to every /dashboard/* path — including /dashboard/auth/login and
-// /dashboard/auth/accept-invite, which are deliberately UNAUTHENTICATED (their
-// entire purpose is to hand out a session token to someone who doesn't have one
-// yet). Registering adminUserRoutes first ensures Express matches those two
-// specific paths here, before the blanket requireApiKey ever runs on them.
-app.use('/', adminUserRoutes);
 
 // Dashboard
 app.use('/dashboard', createRateLimiter(120), requireApiKey, dashboardRoutes);
@@ -231,7 +217,7 @@ async function start() {
   httpServer = app.listen(PORT, () => {
     const modeList = getSupportedModes().map(m => m.toLowerCase()).join(' · ');
     logger.info(`\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
-    logger.info(`  WhatSalesAgent2 v${version} — ${process.env.NODE_ENV} — port ${PORT}`);
+    logger.info(`  WhatSales E-Commerce Store Bot v${version} — ${process.env.NODE_ENV} — port ${PORT}`);
     logger.info(`  Modes: ${modeList}`);
     logger.info(`  Simulation: ${process.env.SIMULATION_MODE === 'true' ? 'ON (dev)' : 'OFF (live Meta webhook)'}`);
     logger.info(`  Cloudinary: ${CLOUDINARY_ENABLED ? 'ON (image uploads enabled)' : 'OFF (set CLOUDINARY_* vars to enable)'}`);

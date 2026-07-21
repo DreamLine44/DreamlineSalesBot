@@ -14,6 +14,16 @@
  *               a greeting cooldown (skip Groq API call for recently-seen customers).
  * [MEM-FIX-1]   recordOrderItem: moved totalOrders increment here only — callers
  *               that want confirmed-order-only counting should call recordConfirmedOrder().
+ *
+ * [NO-MEMORY-1] PERMANENT PROJECT RULE — the GREET case in
+ *               core/conversations/moduleRouter.js deliberately does NOT call into
+ *               this file (getCustomerContext / generateGreeting) to personalise the
+ *               welcome message. The welcome greeting must never reference order or
+ *               booking history and must not use the customer's name, for now. Do
+ *               not re-wire GREET to this module without confirming that rule has
+ *               changed — see the NO-MEMORY-1 block in moduleRouter.js for details.
+ *               This file's other consumers (order/booking flows, VIP tagging, etc.)
+ *               are unaffected by this rule.
  */
 
 import UserProfile from '../../models/UserProfile.js';

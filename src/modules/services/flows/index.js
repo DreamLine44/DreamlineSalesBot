@@ -35,9 +35,9 @@ export const SERVICES_CONFIG = {
     // Fix: keep 3 buttons. QUESTION is accessible via the 'ENQUIRY' flow, free-text,
     // or by using a list-type welcome message (see welcomeList below).
     welcomeButtons: [
-      { id: 'ENQUIRY',      title: '📋 Get a Quote',        description: 'Request a project quote'       },
-      { id: 'BOOK',         title: '📅 Book Consultation',  description: 'Schedule a call or site visit' },
-      { id: 'QUESTION',     title: '❓ Ask a Question',     description: 'Get a quick answer'             },
+      { id: 'ENQUIRY',      title: '📋 Get a Quote'        },
+      { id: 'BOOK',         title: '📅 Book Consultation'  },
+      { id: 'QUESTION',     title: '❓ Ask a Question'     },
     ],
     // [FIX-4BTN-SVC] Full 4-option list for callers that use list-type messages.
     // Use this instead of welcomeButtons when the UI can support a list (no button cap).
@@ -76,19 +76,21 @@ export async function handleEnquiryFlow({ session, message, business, tenant }) 
     });
 
     const serviceTypes = _getServiceTypes(business);
-    // [FIX-SERVICES-LIST-CAP] WhatsApp interactive lists hard-cap at 10 rows; tenant-configured
-    // service lists could silently exceed that and fail to send. Cap + notify via footer.
+    // [AUDIT-FIX-LISTCAP] dispatcher.js now chunks any `rows`/`sections` list
+    // past 10 into additional WhatsApp sections (up to the real 100-row
+    // ceiling) instead of silently dropping anything — see [FIX-LIST-TRUNC]
+    // in core/whatsapp/dispatcher.js. The full, un-sliced list is passed
+    // through here so a tenant with more than 10 configured service types no
+    // longer has any silently hidden.
     return {
       type: 'list',
-      body: '📋 *Get a Quote*\n\nWhat type of service are you looking for?\n\n_(Tap one below or type your answer)_',
+      body:   '📋 *Get a Quote*\n\nWhat type of service are you looking for?\n\n_(Tap one below or type your answer)_',
       button: 'Choose service',
       sections: [{
         title: 'Service Types',
-        rows: serviceTypes.slice(0, 10).map(s => ({ id: `SVC_${s.toUpperCase().replace(/\s+/g, '_')}`, title: s })),
+        rows: serviceTypes.map(s => ({ id: `SVC_${s.toUpperCase().replace(/\s+/g, '_')}`, title: s })),
       }],
-      footer: serviceTypes.length > 10
-        ? `Showing 10 of ${serviceTypes.length} — type your service if not listed`
-        : 'Tap a service or type your own',
+      footer: 'Tap a service or type your own',
     };
   }
 
@@ -364,17 +366,16 @@ function _getServiceTypes(business) {
 
 function _askServiceType(business) {
   const serviceTypes = _getServiceTypes(business);
-  // [FIX-SERVICES-LIST-CAP] same 10-row hard cap fix as INIT handler above.
+  // [AUDIT-FIX-LISTCAP] same fix as the INIT handler above — dispatcher.js
+  // chunks the full list now, so nothing needs pre-slicing here either.
   return {
     type: 'list',
-    body: '📋 *Get a Quote*\n\nWhat type of service are you looking for?',
+    body:   '📋 *Get a Quote*\n\nWhat type of service are you looking for?',
     button: 'Choose service',
     sections: [{
       title: 'Service Types',
-      rows: serviceTypes.slice(0, 10).map(s => ({ id: `SVC_${s.toUpperCase().replace(/\s+/g, '_')}`, title: s })),
+      rows: serviceTypes.map(s => ({ id: `SVC_${s.toUpperCase().replace(/\s+/g, '_')}`, title: s })),
     }],
-    footer: serviceTypes.length > 10
-      ? `Showing 10 of ${serviceTypes.length} — type your service if not listed`
-      : 'Tap a service or type your own',
+    footer: 'Tap a service or type your own',
   };
 }

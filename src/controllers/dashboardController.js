@@ -40,6 +40,7 @@ import Tenant         from '../models/Tenant.js';
 import { getAnalyticsSummary, getAnalyticsTimeseries } from '../core/analytics/analyticsService.js';
 import { updateSession }       from '../core/sessions/sessionService.js';
 import { dispatchText, dispatchMessage } from '../core/whatsapp/dispatcher.js';
+import { scheduleWaCatalogSync } from '../modules/catalog/waCatalogSyncScheduler.js';
 import logger from '../config/logger.js';
 
 // [AUDIT-FIX-9] User-supplied search strings were interpolated directly into
@@ -57,7 +58,6 @@ function escapeRegex(str) {
   return String(str).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 import { uploadMenuImage, deleteMenuImage, CLOUDINARY_ENABLED } from '../config/cloudinary.js';
-import { scheduleWaCatalogSync } from '../modules/catalog/waCatalogSyncScheduler.js';
 
 // ── Helper: load tenant doc for WhatsApp dispatch ─────────────────────────────
 async function loadTenant(tenantId) {
@@ -161,13 +161,7 @@ export async function updateOrderStatus(req, res) {
     try {
       const tenant = await loadTenant(tenantId);
       if (tenant && order.customerPhone) {
-        // [FIX-BIZNAME-STATUS] Neither Order nor Tenant declares a
-        // `businessName` field — this always fell through to the literal
-        // 'us' for every status-change notification below. Fixed to mirror
-        // the already-correct pattern used a few hundred lines below in this
-        // same file (notifyOrderReady): load the name from BusinessConfig.
-        const biz     = await BusinessConfig.findOne({ tenantId }).select('name').lean();
-        const bizName = biz?.name || 'us';
+        const bizName = order.businessName || tenant.businessName || 'us';
 
         if (status === 'preparing') {
           // [FIX-NOTIFY-PREPARING] New notification for the PREPARING state.
@@ -233,24 +227,6 @@ export async function updateOrderStatus(req, res) {
           await dispatchText(order.customerPhone,
             `✅ *Your order is confirmed!*\n\n🍽 *${order.item}* × ${order.quantity}\n\nThank you for your patience! 😊`,
             tenant);
-
-          // [AUDIT-FIX-CATALOG-QUEUE] Mirrors the same wiring added to
-          // adminCommandService.confirmPayment() — this is the dashboard-triggered
-          // twin of that confirmation path (see [FIX-23] above), so it needs the
-          // same drainCatalogQueue() call to advance any queued WA Catalog cart
-          // lines. Without it, orders confirmed from the dashboard (rather than a
-          // WhatsApp APPROVE_ tap) would silently strand every line after the first.
-          try {
-            const { getSession }        = await import('../core/sessions/sessionService.js');
-            const { drainCatalogQueue } = await import('../modules/catalog/waCatalogFlow.js');
-            const drainSession = await getSession(order.customerPhone, String(tenantId));
-            const drainBusiness = await BusinessConfig.findOne({ tenantId }).lean();
-            if (drainSession && drainBusiness) {
-              await drainCatalogQueue({ session: drainSession, business: drainBusiness, tenant });
-            }
-          } catch (err) {
-            logger.warn('[Dashboard] updateOrderStatus: drainCatalogQueue failed', { err: err.message });
-          }
         } else if (status === 'cancelled' || status === 'rejected') {
           // [FIX-23] Set postFlowAck=ORDER_REJECTED so customer follow-up ("ok", "why?")
           // is handled with rejection-context empathy, not a generic welcome screen.
@@ -719,6 +695,8 @@ export async function addMenuItem(req, res) {
       { new: true },
     );
     if (!biz) return res.status(404).json({ error: 'Not found' });
+    // [CATALOG-AUTOSYNC-1] Fire-and-forget debounced WA Catalog sync — no-op
+    // for tenants who haven't enabled it (see waCatalogSyncScheduler.js).
     scheduleWaCatalogSync(tenantId);
     res.status(201).json({ menuItems: biz.menuItems });
   } catch (err) { logger.error('[Dashboard] Request failed', { err: err.message }); res.status(500).json({ error: err.message }); }
@@ -943,104 +921,6 @@ export async function deleteFaq(req, res) {
     );
     if (result.matchedCount === 0) return res.status(404).json({ error: 'Business not found' });
     if (result.modifiedCount === 0) return res.status(404).json({ error: 'FAQ not found' });
-    res.json({ ok: true });
-  } catch (err) { logger.error('[Dashboard] Request failed', { err: err.message }); res.status(500).json({ error: err.message }); }
-}
-
-// ── Promotions CRUD ──────────────────────────────────────────────────────────
-// [FIX-PROMO-WIRE-4] The dashboard-facing half of closing out promoService.js's
-// own claim that "this service and the dashboard CRUD are the config-safe
-// foundation" for promo codes — that CRUD never actually existed. Mirrors the
-// FAQ CRUD above exactly (same tenant-scoping, same findOneAndUpdate/$push/
-// $set/$pull conventions, same error-handling shape).
-
-export async function getPromotions(req, res) {
-  try {
-    const biz = await BusinessConfig.findOne({ tenantId: req.params.tenantId })
-      .select('promotions').lean();
-    if (!biz) return res.status(404).json({ error: 'Not found' });
-    res.json({ promotions: biz.promotions || [], count: (biz.promotions || []).length });
-  } catch (err) { logger.error('[Dashboard] Request failed', { err: err.message }); res.status(500).json({ error: err.message }); }
-}
-
-export async function addPromotion(req, res) {
-  try {
-    const { tenantId } = req.params;
-    const { code, type, value, active, expiresAt, maxUses, minOrderValue } = req.body;
-    if (!code || !String(code).trim()) return res.status(400).json({ error: 'code is required' });
-    if (!['PERCENT', 'FIXED'].includes(type)) return res.status(400).json({ error: "type must be 'PERCENT' or 'FIXED'" });
-    if (value == null || Number.isNaN(Number(value)) || Number(value) < 0) {
-      return res.status(400).json({ error: 'value must be a non-negative number' });
-    }
-    if (type === 'PERCENT' && Number(value) > 100) {
-      return res.status(400).json({ error: 'a PERCENT value cannot exceed 100' });
-    }
-
-    const normalizedCode = String(code).trim().toUpperCase();
-    const existing = await BusinessConfig.findOne(
-      { tenantId, 'promotions.code': normalizedCode },
-    ).select('_id').lean();
-    if (existing) return res.status(409).json({ error: `Promo code '${normalizedCode}' already exists` });
-
-    const biz = await BusinessConfig.findOneAndUpdate(
-      { tenantId },
-      { $push: { promotions: {
-        code: normalizedCode, type, value: Number(value),
-        active: active !== false,
-        expiresAt: expiresAt || null,
-        maxUses: maxUses != null ? Number(maxUses) : null,
-        minOrderValue: minOrderValue != null ? Number(minOrderValue) : null,
-      } } },
-      { new: true, runValidators: true },
-    );
-    if (!biz) return res.status(404).json({ error: 'Not found' });
-    res.status(201).json({ promotions: biz.promotions });
-  } catch (err) { logger.error('[Dashboard] Request failed', { err: err.message }); res.status(500).json({ error: err.message }); }
-}
-
-export async function updatePromotion(req, res) {
-  try {
-    const { tenantId, promoId } = req.params;
-    const { type, value, active, expiresAt, maxUses, minOrderValue } = req.body;
-    const patch = {};
-    // [SECURITY] code is deliberately NOT patchable here — changing an
-    // existing code's text after it may already be in circulation (printed,
-    // shared) would silently break redemption for anyone holding the old
-    // text. Deactivate (active:false) + create a new code instead.
-    if (type !== undefined) {
-      if (!['PERCENT', 'FIXED'].includes(type)) return res.status(400).json({ error: "type must be 'PERCENT' or 'FIXED'" });
-      patch['promotions.$.type'] = type;
-    }
-    if (value !== undefined) {
-      if (Number.isNaN(Number(value)) || Number(value) < 0) return res.status(400).json({ error: 'value must be a non-negative number' });
-      patch['promotions.$.value'] = Number(value);
-    }
-    if (active        !== undefined) patch['promotions.$.active']        = Boolean(active);
-    if (expiresAt      !== undefined) patch['promotions.$.expiresAt']     = expiresAt || null;
-    if (maxUses        !== undefined) patch['promotions.$.maxUses']       = maxUses != null ? Number(maxUses) : null;
-    if (minOrderValue  !== undefined) patch['promotions.$.minOrderValue'] = minOrderValue != null ? Number(minOrderValue) : null;
-
-    if (!Object.keys(patch).length) return res.status(400).json({ error: 'No fields to update' });
-
-    const biz = await BusinessConfig.findOneAndUpdate(
-      { tenantId, 'promotions._id': promoId },
-      { $set: patch },
-      { new: true, runValidators: true },
-    );
-    if (!biz) return res.status(404).json({ error: 'Promotion not found' });
-    res.json({ promotions: biz.promotions });
-  } catch (err) { logger.error('[Dashboard] Request failed', { err: err.message }); res.status(500).json({ error: err.message }); }
-}
-
-export async function deletePromotion(req, res) {
-  try {
-    const { tenantId, promoId } = req.params;
-    const result = await BusinessConfig.updateOne(
-      { tenantId },
-      { $pull: { promotions: { _id: promoId } } },
-    );
-    if (result.matchedCount === 0) return res.status(404).json({ error: 'Business not found' });
-    if (result.modifiedCount === 0) return res.status(404).json({ error: 'Promotion not found' });
     res.json({ ok: true });
   } catch (err) { logger.error('[Dashboard] Request failed', { err: err.message }); res.status(500).json({ error: err.message }); }
 }

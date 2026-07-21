@@ -45,9 +45,9 @@ export const DELIVERY_CONFIG = {
     // dropped by the dispatcher's .slice(0,3). Customers ordering delivery care most
     // about placing an order, viewing the menu, and tracking. SUPPORT handles questions.
     welcomeButtons: [
-      { id: 'ORDER',       title: '🚚 Order Now',     description: 'Browse items & place an order' },
-      { id: 'VIEW_MENU',   title: '📋 View Menu',      description: 'See everything available'      }, // [AUDIT-FIX-VIEWMENU] was SHOW_MENU
-      { id: 'TRACK_ORDER', title: '📍 Track My Order', description: 'Check your delivery status'     },
+      { id: 'ORDER',       title: '🚚 Order Now'      },
+      { id: 'VIEW_MENU',   title: '📋 View Menu'       }, // [AUDIT-FIX-VIEWMENU] was SHOW_MENU
+      { id: 'TRACK_ORDER', title: '📍 Track My Order'  },
     ],
     fallbackButtons: [
       { id: 'ORDER',       title: '🚚 Order Now'     },
@@ -104,13 +104,14 @@ export async function handleDeliveryOrder({ session, message, business, tenant, 
       }
       if (clean.length < 2) return _buildMenuUI(menu, business);
 
-      // [AUDIT-FIX-PARSEINT] parseInt("2 red shirts", 10) === 2, not NaN — a bare
-      // leading digit used to silently hijack the menu index for ANY mixed
-      // alphanumeric reply once menuViewed was true. Only trust the parsed index
-      // for a genuinely bare number or an interactive tap (list row / button).
+      // [AUDIT-FIX-PARSEINT] parseInt("2 red shirts", 10) === 2, NOT NaN — so any
+      // message merely STARTING with a digit silently hijacked the menu index
+      // once menuViewed was true (the normal case). Only trust the parsed index
+      // for a bare number or an interactive tap; everything else falls through
+      // to fuzzy name matching below.
       const isPureNumeric = /^\d+$/.test(raw.trim());
-      const numIdx = parseInt(raw, 10) - 1;
-      let item = ((isInteractive || isPureNumeric) && !isNaN(numIdx) && menu[numIdx]) ? menu[numIdx] : null;
+      const numIdx = (isInteractive || isPureNumeric) ? parseInt(raw, 10) - 1 : NaN;
+      let item = (!isNaN(numIdx) && menu[numIdx]) ? menu[numIdx] : null;
 
       if (!item) {
         const { item: m, confidenceLevel } = findBestMatch(menu, clean);
@@ -620,26 +621,27 @@ function _buildMenuUI(menu, business) {
     };
   }
 
-  // [AUDIT-FIX-DELIVERY-MENU-LIST] Was a plain-text body built from the first
-  // 20 items only — items beyond that cap were silently invisible with no
-  // indication anything was cut off, and customers had to type a number or
-  // name instead of tapping a row. Switched to the same flat top-level `rows`
-  // format every sibling module uses; dispatcher.js's [FIX-LIST-TRUNC] chunks
-  // it into ≤10-row sections (up to 100 total) so nothing is lost.
+  // [AUDIT-FIX-DELIVERYLIST] Tappable WhatsApp list instead of a plain-text
+  // numbered block. Row ids are 1-based numeric strings so the existing
+  // `parseInt(raw, 10) - 1` selection logic above needs no change. Flat
+  // `rows` (not `sections`), unsliced — dispatcher.js chunks it across
+  // sections (10/section, up to 100 total), see [FIX-LIST-TRUNC].
+  const currency = business?.payment?.currency || 'D';
   const rows = menu.map((item, idx) => ({
     id:          String(idx + 1),
     title:       item.name.slice(0, 24),
     description: [
-      item.description?.slice(0, 40),
-      item.price ? `${item.currency || business?.payment?.currency || 'D'}${item.price}` : null,
+      item.description ? item.description.slice(0, 40) : null,
+      item.price ? `${item.currency || currency}${item.price}` : null,
     ].filter(Boolean).join(' — ').slice(0, 72) || undefined,
   }));
 
   return {
-    type:   'list',
-    header: `🚚 ${business?.name || 'Delivery Menu'}`,
-    body:   'What would you like to order today?',
+    type: 'list',
+    header: `🚚 *${business?.name || 'Delivery Menu'}*`,
+    body:   'What would you like delivered? Tap an item, or type its name:',
     button: 'View Menu',
     rows,
+    footer: 'Tap an item or type what you want',
   };
 }

@@ -15,14 +15,14 @@ export const BAKERY_CONFIG = {
   flows: ['ORDER', 'BOOKING'],
   persona: 'warm bakery assistant who loves fresh baked goods and reminds customers about daily specials',
   steps: {
-    ORDER:   ['SELECT_ITEM', 'QUANTITY', 'CONFIRM'],
+    ORDER:   ['BROWSE_CATEGORY', 'SELECT_ITEM', 'QUANTITY', 'CONFIRM'],
     BOOKING: ['SELECT_SERVICE', 'DATE', 'DATE_CONFIRM', 'TIME', 'TIME_CONFIRM', 'CONFIRM'],
   },
   ui: {
     welcomeButtons: [
-      { id: 'ORDER',    title: '🧁 Place an Order',      description: 'Browse our bakes & place an order' },
-      { id: 'BOOK',     title: '📅 Schedule Collection', description: 'Reserve a pickup time'              },
-      { id: 'QUESTION', title: '❓ Ask a Question',      description: 'Get help from our team'             },
+      { id: 'ORDER',    title: '🧁 Place an Order'      },
+      { id: 'BOOK',     title: '📅 Schedule Collection' },
+      { id: 'QUESTION', title: '❓ Ask a Question'      },
     ],
     fallbackButtons: [
       { id: 'ORDER',    title: '🧁 Order'    },

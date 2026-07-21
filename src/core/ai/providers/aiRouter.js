@@ -38,18 +38,16 @@ function getProvider() {
 // ── Public API ─────────────────────────────────────────────────────────────────
 
 /**
- * getAIReply({ customerMessage, business, session, intent, history, orderContext, sessionContext, urgent })
+ * getAIReply({ customerMessage, business, session, intent, history, orderContext, sessionContext })
  * Returns string | null
  *
  * [AI-OPT-1] orderContext: optional active order details for ORDER_CONFIRMED post-flow context.
  * [GROQ-V3-8] sessionContext: optional string for active-flow grounding (walk-in queue, etc.).
- * [MERGE-FEAT-URGENCY-3] urgent: optional bool — tightens reply length/tone (spec: "Respond
- *                  faster and more concisely"). Purely additive; omitted callers unaffected.
  */
-export async function getAIReply({ customerMessage, business, session, intent = 'FALLBACK', history = [], orderContext = null, sessionContext = null, urgent = false }) {
+export async function getAIReply({ customerMessage, business, session, intent = 'FALLBACK', history = [], orderContext = null, sessionContext = null }) {
   try {
     const provider = getProvider();
-    const result   = await provider.getReply({ customerMessage, business, intent, history, orderContext, sessionContext, urgent });
+    const result   = await provider.getReply({ customerMessage, business, intent, history, orderContext, sessionContext });
     if (!result?.text) return null;
     logger.debug('[AI] Reply', { source: result.source, intent });
     return result.text;
@@ -62,20 +60,16 @@ export async function getAIReply({ customerMessage, business, session, intent = 
 }
 
 /**
- * generateGreeting({ business, customerName })
+ * generateGreeting({ business, customerName, lastOrder })
  * Returns string
- *
- * [NO-MEMORY-1] No longer accepts/forwards a lastOrder param — greetings must
- * not reference a customer's order/booking history per the no-unsolicited-
- * memory policy. Name-based personalisation only.
  */
-export async function generateGreeting({ business, customerName }) {
+export async function generateGreeting({ business, customerName, lastOrder }) {
   try {
     const provider = getProvider();
-    const result   = await provider.generateGreeting({ business, customerName });
-    return result?.text || `👋 Hello${customerName ? `, ${customerName}` : ''}!`;
+    const result   = await provider.generateGreeting({ business, customerName, lastOrder });
+    return result?.text || `👋 Welcome back, ${customerName || 'there'}!`;
   } catch {
-    return `👋 Hello${customerName ? `, ${customerName}` : ''}!`;
+    return `👋 Welcome back, ${customerName || 'there'}!`;
   }
 }
 

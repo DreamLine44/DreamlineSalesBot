@@ -20,9 +20,9 @@ export const COSMETICS_CONFIG = {
   },
   ui: {
     welcomeButtons: [
-      { id: 'ORDER',    title: '💄 Shop Products',     description: 'Browse our products & shop'      },
-      { id: 'BOOK',     title: '💅 Book Consultation', description: 'Schedule a beauty consultation'  },
-      { id: 'QUESTION', title: '❓ Beauty Advice',     description: 'Get personalised beauty tips'    },
+      { id: 'ORDER',    title: '💄 Shop Products'     },
+      { id: 'BOOK',     title: '💅 Book Consultation' },
+      { id: 'QUESTION', title: '❓ Beauty Advice'     },
     ],
     fallbackButtons: [
       { id: 'ORDER',    title: '💄 Shop'    },

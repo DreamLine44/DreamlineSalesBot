@@ -26,19 +26,6 @@ export const BUTTON_ID_MAP = {
   // into the reset/start-over action, so it never actually showed the menu.
   // Now a distinct action; see moduleRouter.js case 'VIEW_MENU'.
   'VIEW_MENU':          'VIEW_MENU',
-  // [FIX-CATALOG-BTN] BROWSE_CATALOG was created by waCatalogConfig.js's
-  // withCatalogWelcomeOption() but never mapped here — tapping the "🛍 Browse
-  // Catalog" welcome-menu button (once shown) would have fallen to the
-  // "interactive but unmapped ID" branch above (CONTINUE_FLOW with no active
-  // flow to continue), a dead end. moduleRouter.js's BROWSE_CATALOG case calls
-  // waCatalogFlow.js's browseCatalogExplicit(), which this button was always
-  // documented (in its own docstring) as the trigger for.
-  'BROWSE_CATALOG':     'BROWSE_CATALOG',
-  // [WELCOME-MENU-PAGING] "⋯ More" (welcome-menu overflow) and "🏠 Main Menu"
-  // (the way back from that screen) — see buildWelcomeMenu() in
-  // waCatalogConfig.js and moduleRouter.js's MORE_MENU / MAIN_MENU cases.
-  'MORE_MENU':          'MORE_MENU',
-  'MAIN_MENU':          'MAIN_MENU',
 
   // Flow control
   'CONFIRM':            'CONFIRM',
@@ -106,11 +93,8 @@ export const BUTTON_ID_MAP = {
   'WALKIN_NOW':         'WALKIN',           // [FIX] Join Now variant button
   'JOIN_QUEUE':         'WALKIN',
   // [v14-PATTERNS] Salon/barbershop new button IDs
-  // [AUDIT-FLOWS-RESCHEDULE] Was aliased straight to 'START_BOOKING', which just
-  // starts a brand-new booking flow without ever touching the customer's existing
-  // pending/confirmed appointment — silently duplicating it instead of rescheduling.
-  // Now routes to its own dedicated action; see moduleRouter.js's case 'RESCHEDULE'.
-  'RESCHEDULE':         'RESCHEDULE',
+  'RESCHEDULE':         'RESCHEDULE',      // [AUDIT-FLOWS-RESCHEDULE] must cancel the old
+                                            // booking first, not just re-enter BOOKING fresh
   'CONSULTATION':       'QUESTION',        // consultation taps go to the QUESTION/AI flow
 
   // Payment
@@ -247,26 +231,6 @@ export const INTENT_PATTERNS = {
     'hi', 'hello', 'hey', 'good morning', 'good afternoon', 'good evening',
     'start', 'begin', 'hiya', 'howdy', 'greetings', 'salaam', 'salam',
     'yo', 'sup', 'whatsup', 'what sup', 'assalamu alaikum',
-  ],
-
-  // [FIX-CATALOG-TEXT] BROWSE_CATALOG previously had zero typed-text keywords —
-  // only BUTTON_ID_MAP mapped it, so it could only ever be triggered by tapping
-  // the "🛍 Browse Catalog" button. Now that it's a primary welcome-menu button
-  // (see waCatalogConfig.js#buildWelcomeMenu), a customer typing what the button
-  // says must reach the same handler a tap would.
-  BROWSE_CATALOG: [
-    'browse catalog', 'view catalog', 'see catalog', 'show catalog',
-    'catalog', 'shop catalog', 'see the catalog', 'open catalog',
-    'browse the catalog', 'show me the catalog', 'see products catalog',
-  ],
-
-  // [FIX-NAV-MORE] MORE_MENU is the "⋯ More" button shown once a tenant's
-  // welcome menu is paginated (see waCatalogConfig.js#buildWelcomeMenu). Same
-  // "typed text must reach what the button reaches" reasoning as BROWSE_CATALOG
-  // above.
-  MORE_MENU: [
-    'more', 'more options', 'show more', 'see more',
-    'other options', 'what else', 'more actions',
   ],
 
   ORDER: [
