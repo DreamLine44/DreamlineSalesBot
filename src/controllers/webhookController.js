@@ -2216,10 +2216,18 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
         // fallback to the ORDER flow) is the right gate there, so the session's
         // stale flow state is just cleared first, the same reset SHOW_MENU/
         // MAIN_MENU already perform, before handing off.
+        // [FIX-NAV-SWITCH-STUCK] Originally gated on `navTargetFlow !== session.currentFlow`,
+        // which meant a customer already IN (and stuck at an invalid step of) the same
+        // flow — e.g. an abandoned ORDER session — got no reset when re-tapping "Order
+        // Food": the condition was false, so this block was skipped entirely and the tap
+        // fell through to the generic "that option is no longer available" rejection a
+        // few lines below. A top-level nav tap is an explicit restart request regardless
+        // of whether the target flow matches the current one, so the same-flow case must
+        // also reset + restart, not just the cross-flow switch case.
         const NAV_SWITCH_FLOW_TARGET = { ORDER: 'ORDER', BOOK: 'BOOKING', WALKIN: 'WALKIN' };
         const navTargetFlow = NAV_SWITCH_FLOW_TARGET[upperMsg];
         const navSupported  = navTargetFlow && (getModeConfig(business)?.flows || []).includes(navTargetFlow);
-        if (navTargetFlow && navTargetFlow !== (session.currentFlow || '').toUpperCase() && navSupported) {
+        if (navTargetFlow && navSupported) {
           const switchSession = (await getSession(from, tenantId)) || session;
           const switchReply = await startFlow({ flowName: navTargetFlow, session: switchSession, business, tenant: tenantDoc });
           if (switchReply) {
