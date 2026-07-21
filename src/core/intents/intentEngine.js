@@ -533,6 +533,20 @@ function intentToAction(intent, business) {
     SUPPORT:            'SUPPORT',
     GREETING:           'GREET',
     PAYMENT:            'PAYMENT',
+    // [FIX-CATALOG-TEXT] Typed "browse catalog" / "catalog" etc. must route the
+    // same place the "🛍 Browse Catalog" button tap does (moduleRouter.js's
+    // BROWSE_CATALOG case → browseCatalogExplicit(), which itself gracefully
+    // falls back to the normal ORDER flow for tenants without WA Catalog
+    // configured — so this is always safe to reach, not just for catalog tenants).
+    BROWSE_CATALOG:     'BROWSE_CATALOG',
+    // [FIX-NAV-MORE] Typed "more" / "more options" etc. (INTENT_PATTERNS.MORE_MENU
+    // in patterns.js) must route the same place the "⋯ More" welcome-menu button
+    // tap does — moduleRouter.js's MORE_MENU case (buildWelcomeMenu's paginated
+    // second screen). Without this entry, map[intent] falls through to the
+    // `|| 'FALLBACK'` default below and a customer who types "more" instead of
+    // tapping gets the generic fallback response instead of the More submenu a
+    // tap would show.
+    MORE_MENU:          'MORE_MENU',
     TRACK_ORDER:        'TRACK_ORDER',
     REPEAT_ORDER:       'REPEAT_ORDER',
     SHOW_MENU:          'SHOW_MENU',

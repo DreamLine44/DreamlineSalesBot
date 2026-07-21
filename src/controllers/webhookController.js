@@ -2203,6 +2203,39 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
     // causing the bot to go completely silent for typed messages inside active flows.
     const freshSession = await getSession(from, tenantId) || session;
 
+    // [FIX-FLOW-INIT-RACE] flowEngine.js's startFlow() writes the session in two
+    // steps: (1) an immediate reset — `currentFlow: 'ORDER', step: null` — then
+    // (2) the flow handler's own INIT branch (called with message: null) writes
+    // the real first step, e.g. `step: 'SELECT_ITEM'`. Between those two awaited
+    // writes there is a real window where the DB has currentFlow truthy AND
+    // step null at the same time.
+    //
+    // If a second webhook event for the same customer (an impatient double-tap
+    // on the very button that just started the flow — very common when there's
+    // any perceived lag, and each tap is a genuinely distinct wamid so the
+    // dedup guard at the top of handleIncomingMessage does not catch it) lands
+    // in that window, freshSession.step reads back null. The STEP_VALID_BUTTONS
+    // guard above only runs `if (currentStep && ...)`, so a null step silently
+    // skips it, and the tap falls straight through to the final advance() call
+    // below with the raw button id/title as the message. Flow handlers default
+    // a null step to their first step internally (e.g. handleOrderFlow's
+    // `step = session.step || 'SELECT_ITEM'`) and treat that raw button text as
+    // free-text menu-item input — producing "I couldn't find 'Order Food' on
+    // our menu" instead of the real menu the customer just tapped for.
+    //
+    // No legitimate steady state has currentFlow truthy with step falsy —
+    // completeFlow()/cancelFlow() always null both together — so this
+    // combination reliably means "flow is mid-initialization," never a valid
+    // step to route on. Ask the customer to tap again rather than
+    // misinterpreting the tap as flow input.
+    if (isInteractive && freshSession.currentFlow && !freshSession.step) {
+      await dispatchMessage(from, {
+        type: 'text',
+        body: '⏳ One moment — still getting that ready. Please tap the button again.',
+      }, tenantDoc);
+      return;
+    }
+
     // [FIX-MFQ-BTN] MFQ response buttons (MFQ_SWITCH_YES, MFQ_SWITCH_NO, MFQ_RESUME_FLOW)
     // were listed in FLOW_PASSTHROUGH_IDS which caused them to be routed to advance()
     // BEFORE the MFQ intercept block at 15.1a could handle them. The flow engine
