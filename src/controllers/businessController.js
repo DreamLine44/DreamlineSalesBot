@@ -303,11 +303,15 @@ export async function syncWaCatalog(req, res) {
     const business = await BusinessConfig.findOne({ tenantId }).lean();
     if (!business) return res.status(404).json({ error: 'Not found' });
 
-    // Mirrors isCatalogEnabled() in waCatalogConfig.js — the same "opted in"
-    // bar applies everywhere WA Catalog is gated. This check MUST run before
-    // the Tenant document is fetched: a misconfigured tenant gets a clear
-    // 400, not an unnecessary DB round-trip followed by a confusing
-    // downstream Graph API failure.
+    // [FIX-CATALOG-UNSYNCED] Deliberately checks only enabled+catalogId here,
+    // NOT the full isCatalogEnabled() bar — that function now also requires
+    // a completed sync (lastSyncedAt + syncedRetailerIds), which this
+    // endpoint's whole job is to produce. Reusing isCatalogEnabled() here
+    // would make a tenant's very first sync unreachable: 400 forever because
+    // no sync has ever succeeded yet. This check MUST run before the Tenant
+    // document is fetched: a misconfigured tenant gets a clear 400, not an
+    // unnecessary DB round-trip followed by a confusing downstream Graph API
+    // failure.
     if (!business.waCatalog?.enabled || !business.waCatalog?.catalogId) {
       return res.status(400).json({ error: 'WA Catalog is not enabled or has no catalogId configured for this tenant.' });
     }

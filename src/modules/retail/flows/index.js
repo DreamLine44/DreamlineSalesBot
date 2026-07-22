@@ -262,7 +262,8 @@ export async function handleRetailOrder({ session, message, business, tenant, is
       // variantKeys to 3 first and re-sliced after appending CANCEL, which
       // silently dropped CANCEL for any item with 3+ variants. 4+ variants:
       // switch to a flat top-level `rows` list (unsliced — dispatcher.js
-      // chunks it, see [FIX-LIST-TRUNC]) instead of only ever offering the
+      // hard-caps at Meta's real 10-rows-total limit, see [FIX-LIST-CAP-2]
+      // in core/whatsapp/dispatcher.js) instead of only ever offering the
       // first 3 options with no way to reach the rest.
       if (variantKeys.length > 3) {
         return {
@@ -557,10 +558,11 @@ function _getCategories(menu) {
 
 function _buildCategoryUI(categories, business) {
   // [AUDIT-FIX-CATCAP] This is a single labelled "Categories" section, capped
-  // at WhatsApp's real 10-row-per-section limit — unlike a flat product list
-  // (which dispatcher.js now chunks across sections, see [FIX-LIST-TRUNC]),
-  // a category picker reads best as one section. The "📋 Browse All" row
-  // always needs its own slot, so categories are capped at 9 to reserve it.
+  // at 9 rows so the "📋 Browse All" row always has its own slot within
+  // Meta's real 10-rows-total-per-message limit (dispatcher.js hard-caps
+  // there too, but a category picker reads best as one section rather than
+  // relying on that fallback truncation — see [FIX-LIST-CAP-2] in
+  // core/whatsapp/dispatcher.js for the actual limit dispatcher enforces).
   const shown    = categories.slice(0, 9);
   const overflow = categories.length > 9;
 
@@ -605,7 +607,6 @@ function _buildProductList(items, business, category = null) {
   // dispatcher truncates and adds a footer hint; consider category
   // browsing (see _buildCategoryUI-style helpers elsewhere) so customers
   // aren't silently missing items past #10.
-  // 15 across two sections instead of silently hiding the last 5.
   const rows = items.map((item, idx) => ({
     id:          String(idx + 1),
     title:       item.name.slice(0, 24),

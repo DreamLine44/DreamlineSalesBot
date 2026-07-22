@@ -51,13 +51,42 @@ const BROWSE_INTENTS = new Set(['ORDER', 'ADD_TO_CART']);
 
 /**
  * isCatalogEnabled(business)
- * true only when the tenant has both opted in AND configured a real
- * Meta Commerce Catalog ID. enabled:true with no catalogId is treated as
- * "not actually configured yet" rather than a misconfiguration error —
- * onboarding may enable the toggle before the catalogId is set.
+ * true only when the tenant has opted in, configured a real Meta Commerce
+ * Catalog ID, AND actually completed at least one successful sync of their
+ * products into that catalog.
+ *
+ * [FIX-CATALOG-UNSYNCED] enabled:true + catalogId set is NOT the same thing
+ * as "ready to show customers" — a tenant can flip the toggle and paste a
+ * catalogId during onboarding well before they ever run syncMenuToCatalog()
+ * (see waCatalogService.js), or a sync can fail outright and leave
+ * lastSyncError set with lastSyncedAt still null. Before this fix, that
+ * half-configured state still passed isCatalogEnabled(), which meant:
+ *   - shouldOfferCatalog() could return true and send a product_list/
+ *     catalog_message referencing retailer_ids that don't exist in Meta's
+ *     catalog yet.
+ *   - Meta's Send API does not validate retailer_id existence synchronously,
+ *     so the send can succeed (200 OK, sendCatalogMessage returns non-null)
+ *     while the customer actually sees a broken or empty catalog card —
+ *     not the "silent fallback to normal ORDER flow" the failure-handling
+ *     contract elsewhere in this file promises, because nothing actually
+ *     failed from the code's point of view.
+ *   - shouldShowCatalogButton() would surface a "🛍 Browse Catalog" welcome
+ *     button that leads to that same broken experience.
+ * Requiring a real lastSyncedAt (and at least one synced retailer_id) closes
+ * this gap: until a tenant's first sync actually succeeds, every catalog
+ * entry point below falls straight through to the tenant's normal, always-
+ * working text/list menu — exactly like a tenant who never enabled WA
+ * Catalog at all.
  */
 export function isCatalogEnabled(business) {
-  return !!(business?.waCatalog?.enabled && business?.waCatalog?.catalogId);
+  const wc = business?.waCatalog;
+  return !!(
+    wc?.enabled &&
+    wc?.catalogId &&
+    wc?.lastSyncedAt &&
+    Array.isArray(wc?.syncedRetailerIds) &&
+    wc.syncedRetailerIds.length > 0
+  );
 }
 
 /**

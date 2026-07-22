@@ -624,8 +624,10 @@ function _buildMenuUI(menu, business) {
   // [AUDIT-FIX-DELIVERYLIST] Tappable WhatsApp list instead of a plain-text
   // numbered block. Row ids are 1-based numeric strings so the existing
   // `parseInt(raw, 10) - 1` selection logic above needs no change. Flat
-  // `rows` (not `sections`), unsliced — dispatcher.js chunks it across
-  // sections (10/section, up to 100 total), see [FIX-LIST-TRUNC].
+  // `rows` (not `sections`), unsliced — dispatcher.js hard-caps at Meta's
+  // real limit of 10 rows TOTAL (it does not chunk into extra sections), so
+  // a menu with more than 10 items gets truncated with a footer hint here.
+  // See [FIX-LIST-CAP-2] in core/whatsapp/dispatcher.js.
   const currency = business?.payment?.currency || 'D';
   const rows = menu.map((item, idx) => ({
     id:          String(idx + 1),

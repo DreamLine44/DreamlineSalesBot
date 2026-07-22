@@ -187,15 +187,29 @@ function buildPayload(to, ui) {
   }
 
   if (type === 'product_list') {
+    // [FIX-PRODLIST-CAP] Meta's real limit for a multi-product interactive
+    // message is 30 product items TOTAL across the whole message, not 30
+    // per section — the same "per-section" misreading that caused the
+    // list-row 400s (see [FIX-LIST-CAP-2] above). The only current caller
+    // (waCatalogService.sendCatalogMessage) already self-limits to this
+    // threshold before choosing product_list over catalog_message, but that
+    // discipline lived in a caller, not the transport adapter — exactly the
+    // gap that let the list-row bug happen in the first place. Enforcing it
+    // here too means no future caller can ever trigger a 400 by passing
+    // multiple sections that individually look fine (e.g. 4 sections of 10
+    // items = 40 total) but blow the combined ceiling.
+    const MAX_TOTAL_PRODUCT_ITEMS = 30;
     const rawSections = ui.sections || [];
+    let remainingItems = MAX_TOTAL_PRODUCT_ITEMS;
     const sections = rawSections
-      .map(sec => ({
-        title: sec.title ? String(sec.title).slice(0, 24) : undefined,
-        // Meta caps product_list at 30 items per section.
-        product_items: (sec.productRetailerIds || []).slice(0, 30).map(id => ({
-          product_retailer_id: String(id),
-        })),
-      }))
+      .map(sec => {
+        const ids = (sec.productRetailerIds || []).slice(0, remainingItems);
+        remainingItems -= ids.length;
+        return {
+          title: sec.title ? String(sec.title).slice(0, 24) : undefined,
+          product_items: ids.map(id => ({ product_retailer_id: String(id) })),
+        };
+      })
       .filter(sec => sec.product_items.length > 0);
 
     if (!ui.catalogId || !sections.length) return null;

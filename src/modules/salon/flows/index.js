@@ -1142,11 +1142,12 @@ function _buildProductMenu(items, business, isBarbershop) {
 
   const currency = business?.payment?.currency || 'D';
 
-  // [AUDIT-FIX-LISTCAP] Row IDs are 1-based numeric strings to match numIdx
-  // parsing. No build-time slice — dispatcher.js now chunks a flat `rows`
-  // array across multiple WhatsApp sections (10/section, up to 100 total)
-  // instead of silently truncating, so the full product catalog passes
-  // through here unsliced.
+  // [FIX-LIST-CAP-2] Row IDs are 1-based numeric strings to match numIdx
+  // parsing. No build-time slice needed — dispatcher.js hard-caps the
+  // outgoing message at Meta's real limit of 10 rows TOTAL (it does not
+  // chunk a long list across multiple sections, contrary to an earlier
+  // version of this comment), truncating with a footer hint if the full
+  // product catalog has more than 10 items.
   const rows = items.map((item, i) => ({
     id:          String(i + 1),
     title:       item.name.slice(0, 24),
@@ -1163,10 +1164,10 @@ function _buildProductMenu(items, business, isBarbershop) {
       ? 'Our grooming products — tap to select:'
       : 'Our hair & beauty products — tap to select:',
     button: 'View Products',
-    // [AUDIT-FIX-LISTCAP] Flat top-level `rows`, not pre-wrapped in a single
-    // `sections` entry — dispatcher.js only auto-chunks the flat `rows`
-    // format across sections; wrapping it in one section here would freeze
-    // it back at the old 10-row cap.
+    // [FIX-LIST-CAP-2] Flat top-level `rows`, not pre-wrapped in a single
+    // `sections` entry — dispatcher.js treats both shapes identically (it
+    // hard-caps at 10 rows total either way), so this is just consistency
+    // with the other modules, not a functional requirement.
     rows,
   };
 }

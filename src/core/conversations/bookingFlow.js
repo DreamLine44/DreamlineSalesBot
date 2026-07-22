@@ -874,7 +874,10 @@ function _buildDatePickerUI(headingOrError = null, tz = 'UTC') {
 
 /**
  * _buildTimePickerUI — shows AM/PM slot buttons so customers tap instead of type.
- * Renders a WhatsApp list (up to 10 rows per section) for morning/afternoon/evening.
+ * Renders a WhatsApp list for morning/afternoon/evening. Meta's real limit is
+ * 10 rows TOTAL across all sections combined (not per section) — this static
+ * list is hand-kept at exactly 3 + 5 + 2 = 10 rows for that reason; adding any
+ * more slots here requires removing one elsewhere to stay under the cap.
  */
 function _buildTimePickerUI(headingOrError = null) {
   const body = headingOrError

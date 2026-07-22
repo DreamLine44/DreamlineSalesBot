@@ -76,12 +76,14 @@ export async function handleEnquiryFlow({ session, message, business, tenant }) 
     });
 
     const serviceTypes = _getServiceTypes(business);
-    // [AUDIT-FIX-LISTCAP] dispatcher.js now chunks any `rows`/`sections` list
-    // past 10 into additional WhatsApp sections (up to the real 100-row
-    // ceiling) instead of silently dropping anything — see [FIX-LIST-TRUNC]
-    // in core/whatsapp/dispatcher.js. The full, un-sliced list is passed
-    // through here so a tenant with more than 10 configured service types no
-    // longer has any silently hidden.
+    // [FIX-LIST-CAP-2] No build-time slice needed here — dispatcher.js
+    // hard-caps the OUTGOING message at Meta's real limit of 10 rows TOTAL
+    // (not chunked into extra sections — an earlier version of this comment
+    // wrongly claimed that; Meta's actual cap is 10 rows combined across the
+    // whole message, full stop). If a tenant configures more than 10 service
+    // types, the dispatcher truncates to 10 and adds a footer hint; the rest
+    // are typeable but not shown. Add category grouping here if that becomes
+    // a real limitation for any tenant.
     return {
       type: 'list',
       body:   '📋 *Get a Quote*\n\nWhat type of service are you looking for?\n\n_(Tap one below or type your answer)_',
@@ -366,8 +368,9 @@ function _getServiceTypes(business) {
 
 function _askServiceType(business) {
   const serviceTypes = _getServiceTypes(business);
-  // [AUDIT-FIX-LISTCAP] same fix as the INIT handler above — dispatcher.js
-  // chunks the full list now, so nothing needs pre-slicing here either.
+  // [FIX-LIST-CAP-2] same as the INIT handler above — dispatcher.js hard-caps
+  // at 10 rows total (truncating with a footer hint past that), it does not
+  // chunk into extra sections, so nothing needs pre-slicing here either.
   return {
     type: 'list',
     body:   '📋 *Get a Quote*\n\nWhat type of service are you looking for?',
