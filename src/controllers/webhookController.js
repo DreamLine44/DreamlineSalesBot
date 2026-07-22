@@ -159,6 +159,15 @@ import Order            from '../models/Order.js';
 import logger           from '../config/logger.js';
 import crypto           from 'crypto';
 
+// [DEPLOY-VERIFY] Bumped whenever the signature-verification or catalog-gate logic in
+// this file changes. Exposed on GET /health (see app.js) so a deploy can be confirmed
+// with one curl instead of inferring it from log field shapes after the fact — the
+// last two "is the fix actually live?" questions both had to be answered by diffing
+// warn-log attribute names against source, which only works after a mismatch has
+// already happened. Bump this string in the same commit as any change to
+// _verifyTenantWebhookSignature() or the START_ORDER PATH A/B split below.
+export const WEBHOOK_BUILD_MARKER = 'SIGFIX-CATALOG-GATE-2026-07-22';
+
 // ── [META-CREDS] Per-tenant webhook HMAC signature verification ───────────────
 // Verifies X-Hub-Signature-256 using the tenant's own Meta App Secret.
 // Falls back to the global META_APP_SECRET env var when a tenant has no
@@ -214,8 +223,48 @@ export function _verifyTenantWebhookSignature(req, tenant, wamid) {
   // Resolve all three candidates and accept a match against any of them.
   const encryptedMetaSecret = tenant?.meta?.appSecret ?? null;
   const encryptedWaSecret   = tenant?.whatsapp?.webhookSecret ?? null;
-  const metaSecret = encryptedMetaSecret ? decryptToken(encryptedMetaSecret) : null;
-  const waSecret   = encryptedWaSecret   ? decryptToken(encryptedWaSecret)   : null;
+  let metaSecret = encryptedMetaSecret ? decryptToken(encryptedMetaSecret) : null;
+  let waSecret   = encryptedWaSecret   ? decryptToken(encryptedWaSecret)   : null;
+
+  // [FIX-SIG-3] decryptToken(), on a decryption failure (e.g. the value was
+  // encrypted under a DIFFERENT ENCRYPTION_KEY than the one currently
+  // configured — the classic cause being a key rotated/changed on the host
+  // after the secret was originally saved), intentionally falls back to
+  // returning the *raw stored ciphertext* rather than throwing, so a broken
+  // key can never lock an operator out of their own data. But that fallback
+  // value still starts with "enc:" — if it flows into the HMAC comparison
+  // unchanged, it becomes a "secret" that is guaranteed to never match
+  // anything Meta could possibly sign with. The comparison then fails FOREVER
+  // on every message, `hadTenantSecret` reads true the whole time (a string
+  // is present), and nothing in the mismatch log distinguishes "wrong secret"
+  // from "secret we can't even read." Detect that case explicitly, discard
+  // the unusable value, and say so plainly — this is a config/ops problem
+  // (ENCRYPTION_KEY mismatch), not a signing problem, and needs a different
+  // fix (restore the correct ENCRYPTION_KEY, or re-enter the secret).
+  let metaDecryptFailed = false;
+  let waDecryptFailed   = false;
+  if (metaSecret && metaSecret.startsWith('enc:')) { metaDecryptFailed = true; metaSecret = null; }
+  if (waSecret   && waSecret.startsWith('enc:'))   { waDecryptFailed   = true; waSecret   = null; }
+  if (metaDecryptFailed || waDecryptFailed) {
+    logger.error('[Webhook] Stored webhook secret could not be decrypted — treating as absent ' +
+      'rather than using it as a doomed HMAC key. This almost always means ENCRYPTION_KEY on ' +
+      'this host does not match the key the secret was originally saved under. Re-set ' +
+      'ENCRYPTION_KEY to the original value, or re-enter the tenant\'s Meta App Secret to ' +
+      're-encrypt it under the current key.', {
+      tenantId: String(tenant?._id),
+      metaAppSecretDecryptFailed: metaDecryptFailed,
+      webhookSecretDecryptFailed: waDecryptFailed,
+    });
+  }
+
+  // [FIX-SIG-3] Trim whitespace defensively at read time too, not just at
+  // write time in encryptToken(). This retroactively self-heals any secret
+  // that was saved before that fix with a trailing newline/space baked into
+  // the ciphertext (the single most common real-world cause of a webhook
+  // secret that looks right but never verifies), with no need to re-enter it.
+  if (metaSecret) metaSecret = metaSecret.trim();
+  if (waSecret)   waSecret   = waSecret.trim();
+
   // Keep the old `tenantSecret` name pointing at the meta.appSecret value so the
   // rest of this function (and its comments) still read naturally; waSecret is
   // just another per-tenant candidate tried alongside it.

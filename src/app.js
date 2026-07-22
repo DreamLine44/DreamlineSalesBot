@@ -46,6 +46,7 @@ import { getSupportedModes }     from './config/modes.js';
 
 // Routes
 import webhookRoutes     from './routes/webhookRoutes.js';
+import { WEBHOOK_BUILD_MARKER } from './controllers/webhookController.js';
 import simulateRoutes    from './routes/simulateRoutes.js';
 import businessRoutes    from './routes/businessRoutes.js';
 import dashboardRoutes   from './routes/dashboardRoutes.js';
@@ -129,6 +130,10 @@ app.get('/health', (_req, res) => res.json({
   status: 'ok',
   platform: 'WhatSales E-Commerce Store Bot',
   version,
+  // [DEPLOY-VERIFY] Curl this after every deploy. If it doesn't match the value
+  // currently in controllers/webhookController.js, Railway is not running the
+  // code you think it's running — full stop, no need to infer it from log shapes.
+  webhookBuild: WEBHOOK_BUILD_MARKER,
   uptime: Math.floor(process.uptime()),
   timestamp: new Date().toISOString(),
   environment: process.env.NODE_ENV,

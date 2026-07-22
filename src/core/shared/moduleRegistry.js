@@ -10,6 +10,15 @@
 import { registerFlow, registerGenericFlow } from '../conversations/flowEngine.js';
 import { registerAction }                    from '../conversations/moduleRouter.js';
 import logger                                from '../../config/logger.js';
+// [FIX-CATALOG-GATE] Static import — these are two pure, synchronous,
+// zero-I/O boolean checks (see waCatalogConfig.js) with no dependencies of
+// their own. Importing them statically means the START_ORDER handler below
+// can decide "does WA Catalog even apply to this tenant?" without touching
+// import() at all for the common case, so there is no dynamic-import
+// indirection anywhere on the path a non-catalog tenant's "Order Food" tap
+// takes — that path is now the exact same shape it was before WA Catalog
+// existed: one direct call to startFlow('ORDER').
+import { isCatalogEnabled, hasSellableProducts } from '../../modules/catalog/waCatalogConfig.js';
 
 export async function registerAllModules() {
   // ── Shared booking flow (all modules that book) ───────────────────────────
@@ -128,8 +137,34 @@ export async function registerAllModules() {
   // Only WA-Catalog-enabled tenants take the (documented, already-guarded)
   // sendAndArmCatalog() network path, and any failure there still falls back
   // to startFlow('ORDER') below rather than leaving the customer with no reply.
+  // [FIX-CATALOG-GATE] Two explicit, separately-readable paths, exactly as
+  // requested — not one path with a conditional buried inside it:
+  //
+  //   PATH A — tenant has no WA Catalog configured (the default, and every
+  //   tenant that existed before this integration): checked synchronously,
+  //   with the two pure functions imported at the top of this file, zero
+  //   dynamic import, zero await, zero network call, zero dependency on
+  //   waCatalogFlow.js loading correctly. Goes STRAIGHT to
+  //   startFlow({ flowName: 'ORDER' }) — the identical single call this
+  //   codebase made before WA Catalog existed. "View Menu" cannot be
+  //   silently eaten by anything catalog-related on this path, because
+  //   nothing catalog-related runs on this path at all.
+  //
+  //   PATH B — tenant HAS WA Catalog enabled and configured with sellable
+  //   products: only then do we load waCatalogFlow.js and run the
+  //   AI/mode-based offer decision. Any failure there (bad catalogId, Graph
+  //   API error, thrown exception) still falls back to the exact same
+  //   startFlow('ORDER') call PATH A uses — WA Catalog can never become a
+  //   dead end for a customer, even for tenants who opted into it.
   registerAction('START_ORDER', async ({ session, message, business, tenant, intent }) => {
     const { startFlow } = await import('../conversations/flowEngine.js');
+
+    // PATH A — no WA Catalog for this tenant. Old-version behavior, verbatim.
+    if (!isCatalogEnabled(business) || !hasSellableProducts(business)) {
+      return startFlow({ flowName: 'ORDER', session, business, tenant });
+    }
+
+    // PATH B — WA Catalog is actually configured for this tenant.
     const { offerCatalogOnStartOrder } = await import('../../modules/catalog/waCatalogFlow.js');
     const { offered } = await offerCatalogOnStartOrder({ session, business, tenant, intent }).catch(() => ({ offered: false }));
     if (offered) return null; // WA Catalog message already dispatched directly — nothing further to send

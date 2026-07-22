@@ -104,6 +104,16 @@ function getEncryptionKey() {
  */
 export function encryptToken(plaintext) {
   if (!plaintext) return plaintext;
+  // [FIX-SIG-3] Trim before encrypting. A secret copy-pasted from the Meta
+  // dashboard (or a form/textarea) very commonly carries a trailing newline
+  // or space. Once that whitespace is baked into the ciphertext there is no
+  // way to recover the "clean" value later — every HMAC computed against the
+  // real secret will permanently mismatch the one computed against the
+  // whitespace-padded stored value, with nothing in the logs to indicate why
+  // (hadTenantSecret reads true; the comparison just silently never matches).
+  // Trimming here means the secret we encrypt is always the same one Meta
+  // itself uses to sign, regardless of how it was pasted in.
+  plaintext = String(plaintext).trim();
   const key = getEncryptionKey();
   if (!key) {
     logger.warn('[TenantCtrl] ENCRYPTION_KEY not set — token stored in plaintext (dev only)');
