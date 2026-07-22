@@ -166,7 +166,7 @@ import crypto           from 'crypto';
 // warn-log attribute names against source, which only works after a mismatch has
 // already happened. Bump this string in the same commit as any change to
 // _verifyTenantWebhookSignature() or the START_ORDER PATH A/B split below.
-export const WEBHOOK_BUILD_MARKER = 'SIGFIX-CATALOG-GATE-2026-07-22';
+export const WEBHOOK_BUILD_MARKER = 'CATALOG-ORDER-WIRE-2026-07-22';
 
 // ── [META-CREDS] Per-tenant webhook HMAC signature verification ───────────────
 // Verifies X-Hub-Signature-256 using the tenant's own Meta App Secret.
@@ -1026,7 +1026,16 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
   }
 
   // ── 2. Empty guard ────────────────────────────────────────────────────────
-  if (!messageText && !imageUrl) {
+  // [CATALOG-ORDER-WIRE] msg.type === 'order' (a completed WhatsApp Catalog
+  // checkout) is not handled by extractMessage() — it falls through to that
+  // function's default branch (empty text, no image) and would be dropped
+  // right here, silently, before business/session are even loaded. That is
+  // exactly what was happening: handleCatalogOrderMessage() (waCatalogFlow.js)
+  // was fully built but never wired to anything, so every real catalog
+  // checkout vanished with no reply and no Order saved. Exempted here; the
+  // actual handoff happens at [CATALOG-ORDER-WIRE] below, once business and
+  // session are loaded the normal way.
+  if (!messageText && !imageUrl && msgObj?.type !== 'order') {
     logger.debug('[Webhook] Message has no text and no image — skipping', {
       from, tenantId, msgType: msgObj?.type,
     });
@@ -1103,6 +1112,36 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
     lastSeen:      new Date(),
     phoneNumberId: phoneNumberId || session.phoneNumberId,
   }, { messageCount: 1 }).catch(err => logger.warn('[Webhook] Non-critical session update failed', { err: err.message, from }));
+
+  // ── 4.6 [CATALOG-ORDER-WIRE] WA Catalog checkout ("order" message) ─────────
+  // Meta sends msg.type === 'order' with an `order` payload
+  // ({ catalog_id, product_items: [...] }) when a customer completes checkout
+  // through the native WhatsApp Catalog UI (Review Order → Send). This is the
+  // actual call site handleCatalogOrderMessage()'s own header comment already
+  // documented as existing — it didn't. Bypasses business-hours/rapid-dup
+  // gates below deliberately: the customer already completed a transaction
+  // via Meta's own UI, so the sale must be captured regardless of what gate a
+  // normal chat message would hit.
+  if (msgObj?.type === 'order' && msgObj.order) {
+    try {
+      const { handleCatalogOrderMessage, drainCatalogQueue } = await import('../modules/catalog/waCatalogFlow.js');
+      const catalogReply = await handleCatalogOrderMessage({
+        session, business, tenant: tenantDoc, catalogOrder: msgObj.order,
+      });
+      if (catalogReply) await dispatchMessage(from, catalogReply, tenantDoc);
+
+      // If this single-item handoff reached ORDER_CONFIRMED with nothing further
+      // to ask the customer (no variant/quantity step pending), drain the next
+      // queued line from this same WA cart now instead of leaving it stranded.
+      const postSession = await getSession(from, tenantId);
+      if (postSession?.postFlowAck === 'ORDER_CONFIRMED' && postSession?.pendingCatalogQueue?.length) {
+        await drainCatalogQueue({ session: postSession, business, tenant: tenantDoc });
+      }
+    } catch (err) {
+      logger.error('[Webhook] handleCatalogOrderMessage failed', { err: err.message, from, tenantId });
+    }
+    return;
+  }
 
   // ── 4.5 [FEAT-SPAM-1] Rapid identical-message suppression ──────────────────
   // Spec: "Ignore repeated identical messages (e.g. 'hello' sent 4 times) —
@@ -2904,6 +2943,22 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
     const lastPayload = payloads[payloads.length - 1];
     const body = typeof lastPayload === 'string' ? lastPayload : lastPayload?.body;
     if (body) updateSession(from, tenantId, { lastBotMessage: body }).catch(() => {});
+
+    // [CATALOG-ORDER-WIRE] The customer's own in-flow path (typed quantity,
+    // tapped variant, etc. — as opposed to the immediate no-further-questions
+    // handoff at [CATALOG-ORDER-WIRE] above) just reached ORDER_CONFIRMED.
+    // If this order originated from a multi-item WA Catalog cart, drain the
+    // next queued line now instead of leaving it stranded until some
+    // unrelated future message happens to touch it.
+    try {
+      const postSession = await getSession(from, tenantId);
+      if (postSession?.postFlowAck === 'ORDER_CONFIRMED' && postSession?.pendingCatalogQueue?.length) {
+        const { drainCatalogQueue } = await import('../modules/catalog/waCatalogFlow.js');
+        await drainCatalogQueue({ session: postSession, business, tenant: tenantDoc });
+      }
+    } catch (err) {
+      logger.debug('[Webhook] drainCatalogQueue check skipped (non-fatal)', { err: err.message });
+    }
   }
 }
 
