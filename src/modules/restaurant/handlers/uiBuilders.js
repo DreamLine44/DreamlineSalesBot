@@ -16,6 +16,13 @@ export function buildMenuUI(business) {
       buttons: [{ id: 'SUPPORT', title: '💬 Contact Us' }],
     };
   }
+  // [FIX-LIST-CAP-2] This is a flat, uncategorised list — unlike bakery/
+  // electronics/cosmetics, the restaurant module has no category browsing
+  // step to naturally keep any one list under Meta's real 10-row-total cap.
+  // dispatcher.js now truncates to 10 and adds a footer hint rather than
+  // rejecting the send, but a menu with more than 10 items will still hide
+  // items past #10 from this view — add category browsing here (mirroring
+  // _buildCategoryUI in bakery/orderFlow.js) if that becomes a problem.
   const rows = items.map((item, i) => ({
     id:          String(i + 1),
     title:       item.name.slice(0, 24),

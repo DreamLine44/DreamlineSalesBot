@@ -29,6 +29,7 @@
 import { updateSession }  from '../core/sessions/sessionService.js';
 import { getModeConfig }  from '../config/modes.js';
 import { dispatchMessage } from '../core/whatsapp/dispatcher.js';
+import { buildOptionsReply } from '../core/shared/uiOptionsHelper.js';
 import logger from '../config/logger.js';
 
 // ── Name validation (duplicated from webhookController — avoids circular import) ──
@@ -448,29 +449,17 @@ export async function handlePostFlowMessage({
     // which sent a generic "How can I help?" menu instead of a warm contextual reply.
     case 'SKINCARE_ADVICE': {
       if (isAck || isCompliment) {
-        await dispatchMessage(from, {
-          type:    'buttons',
-          body:    `You're welcome${custName}! 😊 Ready to explore our range?`,
-          buttons: welcomeBtns,
-        }, tenantDoc);
+        await dispatchMessage(from, buildOptionsReply(cfg, `You're welcome${custName}! 😊 Ready to explore our range?`), tenantDoc);
         return true;
       }
       if (isQuestion) {
         const { getAIReply } = await import('../core/ai/providers/aiRouter.js');
         const aiReply = await getAIReply({ customerMessage: msg, business, session, intent: 'SKINCARE_ADVICE' });
-        await dispatchMessage(from, {
-          type:    'buttons',
-          body:    aiReply || `Happy to help${custName}! 😊`,
-          buttons: welcomeBtns,
-        }, tenantDoc);
+        await dispatchMessage(from, buildOptionsReply(cfg, aiReply || `Happy to help${custName}! 😊`), tenantDoc);
         return true;
       }
       // Any other message — show welcome menu
-      await dispatchMessage(from, {
-        type:    'buttons',
-        body:    `What else can I help you with${custName}? 💄`,
-        buttons: welcomeBtns,
-      }, tenantDoc);
+      await dispatchMessage(from, buildOptionsReply(cfg, `What else can I help you with${custName}? 💄`), tenantDoc);
       return true;
     }
 
@@ -480,11 +469,7 @@ export async function handlePostFlowMessage({
     case 'ORDER_COLLECTED': {
       const itemStr = flowData.item ? ` *${flowData.item}*` : '';
       if (isCompliment || isAck) {
-        await dispatchMessage(from, {
-          type:    'buttons',
-          body:    `You're so welcome${custName}! 😊 Glad you enjoyed your${itemStr}. Hope to see you again soon! 🙏`,
-          buttons: welcomeBtns,
-        }, tenantDoc);
+        await dispatchMessage(from, buildOptionsReply(cfg, `You're so welcome${custName}! 😊 Glad you enjoyed your${itemStr}. Hope to see you again soon! 🙏`), tenantDoc);
         return true;
       }
       if (isComplaint) {
@@ -498,11 +483,7 @@ export async function handlePostFlowMessage({
         return true;
       }
       // Any other message — show welcome menu
-      await dispatchMessage(from, {
-        type:    'buttons',
-        body:    `😊 What would you like to do next${custName}?`,
-        buttons: welcomeBtns,
-      }, tenantDoc);
+      await dispatchMessage(from, buildOptionsReply(cfg, `😊 What would you like to do next${custName}?`), tenantDoc);
       return true;
     }
 
@@ -512,11 +493,7 @@ export async function handlePostFlowMessage({
     case 'ENQUIRY': {
       const { getAIReply: _enqAI } = await import('../core/ai/providers/aiRouter.js');
       if (isAck || isCompliment) {
-        await dispatchMessage(from, {
-          type:    'buttons',
-          body:    `You're welcome${custName}! 😊 We've received your enquiry and will get back to you shortly.`,
-          buttons: welcomeBtns,
-        }, tenantDoc);
+        await dispatchMessage(from, buildOptionsReply(cfg, `You're welcome${custName}! 😊 We've received your enquiry and will get back to you shortly.`), tenantDoc);
         return true;
       }
       if (isComplaint) {
@@ -530,50 +507,30 @@ export async function handlePostFlowMessage({
       }
       // Follow-up question — AI handles it
       const _enqFollowUp = await _enqAI({ customerMessage: msg, business, intent: 'QUESTION' });
-      await dispatchMessage(from, {
-        type:    'buttons',
-        body:    _enqFollowUp || `Happy to help${custName}! 😊 We'll follow up on your enquiry shortly.`,
-        buttons: welcomeBtns,
-      }, tenantDoc);
+      await dispatchMessage(from, buildOptionsReply(cfg, _enqFollowUp || `Happy to help${custName}! 😊 We'll follow up on your enquiry shortly.`), tenantDoc);
       return true;
     }
 
     // [FIX-26] QUOTE_FOLLOW postFlowAck — set by completeFlow('QUOTE_FOLLOW') in services flow.
     case 'QUOTE_FOLLOW': {
       if (isAck || isCompliment) {
-        await dispatchMessage(from, {
-          type:    'buttons',
-          body:    `You're welcome${custName}! 😊 We'll have your quote ready shortly. We'll reach out as soon as it's prepared.`,
-          buttons: welcomeBtns,
-        }, tenantDoc);
+        await dispatchMessage(from, buildOptionsReply(cfg, `You're welcome${custName}! 😊 We'll have your quote ready shortly. We'll reach out as soon as it's prepared.`), tenantDoc);
         return true;
       }
       // Question or other — show warm menu
-      await dispatchMessage(from, {
-        type:    'buttons',
-        body:    `Thanks${custName}! 😊 Our team will be in touch with your quote. Is there anything else we can help with?`,
-        buttons: welcomeBtns,
-      }, tenantDoc);
+      await dispatchMessage(from, buildOptionsReply(cfg, `Thanks${custName}! 😊 Our team will be in touch with your quote. Is there anything else we can help with?`), tenantDoc);
       return true;
     }
 
     // [FIX-26] ABOUT postFlowAck — set by completeFlow('ABOUT') in general/handleAbout.
     case 'ABOUT': {
       if (isAck || isCompliment) {
-        await dispatchMessage(from, {
-          type:    'buttons',
-          body:    `Glad to share! 😊 Let us know if you'd like to get started.`,
-          buttons: welcomeBtns,
-        }, tenantDoc);
+        await dispatchMessage(from, buildOptionsReply(cfg, `Glad to share! 😊 Let us know if you'd like to get started.`), tenantDoc);
         return true;
       }
       const { getAIReply: _aboutAI } = await import('../core/ai/providers/aiRouter.js');
       const _aboutReply = await _aboutAI({ customerMessage: msg, business, intent: 'QUESTION' });
-      await dispatchMessage(from, {
-        type:    'buttons',
-        body:    _aboutReply || `Happy to help${custName}! 😊`,
-        buttons: welcomeBtns,
-      }, tenantDoc);
+      await dispatchMessage(from, buildOptionsReply(cfg, _aboutReply || `Happy to help${custName}! 😊`), tenantDoc);
       return true;
     }
 
@@ -736,11 +693,7 @@ export async function handlePostFlowMessage({
       }
 
       // No resume context — just show the menu
-      await dispatchMessage(from, {
-        type:    'buttons',
-        body:    `😊 Hope that helped! What would you like to do next?`,
-        buttons: welcomeBtns,
-      }, tenantDoc);
+      await dispatchMessage(from, buildOptionsReply(cfg, `😊 Hope that helped! What would you like to do next?`), tenantDoc);
       return true;
     }
 
@@ -750,11 +703,7 @@ export async function handlePostFlowMessage({
       // would route the customer into a fresh flow, silently wiping their context.
       logger.warn('[PostFlow] Unknown ackCtx — clearing and showing menu', { ackCtx, from });
       await updateSession(from, tenantId, { postFlowAck: null, postFlowData: null });
-      await dispatchMessage(from, {
-        type:    'buttons',
-        body:    `😊 How can I help you?`,
-        buttons: welcomeBtns,
-      }, tenantDoc);
+      await dispatchMessage(from, buildOptionsReply(cfg, `😊 How can I help you?`), tenantDoc);
       return true;
     }
   }
@@ -817,11 +766,11 @@ async function handleOrderConfirmed({
       ).catch(() => {});
     }
     await updateSession(from, tenantId, { postFlowAck: null, postFlowData: null, data: {} });
-    await dispatchMessage(from, {
-      type:    'buttons',
-      body:    `❌ Your order has been cancelled.\n\nWhat would you like to do next?`,
-      buttons: cfg.ui?.welcomeButtons || [{ id: 'ORDER', title: '🛒 Place New Order' }],
-    }, tenantDoc);
+    await dispatchMessage(from, buildOptionsReply(
+      cfg,
+      `❌ Your order has been cancelled.\n\nWhat would you like to do next?`,
+      [{ id: 'ORDER', title: '🛒 Place New Order' }]
+    ), tenantDoc);
     return true;
   }
 
@@ -963,6 +912,8 @@ async function handleOrderRejected({
   flowData, business, tenantDoc, from, tenantId,
   custName, welcomeBtns,
 }) {
+  const { getModeConfig } = await import('../config/modes.js');
+  const cfg = getModeConfig(business);
   const { getAIReply } = await import('../core/ai/providers/aiRouter.js');
   const itemStr = flowData.item ? ` for *${flowData.item}*` : '';
 
@@ -984,21 +935,13 @@ async function handleOrderRejected({
     const reasonLine = flowData.rejectReason
       ? `\n\n💬 *Reason:* ${flowData.rejectReason}`
       : '';
-    await dispatchMessage(from, {
-      type:    'buttons',
-      body:    `We're sorry your order${itemStr} didn't go through${custName}. 🙏${reasonLine}\n\nWe'd love to make it up to you — tap below to try again or ask us anything.`,
-      buttons: welcomeBtns,
-    }, tenantDoc);
+    await dispatchMessage(from, buildOptionsReply(cfg, `We're sorry your order${itemStr} didn't go through${custName}. 🙏${reasonLine}\n\nWe'd love to make it up to you — tap below to try again or ask us anything.`), tenantDoc);
     return true;
   }
 
   // Any other message — treat as question/follow-up
   const aiReply = await getAIReply({ customerMessage: msg, business, intent: 'SUPPORT' });
-  await dispatchMessage(from, {
-    type:    'buttons',
-    body:    aiReply || `We're here to help${custName}. 😊 What can we do for you?`,
-    buttons: welcomeBtns,
-  }, tenantDoc);
+  await dispatchMessage(from, buildOptionsReply(cfg, aiReply || `We're here to help${custName}. 😊 What can we do for you?`), tenantDoc);
   return true;
 }
 

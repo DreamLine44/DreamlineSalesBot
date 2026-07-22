@@ -40,6 +40,7 @@ import { updateSession }         from '../sessions/sessionService.js';
 import { dispatchText, dispatchMessage }          from '../whatsapp/dispatcher.js';
 import { getModeConfig }         from '../../config/modes.js';
 import { withCatalogWelcomeOption } from '../../modules/catalog/waCatalogConfig.js';
+import { buildOptionsReply } from '../shared/uiOptionsHelper.js';
 import logger from '../../config/logger.js';
 
 const ACTION_REGISTRY = new Map();
@@ -72,7 +73,7 @@ export function registerAction(action, handler) {
 export function buildWelcomeSequence(business, cfg) {
   const customWelcome = business?.customMessages?.welcomeMessage;
   const greeting = customWelcome || cfg.messages?.welcome || '👋 Welcome! How can I help you today?';
-  const promptBody = cfg.messages?.chooseOptionPrompt || 'Choose an option below to get started.';
+  const promptBody = cfg.messages?.chooseOptionPrompt || 'Choose an option below to get started ▼';
 
   // [AUDIT-FIX-CATALOG-WELCOME] waCatalogConfig.js's shouldShowCatalogButton() /
   // withCatalogWelcomeOption() were fully implemented (see [CATALOG-UX-BUTTON])
@@ -90,6 +91,17 @@ export function buildWelcomeSequence(business, cfg) {
   // primary options with descriptions in a single tap, instead of splitting
   // them across a primary screen + a secondary "More" screen.
   //
+  // [FIX-WELCOME-MERGE-1] Previously sent as TWO separate messages — a plain
+  // greeting text, then a second list message with its own "Choose an option
+  // below to get started." body. Merged into ONE list message whose body is
+  // the greeting followed by the prompt, so the whole welcome reads as a
+  // single natural message: "👋 Welcome! What would you like to do today?
+  // Choose an option below to get started ▼". Note the list ACTION BUTTON
+  // itself (cfg.ui.welcomeList.button, e.g. "Choose an option ▼") is a
+  // separate, Meta-capped field — WhatsApp hard-limits that tappable label to
+  // 20 characters, so the longer descriptive phrase lives in the body text
+  // here, not on the button.
+  //
   // Deliberately checked FIRST and returns early: this is purely additive.
   // Row ids in welcomeList (ORDER/BOOK/BROWSE_CATALOG/QUESTION, etc.) are the
   // SAME ids the existing buttons already used — BUTTON_ID_MAP,
@@ -101,15 +113,12 @@ export function buildWelcomeSequence(business, cfg) {
   // through to the moreMenuButtons/withCatalogWelcomeOption logic below,
   // completely untouched.
   if (cfg.ui?.welcomeList) {
-    return [
-      { type: 'text', body: greeting },
-      {
-        type:   'list',
-        body:   promptBody,
-        button: cfg.ui.welcomeList.button || 'Choose an option',
-        rows:   cfg.ui.welcomeList.rows || [],
-      },
-    ];
+    return {
+      type:   'list',
+      body:   `${greeting}\n\n${promptBody}`,
+      button: cfg.ui.welcomeList.button || 'Choose an option',
+      rows:   cfg.ui.welcomeList.rows || [],
+    };
   }
 
   // RESTAURANT is left untouched here: it already surfaces Browse Catalog via
@@ -213,10 +222,7 @@ export async function route({ action, intent, session, message, business, tenant
       // No active order — soft welcome menu, no branded greeting
       const cfg = getModeConfig(business);
       return {
-        type:    'buttons',
-        body:    '😊 What would you like to do?',
-        buttons: cfg.ui?.welcomeButtons || [],
-      };
+      return buildOptionsReply(cfg, '😊 What would you like to do?');
     }
 
     case 'CONTINUE_FLOW': {
@@ -227,10 +233,7 @@ export async function route({ action, intent, session, message, business, tenant
       // jarring for a customer who typed "5" from the main menu. Show the welcome menu instead.
       const cfg = getModeConfig(business);
       return {
-        type:    'buttons',
-        body:    business?.customMessages?.welcomeMessage || cfg.messages?.welcome || '👋 How can I help you today?',
-        buttons: cfg.ui?.welcomeButtons || [],
-      };
+      return buildOptionsReply(cfg, business?.customMessages?.welcomeMessage || cfg.messages?.welcome || '👋 How can I help you today?');
     }
 
     case 'GREET': {
@@ -406,10 +409,7 @@ export async function route({ action, intent, session, message, business, tenant
       // SHOW_MENU shows a short "what else can I help with?" prompt + action buttons.
       // GREET (first message / fresh start) shows the full branded welcome.
       return {
-        type:    'buttons',
-        body:    cfg.messages?.showMenuPrompt || '👇 What would you like to do?',
-        buttons: cfg.ui?.welcomeButtons || [],
-      };
+      return buildOptionsReply(cfg, cfg.messages?.showMenuPrompt || '👇 What would you like to do?');
     }
 
     // [NAV-META3] Secondary "⋯ More" screen — reached from the primary welcome
@@ -655,13 +655,12 @@ export async function route({ action, intent, session, message, business, tenant
           currentFlow: null, step: null, data: {}, postFlowAck: null,
         });
         const cfgCancelAll = getModeConfig(business);
-        return {
-          type:    'buttons',
-          body:    count > 0
+        return buildOptionsReply(
+          cfgCancelAll,
+          count > 0
             ? `✅ Done — *${count} order${count !== 1 ? 's' : ''}* ${count !== 1 ? 'have' : 'has'} been cancelled. Sorry to see you go! 🙏`
-            : `ℹ️ No active orders found to cancel.`,
-          buttons: cfgCancelAll.ui?.welcomeButtons || [{ id: 'SHOW_MENU', title: '🔄 Start Over' }],
-        };
+            : `ℹ️ No active orders found to cancel.`
+        );
       } catch (err) {
         logger.error('[Router] CANCEL_ALL failed', { err: err.message });
         const cfgCancelAllErr = getModeConfig(business);
@@ -783,11 +782,7 @@ export async function route({ action, intent, session, message, business, tenant
       const isOffTopic = OFF_TOPIC_RE.test(cleanMsg) || GIBBERISH_RE.test(cleanMsg) || SPAM_RE.test(cleanMsg);
 
       if (isOffTopic) {
-        return {
-          type:    'buttons',
-          body:    cfg.messages?.welcome || '👋 How can I help you today?',
-          buttons: cfg.ui?.welcomeButtons || [{ id: 'SHOW_MENU', title: '🔄 Start Over' }],
-        };
+        return buildOptionsReply(cfg, cfg.messages?.welcome || '👋 How can I help you today?');
       }
 
       const aiText = await getAIReply({ customerMessage: message, business, session, intent });
@@ -795,11 +790,7 @@ export async function route({ action, intent, session, message, business, tenant
       const fallbackMsg = business?.customMessages?.fallback || cfg.messages?.fallback;
       const body = aiText || fallbackMsg || 'How can I help you? 😊';
 
-      return {
-        type:    'buttons',
-        body,
-        buttons: cfg.ui?.welcomeButtons || [{ id: 'SHOW_MENU', title: '🔄 Start Over' }],
-      };
+      return buildOptionsReply(cfg, body);
     }
 
     case 'ABOUT': {
@@ -826,11 +817,7 @@ export async function route({ action, intent, session, message, business, tenant
       if (hours)   lines.push(`\n🕐 *Hours:* ${hours}`);
       lines.push('\n_Tap below to continue:_');
       const cfgAbout = getModeConfig(business);
-      return {
-        type:    'buttons',
-        body:    lines.join(''),
-        buttons: (cfgAbout.ui?.welcomeButtons || [{ id: 'SHOW_MENU', title: '🔄 Start Over' }]).slice(0, 3),
-      };
+      return buildOptionsReply(cfgAbout, lines.join(''));
     }
 
     case 'QUOTE_FOLLOW': {
@@ -850,11 +837,7 @@ export async function route({ action, intent, session, message, business, tenant
     case 'DONE': {
       // [FIX-BUG10] Return welcome buttons instead of dead-end plain text
       const cfg = getModeConfig(business);
-      return {
-        type:    'buttons',
-        body:    '✅ Thank you! Is there anything else we can help with?',
-        buttons: cfg.ui?.welcomeButtons || [{ id: 'SHOW_MENU', title: '🔄 Start Over' }],
-      };
+      return buildOptionsReply(cfg, '✅ Thank you! Is there anything else we can help with?');
     }
 
     case 'PAYMENT': {
@@ -897,11 +880,7 @@ export async function route({ action, intent, session, message, business, tenant
 
       // No pending payment found — show welcome menu
       const cfgPay = getModeConfig(business);
-      return {
-        type:    'buttons',
-        body:    `😊 We couldn't find a pending order for your payment. Would you like to place a new order?`,
-        buttons: cfgPay.ui?.welcomeButtons || [{ id: 'ORDER', title: '🛒 Place an Order' }],
-      };
+      return buildOptionsReply(cfgPay, `😊 We couldn't find a pending order for your payment. Would you like to place a new order?`, [{ id: 'ORDER', title: '🛒 Place an Order' }]);
     }
 
     case 'ENQUIRY': {
@@ -960,10 +939,6 @@ export async function route({ action, intent, session, message, business, tenant
 
   logger.warn('[Router] Unknown action', { action: upper, mode });
   const cfg2 = getModeConfig(business);
-  return {
-    type:    'buttons',
-    // [FIX-BUG1] cfg.messages not cfg.labels
-    body:    cfg2.messages?.fallback || 'How can I help you today?',
-    buttons: cfg2.ui?.welcomeButtons || [],
-  };
+  // [FIX-BUG1] cfg.messages not cfg.labels
+  return buildOptionsReply(cfg2, cfg2.messages?.fallback || 'How can I help you today?');
 }

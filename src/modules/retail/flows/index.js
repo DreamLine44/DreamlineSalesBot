@@ -597,10 +597,14 @@ function _buildProductList(items, business, category = null) {
     };
   }
 
-  // [AUDIT-FIX-LISTCAP] No build-time slice — dispatcher.js chunks a flat
-  // `rows` array across multiple WhatsApp sections (10/section, up to the
-  // real 100-row ceiling) instead of truncating, see [FIX-LIST-TRUNC] in
-  // core/whatsapp/dispatcher.js. A category with 15 products now shows all
+  // [FIX-LIST-CAP-2] No build-time slice needed here — dispatcher.js now
+  // hard-caps the OUTGOING message at Meta's real limit of 10 rows TOTAL
+  // across all sections (not 10/section as previously assumed here — that
+  // assumption caused production 400s: "Total row count exceed max
+  // allowed count: 10"). If this list has more than 10 items, the
+  // dispatcher truncates and adds a footer hint; consider category
+  // browsing (see _buildCategoryUI-style helpers elsewhere) so customers
+  // aren't silently missing items past #10.
   // 15 across two sections instead of silently hiding the last 5.
   const rows = items.map((item, idx) => ({
     id:          String(idx + 1),

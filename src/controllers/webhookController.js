@@ -135,6 +135,7 @@ import { advance, startFlow }                        from '../core/conversations
 import { route }                                     from '../core/conversations/moduleRouter.js';
 import { dispatchMessage }                           from '../core/whatsapp/dispatcher.js';
 import { getModeConfig }                             from '../config/modes.js';
+import { buildOptionsReply }                         from '../core/shared/uiOptionsHelper.js';
 import { decryptToken }                              from './tenantController.js';
 // [FIX-IMPORT-1] handlePostFlowMessage was called at step 14 but never imported —
 // every postFlowAck message fell through to the default-case "unknown ackCtx" path in
@@ -644,11 +645,7 @@ async function checkAndHandleLoop(session, messageText, tenantId, business) {
       const cfg = getModeConfig(business);
       const loopMsg = business?.customMessages?.loopFallback
         || "I noticed we keep going in circles! Let me take you back to the main menu. 😊";
-      return {
-        type:    'buttons',
-        body:    loopMsg,
-        buttons: cfg.ui?.welcomeButtons || [{ id: 'SHOW_MENU', title: '🔄 Start Over' }],
-      };
+      return buildOptionsReply(cfg, loopMsg);
     }
     // Not yet at limit — persist the incremented count
     await updateSession(session.customerPhone, tenantId, {
@@ -1431,11 +1428,11 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
       ).catch(() => {});
       await updateSession(from, tenantId, { currentFlow: null, step: null, data: {} });
       const cfg = getModeConfig(business);
-      await dispatchMessage(from, {
-        type:    'buttons',
-        body:    '❌ Your order has been cancelled.\n\nWhat would you like to do next?',
-        buttons: cfg.ui?.welcomeButtons || [{ id: 'ORDER', title: '🛒 Place New Order' }],
-      }, tenantDoc);
+      await dispatchMessage(from, buildOptionsReply(
+        cfg,
+        '❌ Your order has been cancelled.\n\nWhat would you like to do next?',
+        [{ id: 'ORDER', title: '🛒 Place New Order' }]
+      ), tenantDoc);
       return;
     }
 
@@ -1502,11 +1499,11 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
       ).catch(() => {});
       await updateSession(from, tenantId, { currentFlow: null, step: null, data: {} });
       const cfg = getModeConfig(business);
-      await dispatchMessage(from, {
-        type:    'buttons',
-        body:    '❌ Your order has been cancelled.\n\nWhat would you like to do?',
-        buttons: cfg.ui?.welcomeButtons || [{ id: 'ORDER', title: '🛒 Place New Order' }],
-      }, tenantDoc);
+      await dispatchMessage(from, buildOptionsReply(
+        cfg,
+        '❌ Your order has been cancelled.\n\nWhat would you like to do?',
+        [{ id: 'ORDER', title: '🛒 Place New Order' }]
+      ), tenantDoc);
       return;
     }
     // Everything else — classify ack/filler first, then politely hold the customer
@@ -1581,11 +1578,11 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
         ).catch(() => {});
         await updateSession(from, tenantId, { currentFlow: null, step: null, data: {} });
         const cfgPOL = getModeConfig(business);
-        await dispatchMessage(from, {
-          type:    'buttons',
-          body:    `❌ Your order *#${pendingOrder.shortId}* has been cancelled.\n\nWhat would you like to do next?`,
-          buttons: cfgPOL.ui?.welcomeButtons || [{ id: 'ORDER', title: '🛒 Place New Order' }],
-        }, tenantDoc);
+        await dispatchMessage(from, buildOptionsReply(
+          cfgPOL,
+          `❌ Your order *#${pendingOrder.shortId}* has been cancelled.\n\nWhat would you like to do next?`,
+          [{ id: 'ORDER', title: '🛒 Place New Order' }]
+        ), tenantDoc);
         return;
       }
 
@@ -2357,11 +2354,7 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
       await updateSession(from, tenantId, { currentFlow: null, step: null, postFlowAck: null });
       const cfg = getModeConfig(business);
       // [FIX] Mid-session "Start Over" tap → short prompt, NOT full welcome greeting
-      await dispatchMessage(from, {
-        type:    'buttons',
-        body:    '👇 What would you like to do?',
-        buttons: cfg.ui?.welcomeButtons || [],
-      }, tenantDoc);
+      await dispatchMessage(from, buildOptionsReply(cfg, '👇 What would you like to do?'), tenantDoc);
       return;
     }
 
@@ -2614,22 +2607,14 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
           for (const rp2 of rPayloads2) await dispatchMessage(from, rp2, tenantDoc);
         } else {
           const cfg = getModeConfig(business);
-          await dispatchMessage(from, {
-            type:    'buttons',
-            body:    '👇 What would you like to do?',
-            buttons: cfg.ui?.welcomeButtons || [],
-          }, tenantDoc);
+          await dispatchMessage(from, buildOptionsReply(cfg, '👇 What would you like to do?'), tenantDoc);
         }
         return;
       }
       // No resume context — fall through to main menu
       await updateSession(from, tenantId, { postFlowAck: null, postFlowData: null });
       const cfg = getModeConfig(business);
-      await dispatchMessage(from, {
-        type:    'buttons',
-        body:    '👇 What would you like to do?',
-        buttons: cfg.ui?.welcomeButtons || [],
-      }, tenantDoc);
+      await dispatchMessage(from, buildOptionsReply(cfg, '👇 What would you like to do?'), tenantDoc);
       return;
     }
 
@@ -2748,11 +2733,7 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
           }
         }
         const cfgFsiYes = getModeConfig(business);
-        await dispatchMessage(from, {
-          type:    'buttons',
-          body:    '👇 What would you like to do?',
-          buttons: cfgFsiYes.ui?.welcomeButtons || [],
-        }, tenantDoc);
+        await dispatchMessage(from, buildOptionsReply(cfgFsiYes, '👇 What would you like to do?'), tenantDoc);
         return;
       }
 

@@ -98,49 +98,56 @@ function buildPayload(to, ui) {
       description: r.description ? String(r.description).slice(0, 72) : undefined,
     });
 
-    // [FIX-LIST-TRUNC] Splits one logical section's rows into WhatsApp's real
-    // 10-row-per-section cap. When a section needs more than one chunk, every
-    // chunk after the first is suffixed "(cont.)" so a customer scrolling a
-    // long category still sees where they are, instead of two identically
-    // titled sections back to back.
-    const chunkSection = (title, rows) => {
-      if (!rows.length) return [{ title, rows: [] }];
-      const chunks = [];
-      for (let i = 0; i < rows.length; i += 10) {
-        const isFirst = i === 0;
-        chunks.push({
-          title: title
-            ? String(isFirst ? title : `${title} (cont.)`).slice(0, 24)
-            : undefined,
-          rows: rows.slice(i, i + 10),
-        });
-      }
-      return chunks;
-    };
+    // [FIX-LIST-CAP-2] The previous [FIX-LIST-TRUNC] logic assumed WhatsApp
+    // allows 10 rows PER SECTION with up to 10 sections (100 rows total) and
+    // chunked overflowing sections into "Category (cont.)" siblings. That
+    // assumption is wrong — Meta's actual limit is 10 ROWS TOTAL across ALL
+    // sections combined for a single interactive list message. Sending more
+    // returns a hard 400 from the Graph API:
+    //   (#131009) Parameter value is not valid — "Total row count exceed
+    //   max allowed count: 10"
+    // which is exactly what was happening for any menu/category/list with
+    // more than 10 entries (production incident 2026-07-22, YM Store menu).
+    // Fixed here: rows are collected across sections IN ORDER and hard-capped
+    // at 10 total, never chunked past that ceiling. Anything beyond row 10 is
+    // dropped from the payload (never sent — a truncated list beats a
+    // rejected message), and if truncation happened we surface it via the
+    // footer so the customer knows to narrow their search instead of
+    // silently losing options.
+    const MAX_TOTAL_ROWS = 10;
 
-    let sections;
+    let rawSections;
     if (ui.sections && ui.sections.length) {
       // Multi-section format (e.g. time picker with Morning/Afternoon/Evening)
-      // [FIX-LIST-TRUNC] Each caller-supplied section is itself chunked to the
-      // WhatsApp 10-row-per-section limit instead of dropping every row past
-      // #10 — a category with 15 products now becomes "Category", "Category
-      // (cont.)" instead of silently losing 5 of them.
-      sections = ui.sections.flatMap(sec => {
-        const title = sec.title ? String(sec.title).slice(0, 24) : undefined;
-        const rows  = (sec.rows || []).map(normalizeRow);
-        return chunkSection(title, rows);
-      }).filter(sec => sec.rows.length > 0).slice(0, 10);
+      rawSections = ui.sections.map(sec => ({
+        title: sec.title ? String(sec.title).slice(0, 24) : undefined,
+        rows:  (sec.rows || []).map(normalizeRow),
+      }));
     } else {
-      // [FIX-LIST-TRUNC] Flat rows format (used by every module's product/menu
-      // list) — previously `.slice(0, 10)` silently dropped everything past
-      // the 10th row. WhatsApp's real limit is 10 rows PER SECTION with up to
-      // 10 sections (100 rows total), so a flat list is now chunked into
-      // multiple numbered sections instead of truncated.
-      const rows = (ui.rows || []).map(normalizeRow);
-      sections = chunkSection(undefined, rows).slice(0, 10);
+      // Flat rows format (used by every module's product/menu list)
+      rawSections = [{ title: undefined, rows: (ui.rows || []).map(normalizeRow) }];
+    }
+
+    let remaining = MAX_TOTAL_ROWS;
+    let truncated = false;
+    const sections = [];
+    for (const sec of rawSections) {
+      if (remaining <= 0) {
+        if (sec.rows.length) truncated = true;
+        continue;
+      }
+      if (sec.rows.length > remaining) truncated = true;
+      const rows = sec.rows.slice(0, remaining);
+      remaining -= rows.length;
+      if (rows.length) sections.push({ title: sec.title, rows });
     }
 
     if (!sections.length || !sections[0].rows.length) return null;
+
+    let listFooter = ui.footer ? String(ui.footer).slice(0, 60) : undefined;
+    if (truncated && !ui.footer) {
+      listFooter = "Showing 10 items — type what you're looking for to see more";
+    }
 
     return {
       messaging_product: 'whatsapp', recipient_type: 'individual',
@@ -149,7 +156,7 @@ function buildPayload(to, ui) {
         type: 'list',
         ...(ui.header ? { header: { type: 'text', text: String(ui.header).slice(0, 60) } } : {}),
         body:   { text: String(ui.body || '').slice(0, 1024) },
-        ...(ui.footer ? { footer: { text: String(ui.footer).slice(0, 60) } } : {}),
+        ...(listFooter ? { footer: { text: listFooter } } : {}),
         action: {
           button: String(ui.button || ui.buttonLabel || 'Choose option').slice(0, 20),
           sections,

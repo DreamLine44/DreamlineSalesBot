@@ -496,11 +496,14 @@ function _buildBakeryMenu(menu, business, category = null) {
       buttons: [{ id: 'SUPPORT', title: '💬 Contact Us' }],
     };
   }
-  // [AUDIT-FIX-LISTCAP] No build-time slice — dispatcher.js chunks a flat
-  // `rows` array across multiple WhatsApp sections (10/section, up to the
-  // real 100-row ceiling) instead of truncating, see [FIX-LIST-TRUNC] in
-  // core/whatsapp/dispatcher.js. Previously items past #10 were silently
-  // invisible with only a "Showing 10 of N" footer as a hint.
+  // [FIX-LIST-CAP-2] No build-time slice needed here — dispatcher.js now
+  // hard-caps the OUTGOING message at Meta's real limit of 10 rows TOTAL
+  // across all sections (not 10/section as previously assumed here — that
+  // assumption caused production 400s: "Total row count exceed max
+  // allowed count: 10"). If this list has more than 10 items, the
+  // dispatcher truncates and adds a footer hint; consider category
+  // browsing (see _buildCategoryUI-style helpers elsewhere) so customers
+  // aren't silently missing items past #10.
   const rows = menu.map((item, i) => ({
     id:          String(i + 1),
     title:       item.name.slice(0, 24),

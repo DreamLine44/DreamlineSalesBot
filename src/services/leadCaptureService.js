@@ -192,12 +192,9 @@ async function finaliseLead({ session, lead, business, tenantDoc }) {
   });
 
   const { getModeConfig } = await import('../config/modes.js');
+  const { buildOptionsReply } = await import('../core/shared/uiOptionsHelper.js');
   const modeCfg = getModeConfig(business);
 
   const thankYou = cfg.thankYouMsg || `✅ All set! We'll remember you next time at *${bizName}*. 😊`;
-  return {
-    type:    'buttons',
-    body:    thankYou,
-    buttons: modeCfg.ui?.welcomeButtons || [{ id: 'SHOW_MENU', title: '🔄 Start Over' }],
-  };
+  return buildOptionsReply(modeCfg, thankYou);
 }

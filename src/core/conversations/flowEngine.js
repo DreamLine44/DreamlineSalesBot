@@ -186,12 +186,9 @@ export async function cancelFlow(session, business) {
   // [FIX] Return mode-appropriate welcome buttons so the customer has somewhere to go
   // without needing to type anything.
   const { getModeConfig } = await import('../../config/modes.js');
+  const { buildOptionsReply } = await import('../shared/uiOptionsHelper.js');
   const cfg = getModeConfig(business);
-  return {
-    type:    'buttons',
-    body:    CANCEL_MSGS[mode] || '✅ Cancelled.',
-    buttons: cfg.ui?.welcomeButtons || [{ id: 'SHOW_MENU', title: '🔄 Start Over' }],
-  };
+  return buildOptionsReply(cfg, CANCEL_MSGS[mode] || '✅ Cancelled.');
 }
 
 /**
