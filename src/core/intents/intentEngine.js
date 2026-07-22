@@ -443,6 +443,9 @@ function intentToAction(intent, business) {
     // action instead of silently reusing the reset-to-top-level SHOW_MENU
     // action, which never rendered any menu content.
     VIEW_MENU:          'VIEW_MENU',
+    // [AUDIT-FIX-MAINMENU-COLLISION] Companion to the patterns.js keyword move —
+    // typed "main menu" now reaches the same action as the "🏠 Main Menu" button tap.
+    MAIN_MENU:          'MAIN_MENU',
     ADD_TO_CART:        'START_ORDER',
     CHECKOUT:           'START_ORDER',
     REMOVE_FROM_CART:   'START_ORDER',       // re-enter order flow to adjust

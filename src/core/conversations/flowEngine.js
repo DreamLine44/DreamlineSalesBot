@@ -99,8 +99,13 @@ export async function startFlow({ flowName, session, business, tenant }) {
   const mode = (business?.businessMode || 'RETAIL').toUpperCase();
   const key  = `${mode}:${flowName.toUpperCase()}`;
 
-  // Reset session to fresh flow state
-  await updateSession(session.customerPhone, session.tenantId, {
+  // Reset session to fresh flow state.
+  // [FIX-STARTFLOW-DOUBLE-READ] updateSession() uses findOneAndUpdate(..., { new: true })
+  // and already returns the freshly-written document — the getSession() call that used
+  // to follow this was a second, entirely redundant DB round trip reading back exactly
+  // what was just written. Removing it shaves a full Mongo round trip off every flow
+  // start (Order Food, View Menu, Book a Table, etc.), directly on the tap-to-reply path.
+  const updated = await updateSession(session.customerPhone, session.tenantId, {
     currentFlow: flowName.toUpperCase(),
     step:        null,
     data:        {},
@@ -120,7 +125,7 @@ export async function startFlow({ flowName, session, business, tenant }) {
   }
 
   // Call handler with null message to trigger first-step UI
-  const freshSession = (await getSession(session.customerPhone, session.tenantId)) || session;
+  const freshSession = updated || session;
   return handler({ session: freshSession, message: null, business, tenant, isInteractive: false });
 }
 

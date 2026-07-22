@@ -39,12 +39,104 @@ import { startFlow, cancelFlow } from './flowEngine.js';
 import { updateSession }         from '../sessions/sessionService.js';
 import { dispatchText, dispatchMessage }          from '../whatsapp/dispatcher.js';
 import { getModeConfig }         from '../../config/modes.js';
+import { withCatalogWelcomeOption } from '../../modules/catalog/waCatalogConfig.js';
 import logger from '../../config/logger.js';
 
 const ACTION_REGISTRY = new Map();
 
 export function registerAction(action, handler) {
   ACTION_REGISTRY.set(action.toUpperCase(), handler);
+}
+
+/**
+ * buildWelcomeSequence(business, cfg)
+ * [NAV-META3] Meta-compliant main-navigation upgrade.
+ *
+ * Single source of truth for the two-step welcome experience: a plain text
+ * greeting sent first, followed by a separate interactive reply-button
+ * message (max 3 buttons — dispatcher.js already hard-caps at 3, and every
+ * module's welcomeButtons config already fits within that limit).
+ *
+ * Previously GREET returned one 'buttons' message with the branded welcome
+ * copy embedded directly in the interactive body. Splitting it into two
+ * messages reads as a more natural conversational greeting and gives the
+ * text message room to stand on its own. Both GREET (fresh conversation)
+ * and the new MAIN_MENU action (explicit "🏠 Main Menu" tap from the More
+ * submenu) render this exact sequence — reused here rather than duplicated.
+ *
+ * Returns an array of two UI payloads; callers dispatch each in order
+ * (webhookController.js's top-level route() call site already dispatches
+ * array replies sequentially — see [FIX-IMG-URL] in restaurant/flows/orderFlow.js
+ * for the same established pattern).
+ */
+export function buildWelcomeSequence(business, cfg) {
+  const customWelcome = business?.customMessages?.welcomeMessage;
+  const greeting = customWelcome || cfg.messages?.welcome || '👋 Welcome! How can I help you today?';
+  const promptBody = cfg.messages?.chooseOptionPrompt || 'Choose an option below to get started.';
+
+  // [AUDIT-FIX-CATALOG-WELCOME] waCatalogConfig.js's shouldShowCatalogButton() /
+  // withCatalogWelcomeOption() were fully implemented (see [CATALOG-UX-BUTTON])
+  // but nothing in production code ever actually called withCatalogWelcomeOption
+  // — the exact same "implemented but unwired" bug class NAV-META3 already fixed
+  // once for the BROWSE_CATALOG BUTTON_ID_MAP entry. A tenant on any mode other
+  // than RESTAURANT could enable WA Catalog, configure a catalogId, and have
+  // sellable products, and STILL never see a "🛍 Browse Catalog" option anywhere
+  // — MANUAL_ONLY mode in particular can never fire for them at all, since its
+  // only trigger is this exact button.
+  //
+  // [LIST-NAV-1] Single Interactive List navigation — supersedes the 3-button
+  // + "⋯ More" submenu (NAV-META3) for any mode config that opts in via
+  // cfg.ui.welcomeList. One "Choose an option ▼" list button opens all
+  // primary options with descriptions in a single tap, instead of splitting
+  // them across a primary screen + a secondary "More" screen.
+  //
+  // Deliberately checked FIRST and returns early: this is purely additive.
+  // Row ids in welcomeList (ORDER/BOOK/BROWSE_CATALOG/QUESTION, etc.) are the
+  // SAME ids the existing buttons already used — BUTTON_ID_MAP,
+  // ACTION_REGISTRY, and every downstream flow/case (case 'BROWSE_CATALOG',
+  // ACTION_REGISTRY 'QUESTION'/'START_ORDER'/'START_BOOKING') are reused
+  // completely unchanged; only the outbound message SHAPE changes here, not
+  // routing, business logic, state, or any handler. Modes that don't define
+  // cfg.ui.welcomeList (every module except restaurant, for now) fall straight
+  // through to the moreMenuButtons/withCatalogWelcomeOption logic below,
+  // completely untouched.
+  if (cfg.ui?.welcomeList) {
+    return [
+      { type: 'text', body: greeting },
+      {
+        type:   'list',
+        body:   promptBody,
+        button: cfg.ui.welcomeList.button || 'Choose an option',
+        rows:   cfg.ui.welcomeList.rows || [],
+      },
+    ];
+  }
+
+  // RESTAURANT is left untouched here: it already surfaces Browse Catalog via
+  // its own static moreMenuButtons submenu (see modules/restaurant/configs/index.js
+  // and moduleRouter.js case 'MORE_MENU'/'BROWSE_CATALOG'). Merging it into the
+  // primary welcomeButtons there too would push its intentional 3-button
+  // Order/Book/⋯More set to 4, which withCatalogWelcomeOption would then have to
+  // silently flip into a 'list' message — duplicating access to the same feature
+  // and breaking the deliberate NAV-META3 button layout for no benefit.
+  let buttonsMessage;
+  if (cfg.ui?.moreMenuButtons) {
+    buttonsMessage = {
+      type:    'buttons',
+      body:    promptBody,
+      buttons: cfg.ui?.welcomeButtons || [],
+    };
+  } else {
+    const merged = withCatalogWelcomeOption(cfg.ui?.welcomeButtons || [], business);
+    buttonsMessage = merged.rows
+      ? { type: 'list', body: promptBody, button: 'Choose option', rows: merged.rows }
+      : { type: 'buttons', body: promptBody, buttons: merged.buttons };
+  }
+
+  return [
+    { type: 'text', body: greeting },
+    buttonsMessage,
+  ];
 }
 
 export async function route({ action, intent, session, message, business, tenant, isInteractive, suggestion }) {
@@ -281,16 +373,15 @@ export async function route({ action, intent, session, message, business, tenant
       // Greeting is intentionally the same generic branded welcome for every
       // customer, new or returning — no DB lookups, no name, no history.
       const cfg = getModeConfig(business);
-      const customWelcome = business?.customMessages?.welcomeMessage;
 
       await updateSession(session.customerPhone, session.tenantId, {
         currentFlow:  null, step: null, data: {},
         postFlowAck:  null, menuViewed: false, upsellSent: false,
       });
 
-      const body = customWelcome || cfg.messages?.welcome || '👋 Welcome! How can I help you today?';
-
-      return { type: 'buttons', body, buttons: cfg.ui?.welcomeButtons || [] };
+      // [NAV-META3] Two-step welcome: greeting text first, interactive menu
+      // second — see buildWelcomeSequence() above.
+      return buildWelcomeSequence(business, cfg);
     }
 
     // [AUDIT-FIX-VIEWMENU] VIEW_MENU is distinct from SHOW_MENU (see patterns.js).
@@ -319,6 +410,54 @@ export async function route({ action, intent, session, message, business, tenant
         body:    cfg.messages?.showMenuPrompt || '👇 What would you like to do?',
         buttons: cfg.ui?.welcomeButtons || [],
       };
+    }
+
+    // [NAV-META3] Secondary "⋯ More" screen — reached from the primary welcome
+    // menu when a mode's welcomeButtons config includes a MORE_MENU button
+    // (currently RESTAURANT only; see modules/restaurant/configs/index.js).
+    // Keeps the primary welcome menu at exactly 3 buttons (Meta's hard limit)
+    // while still surfacing catalog browsing, Q&A, and a way back to the
+    // welcome screen without any of them competing for one of the 3 primary
+    // slots.
+    case 'MORE_MENU': {
+      const cfg = getModeConfig(business);
+      return {
+        type:    'buttons',
+        body:    cfg.messages?.moreMenuPrompt || 'What else would you like to do?',
+        buttons: cfg.ui?.moreMenuButtons || [
+          { id: 'QUESTION',  title: '❓ Ask a Question' },
+          { id: 'MAIN_MENU', title: '🏠 Main Menu'      },
+        ],
+      };
+    }
+
+    // [NAV-META3] "🏠 Main Menu" — always returns to the full two-step welcome
+    // experience (same sequence GREET sends on a fresh conversation), reusing
+    // buildWelcomeSequence() rather than duplicating the welcome text/buttons
+    // construction. Distinct from SHOW_MENU (the short "Start Over" reset
+    // prompt used mid-session elsewhere) — this is an explicit customer request
+    // to go "home", so the full branded greeting is appropriate here, not a
+    // jarring re-send mid-flow.
+    case 'MAIN_MENU': {
+      const cfg = getModeConfig(business);
+      await updateSession(session.customerPhone, session.tenantId, {
+        currentFlow: null, step: null, data: {}, postFlowAck: null, postFlowData: null,
+      });
+      return buildWelcomeSequence(business, cfg);
+    }
+
+    // [NAV-META3] [AUDIT-FIX] "🛍 Browse Catalog" — browseCatalogExplicit() and
+    // its supporting config (waCatalogConfig.js shouldShowCatalogButton/
+    // withCatalogWelcomeOption) were already fully implemented but had no
+    // BUTTON_ID_MAP entry and no case here, so a tap on this button ID was
+    // completely unreachable (detectIntent() fell back to CONTINUE_FLOW,
+    // silently re-showing the welcome menu). Now wired to the existing
+    // implementation — no new catalog logic added. browseCatalogExplicit()
+    // already handles its own graceful fallback to the module's normal ORDER
+    // flow when WA Catalog isn't configured/enabled for the tenant.
+    case 'BROWSE_CATALOG': {
+      const { browseCatalogExplicit } = await import('../../modules/catalog/waCatalogFlow.js');
+      return browseCatalogExplicit({ session, business, tenant });
     }
 
     // [AUDIT-FLOWS-RESCHEDULE] The "📅 Reschedule" button (shown from GREET for a

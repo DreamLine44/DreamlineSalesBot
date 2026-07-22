@@ -169,13 +169,58 @@ import crypto           from 'crypto';
 //
 // IMPORTANT: req.rawBody (Buffer) must be set by app.js before this runs.
 // The existing express.raw() setup in app.js already handles this.
-function _verifyTenantWebhookSignature(req, tenant) {
-  // [META-CREDS] Resolve secret: per-tenant first, then global env fallback.
+// [FIX-SIG-1] Pure HMAC comparison against a single candidate secret.
+// Pulled out of _verifyTenantWebhookSignature so the caller can try more than
+// one candidate secret without duplicating the digest/compare logic.
+function _hmacMatches(rawBody, secret, sigHeader) {
+  if (!secret || !sigHeader || !rawBody) return false;
+  const expected = 'sha256=' + crypto
+    .createHmac('sha256', secret)
+    .update(rawBody)
+    .digest('hex');
+  const sigBuf = Buffer.from(sigHeader);
+  const expBuf = Buffer.from(expected);
+  return sigBuf.length === expBuf.length &&
+         crypto.timingSafeEqual(sigBuf, expBuf);
+}
+
+// Exported (in addition to being used internally) purely so regression tests can
+// exercise it directly against the two-secret-field bug without spinning up a full
+// HTTP request/DB stack. Not part of the public webhook route surface.
+export function _verifyTenantWebhookSignature(req, tenant, wamid) {
+  // [FIX-SIG-1] Resolve BOTH candidate secrets — per-tenant AND the global env
+  // fallback — instead of picking exactly one and never trying the other.
+  //
+  // Previously the tenant secret (when present) won EXCLUSIVELY: if a tenant's
+  // meta.appSecret happened to be stale, mistyped, or left over from an app the
+  // tenant is no longer subscribed under (while Meta is actually delivering
+  // webhooks signed with the platform-wide META_APP_SECRET, or vice versa),
+  // every single message for that tenant would be silently dropped with no way
+  // to recover short of an admin fixing the DB field — a real message would
+  // never get a second chance against the other known-good secret.
   // decryptToken handles the enc: prefix transparently (imported above).
-  const encryptedSecret = tenant?.meta?.appSecret ?? null;
-  const rawSecret = (encryptedSecret ? decryptToken(encryptedSecret) : null)
-    ?? process.env.META_APP_SECRET
-    ?? null;
+  // [FIX-SIG-2] There are TWO places an operator can legitimately store a
+  // per-tenant Meta App Secret: `meta.appSecret` (added by the multi-tenant
+  // credential upgrade) and `whatsapp.webhookSecret` (added earlier, by the
+  // per-tenant HMAC feature, and still the field name exposed on the
+  // tenant-creation/update API's ALLOWED list). Both are encrypted the same
+  // way and both are documented as "the" webhook HMAC secret, but this
+  // function used to read ONLY `meta.appSecret`. Any tenant onboarded (or
+  // updated) via `whatsapp.webhookSecret` — the field createTenant/updateTenant
+  // actually accept from the setup form — had a secret sitting in the DB that
+  // verification never looked at, so EVERY real webhook delivery for that
+  // tenant failed HMAC and was dropped, consistently, for every message from
+  // that chat, even though nothing else about the tenant was misconfigured.
+  // Resolve all three candidates and accept a match against any of them.
+  const encryptedMetaSecret = tenant?.meta?.appSecret ?? null;
+  const encryptedWaSecret   = tenant?.whatsapp?.webhookSecret ?? null;
+  const metaSecret = encryptedMetaSecret ? decryptToken(encryptedMetaSecret) : null;
+  const waSecret   = encryptedWaSecret   ? decryptToken(encryptedWaSecret)   : null;
+  // Keep the old `tenantSecret` name pointing at the meta.appSecret value so the
+  // rest of this function (and its comments) still read naturally; waSecret is
+  // just another per-tenant candidate tried alongside it.
+  const tenantSecret = metaSecret;
+  const globalSecret = process.env.META_APP_SECRET || null;
 
   // No secret anywhere — pass through with a warning rather than silently dropping
   // the message. During migration, tenants that have not yet had meta.appSecret
@@ -184,7 +229,7 @@ function _verifyTenantWebhookSignature(req, tenant) {
   // contradicts that. A missing secret is an ops/config issue — log it clearly
   // so the operator knows, but don't silently break the bot.
   // [META-CREDS-FIX] Changed from hard reject → warn+pass in both environments.
-  if (!rawSecret) {
+  if (!tenantSecret && !waSecret && !globalSecret) {
     logger.warn('[Webhook] No app secret configured — signature check skipped. ' +
       'Set META_APP_SECRET or populate meta.appSecret on the tenant to enable HMAC verification.', {
       tenantId: String(tenant?._id),
@@ -196,25 +241,42 @@ function _verifyTenantWebhookSignature(req, tenant) {
   const sigHeader = req.headers['x-hub-signature-256'];
   if (!sigHeader) {
     // Meta always sends this header on real webhook events
-    logger.warn('[Webhook] Missing X-Hub-Signature-256 header', { ip: req.ip });
+    logger.warn('[Webhook] Missing X-Hub-Signature-256 header', { ip: req.ip, tenantId: String(tenant?._id) });
     return false;
   }
 
   const rawBody = req.rawBody;
   if (!rawBody) {
-    logger.error('[Webhook] rawBody missing — check app.js raw body parser setup');
+    logger.error('[Webhook] rawBody missing — check app.js raw body parser setup', { tenantId: String(tenant?._id) });
     return false;
   }
 
-  const expected = 'sha256=' + crypto
-    .createHmac('sha256', rawSecret)
-    .update(rawBody)
-    .digest('hex');
+  // [FIX-SIG-1][FIX-SIG-2] Try every candidate secret: the tenant's meta.appSecret,
+  // the tenant's whatsapp.webhookSecret, then the global env fallback. Any one
+  // matching is sufficient — this is what lets a tenant keep working through a
+  // secret migration/rotation window (or simply having used either of the two
+  // legitimate per-tenant fields) instead of a single wrong/unread value
+  // permanently wedging every message for that tenant.
+  if (tenantSecret && _hmacMatches(rawBody, tenantSecret, sigHeader)) return true;
+  if (waSecret && waSecret !== tenantSecret && _hmacMatches(rawBody, waSecret, sigHeader)) return true;
+  if (globalSecret && globalSecret !== tenantSecret && globalSecret !== waSecret && _hmacMatches(rawBody, globalSecret, sigHeader)) return true;
 
-  const sigBuf = Buffer.from(sigHeader);
-  const expBuf = Buffer.from(expected);
-  return sigBuf.length === expBuf.length &&
-         crypto.timingSafeEqual(sigBuf, expBuf);
+  // Neither candidate matched — log enough detail to actually
+  // diagnose this next time instead of a bare "mismatch" line. Never logs the
+  // secret values themselves, only which sources were available/tried and
+  // basic shape info about the request that can rule things in or out fast
+  // (rawBody length vs Content-Length, which secret source(s) existed).
+  logger.warn('[Webhook] ✗ Signature mismatch for tenant — message dropped', {
+    tenantId: String(tenant?._id),
+    wamid: wamid || null,
+    hadTenantSecret: !!tenantSecret,
+    hadWebhookSecret: !!waSecret,
+    hadGlobalSecret: !!globalSecret,
+    rawBodyLength: rawBody.length,
+    contentLengthHeader: req.headers['content-length'] || null,
+    sigHeaderPrefix: sigHeader.slice(0, 12), // "sha256=" + first few hex chars only
+  });
+  return false;
 }
 
 // ── [FIX-BUG9] Button IDs generated inside active flows — must bypass intent detection
@@ -1899,6 +1961,38 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
 
   // ── 15. Active flow ───────────────────────────────────────────────────────
   if (session.currentFlow) {
+    // [FIX-LISTNAV-ORDER-COLLISION] buildWelcomeSequence()'s LIST-NAV-1 welcome
+    // list uses row id 'ORDER' for "🍔 Order Food" — which is ALSO the literal
+    // currentFlow value the ORDER flow sets (flows: ['ORDER','BOOKING']). Before
+    // LIST-NAV-1 the welcome screen sent BUTTON replies (isListReply=false), so
+    // the very next check below — written for genuine in-flow menu-item taps —
+    // could never see a welcome-screen tap. Switching the welcome screen to a
+    // LIST message made that collision reachable: a customer who already has
+    // currentFlow='ORDER' (they tapped Order Food once already, or have a cash
+    // order sitting in AWAIT_ADMIN_CONFIRM awaiting the admin) who then taps the
+    // OLD "🍔 Order Food" welcome row again — WhatsApp never disables old
+    // interactive messages — sends id='ORDER' as a list_reply. That used to fall
+    // straight into the menu-item-selection branch below and get treated as if
+    // the customer had ordered a dish literally named "ORDER", which matches
+    // nothing — a confusing "couldn't find that" reply instead of the menu they
+    // tapped for. BOOK/BROWSE_CATALOG/QUESTION never collide this way (their row
+    // ids don't match any currentFlow value, and QUESTION bypasses this whole
+    // section via FLOW_PASSTHROUGH_IDS) — which is exactly why only Order Food
+    // looked broken while Book a Table and Ask a Question worked fine.
+    // Fix: recognise this specific re-tap and treat it as "show me the order
+    // flow" (restart via startFlow, same as a fresh tap) instead of feeding the
+    // literal string 'ORDER' to the item picker.
+    if (isListReply && session.currentFlow === 'ORDER' && messageText.trim().toUpperCase() === 'ORDER') {
+      const { startFlow: _startOrderFlow } = await import('../core/conversations/flowEngine.js');
+      const freshOrderSession = await getSession(from, tenantId) || session;
+      const reply = await _startOrderFlow({ flowName: 'ORDER', session: freshOrderSession, business, tenant: tenantDoc });
+      if (reply) {
+        const payloads = Array.isArray(reply) ? reply : [reply];
+        for (const payload of payloads) await dispatchMessage(from, payload, tenantDoc);
+      }
+      return;
+    }
+
     if (isListReply && session.currentFlow === 'ORDER' && !session.menuViewed) {
       await updateSession(from, tenantId, { menuViewed: true });
       session = { ...session, menuViewed: true };
@@ -2136,7 +2230,27 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
     // instead of resetting to the unrelated top-level buttons. Outside an
     // ORDER flow (e.g. mid-booking) there's no menu concept to show, so it
     // falls back to the same safe reset behavior as SHOW_MENU.
-    if (upperMsg === 'VIEW_MENU' || upperMsg === 'MENU' || upperMsg === 'SHOW MENU'
+    //
+    // [AUDIT-FIX-SHOWMENU-PARITY] The button id 'SHOW_MENU' was previously
+    // EXCLUDED from this menu-rendering branch and handled only by the plain
+    // reset block below — but SHOW_MENU is the exact button id every module
+    // OTHER than restaurant/delivery uses for its "view the menu/products"
+    // affordance (bakery "📋 Browse All", retail "📋 View All Products",
+    // cosmetics "🛍 Browse All", fashion "📋 Browse All", etc — see each
+    // module's flows/index.js / orderFlow.js). Because SHOW_MENU skipped this
+    // branch, tapping any of those buttons mid-ORDER-flow silently reset the
+    // session and dumped the customer on the generic top-level welcome
+    // buttons instead of showing the menu the label promised — the exact same
+    // bug class already fixed here for VIEW_MENU, just left unfixed for every
+    // other vertical's equivalent button. The customer then had to tap
+    // "Order Food" a second time just to see products again — a visible
+    // delay/dead-end that reads as the button being wired to the wrong
+    // (mismatched) action. Adding SHOW_MENU here gives it the exact same
+    // "show the real menu when inside an ORDER flow, otherwise fall through
+    // to the safe reset" treatment as VIEW_MENU, with zero behavior change
+    // outside an active ORDER flow (mid-booking, post-flow, or top-level
+    // "Start Over" taps still reset exactly as before via the block below).
+    if (upperMsg === 'VIEW_MENU' || upperMsg === 'SHOW_MENU' || upperMsg === 'MENU' || upperMsg === 'SHOW MENU'
         || upperMsg === 'VIEW MENU' || upperMsg === 'SEE MENU' || upperMsg === 'MAIN MENU'
         || upperMsg === 'BACK TO MENU') {
       if ((session.currentFlow || '').toUpperCase() === 'ORDER') {
@@ -2854,14 +2968,41 @@ export async function receiveWebhook(req, res) {
               continue;
             }
 
-            // [META-CREDS] Per-tenant webhook HMAC verification.
-            // Resolve the app secret: tenant-specific takes priority over global env fallback.
-            // This runs after tenant resolution so we know which secret to use.
-            if (!_verifyTenantWebhookSignature(req, tenant)) {
-              logger.warn('[Webhook] ✗ Signature mismatch for tenant — message dropped', {
-                tenantId: String(tenant._id), phoneNumberId, ip: req.ip,
-              });
-              continue; // Skip this message — possible spoofed request
+            // [META-CREDS] Per-tenant webhook HMAC verification. Tries the tenant's own
+            // secret and the global META_APP_SECRET fallback (see [FIX-SIG-1] on
+            // _verifyTenantWebhookSignature) — either matching is sufficient. Runs after
+            // tenant resolution so we know which secret(s) to try. On failure, the
+            // detailed diagnostic log is emitted inside _verifyTenantWebhookSignature
+            // itself (it has the rawBody/secret-source context this call site doesn't).
+            if (!_verifyTenantWebhookSignature(req, tenant, msg.id)) {
+              // [FIX-SIG-DUP] A mismatch does NOT necessarily mean the customer's tap
+              // was lost. WhatsApp/Meta fans a single event out to every webhook
+              // subscription configured on the WABA — if more than one Meta App (e.g.
+              // an old/legacy app left subscribed alongside the current one) points at
+              // this same URL, each copy is signed with ITS OWN App Secret. Only the
+              // copy signed with the secret we know about verifies; the other copy of
+              // the *same* wamid legitimately fails HMAC here even though nothing is
+              // actually broken for the customer.
+              //
+              // Distinguish the two cases instead of alarming on both:
+              //   - wamid already in ProcessedMessage → the valid twin already got
+              //     through and was handled. This is delivery noise, not an incident.
+              //   - wamid NOT found → this copy is the only one we've seen; the
+              //     customer really did not get a reply. Keep this loud.
+              const alreadyHandled = await ProcessedMessage.findOne({ wamid: msg.id, tenantId: String(tenant._id) }).lean();
+              if (alreadyHandled) {
+                logger.info('[Webhook] Duplicate delivery with non-matching signature ignored — ' +
+                  'message already processed via a valid delivery, customer unaffected', {
+                  tenantId: String(tenant._id), wamid: msg.id, from,
+                });
+              } else {
+                logger.warn('[Webhook] ✗✗ Signature mismatch and NO successful duplicate found for this wamid — ' +
+                  'customer likely did not receive a reply. Check for a second/legacy Meta App still ' +
+                  'subscribed to this WABA\'s webhook, or a stale meta.appSecret/META_APP_SECRET.', {
+                  tenantId: String(tenant._id), wamid: msg.id, from, phoneNumberId,
+                });
+              }
+              continue; // Skip this message — possible spoofed request, or an unmatched duplicate
             }
 
             await handleIncomingMessage({

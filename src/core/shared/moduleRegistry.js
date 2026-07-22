@@ -107,8 +107,32 @@ export async function registerAllModules() {
   registerFlow('GENERAL', 'ABOUT',    handleAbout);
 
   // ── Action handlers (module-registered) ───────────────────────────────────
-  registerAction('START_ORDER', async ({ session, message, business, tenant }) => {
+  // [AUDIT-FIX-CATALOG-STARTORDER] modules/catalog/waCatalogFlow.js's
+  // offerCatalogOnStartOrder() was fully implemented and its own header comment
+  // documents it as "Called from the moduleRegistry.js START_ORDER action
+  // override (see [CATALOG-REG-1] there)" — but no such override existed here.
+  // Same "implemented but unwired" bug class as withCatalogWelcomeOption()
+  // (see [AUDIT-FIX-CATALOG-WELCOME] in moduleRouter.js): WA-Catalog-enabled
+  // tenants in AI_DECIDES/ALWAYS_OFFER mode could never actually have their
+  // "🍔 Order Food" tap open with WA Catalog — it always silently went straight
+  // to the module's own text/list menu, no matter how the tenant was configured.
+  //
+  // Immediate-display guarantee: shouldOfferCatalog() (called first, inside
+  // offerCatalogOnStartOrder) short-circuits on `isCatalogEnabled(business) &&
+  // hasSellableProducts(business)` — two synchronous field/array checks, zero
+  // I/O, zero network calls. For any tenant without WA Catalog enabled (the
+  // default for every tenant that hasn't explicitly opted in), this resolves
+  // instantly and falls straight through to the exact same
+  // startFlow({ flowName: 'ORDER' }) call that ran here before — View Menu
+  // still displays immediately, with no added delay and no risk of silence.
+  // Only WA-Catalog-enabled tenants take the (documented, already-guarded)
+  // sendAndArmCatalog() network path, and any failure there still falls back
+  // to startFlow('ORDER') below rather than leaving the customer with no reply.
+  registerAction('START_ORDER', async ({ session, message, business, tenant, intent }) => {
     const { startFlow } = await import('../conversations/flowEngine.js');
+    const { offerCatalogOnStartOrder } = await import('../../modules/catalog/waCatalogFlow.js');
+    const { offered } = await offerCatalogOnStartOrder({ session, business, tenant, intent }).catch(() => ({ offered: false }));
+    if (offered) return null; // WA Catalog message already dispatched directly — nothing further to send
     return startFlow({ flowName: 'ORDER', session, business, tenant });
   });
 

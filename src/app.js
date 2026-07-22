@@ -108,7 +108,18 @@ app.use('/webhook', express.raw({ type: '*/*', limit: '2mb' }), (req, _res, next
   }
   next();
 });
-app.use(express.json({ limit: '2mb' }));
+// [FIX-DOUBLE-PARSE] Explicitly skip /webhook here instead of relying on
+// body-parser's internal "request already finished" guard to make this a no-op
+// for that route. That guard is real (verified: body-parser's read() checks
+// onFinished.isFinished(req) and calls next() without touching req.body when
+// the stream was already fully consumed by express.raw() above) — but leaning
+// on an internal implementation detail of a dependency is fragile. Scoping the
+// path explicitly removes any dependency on that detail and makes the intent
+// unambiguous: /webhook's body is parsed exactly once, by the raw handler above.
+app.use((req, res, next) => {
+  if (req.path === '/webhook' || req.path.startsWith('/webhook/')) return next();
+  express.json({ limit: '2mb' })(req, res, next);
+});
 
 // Trust reverse proxy headers (X-Forwarded-For) — required for Railway, Render, Heroku, etc.
 app.set('trust proxy', 1);

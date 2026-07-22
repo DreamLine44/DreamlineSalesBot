@@ -27,6 +27,20 @@ export const BUTTON_ID_MAP = {
   // Now a distinct action; see moduleRouter.js case 'VIEW_MENU'.
   'VIEW_MENU':          'VIEW_MENU',
 
+  // [NAV-META3] Meta-compliant main-navigation upgrade — the welcome menu's
+  // "⋯ More" button opens a secondary 3-button screen (see moduleRouter.js
+  // case 'MORE_MENU'). 'MAIN_MENU' is distinct from the existing 'SHOW_MENU'
+  // action: SHOW_MENU is the short "Start Over" reset prompt, MAIN_MENU
+  // replays the full two-step welcome greeting (see moduleRouter.js case
+  // 'MAIN_MENU'). 'BROWSE_CATALOG' was already referenced by
+  // modules/catalog/waCatalogFlow.js's browseCatalogExplicit() and by
+  // waCatalogConfig.js's withCatalogWelcomeOption(), but had no BUTTON_ID_MAP
+  // entry — an unmapped interactive ID resolved to CONTINUE_FLOW, so a tap on
+  // it silently showed the welcome menu instead of the catalog. Now wired.
+  'MORE_MENU':          'MORE_MENU',
+  'MAIN_MENU':          'MAIN_MENU',
+  'BROWSE_CATALOG':     'BROWSE_CATALOG',
+
   // Flow control
   'CONFIRM':            'CONFIRM',
   'CANCEL':             'CANCEL',
@@ -361,11 +375,22 @@ export const INTENT_PATTERNS = {
   // (see intentEngine.js intentToAction, moduleRouter.js case 'VIEW_MENU', and
   // webhookController.js mid-flow handling) that actually renders the menu.
   VIEW_MENU: [
-    'menu', 'show menu', 'view menu', 'see menu', 'main menu', 'back to menu',
+    'menu', 'show menu', 'view menu', 'see menu', 'back to menu',
   ],
 
   SHOW_MENU: [
     'home', 'back', 'restart', '0', 'start over',
+  ],
+
+  // [AUDIT-FIX-MAINMENU-COLLISION] 'main menu' used to live in VIEW_MENU's
+  // keyword list (predates [NAV-META3]) — a customer *typing* "main menu"
+  // therefore hit VIEW_MENU → startFlow('ORDER') and saw the product menu,
+  // while tapping the "🏠 Main Menu" button (BUTTON_ID_MAP → action
+  // 'MAIN_MENU') replays the full two-step welcome via buildWelcomeSequence().
+  // Same words, two different screens depending on tap vs type. Now typed
+  // "main menu" resolves to the same MAIN_MENU action the button produces.
+  MAIN_MENU: [
+    'main menu', 'go to main menu', 'home menu',
   ],
 
   CAKE_CUSTOMIZATION: [

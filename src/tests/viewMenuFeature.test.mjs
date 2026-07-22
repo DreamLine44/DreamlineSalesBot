@@ -54,7 +54,11 @@ function readSource(relPath) {
 // ── 1. patterns.js — VIEW_MENU split out of SHOW_MENU ───────────────────────
 
 test('patterns.js: VIEW_MENU keyword list contains the menu-viewing phrases', () => {
-  const mustHave = ['menu', 'show menu', 'view menu', 'see menu', 'main menu', 'back to menu'];
+  // [AUDIT-FIX-MAINMENU-COLLISION] 'main menu' no longer belongs to VIEW_MENU —
+  // it moved to its own MAIN_MENU intent so typed "main menu" resolves to the
+  // same action as tapping the "🏠 Main Menu" button (see patterns.js and
+  // intentEngine.js intentToAction for the companion change).
+  const mustHave = ['menu', 'show menu', 'view menu', 'see menu', 'back to menu'];
   for (const phrase of mustHave) {
     assert.ok(
       INTENT_PATTERNS.VIEW_MENU?.includes(phrase),
@@ -97,7 +101,9 @@ test('detectIntent: tapping a VIEW_MENU button resolves to action VIEW_MENU (not
 });
 
 test('detectIntent: typed "menu" / "view menu" resolve to action VIEW_MENU via exact keyword match', async () => {
-  const phrases = ['menu', 'view menu', 'show menu', 'see menu', 'main menu'];
+  // [AUDIT-FIX-MAINMENU-COLLISION] 'main menu' intentionally excluded here — it
+  // now resolves to action MAIN_MENU instead (see the dedicated test below).
+  const phrases = ['menu', 'view menu', 'show menu', 'see menu'];
   for (const message of phrases) {
     const result = await detectIntent({ message, isInteractive: false, session: {}, business: { businessMode: 'RESTAURANT' } });
     assert.equal(result.action, 'VIEW_MENU', `'${message}' should resolve to VIEW_MENU, got ${result.action}`);

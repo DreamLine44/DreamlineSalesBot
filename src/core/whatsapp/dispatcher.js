@@ -266,8 +266,30 @@ export async function dispatchMessage(to, ui, tenant) {
   }
 
   // Live Meta API
-  const payload = buildPayload(to, ui);
-  if (!payload) return;
+  let payload = buildPayload(to, ui);
+
+  // [FIX-SILENT-DROP] buildPayload() intentionally returns null for a handful of
+  // malformed-message guards (list with zero rows after normalisation, catalog
+  // message with no catalogId, image with no url, etc.) so a broken payload is
+  // never sent to Meta. Previously that null propagated straight back out of
+  // dispatchMessage with a bare `return` — no log line, no message to the
+  // customer, nothing. From the customer's side a tap (e.g. "View Menu") simply
+  // produced no reply at all, which reads as the bot being broken or hung.
+  // Now: log loudly (so this is diagnosable instead of a silent no-op) and, if
+  // the original ui had any body/text, fall back to sending that as a plain
+  // text message so the customer always gets *something* rather than silence.
+  if (!payload) {
+    logger.warn('[Dispatch] ✗ buildPayload returned null — message payload was malformed, falling back to text', {
+      to,
+      type: ui.type,
+      hadBody: !!(ui.body || ui.text),
+      tenantId: tenant?._id,
+    });
+    const fallbackText = ui.body || ui.text;
+    if (!fallbackText) return;
+    payload = buildPayload(to, { type: 'text', body: fallbackText });
+    if (!payload) return;
+  }
 
   // [AUDIT-P2-A] Decrypt token before use — transparently handles both encrypted
   // (enc: prefix) and plaintext tokens (pre-migration / dev environments).
