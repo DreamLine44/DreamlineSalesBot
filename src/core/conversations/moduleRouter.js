@@ -221,7 +221,6 @@ export async function route({ action, intent, session, message, business, tenant
 
       // No active order — soft welcome menu, no branded greeting
       const cfg = getModeConfig(business);
-      return {
       return buildOptionsReply(cfg, '😊 What would you like to do?');
     }
 
@@ -232,7 +231,6 @@ export async function route({ action, intent, session, message, business, tenant
       // through to the unknown-action logger and returns the generic fallback, which is
       // jarring for a customer who typed "5" from the main menu. Show the welcome menu instead.
       const cfg = getModeConfig(business);
-      return {
       return buildOptionsReply(cfg, business?.customMessages?.welcomeMessage || cfg.messages?.welcome || '👋 How can I help you today?');
     }
 
@@ -408,7 +406,6 @@ export async function route({ action, intent, session, message, business, tenant
       // again — that's jarring and feels like the bot forgot the conversation.
       // SHOW_MENU shows a short "what else can I help with?" prompt + action buttons.
       // GREET (first message / fresh start) shows the full branded welcome.
-      return {
       return buildOptionsReply(cfg, cfg.messages?.showMenuPrompt || '👇 What would you like to do?');
     }
 
