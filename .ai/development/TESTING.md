@@ -77,6 +77,57 @@ import directly — consistent with the existing
 5. Run the full suite (`npm test`) and confirm zero regressions before
    considering the change complete.
 
+## Known issue: `npm test` (`node --test tests/`) vs. `node --test tests/*.test.mjs`
+
+On Node v22.22.2 in this environment, `npm test` (which runs exactly
+`node --test tests/`) failed immediately with `Cannot find module
+'/path/tests'` — passing the directory without a trailing glob didn't
+discover files as expected. Running `node --test tests/*.test.mjs`
+directly worked and executed all 420 tests. If `npm test` fails
+immediately with a `MODULE_NOT_FOUND` on the bare `tests/` path in your
+environment, try the explicit glob before assuming something else is
+broken.
+
+## KNOWN FAILING TESTS as of this audit pass — read before trusting a green/red result
+
+Running the full suite in this environment: **403 passing, 17 failing.**
+At least one cluster of failures is a **genuinely stale test file**, not a
+code regression — worth fixing (or deleting) rather than trusting blindly:
+
+- **`tests/dispatcherListChunking.test.mjs`** tests `[FIX-LIST-TRUNC]`
+  (the OLDER assumption: 10 rows *per section*, up to 10 sections, chunk
+  overflow into "(cont.)" sections). This has since been **superseded** by
+  `[FIX-LIST-CAP-2]` in `core/whatsapp/dispatcher.js` (10 rows *total*
+  across the whole message — see `.ai/whatsapp/DISPATCHER_AND_LIMITS.md`
+  and `.ai/references/RECURRING_BUG_PATTERNS.md` #4), which was itself a
+  fix for a real Meta 400 error the chunking approach caused in
+  production. The test file's assertions directly contradict the current,
+  correct `dispatcher.js` behavior. **This test file should be rewritten
+  or removed** — it is currently testing for behavior the code
+  deliberately no longer has.
+- A cluster of `buildWelcomeSequence` test failures (`moduleRouter.js`)
+  expect a two-message shape (plain-text greeting + separate buttons
+  message) that doesn't match the current single-Interactive-List welcome
+  UI described in `.ai/modules/BUSINESS_MODULES.md` — likely the same
+  "test written against an earlier UI iteration" issue as above.
+- A cluster of WA Catalog tests (`shouldOfferCatalog`, `shouldShowCatalogButton`,
+  `withCatalogWelcomeOption`, `syncWaCatalog` response fields) are also
+  failing — these need investigation to determine whether they're stale
+  (same class as above) or represent a real regression in
+  `modules/catalog/waCatalogConfig.js` / `waCatalogService.js`. Given this
+  session's `isCatalogEnabled()` behavior matched its own doc comments
+  exactly when read directly, stale-test is the more likely explanation,
+  but **do not assume this without actually running the specific failing
+  assertions against the current function output** — confirm before
+  deleting or "fixing" any of these.
+
+**Do not treat a passing `npm test` run as ground truth without first
+running it and checking the current pass/fail delta against this list** —
+either resolve these 17 (likely by retiring `dispatcherListChunking.test.mjs`
+and updating/removing the stale welcome/catalog assertions to match current
+behavior), or at minimum confirm the failure count hasn't grown before
+considering any new change "regression-free."
+
 ## What NOT to do
 
 - Don't mock MongoDB — this codebase doesn't use an in-memory Mongo or
