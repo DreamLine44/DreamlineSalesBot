@@ -73,7 +73,12 @@ export function registerAction(action, handler) {
 export function buildWelcomeSequence(business, cfg) {
   const customWelcome = business?.customMessages?.welcomeMessage;
   const greeting = customWelcome || cfg.messages?.welcome || '👋 Welcome! How can I help you today?';
-  const promptBody = cfg.messages?.chooseOptionPrompt || 'Choose an option below to get started ▼';
+  // [AUDIT-FIX-WELCOMELIST-REMOVE] Was 'Choose an option below to get started ▼'.
+  // That phrase duplicated the greeting's own question (which already asks
+  // "What would you like to do today?") and its "▼" implied a list dropdown
+  // even on the plain 3-button messages that never had one. Replaced with a
+  // short, neutral prompt.
+  const promptBody = cfg.messages?.chooseOptionPrompt || '👇';
 
   // [AUDIT-FIX-CATALOG-WELCOME] waCatalogConfig.js's shouldShowCatalogButton() /
   // withCatalogWelcomeOption() were fully implemented (see [CATALOG-UX-BUTTON])
@@ -108,10 +113,15 @@ export function buildWelcomeSequence(business, cfg) {
   // ACTION_REGISTRY, and every downstream flow/case (case 'BROWSE_CATALOG',
   // ACTION_REGISTRY 'QUESTION'/'START_ORDER'/'START_BOOKING') are reused
   // completely unchanged; only the outbound message SHAPE changes here, not
-  // routing, business logic, state, or any handler. Modes that don't define
-  // cfg.ui.welcomeList (every module except restaurant, for now) fall straight
-  // through to the moreMenuButtons/withCatalogWelcomeOption logic below,
-  // completely untouched.
+  // routing, business logic, state, or any handler.
+  // [AUDIT-FIX-WELCOMELIST-REMOVE] RESTAURANT (the only mode that used to opt
+  // in via modules/restaurant/configs/index.js) has had its welcomeList
+  // config removed — see that file for why. No mode currently sets
+  // cfg.ui.welcomeList in the shape this branch expects, so every mode now
+  // falls straight through to the moreMenuButtons/withCatalogWelcomeOption
+  // logic below. The branch itself is left in place as shared infrastructure
+  // in case a future mode genuinely wants a single-tap list menu — it is
+  // dormant, not deleted, and touches nothing when unused.
   if (cfg.ui?.welcomeList) {
     return {
       type:   'list',

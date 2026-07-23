@@ -14,30 +14,31 @@ export const RESTAURANT_CONFIG = {
   },
 
   ui: {
-    // [LIST-NAV-1] Single Interactive List navigation — replaces the previous
-    // 3-button + "⋯ More" submenu (NAV-META3, kept just below) as the layout
-    // buildWelcomeSequence() actually sends for GREET/MAIN_MENU. One "Choose
-    // an option ▼" list opens all four primary options with descriptions in
-    // a single tap. Row ids are UNCHANGED from the buttons below
-    // (ORDER/BOOK/BROWSE_CATALOG/QUESTION), so BUTTON_ID_MAP, ACTION_REGISTRY,
-    // and every downstream flow/case handle a tap here exactly as they always
-    // have — only the outbound message shape changed, not routing or logic.
-    welcomeList: {
-      button: 'Choose an option ▼',
-      rows: [
-        { id: 'ORDER',          title: '🍔 Order Food',     description: 'Browse our menu & place an order' },
-        { id: 'BOOK',           title: '📅 Book a Table',   description: 'Reserve a table in advance'        },
-        { id: 'BROWSE_CATALOG', title: '🛍 Browse Catalog', description: 'Shop our products & collections'   },
-        { id: 'QUESTION',       title: '❓ Ask a Question', description: 'Get help from our team'            },
-      ],
-    },
+    // [AUDIT-FIX-WELCOMELIST-REMOVE] The "Choose an option ▼" list dropdown
+    // (formerly [LIST-NAV-1] here) has been removed entirely for RESTAURANT.
+    // It duplicated the greeting's own question ("What would you like to do
+    // today?" immediately followed by "Choose an option below to get
+    // started ▼"), forced an extra tap-to-open-the-list step Meta's direct
+    // reply buttons don't need, and — because buildWelcomeSequence() returns
+    // a single list object for any cfg.ui.welcomeList config instead of the
+    // two-element [text, buttons] array every other case expects — it was
+    // silently breaking the existing 'RESTAURANT is unaffected — still
+    // exactly its static 3-button Order/Book/⋯More set' regression test in
+    // tests/auditFixButtonsMenuSystemic.test.mjs. Removing this config key is
+    // enough: buildWelcomeSequence() (moduleRouter.js) already falls straight
+    // through to the NAV-META3 3-button + "⋯More" path below whenever
+    // cfg.ui.welcomeList is absent — no other file needed to change. This
+    // does NOT touch VIEW_MENU: that's a fully separate action (case
+    // 'VIEW_MENU' in moduleRouter.js, still starts the ORDER flow and shows
+    // the real menu exactly as before) that was never part of this welcome
+    // list in the first place.
     // [NAV-META3] Meta-compliant main navigation: 3 primary buttons, with
     // "⋯ More" opening a secondary screen (moreMenuButtons below) rather than
     // overflowing past Meta's 3-reply-button limit. See moduleRouter.js cases
     // 'MORE_MENU' / 'MAIN_MENU' / 'BROWSE_CATALOG'.
-    // No longer used by buildWelcomeSequence() now that welcomeList (above)
-    // takes precedence there — but kept as-is because welcomeButtons is also
-    // the shared 3-button set reused by many OTHER replies throughout the
+    // This IS what buildWelcomeSequence() sends for GREET/MAIN_MENU now that
+    // welcomeList has been removed above. Also kept as the shared 3-button
+    // set reused by many OTHER replies throughout the
     // codebase (post-order-confirmation "what next?", About, Cancel-All,
     // payment confirmations, lead capture, etc. — see moduleRouter.js,
     // postFlowHandler.js, adminCommandService.js). Removing or resizing it
