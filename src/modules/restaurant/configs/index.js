@@ -14,38 +14,42 @@ export const RESTAURANT_CONFIG = {
   },
 
   ui: {
-    // [LIST-NAV-1] Single Interactive List navigation — replaces the previous
-    // 3-button + "⋯ More" submenu (NAV-META3, kept just below) as the layout
-    // buildWelcomeSequence() actually sends for GREET/MAIN_MENU. One "Choose
-    // an option ▼" list opens all four primary options with descriptions in
-    // a single tap. Row ids are UNCHANGED from the buttons below
-    // (ORDER/BOOK/BROWSE_CATALOG/QUESTION), so BUTTON_ID_MAP, ACTION_REGISTRY,
-    // and every downstream flow/case handle a tap here exactly as they always
-    // have — only the outbound message shape changed, not routing or logic.
+    // [RESTORE-LISTNAV-1] Restored per explicit request: the welcome screen
+    // must render as the single "Choose an option ▼" interactive list, not
+    // the 3-button + "⋯ More" set. buildWelcomeSequence() (moduleRouter.js)
+    // checks cfg.ui.welcomeList FIRST and, when present, returns ONE merged
+    // list message (greeting + prompt in the body, rows below) instead of
+    // the [text, buttons] two-message array — this branch was already fully
+    // built and wired (dormant, not deleted) from before the prior
+    // AUDIT-FIX-WELCOMELIST-REMOVE pass, so restoring it here is the only
+    // change needed. Row ids (ORDER/BOOK/BROWSE_CATALOG/QUESTION) are the
+    // SAME ids welcomeButtons/moreMenuButtons already used, so every
+    // downstream case in moduleRouter.js (case 'BROWSE_CATALOG', 'QUESTION',
+    // ACTION_REGISTRY 'START_ORDER'/'START_BOOKING', etc.) keeps working
+    // completely unchanged — only the outbound message SHAPE changes.
     welcomeList: {
-      button: 'Choose an option ▼',
+      button: 'Choose an option',
       rows: [
-        { id: 'ORDER',          title: '🍔 Order Food',     description: 'Browse our menu & place an order' },
-        { id: 'BOOK',           title: '📅 Book a Table',   description: 'Reserve a table in advance'        },
-        { id: 'BROWSE_CATALOG', title: '🛍 Browse Catalog', description: 'Shop our products & collections'   },
-        { id: 'QUESTION',       title: '❓ Ask a Question', description: 'Get help from our team'            },
+        { id: 'ORDER',           title: '🍔 Order Food',      description: 'Browse the menu and place an order' },
+        { id: 'BOOK',            title: '📅 Book a Table',    description: 'Reserve a table for your visit'      },
+        { id: 'BROWSE_CATALOG',  title: '🛍 Browse Catalog',  description: 'View our full product catalog'      },
+        { id: 'QUESTION',        title: '❓ Ask a Question',  description: 'Get a quick answer'                  },
       ],
     },
     // [NAV-META3] Meta-compliant main navigation: 3 primary buttons, with
     // "⋯ More" opening a secondary screen (moreMenuButtons below) rather than
     // overflowing past Meta's 3-reply-button limit. See moduleRouter.js cases
     // 'MORE_MENU' / 'MAIN_MENU' / 'BROWSE_CATALOG'.
-    // No longer used by buildWelcomeSequence() now that welcomeList (above)
-    // takes precedence there — but kept as-is because welcomeButtons is also
-    // the shared 3-button set reused by many OTHER replies throughout the
+    // NOTE: with welcomeList restored above, GREET/MAIN_MENU no longer send
+    // this 3-button set as the primary welcome — they send the single list
+    // instead. welcomeButtons/moreMenuButtons are kept for two reasons: (1)
+    // the shared button set is reused by many OTHER replies throughout the
     // codebase (post-order-confirmation "what next?", About, Cancel-All,
     // payment confirmations, lead capture, etc. — see moduleRouter.js,
-    // postFlowHandler.js, adminCommandService.js). Removing or resizing it
-    // would ripple into all of those unrelated call sites for no reason.
-    // moreMenuButtons/MORE_MENU/MAIN_MENU also stay fully wired in
-    // moduleRouter.js as a harmless backward-compat path for any "⋯ More" /
-    // "🏠 Main Menu" button a customer may already have open from before
-    // this change shipped.
+    // postFlowHandler.js, adminCommandService.js), and (2) MORE_MENU/
+    // MAIN_MENU stay wired as a harmless backward-compat path for any "⋯
+    // More" button a customer may already have open from before this
+    // restore.
     welcomeButtons: [
       { id: 'ORDER',     title: '🍔 Order Food'   },
       { id: 'BOOK',      title: '📅 Book a Table' },
