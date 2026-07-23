@@ -115,16 +115,11 @@ export async function handleOrderFlow({ session, message, business, tenant, isIn
       }
 
       // Too short — show a gentle nudge instead of just dumping the menu again
-      // [AUDIT-FIX-QBUTTONS] The button here previously said "🔄 Start Over"
-      // with id SHOW_MENU while the body text told the customer to tap "View
-      // Menu" — SHOW_MENU doesn't even show the menu, it resets the session
-      // back to the generic welcome screen. Button now matches what the copy
-      // promises and what the customer actually wants: the real menu.
       if (clean.length < 3) {
         return {
           type:    'buttons',
           body:    `Please type the name of what you'd like to order, or tap *View Menu* to see all options:`,
-          buttons: [{ id: 'VIEW_MENU', title: '📋 View Menu' }],
+          buttons: [{ id: 'SHOW_MENU', title: '🔄 Start Over' }],
         };
       }
 
@@ -508,23 +503,13 @@ async function _selectItem(item, session, business, data) {
 export async function handleRestaurantQuestion({ session, message, business, tenant }) {
   const raw = String(message || '').trim();
 
-  // [AUDIT-FIX-QBUTTONS] Previously showed "🍔 Order Food" + "📋 View Menu"
-  // together here — both buttons do the exact same thing (VIEW_MENU and
-  // ORDER both route to startFlow('ORDER'), which opens the menu), so the
-  // pair read as a confusing, redundant choice next to each other. Switched
-  // to the same ORDER/BOOK/QUESTION trio used a few lines below when an AI
-  // answer IS given, so every exit out of the Question flow looks and
-  // behaves consistently. VIEW_MENU itself is untouched — it still works
-  // exactly as before everywhere else (mid-order-flow "View Menu" taps,
-  // typed "menu"/"view menu").
   if (!raw || raw.length < 2) {
     return {
       type: 'buttons',
       body: '❓ What would you like to know? Ask about our menu, hours, allergens, or anything else!',
       buttons: [
-        { id: 'ORDER',    title: '🍔 Order Food'   },
-        { id: 'BOOK',     title: '📅 Book a Table' },
-        { id: 'QUESTION', title: '❓ Ask Another'  },
+        { id: 'ORDER',     title: '🍔 Order Food'  },
+        { id: 'VIEW_MENU', title: '📋 View Menu'   }, // [AUDIT-FIX-VIEWMENU] was SHOW_MENU
       ],
     };
   }

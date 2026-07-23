@@ -62,15 +62,13 @@ test('buildWelcomeSequence: catalog-disabled tenant sees no Browse Catalog optio
   assert.ok(!ids.includes('BROWSE_CATALOG'));
 });
 
-test('buildWelcomeSequence: RESTAURANT uses the single "Choose an option ▼" list dropdown (RESTORE-LISTNAV-1)', () => {
+test('buildWelcomeSequence: RESTAURANT is unaffected — still exactly its static 3-button Order/Book/⋯More set', () => {
   const cfg = getModeConfig({ businessMode: 'RESTAURANT' });
   const business = catalogBusiness({ businessMode: 'RESTAURANT' });
   const seq = buildWelcomeSequence(business, cfg);
 
-  // Restored welcomeList branch returns ONE merged message, not a [text, buttons] array.
-  assert.equal(seq.type, 'list');
-  assert.equal(seq.button, 'Choose an option');
-  assert.deepEqual(seq.rows.map(r => r.id), ['ORDER', 'BOOK', 'BROWSE_CATALOG', 'QUESTION']);
+  assert.equal(seq[1].type, 'buttons');
+  assert.deepEqual(seq[1].buttons.map(b => b.id), ['ORDER', 'BOOK', 'MORE_MENU']);
 });
 
 // ── 2. MAIN_MENU / VIEW_MENU collision ───────────────────────────────────────
