@@ -583,7 +583,7 @@ export async function getBusinessSettings(req, res) {
   try {
     const { tenantId } = req.params;
     const business = await BusinessConfig.findOne({ tenantId })
-      .select('name description businessMode adminPhone menuItems services faq payment leadCapture hours customMessages addOns settings')
+      .select('name description businessMode adminPhone menuItems services faq payment leadCapture hours customMessages addOns settings waCatalog phoneNumberId')
       .lean();
     if (!business) return res.status(404).json({ error: 'Business not found' });
     res.json({ business });
@@ -602,6 +602,47 @@ export async function updateBusinessSettings(req, res) {
     for (const key of allowed) {
       if (req.body[key] !== undefined) updates[key] = req.body[key];
     }
+
+    // [AUDIT-FIX-CATALOG-SETTINGS-1] 'waCatalog' was missing from `allowed`
+    // entirely — CatalogPage.jsx's save() (bizApi.updateSettings({ waCatalog:
+    // { enabled, mode } })) was silently dropped by the `allowed` filter above,
+    // so every tenant catalog-settings save either did nothing (if other
+    // fields were also being saved in the same call) or hit this function's
+    // own "No valid fields to update" 400 (when waCatalog was the only key
+    // sent, which is what CatalogPage always sends). Handled as a special
+    // case rather than just adding 'waCatalog' to `allowed` above: a tenant
+    // must only ever be able to toggle `enabled`/`mode` — never `catalogId`
+    // (admin-only, see [AUDIT-FIX-CATALOG-TENANT-LOCKDOWN-1] in
+    // CatalogPage.jsx) or the sync bookkeeping fields
+    // (syncedRetailerIds/syncedItemHashes/lastSyncedAt/lastSyncError). Written
+    // via dot-path keys (`waCatalog.enabled`/`waCatalog.mode`) rather than
+    // `updates.waCatalog = req.body.waCatalog` so `$set` only ever touches
+    // those two leaves and can never replace/wipe the rest of the subdocument.
+    let business404Check = null;
+    if (req.body.waCatalog !== undefined) {
+      const wc = req.body.waCatalog || {};
+      if (wc.enabled !== undefined) updates['waCatalog.enabled'] = !!wc.enabled;
+      if (wc.mode !== undefined)    updates['waCatalog.mode']    = wc.mode;
+
+      // Enabling it requires a catalogId already on file (admin-set) AND a
+      // real, connected WhatsApp number — CatalogPage.jsx's own comment
+      // ("backend returns a clear 400 message in either case") already
+      // assumed this check existed; it didn't, so a tenant could previously
+      // flip the toggle on with nothing actually configured.
+      if (wc.enabled === true) {
+        business404Check = await BusinessConfig.findOne({ tenantId })
+          .select('waCatalog phoneNumberId').lean();
+        if (!business404Check) return res.status(404).json({ error: 'Business not found' });
+        if (!business404Check.waCatalog?.catalogId) {
+          return res.status(400).json({ error: 'No Catalog ID is configured for this account yet — contact your admin.' });
+        }
+        const phoneId = business404Check.phoneNumberId;
+        if (!phoneId || String(phoneId).startsWith('SIM_')) {
+          return res.status(400).json({ error: 'WhatsApp is not connected yet — connect a real number before enabling the catalog.' });
+        }
+      }
+    }
+
     if (!Object.keys(updates).length) return res.status(400).json({ error: 'No valid fields to update' });
 
     // [FIX-TONE-3] findOneAndUpdate bypasses Mongoose pre('save') hooks — inline

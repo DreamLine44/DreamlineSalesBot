@@ -52,6 +52,7 @@ import businessRoutes    from './routes/businessRoutes.js';
 import dashboardRoutes   from './routes/dashboardRoutes.js';
 import tenantRoutes      from './routes/tenantRoutes.js';
 import adminRoutes                 from './routes/adminRoutes.js';
+import adminUserRoutes             from './routes/adminUserRoutes.js';
 import whatsappOnboardingRoutes from './routes/whatsappOnboardingRoutes.js';
 
 const app        = express();
@@ -191,6 +192,14 @@ app.post('/admin/rotate-super-key', adminLimiter, requireSuperAdminKey, (_req, r
 // [FIX-MOUNT-1] whatsappOnboardingRoutes — tenant-facing /api/whatsapp/* and
 // admin-facing /admin/whatsapp/* — must be mounted before the broad /admin catch-all.
 app.use('/', whatsappOnboardingRoutes);
+// [FIX-MOUNT-2] adminUserRoutes.js (multi-admin/staff login, invite, and
+// management — /dashboard/auth/*, /dashboard/:tenantId/admins/*) was fully
+// built, imported by nothing, and never mounted anywhere. Every request from
+// StaffPage.jsx / AcceptInvitePage.jsx / the staff login flow was 404ing
+// before it ever reached adminUserController.js. Mounted at '/' exactly as
+// its own header comment says, matching whatsappOnboardingRoutes.js's
+// pattern of declaring full paths per-route rather than a shared prefix.
+app.use('/', adminUserRoutes);
 app.use('/admin/tenants', adminLimiter, requireSuperAdminKey, tenantRoutes);
 app.use('/admin',         adminLimiter, requireApiKey,        adminRoutes);
 
