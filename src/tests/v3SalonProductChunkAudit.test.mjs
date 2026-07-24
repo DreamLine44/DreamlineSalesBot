@@ -49,7 +49,7 @@ test('salon/flows/index.js: _buildProductMenu returns flat top-level rows, not a
 
   const returnStart = body.indexOf('return {', body.indexOf('const rows ='));
   assert.ok(returnStart !== -1, 'return statement not found after rows construction');
-  const returnBlock = body.slice(returnStart, returnStart + 500);
+  const returnBlock = body.slice(returnStart, returnStart + 800);
 
   assert.doesNotMatch(
     returnBlock,

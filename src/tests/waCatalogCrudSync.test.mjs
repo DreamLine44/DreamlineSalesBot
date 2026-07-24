@@ -91,7 +91,7 @@ test('BusinessConfig schema stores waCatalog.syncedItemHashes as a String map de
 test('businessController.syncWaCatalog surfaces the deleted count in its response', () => {
   const src = read('../controllers/businessController.js');
   const idx = src.indexOf('export async function syncWaCatalog');
-  const body = src.slice(idx, idx + 2600);
+  const body = src.slice(idx, idx + 3200);
   // [AUDIT-FIX-CATALOG-INVISIBLE-SKIPS] Response now also surfaces
   // skippedInvalid (items excluded from sync for missing image/invalid
   // price) — the field this test guards for (deleted) is still present,

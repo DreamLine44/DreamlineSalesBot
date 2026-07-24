@@ -261,8 +261,20 @@ process.on('unhandledRejection', (r) => {
   logger.error('[Process] Unhandled rejection', { reason: r instanceof Error ? r.message : String(r) });
 });
 process.on('uncaughtException', (err) => {
-  logger.error('[Process] Uncaught exception', { err: err.message, stack: err.stack?.slice(0, 400) });
-  process.exit(1);
+  // [AUDIT-FIX-CRASH-1] Previously exited the whole process here — meaning
+  // ANY single uncaught exception anywhere (not necessarily in webhook
+  // request handling) killed the bot for every tenant until Railway
+  // restarted the container. webhookController.js already wraps per-message
+  // processing in its own try/catch (see receiveWebhook's inner catch), so
+  // an exception reaching all the way here is almost always something
+  // isolated (a background job, a rarely-hit edge case) rather than
+  // corrupted shared state that makes continuing unsafe. Logging loudly and
+  // staying up keeps the platform serving every OTHER tenant's customers
+  // instead of a full outage over one bad edge case.
+  logger.error('[Process] ✗✗ Uncaught exception — NOT exiting (see AUDIT-FIX-CRASH-1). ' +
+    'This should still be treated as a bug to fix, but the process stays up.', {
+    err: err.message, stack: err.stack?.slice(0, 800),
+  });
 });
 
 start().catch(err => {

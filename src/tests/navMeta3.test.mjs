@@ -101,8 +101,17 @@ test('BUTTON_ID_MAP: no duplicate/overwritten keys were introduced by the NAV-ME
 
 // ── 2. moduleRouter.js — buildWelcomeSequence() ─────────────────────────────
 
+// NOTE: these four tests exercise the generic buildWelcomeSequence() contract
+// via RETAIL, not RESTAURANT. RESTAURANT_CONFIG now opts into
+// cfg.ui.welcomeList (see [LIST-NAV-1] in moduleRouter.js / restaurant
+// configs/index.js), which buildWelcomeSequence() checks FIRST and returns
+// early for — a single merged 'list' message, not this [text, buttons] array.
+// RETAIL has no welcomeList/moreMenuButtons, so it still exercises the plain
+// two-step contract this file documents (see auditFixButtonsMenuSystemic.test.mjs
+// for the RESTAURANT-specific list-message coverage).
+
 test('buildWelcomeSequence: returns a two-element array — plain text greeting, then a separate buttons message', () => {
-  const cfg = getModeConfig({ businessMode: 'RESTAURANT' });
+  const cfg = getModeConfig({ businessMode: 'RETAIL' });
   const seq = buildWelcomeSequence({}, cfg);
 
   assert.equal(seq.length, 2, 'welcome sequence must be exactly [text, buttons] — one interactive message, sent separately from the greeting');
@@ -111,7 +120,7 @@ test('buildWelcomeSequence: returns a two-element array — plain text greeting,
 });
 
 test('buildWelcomeSequence: the text message carries the branded welcome copy; the buttons message does not repeat it', () => {
-  const cfg = getModeConfig({ businessMode: 'RESTAURANT' });
+  const cfg = getModeConfig({ businessMode: 'RETAIL' });
   const seq = buildWelcomeSequence({}, cfg);
 
   assert.equal(seq[0].body, cfg.messages.welcome);
@@ -119,18 +128,18 @@ test('buildWelcomeSequence: the text message carries the branded welcome copy; t
 });
 
 test('buildWelcomeSequence: honors a tenant\'s customMessages.welcomeMessage override, same as the old single-message GREET behavior', () => {
-  const cfg = getModeConfig({ businessMode: 'RESTAURANT' });
-  const business = { businessMode: 'RESTAURANT', customMessages: { welcomeMessage: 'Yo! Welcome to Dee\'s Kitchen 🍲' } };
+  const cfg = getModeConfig({ businessMode: 'RETAIL' });
+  const business = { businessMode: 'RETAIL', customMessages: { welcomeMessage: 'Yo! Welcome to Dee\'s Kitchen 🍲' } };
   const seq = buildWelcomeSequence(business, cfg);
 
   assert.equal(seq[0].body, "Yo! Welcome to Dee's Kitchen 🍲");
 });
 
 test('buildWelcomeSequence: buttons message uses cfg.ui.welcomeButtons and never exceeds Meta\'s 3-reply-button limit', () => {
-  const cfg = getModeConfig({ businessMode: 'RESTAURANT' });
+  const cfg = getModeConfig({ businessMode: 'RETAIL' });
   const seq = buildWelcomeSequence({}, cfg);
 
-  assert.deepEqual(seq[1].buttons, RESTAURANT_CONFIG.ui.welcomeButtons);
+  assert.deepEqual(seq[1].buttons, cfg.ui.welcomeButtons);
   assert.ok(seq[1].buttons.length <= 3, `welcome buttons message has ${seq[1].buttons.length} buttons — Meta allows a maximum of 3`);
 });
 

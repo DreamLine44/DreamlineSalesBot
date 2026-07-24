@@ -32,7 +32,7 @@ import { INTENT_PATTERNS } from '../core/intents/patterns.js';
 function catalogBusiness(overrides = {}) {
   return {
     businessMode: 'RETAIL',
-    waCatalog: { enabled: true, catalogId: 'CAT_1', mode: 'MANUAL_ONLY' },
+    waCatalog: { enabled: true, catalogId: 'CAT_1', mode: 'MANUAL_ONLY', lastSyncedAt: new Date(), syncedRetailerIds: ['i1'] },
     menuItems: [{ _id: 'i1', name: 'Widget', available: true }],
     ...overrides,
   };
@@ -62,13 +62,18 @@ test('buildWelcomeSequence: catalog-disabled tenant sees no Browse Catalog optio
   assert.ok(!ids.includes('BROWSE_CATALOG'));
 });
 
-test('buildWelcomeSequence: RESTAURANT is unaffected — still exactly its static 3-button Order/Book/⋯More set', () => {
+test('buildWelcomeSequence: RESTAURANT uses its merged single "Choose an option" list message (LIST-NAV-1)', () => {
   const cfg = getModeConfig({ businessMode: 'RESTAURANT' });
   const business = catalogBusiness({ businessMode: 'RESTAURANT' });
   const seq = buildWelcomeSequence(business, cfg);
 
-  assert.equal(seq[1].type, 'buttons');
-  assert.deepEqual(seq[1].buttons.map(b => b.id), ['ORDER', 'BOOK', 'MORE_MENU']);
+  // RESTAURANT_CONFIG.ui.welcomeList takes precedence over the 3-button
+  // NAV-META3 layout — buildWelcomeSequence() returns ONE merged list
+  // message (not a [text, buttons] array) whenever a mode opts in via
+  // cfg.ui.welcomeList.
+  assert.equal(seq.type, 'list');
+  assert.equal(seq.button, cfg.ui.welcomeList.button);
+  assert.deepEqual(seq.rows.map(r => r.id), ['ORDER', 'BOOK', 'BROWSE_CATALOG', 'QUESTION']);
 });
 
 // ── 2. MAIN_MENU / VIEW_MENU collision ───────────────────────────────────────

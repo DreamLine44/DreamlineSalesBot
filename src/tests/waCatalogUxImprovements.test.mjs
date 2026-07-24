@@ -25,7 +25,7 @@ const { shouldShowCatalogButton, withCatalogWelcomeOption } =
 function makeBusiness(overrides = {}) {
   return {
     tenantId: 't1',
-    waCatalog: { enabled: true, catalogId: 'CAT_1', mode: 'AI_DECIDES' },
+    waCatalog: { enabled: true, catalogId: 'CAT_1', mode: 'AI_DECIDES', lastSyncedAt: new Date(), syncedRetailerIds: ['i1'] },
     menuItems: [
       { _id: 'i1', name: 'Burger',   category: 'Mains',  available: true },
       { _id: 'i2', name: 'Fries',    category: 'Mains',  available: true },
@@ -88,8 +88,8 @@ test('buildCategorizedSections caps at 10 sections and 30 rows per section', () 
 // ── shouldShowCatalogButton / withCatalogWelcomeOption ───────────────────────
 
 test('shouldShowCatalogButton is true for an enabled+configured tenant with sellable products, regardless of mode', () => {
-  assert.equal(shouldShowCatalogButton(makeBusiness({ waCatalog: { enabled: true, catalogId: 'C', mode: 'MANUAL_ONLY' } })), true);
-  assert.equal(shouldShowCatalogButton(makeBusiness({ waCatalog: { enabled: true, catalogId: 'C', mode: 'AI_DECIDES' } })), true);
+  assert.equal(shouldShowCatalogButton(makeBusiness({ waCatalog: { enabled: true, catalogId: 'C', mode: 'MANUAL_ONLY', lastSyncedAt: new Date(), syncedRetailerIds: ['i1'] } })), true);
+  assert.equal(shouldShowCatalogButton(makeBusiness({ waCatalog: { enabled: true, catalogId: 'C', mode: 'AI_DECIDES', lastSyncedAt: new Date(), syncedRetailerIds: ['i1'] } })), true);
 });
 
 test('shouldShowCatalogButton is false when disabled, unconfigured, or nothing sellable', () => {
