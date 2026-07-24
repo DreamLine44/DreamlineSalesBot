@@ -73,12 +73,7 @@ export function registerAction(action, handler) {
 export function buildWelcomeSequence(business, cfg) {
   const customWelcome = business?.customMessages?.welcomeMessage;
   const greeting = customWelcome || cfg.messages?.welcome || '👋 Welcome! How can I help you today?';
-  // [REMOVE-CHOOSE-PROMPT-1] No longer appends a "Choose an option below to
-  // get started ▼" line — only honors an explicit per-tenant override
-  // (cfg.messages.chooseOptionPrompt) if one is ever configured; otherwise
-  // the welcome body is just the greeting on its own.
-  const promptBody = cfg.messages?.chooseOptionPrompt || '';
-  const welcomeBody = promptBody ? `${greeting}\n\n${promptBody}` : greeting;
+  const promptBody = cfg.messages?.chooseOptionPrompt || 'Choose an option below to get started ▼';
 
   // [AUDIT-FIX-CATALOG-WELCOME] waCatalogConfig.js's shouldShowCatalogButton() /
   // withCatalogWelcomeOption() were fully implemented (see [CATALOG-UX-BUTTON])
@@ -120,7 +115,7 @@ export function buildWelcomeSequence(business, cfg) {
   if (cfg.ui?.welcomeList) {
     return {
       type:   'list',
-      body:   welcomeBody,
+      body:   `${greeting}\n\n${promptBody}`,
       button: cfg.ui.welcomeList.button || 'Choose an option',
       rows:   cfg.ui.welcomeList.rows || [],
     };
@@ -137,23 +132,20 @@ export function buildWelcomeSequence(business, cfg) {
   if (cfg.ui?.moreMenuButtons) {
     buttonsMessage = {
       type:    'buttons',
-      body:    welcomeBody,
+      body:    promptBody,
       buttons: cfg.ui?.welcomeButtons || [],
     };
   } else {
     const merged = withCatalogWelcomeOption(cfg.ui?.welcomeButtons || [], business);
     buttonsMessage = merged.rows
-      ? { type: 'list', body: welcomeBody, button: 'Choose option', rows: merged.rows }
-      : { type: 'buttons', body: welcomeBody, buttons: merged.buttons };
+      ? { type: 'list', body: promptBody, button: 'Choose option', rows: merged.rows }
+      : { type: 'buttons', body: promptBody, buttons: merged.buttons };
   }
 
-  // [REMOVE-CHOOSE-PROMPT-1] Previously sent as two messages (a plain greeting
-  // text, then a second buttons/list message whose body was the "Choose an
-  // option below to get started ▼" prompt). Now that the prompt phrase is
-  // gone, the greeting is folded directly into buttonsMessage.body above —
-  // sending it again as a separate leading text message would just duplicate
-  // it, so only buttonsMessage is returned.
-  return buttonsMessage;
+  return [
+    { type: 'text', body: greeting },
+    buttonsMessage,
+  ];
 }
 
 export async function route({ action, intent, session, message, business, tenant, isInteractive, suggestion }) {
