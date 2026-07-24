@@ -32,7 +32,7 @@ const { shouldOfferCatalog, isCatalogEnabled, hasSellableProducts } =
 function makeBusiness(overrides = {}) {
   return {
     tenantId: 't1',
-    waCatalog: { enabled: true, catalogId: 'CAT_1', mode: 'AI_DECIDES', lastSyncedAt: new Date(), syncedRetailerIds: ['item1'] },
+    waCatalog: { enabled: true, catalogId: 'CAT_1', mode: 'AI_DECIDES' },
     menuItems: [
       { _id: 'item1', name: 'Blue Shirt', price: 20, available: true, variants: [{ name: 'Small' }, { name: 'Large' }] },
       { _id: 'item2', name: 'Red Hat',    price: 10, available: true, variants: [] },
@@ -146,7 +146,7 @@ test('shouldOfferCatalog is false when the tenant has no sellable products', () 
 });
 
 test('shouldOfferCatalog: AI_DECIDES offers on browse-ish intents but not CHECKOUT/REMOVE_FROM_CART', () => {
-  const business = makeBusiness({ waCatalog: { enabled: true, catalogId: 'C1', mode: 'AI_DECIDES', lastSyncedAt: new Date(), syncedRetailerIds: ['item1'] } });
+  const business = makeBusiness({ waCatalog: { enabled: true, catalogId: 'C1', mode: 'AI_DECIDES' } });
   // [FIX-CATALOG-DEADINTENT] shouldOfferCatalog() is only ever called with the
   // *intent* value (see intentEngine.js intentToAction()) — 'ORDER' and
   // 'ADD_TO_CART' both map to the 'START_ORDER' *action*, but 'START_ORDER' is
@@ -159,7 +159,7 @@ test('shouldOfferCatalog: AI_DECIDES offers on browse-ish intents but not CHECKO
 });
 
 test('shouldOfferCatalog: ALWAYS_OFFER ignores intent nuance entirely', () => {
-  const business = makeBusiness({ waCatalog: { enabled: true, catalogId: 'C1', mode: 'ALWAYS_OFFER', lastSyncedAt: new Date(), syncedRetailerIds: ['item1'] } });
+  const business = makeBusiness({ waCatalog: { enabled: true, catalogId: 'C1', mode: 'ALWAYS_OFFER' } });
   assert.equal(shouldOfferCatalog({ business, intent: 'CHECKOUT' }), true);
 });
 

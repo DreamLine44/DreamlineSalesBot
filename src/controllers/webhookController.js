@@ -3029,10 +3029,6 @@ export async function receiveWebhook(req, res) {
         }
 
         for (const msg of value.messages || []) {
-          // [FIX-SILENT-CRASH-1] Declared here (not `const` inside the try below)
-          // so the catch block's fallback-reply logic can still reach the
-          // resolved tenant doc even when the throw happens after tenant lookup.
-          let tenant = null;
           try {
             const from   = msg.from;
             const msgType = msg.type || 'unknown';
@@ -3044,7 +3040,7 @@ export async function receiveWebhook(req, res) {
               wamid: msg.id,
             });
 
-            tenant = await Tenant.findOne({ 'whatsapp.phoneNumberId': phoneNumberId, status: 'ACTIVE' }).lean();
+            const tenant = await Tenant.findOne({ 'whatsapp.phoneNumberId': phoneNumberId, status: 'ACTIVE' }).lean();
 
             // [LOG-1d] No ACTIVE tenant for this phoneNumberId — the most common
             // cause of total silence. Warn so the operator knows immediately.
@@ -3105,20 +3101,6 @@ export async function receiveWebhook(req, res) {
               from: msg?.from,
               phoneNumberId,
             });
-            // [FIX-SILENT-CRASH-1] Without this, an uncaught exception anywhere in
-            // handleIncomingMessage() (a flow handler bug, a DB hiccup mid-order,
-            // etc.) left the customer with zero reply — indistinguishable, from
-            // their side of the chat, from the message never having arrived at all.
-            // Best-effort only: swallow failures here so a broken fallback send can
-            // never mask the original error above or crash the webhook handler.
-            try {
-              if (msg?.from && tenant) {
-                await dispatchMessage(msg.from, {
-                  type: 'text',
-                  body: "⚠️ Sorry, something went wrong on our end processing that. Please try again in a moment, or type *CANCEL* to start over.",
-                }, tenant).catch(() => {});
-              }
-            } catch { /* non-fatal — never let the fallback itself throw */ }
           }
         }
       }
