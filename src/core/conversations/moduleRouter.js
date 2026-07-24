@@ -115,7 +115,11 @@ export function buildWelcomeSequence(business, cfg) {
   if (cfg.ui?.welcomeList) {
     return {
       type:   'list',
-      body:   `${greeting}\n\n${promptBody}`,
+      // [AUDIT-FIX-WELCOME-PROMPT] promptBody ("Choose an option below to
+      // get started ▼") intentionally dropped from the body here per MJ's
+      // request — greeting now stands alone. promptBody is still computed
+      // above and still used by the buttons-mode message below, untouched.
+      body:   greeting,
       button: cfg.ui.welcomeList.button || 'Choose an option',
       rows:   cfg.ui.welcomeList.rows || [],
     };
