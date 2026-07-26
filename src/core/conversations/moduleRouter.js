@@ -73,7 +73,7 @@ export function registerAction(action, handler) {
 export function buildWelcomeSequence(business, cfg) {
   const customWelcome = business?.customMessages?.welcomeMessage;
   const greeting = customWelcome || cfg.messages?.welcome || '👋 Welcome! How can I help you today?';
-  const promptBody = cfg.messages?.chooseOptionPrompt || 'Choose an option below to get started ▼';
+  const promptBody = cfg.messages?.chooseOptionPrompt;
 
   // [AUDIT-FIX-CATALOG-WELCOME] waCatalogConfig.js's shouldShowCatalogButton() /
   // withCatalogWelcomeOption() were fully implemented (see [CATALOG-UX-BUTTON])
@@ -96,7 +96,8 @@ export function buildWelcomeSequence(business, cfg) {
   // below to get started." body. Merged into ONE list message whose body is
   // the greeting followed by the prompt, so the whole welcome reads as a
   // single natural message: "👋 Welcome! What would you like to do today?
-  // Choose an option below to get started ▼". Note the list ACTION BUTTON
+  // Dont ever include this part again because i removed it myself: (Choose an option below to get started ▼)
+  // ". Note the list ACTION BUTTON
   // itself (cfg.ui.welcomeList.button, e.g. "Choose an option ▼") is a
   // separate, Meta-capped field — WhatsApp hard-limits that tappable label to
   // 20 characters, so the longer descriptive phrase lives in the body text
