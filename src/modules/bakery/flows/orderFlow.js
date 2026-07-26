@@ -19,6 +19,7 @@ import { parseQuantity }  from '../../../utils/parseQuantity.js';
 import { saveOrder }      from '../../../services/orderService.js';
 import { trackOrderAnalytics } from '../../../core/analytics/analyticsService.js';
 import { buildWhatsAppImageUrl } from '../../../config/cloudinary.js';
+import { itemLabel }      from '../../../utils/itemLabel.js';
 import logger             from '../../../config/logger.js';
 
 const norm = (s = '') => s.toLowerCase().replace(/[^\w\s]/g, ' ').replace(/\s+/g, ' ').trim();
@@ -312,7 +313,7 @@ export async function handleBakeryOrderFlow({ session, message, business, tenant
         type: 'buttons',
         body:
           `🧾 *Order Summary*\n\n` +
-          `🧁 *${qty}× ${item?.name}*\n` +
+          `🧁 *${qty}× ${itemLabel(item, data.variant)}*\n` +
           `📦 *${method}*` +
           addressLine +
           `\n⏰ *${method === 'Delivery' ? 'Delivery' : 'Collection'} Time:* ${slot}` +
@@ -345,7 +346,10 @@ export async function handleBakeryOrderFlow({ session, message, business, tenant
           tenantId:      session.tenantId,
           customerPhone: session.customerPhone,
           customerName:  session.customerName,
-          item:          data.item?.name,
+          // [AUDIT-FIX-CATALOG-VARIANT-LOSS] data.variant is set by
+          // waCatalogFlow.js when this item was chosen via WA Catalog; bakery
+          // has no variant-specific step of its own and previously dropped it.
+          item:          itemLabel(data.item, data.variant),
           quantity:      data.quantity || 1,
           totalPrice:    data.totalPrice || 0,
           notes:         [
@@ -417,7 +421,7 @@ export async function handleBakeryOrderFlow({ session, message, business, tenant
             body:
               `🔔 *New Bakery Order — ${business?.name || 'Bakery'}*\n\n` +
               `📞 Customer: *${session.customerPhone}*\n` +
-              `🧁 *${data.quantity}× ${data.item?.name}*\n` +
+              `🧁 *${data.quantity}× ${itemLabel(data.item, data.variant)}*\n` +
               `📦 Fulfilment: *${data.fulfilment || 'Collection'}*\n` +
               `⏰ Time: *${data.pickupTime || 'ASAP'}*` +
               addressLine + notesLine + totalLine +
@@ -430,7 +434,7 @@ export async function handleBakeryOrderFlow({ session, message, business, tenant
         }
       } catch {}
 
-      trackOrderAnalytics(data.item?.name, null, data.quantity, data.totalPrice || 0, session.tenantId).catch(() => {});
+      trackOrderAnalytics(itemLabel(data.item, data.variant), null, data.quantity, data.totalPrice || 0, session.tenantId).catch(() => {});
       // [AUDIT-FIX-4] recordRevenue() moved to adminCommandService.confirmPayment() —
       // recording it here at placement time counted unconfirmed/later-rejected orders
       // as revenue. See adminCommandService.js AUDIT-FIX-4 for full rationale.
@@ -445,7 +449,7 @@ export async function handleBakeryOrderFlow({ session, message, business, tenant
         type: 'text',
         body:
           `✅ *Order Received!* 🥐\n\n` +
-          `🧁 *${data.quantity}× ${data.item?.name}*\n` +
+          `🧁 *${data.quantity}× ${itemLabel(data.item, data.variant)}*\n` +
           `📦 ${data.fulfilment || 'Collection'} — ${data.pickupTime || 'ASAP'}\n` +
           (data.notes ? `📝 ${data.notes}\n` : '') +
           `\n⏳ Our team will confirm your order shortly. Please wait for confirmation before placing a new one. 🙏`,

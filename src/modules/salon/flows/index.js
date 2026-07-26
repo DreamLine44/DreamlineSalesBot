@@ -128,6 +128,7 @@ import { parseQuantity }     from '../../../utils/parseQuantity.js';
 import { saveOrder }         from '../../../services/orderService.js';
 import { saveBooking }       from '../../../services/bookingService.js';
 import { trackOrderAnalytics } from '../../../core/analytics/analyticsService.js';
+import { itemLabel }         from '../../../utils/itemLabel.js';
 import logger                from '../../../config/logger.js';
 
 // ── Salon Config ───────────────────────────────────────────────────────────────
@@ -801,7 +802,7 @@ export async function handleSalonProductOrder({ session, message, business, tena
         type: 'buttons',
         body:
           `🧾 *Order Summary*\n\n` +
-          `🛍 *${qty}× ${data.item?.name}*\n` +
+          `🛍 *${qty}× ${itemLabel(data.item, data.variant)}*\n` +
           (total ? `💰 *Total:* ${currency}${total}\n` : '') +
           `\nReady to confirm?`,
         buttons: [
@@ -827,7 +828,7 @@ export async function handleSalonProductOrder({ session, message, business, tena
           // [FIX-SALON-CONFIRM-REPROMPT] previously dropped item/total summary on invalid input; currency was computed but unused
           body:
             `🧾 *Order Summary*\n\n` +
-            `🛍 *${data.quantity || 1}× ${data.item?.name}*\n` +
+            `🛍 *${data.quantity || 1}× ${itemLabel(data.item, data.variant)}*\n` +
             (total ? `💰 *Total:* ${currency}${total}\n` : '') +
             `\n${emoji} Ready to place your order?`,
           buttons: [
@@ -843,7 +844,11 @@ export async function handleSalonProductOrder({ session, message, business, tena
           tenantId:      session.tenantId,
           customerPhone: session.customerPhone,
           customerName:  session.customerName,
-          item:          data.item?.name,
+          // [AUDIT-FIX-CATALOG-VARIANT-LOSS] data.variant is set by
+          // waCatalogFlow.js when this item was chosen via WA Catalog; salon's
+          // product-order path had no variant-specific step and previously
+          // dropped it.
+          item:          itemLabel(data.item, data.variant),
           quantity:      data.quantity || 1,
           totalPrice:    data.totalPrice || 0,
           businessId:    business._id,
@@ -901,7 +906,7 @@ export async function handleSalonProductOrder({ session, message, business, tena
                 `🔔 *New Product Order — ${business?.name || (isBarbershop ? 'Barbershop' : 'Salon')}*\n\n` +
                 `📞 Customer: ${session.customerPhone}\n` +
                 (session.customerName ? `👤 Name: ${session.customerName}\n` : '') +
-                `🛍 *${data.quantity}× ${data.item?.name}*\n` +
+                `🛍 *${data.quantity}× ${itemLabel(data.item, data.variant)}*\n` +
                 (data.totalPrice ? `💰 Total: ${currency}${data.totalPrice}\n` : '') +
                 `🔖 Ref: \`${savedOrder?.shortId || 'N/A'}\``,
               buttons: [
@@ -914,7 +919,7 @@ export async function handleSalonProductOrder({ session, message, business, tena
         }
       } catch {}
 
-      trackOrderAnalytics(data.item?.name, null, data.quantity, data.totalPrice || 0, session.tenantId).catch(() => {});
+      trackOrderAnalytics(itemLabel(data.item, data.variant), null, data.quantity, data.totalPrice || 0, session.tenantId).catch(() => {});
       // [AUDIT-FIX-4] recordRevenue() moved to adminCommandService.confirmPayment() —
       // recording it here at placement time counted unconfirmed/later-rejected orders
       // as revenue. See adminCommandService.js AUDIT-FIX-4 for full rationale.
@@ -929,7 +934,7 @@ export async function handleSalonProductOrder({ session, message, business, tena
         type: 'text',
         body:
           `✅ *Order received!* ${emoji}\n\n` +
-          `🛍 *${data.quantity}× ${data.item?.name}*\n` +
+          `🛍 *${data.quantity}× ${itemLabel(data.item, data.variant)}*\n` +
           (data.totalPrice ? `💰 Total: *${currency}${data.totalPrice}*\n` : '') +
           `\n⏳ Our team will confirm your order shortly. We'll message you when it's ready! 🙏`,
       };

@@ -454,6 +454,58 @@ export async function updateTenant(req, res) {
       'limits.messagesPerMonth', 'limits.maxMenuItems', 'limits.maxAdmins',
     ];
 
+    // [FIX-CATALOGID-BUSINESSCONFIG-SYNC] waCatalog.catalogId is deliberately
+    // NOT in ALLOWED above — it isn't a Tenant schema field at all, it lives
+    // on BusinessConfig (see models/BusinessConfig.js). Admin-panel UX puts it
+    // on this same "save credentials" screen/request (AUDIT-FIX-CATALOG-ADMIN-1,
+    // frontend AdminTenantsPage.jsx), so this endpoint still accepts it — it's
+    // just written to BusinessConfig below (mirroring the phoneNumberId sync
+    // block, [AUDIT-P1-A]) instead of being forced onto the Tenant document,
+    // where it would either be silently dropped (Mongoose strict mode) or sit
+    // as a stray untyped field nothing ever reads.
+    //
+    // Previously this field wasn't recognized ANYWHERE in this handler, so it
+    // was silently discarded from `updates` with no error — a save request
+    // would return 200 "success" while the catalog ID was never persisted to
+    // any collection. That silent-drop is exactly what CROSS_MODEL_FIELDS +
+    // findIgnoredFields() below now catch generally, for this field and any
+    // future one like it.
+    const CROSS_MODEL_FIELDS = ['waCatalog.catalogId'];
+
+    // [FIX-SILENT-DROP-1] Any request field that isn't in ALLOWED, isn't a
+    // known cross-model field, and isn't `activate` is currently just thrown
+    // away with zero signal to the caller — a save can "succeed" (200) while
+    // silently changing nothing. That's exactly the bug that let the catalog
+    // ID vanish above. Rather than relying on every future field being added
+    // to ALLOWED correctly, this surfaces anything unrecognized in the
+    // response as `ignored`, so a silent drop is visible immediately instead
+    // of requiring another debugging session.
+    const KNOWN_NESTED_SUBFIELDS = {
+      whatsapp: ['phone', 'phoneNumberId', 'wabaId', 'accessToken', 'verifyToken', 'webhookSecret', 'apiVersion'],
+      meta:     ['appId', 'appSecret'],
+      waCatalog: ['catalogId'],
+      limits:   ['messagesPerMonth', 'maxMenuItems', 'maxAdmins'],
+    };
+    function findIgnoredFields(body) {
+      const knownTop = new Set([
+        'name', 'adminPhone', 'email', 'plan', 'notes', 'activate',
+        ...Object.keys(KNOWN_NESTED_SUBFIELDS),
+        ...ALLOWED, ...CROSS_MODEL_FIELDS, // flat dotted forms, e.g. 'whatsapp.accessToken'
+      ]);
+      const ignored = [];
+      for (const key of Object.keys(body)) {
+        if (KNOWN_NESTED_SUBFIELDS[key] && body[key] && typeof body[key] === 'object') {
+          for (const subKey of Object.keys(body[key])) {
+            if (!KNOWN_NESTED_SUBFIELDS[key].includes(subKey)) ignored.push(`${key}.${subKey}`);
+          }
+          continue;
+        }
+        if (!knownTop.has(key)) ignored.push(key);
+      }
+      return ignored;
+    }
+    const ignoredFields = findIgnoredFields(req.body);
+
     // Accept both nested { whatsapp: { accessToken } } and flat { 'whatsapp.accessToken': '...' }
     const updates = {};
     for (const field of ALLOWED) {
@@ -467,10 +519,21 @@ export async function updateTenant(req, res) {
       }
     }
 
+    // [FIX-CATALOGID-BUSINESSCONFIG-SYNC] Read the catalog ID out separately —
+    // supports both nested { waCatalog: { catalogId } } and flat
+    // { 'waCatalog.catalogId': '...' }, same convention as every other field
+    // above. Trimmed and only kept if non-empty, matching the frontend's own
+    // "don't send blank — use the explicit clear affordance" guard, so an
+    // accidental empty save can't wipe out a previously-set catalog ID.
+    const catalogIdRaw = req.body.waCatalog?.catalogId ?? req.body['waCatalog.catalogId'];
+    const catalogIdUpdate = typeof catalogIdRaw === 'string' && catalogIdRaw.trim()
+      ? catalogIdRaw.trim()
+      : undefined;
+
     const wantsActivate = req.body.activate === true;
 
-    if (!Object.keys(updates).length && !wantsActivate) {
-      return res.status(400).json({ error: 'No valid fields to update', allowed: ALLOWED });
+    if (!Object.keys(updates).length && !wantsActivate && !catalogIdUpdate) {
+      return res.status(400).json({ error: 'No valid fields to update', allowed: [...ALLOWED, ...CROSS_MODEL_FIELDS] });
     }
 
     // Encrypt sensitive tokens before they reach the DB
@@ -563,9 +626,43 @@ export async function updateTenant(req, res) {
       }
     }
 
+    // [FIX-CATALOGID-BUSINESSCONFIG-SYNC] waCatalog.catalogId lives on
+    // BusinessConfig, not Tenant, so it's written here directly rather than
+    // via the ALLOWED/Tenant.findByIdAndUpdate path above — mirrors the
+    // phoneNumberId sync block immediately above. Also clears any stale
+    // waCatalog.lastSyncError: a newly-set catalog ID makes a previous sync
+    // failure (which may well have been caused by the missing/wrong ID)
+    // moot, and leaving it in place would keep showing an old GRAPH_ERROR on
+    // the tenant's Catalog page even after the real problem is fixed.
+    let updatedBusiness = null;
+    if (catalogIdUpdate) {
+      try {
+        updatedBusiness = await BusinessConfig.findOneAndUpdate(
+          { tenantId: String(req.params.id) },
+          {
+            $set: {
+              'waCatalog.catalogId':    catalogIdUpdate,
+              'waCatalog.lastSyncError': { reason: null, at: null },
+            },
+          },
+          { new: true },
+        ).lean();
+        logger.info('[Tenant] Synced waCatalog.catalogId to BusinessConfig', {
+          tenantId: req.params.id,
+        });
+      } catch (syncErr) {
+        logger.warn('[Tenant] BusinessConfig waCatalog.catalogId sync failed (non-fatal)', {
+          tenantId: req.params.id,
+          err: syncErr.message,
+        });
+      }
+    }
+
     logger.info('[Tenant] Updated', {
       tenantId:  tenant._id,
       fields:    Object.keys(updates),
+      catalogIdUpdated: !!catalogIdUpdate,
+      ignoredFields: ignoredFields.length ? ignoredFields : undefined,
       activated: wantsActivate,
     });
 
@@ -576,6 +673,14 @@ export async function updateTenant(req, res) {
     res.json({
       ok:     true,
       tenant: tenantOut,
+      // [FIX-CATALOGID-BUSINESSCONFIG-SYNC] Included whenever a catalog ID
+      // write was attempted, so the frontend can confirm — rather than
+      // assume — that it actually landed, instead of trusting a bare 200.
+      ...(updatedBusiness ? { business: { waCatalog: updatedBusiness.waCatalog } } : {}),
+      // [FIX-SILENT-DROP-1] Any request field that wasn't recognized (typo,
+      // wrong nesting, or simply not yet wired up) is surfaced here instead
+      // of vanishing with no trace.
+      ...(ignoredFields.length ? { ignored: ignoredFields } : {}),
       ...(wantsActivate ? {
         activated:            true,
         message:              'Tenant credentials set and activated. Bot is live.',

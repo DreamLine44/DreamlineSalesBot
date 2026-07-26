@@ -145,13 +145,13 @@ export async function handleCosmeticsOrderFlow({ session, message, business, ten
       if (!item) return _buildCosmeticsMenu(menu, business, data.skinType || null);
 
       await updateSession(session.customerPhone, session.tenantId, {
-        step: item.shades?.length ? 'SELECT_SHADE' : 'QUANTITY',
+        step: _shadeOptions(item).length ? 'SELECT_SHADE' : 'QUANTITY',
         data: { ...data, item },
         menuViewed: true,
       });
 
       let nextPrompt;
-      if (item.shades?.length) {
+      if (_shadeOptions(item).length) {
         nextPrompt = _buildShadeUI(item);
       } else {
         const price = item.price ? ` — ${item.currency || 'D'}${item.price}` : '';
@@ -188,7 +188,7 @@ export async function handleCosmeticsOrderFlow({ session, message, business, ten
     // ── SELECT_SHADE ──────────────────────────────────────────────────────────
     case 'SELECT_SHADE': {
       const item = data.item;
-      const shades = item?.shades || [];
+      const shades = _shadeOptions(item);
 
       // Match shade button ID or typed text
       const shadeMatch = shades.find(s =>
@@ -263,7 +263,13 @@ export async function handleCosmeticsOrderFlow({ session, message, business, ten
       const giftNote = raw.toUpperCase() === 'GIFT_NONE' ? null : raw;
       const item     = data.item;
       const qty      = data.quantity || 1;
-      const shade    = data.shade    ? ` (${data.shade})` : '';
+      // [AUDIT-FIX-CATALOG-VARIANT-LOSS] data.shade is set by the in-chat
+      // SELECT_SHADE step above; data.variant is set instead when this item
+      // was chosen via WA Catalog (see waCatalogFlow.js) and SELECT_SHADE was
+      // skipped because the shade was already resolved. Fall back so a
+      // catalog-resolved shade isn't lost from here on.
+      const shadeVal = data.shade || data.variant;
+      const shade    = shadeVal ? ` (${shadeVal})` : '';
       const total    = data.totalPrice;
 
       await updateSession(session.customerPhone, session.tenantId, {
@@ -298,7 +304,8 @@ export async function handleCosmeticsOrderFlow({ session, message, business, ten
         };
       }
 
-      const shade    = data.shade    ? ` (${data.shade})` : '';
+      const shadeVal = data.shade || data.variant;
+      const shade    = shadeVal ? ` (${shadeVal})` : '';
       const skinNote = data.skinType ? `Skin type: ${data.skinType}` : null;
 
       let savedOrder = null;
@@ -450,8 +457,27 @@ function _buildCosmeticsMenu(items, business, skinType = null) {
   };
 }
 
+// [AUDIT-FIX-CATALOG-SHADE-1] item.variants is the one field that actually
+// round-trips through Mongoose (see BusinessConfig.js FIX-VARIANTS-SCHEMA)
+// and the only field waCatalogHelpers.js (buildRetailerId/resolveCatalogItem/
+// buildCategorizedSections) reads when syncing to and resolving from Meta's
+// WA Catalog. item.shades is NOT in the schema — any value written to it via
+// addMenuItem/updateMenuItem is silently dropped by Mongoose strict mode, so
+// it is always undefined on a persisted item. That meant SELECT_SHADE could
+// never actually trigger for any cosmetics tenant, and any shade options a
+// tenant configured never made it into the synced WA Catalog either. Reading
+// from item.variants (with the legacy item.shades checked only as a
+// belt-and-suspenders fallback, in case it's ever populated by an older
+// write path) fixes both problems at once: shade selection now works for
+// in-chat customers, and it lines up with exactly what WA Catalog syncs and
+// resolves for the very same item.
+function _shadeOptions(item) {
+  const raw = (item?.variants?.length ? item.variants : item?.shades) || [];
+  return raw.map(v => (v && typeof v === 'object') ? v.name : v).filter(Boolean);
+}
+
 function _buildShadeUI(item) {
-  const shades = item?.shades || [];
+  const shades = _shadeOptions(item);
   if (shades.length <= 3) {
     return {
       type: 'buttons',

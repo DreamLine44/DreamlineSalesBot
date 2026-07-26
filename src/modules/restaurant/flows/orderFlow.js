@@ -33,6 +33,7 @@ import { trackOrderAnalytics } from '../../../core/analytics/analyticsService.js
 import { dispatchText }     from '../../../core/whatsapp/dispatcher.js';
 import { buildPaymentInstructionsUI } from '../../../services/paymentService.js';
 import { buildWhatsAppImageUrl }       from '../../../config/cloudinary.js';
+import { itemLabel }        from '../../../utils/itemLabel.js';
 import logger               from '../../../config/logger.js';
 
 // ── Normalise — [FIX-1] /\s+/ was missing the 'g' flag ──────────────────────
@@ -241,7 +242,9 @@ export async function handleOrderFlow({ session, message, business, tenant, isIn
       await updateSession(session.customerPhone, session.tenantId, {
         step: 'CONFIRM', data: { ...data, quantity: qty, totalPrice: total },
       });
-      return buildOrderSummary({ item, qty, total, business });
+      // [AUDIT-FIX-CATALOG-VARIANT-LOSS] fold data.variant (set only when this
+      // item was selected via WA Catalog — see waCatalogFlow.js) into the label.
+      return buildOrderSummary({ item: itemLabel(item, data.variant), qty, total, business });
     }
 
     // ────────────────────────────────────────────────────────────────────────
@@ -260,7 +263,7 @@ export async function handleOrderFlow({ session, message, business, tenant, isIn
       await updateSession(session.customerPhone, session.tenantId, {
         step: 'CONFIRM', data: { ...data, totalPrice: finalTotal, addOns: addOnsList },
       });
-      return buildOrderSummary({ item: data.item, qty: data.quantity, total: finalTotal, addOns: addOnsList, business });
+      return buildOrderSummary({ item: itemLabel(data.item, data.variant), qty: data.quantity, total: finalTotal, addOns: addOnsList, business });
     }
 
     // ────────────────────────────────────────────────────────────────────────
@@ -269,14 +272,19 @@ export async function handleOrderFlow({ session, message, business, tenant, isIn
       // confirm-style step in this file (SUGGESTION_CONFIRM, UPSELL) accepts them.
       const isConfirm = /^(yes|y|yeah|yep|confirm|ok|okay|sure|place|confirmed)$/i.test(clean);
       if (!isConfirm) {
-        return buildOrderSummary({ item: data.item, qty: data.quantity, total: data.totalPrice, business });
+        return buildOrderSummary({ item: itemLabel(data.item, data.variant), qty: data.quantity, total: data.totalPrice, business });
       }
 
       // Save order
+      // [AUDIT-FIX-CATALOG-VARIANT-LOSS] Previously always `data.item?.name` —
+      // a WA-Catalog-selected variant (e.g. size) was resolved into
+      // data.variant by waCatalogFlow.js/waCatalogHelpers.js but this module
+      // never read it anywhere, so the saved Order, the admin alert, and the
+      // customer-facing summary all silently lost which variant was ordered.
       let savedOrder = null;
       try {
         savedOrder = await saveOrder({
-          item:          data.item?.name,
+          item:          itemLabel(data.item, data.variant),
           quantity:      data.quantity,
           totalPrice:    data.totalPrice,
           addOns:        data.addOns,
@@ -354,7 +362,7 @@ export async function handleOrderFlow({ session, message, business, tenant, isIn
               body:
                 `🔔 *New Order — ${business.name || 'Restaurant'}*\n\n` +
                 `👤 Customer: *${session.customerPhone}*\n` +
-                `🛒 Items: *${data.quantity}× ${data.item?.name}*\n` +
+                `🛒 Items: *${data.quantity}× ${itemLabel(data.item, data.variant)}*\n` +
                 `💰 Total: *${currency}${data.totalPrice}*\n` +
                 `📝 Ref: *${ref}*\n\n` +
                 `⏳ Status: *Pending* — awaiting payment screenshot.`,
@@ -397,7 +405,7 @@ export async function handleOrderFlow({ session, message, business, tenant, isIn
             const { dispatchMessage } = await import('../../../core/whatsapp/dispatcher.js');
             const alertBody = buildAdminOrderAlertBody({
               customerPhone: session.customerPhone,
-              item:          data.item?.name,
+              item:          itemLabel(data.item, data.variant),
               quantity:      data.quantity,
               totalPrice:    data.totalPrice,
               addOns:        data.addOns,
@@ -434,7 +442,7 @@ export async function handleOrderFlow({ session, message, business, tenant, isIn
 
       const _lcR = await completeFlow(session, 'ORDER', business, tenant);
       if (_lcR) return _lcR;
-      return buildOrderSuccess({ item: data.item, qty: data.quantity, business });
+      return buildOrderSuccess({ item: itemLabel(data.item, data.variant), qty: data.quantity, business });
     }
 
     default:

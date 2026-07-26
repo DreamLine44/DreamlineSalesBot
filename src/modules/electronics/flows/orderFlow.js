@@ -63,6 +63,7 @@ import {
   buildComparisonCard,
   buildAdminOrderAlertBody,
 } from '../handlers/uiBuilders.js';
+import { itemLabel } from '../../../utils/itemLabel.js';
 import logger from '../../../config/logger.js';
 
 // ── Normalise text for fuzzy comparisons ─────────────────────────────────────
@@ -361,14 +362,14 @@ export async function handleElectronicsOrder({
           step: 'CONFIRM',
           data: { ...data, quantity: qty, totalPrice: total, fulfilment: 'DELIVERY' },
         });
-        return buildOrderSummary({ item: data.item, qty, total, fulfilment: 'DELIVERY', business });
+        return buildOrderSummary({ item: itemLabel(data.item, data.variant), qty, total, fulfilment: 'DELIVERY', business });
       }
       if (hasPickup && !hasDelivery) {
         await updateSession(session.customerPhone, session.tenantId, {
           step: 'CONFIRM',
           data: { ...data, quantity: qty, totalPrice: total, fulfilment: 'PICKUP' },
         });
-        return buildOrderSummary({ item: data.item, qty, total, fulfilment: 'PICKUP', business });
+        return buildOrderSummary({ item: itemLabel(data.item, data.variant), qty, total, fulfilment: 'PICKUP', business });
       }
 
       await updateSession(session.customerPhone, session.tenantId, {
@@ -378,7 +379,7 @@ export async function handleElectronicsOrder({
       return {
         type: 'buttons',
         body:
-          `📦 *${qty}× ${data.item?.name}*\n` +
+          `📦 *${qty}× ${itemLabel(data.item, data.variant)}*\n` +
           (total ? `💰 *${currency}${total}*\n` : '') +
           `\nHow would you like to receive your order?`,
         buttons: [
@@ -411,7 +412,7 @@ export async function handleElectronicsOrder({
         data: { ...data, fulfilment },
       });
       return buildOrderSummary({
-        item: data.item, qty: data.quantity, total: data.totalPrice, fulfilment, business,
+        item: itemLabel(data.item, data.variant), qty: data.quantity, total: data.totalPrice, fulfilment, business,
       });
     }
 
@@ -420,7 +421,7 @@ export async function handleElectronicsOrder({
       const isConfirm = /^(yes|y|confirm|ok|okay|sure|place|confirmed)$/i.test(clean);
       if (!isConfirm) {
         return buildOrderSummary({
-          item: data.item, qty: data.quantity, total: data.totalPrice,
+          item: itemLabel(data.item, data.variant), qty: data.quantity, total: data.totalPrice,
           fulfilment: data.fulfilment, business,
         });
       }
@@ -431,7 +432,10 @@ export async function handleElectronicsOrder({
       let savedOrder = null;
       try {
         savedOrder = await saveOrder({
-          item:          data.item?.name,
+          // [AUDIT-FIX-CATALOG-VARIANT-LOSS] data.variant is set by
+          // waCatalogFlow.js when this item was chosen via WA Catalog;
+          // electronics had no variant-specific step and previously dropped it.
+          item:          itemLabel(data.item, data.variant),
           quantity:      data.quantity,
           totalPrice:    data.totalPrice,
           // [AUDIT-FIX-ELEC-1] orderService.saveOrder() destructures a fixed set of
@@ -456,7 +460,7 @@ export async function handleElectronicsOrder({
         });
 
         trackOrderAnalytics(
-          data.item?.name,
+          itemLabel(data.item, data.variant),
           business.phoneNumberId || null,
           data.quantity,
           data.totalPrice || 0,
@@ -508,7 +512,7 @@ export async function handleElectronicsOrder({
               body:
                 `🔔 *New Order — ${business.name || 'Electronics Store'}*\n\n` +
                 `👤 Customer: *${session.customerPhone}*\n` +
-                `📱 *${data.quantity}× ${data.item?.name}*\n` +
+                `📱 *${data.quantity}× ${itemLabel(data.item, data.variant)}*\n` +
                 `💰 Total: *${currency}${data.totalPrice}*\n` +
                 `📦 Fulfilment: *${data.fulfilment === 'DELIVERY' ? 'Delivery' : 'In-store pick-up'}*\n` +
                 `📝 Ref: *${ref}*\n\n` +
@@ -528,7 +532,7 @@ export async function handleElectronicsOrder({
           // [FIX-1] Static import — dispatchMessage already imported at top of file
           const alertBody = buildAdminOrderAlertBody({
             customerPhone: session.customerPhone,
-            item:          data.item?.name,
+            item:          itemLabel(data.item, data.variant),
             quantity:      data.quantity,
             totalPrice:    data.totalPrice,
             fulfilment:    data.fulfilment,

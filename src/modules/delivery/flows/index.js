@@ -29,6 +29,7 @@ import { findBestMatch }  from '../../../utils/matchEngine.js';
 import { saveOrder }      from '../../../services/orderService.js';
 import { parseQuantity }  from '../../../utils/parseQuantity.js';
 import { trackOrderAnalytics } from '../../../core/analytics/analyticsService.js';
+import { itemLabel }      from '../../../utils/itemLabel.js';
 import logger             from '../../../config/logger.js';
 
 // ── Config ────────────────────────────────────────────────────────────────────
@@ -345,7 +346,7 @@ export async function handleDeliveryOrder({ session, message, business, tenant, 
         return {
           type: 'buttons',
           body: `🧾 *Order Summary*\n\n` +
-            `🚚 *Item:* ${item?.name} × ${qty}\n` +
+            `🚚 *Item:* ${itemLabel(item, data.variant)} × ${qty}\n` +
             `📍 *Deliver to:* ${address}\n` +
             `⏱ *When:* ${resolvedScheduled}` +
             (subtotal ? `\n💰 *Total:* ${item.currency || business?.payment?.currency || 'D'}${subtotal.toFixed(2)}` : '') +
@@ -436,7 +437,7 @@ export async function handleDeliveryOrder({ session, message, business, tenant, 
       return {
         type: 'buttons',
         body: `🧾 *Order Summary*\n\n` +
-          `🚚 *Item:* ${item?.name} × ${qty}\n` +
+          `🚚 *Item:* ${itemLabel(item, data.variant)} × ${qty}\n` +
           `📍 *Deliver to:* ${address}\n` +
           `⏱ *When:* ${slot}` +
           (subtotal ? `\n💰 *Total:* ${item.currency || business?.payment?.currency || 'D'}${subtotal.toFixed(2)}` : '') +
@@ -475,7 +476,10 @@ export async function handleDeliveryOrder({ session, message, business, tenant, 
           tenantId:      session.tenantId,
           customerPhone: session.customerPhone,
           customerName:  session.customerName,
-          item:          item?.name,
+          // [AUDIT-FIX-CATALOG-VARIANT-LOSS] data.variant is set by
+          // waCatalogFlow.js when this item was chosen via WA Catalog; delivery
+          // had no variant-specific step of its own and previously dropped it.
+          item:          itemLabel(item, data.variant),
           quantity:      qty,
           notes:         `Delivery to: ${address} | Slot: ${slot}`,
           status:        'pending',
@@ -493,7 +497,7 @@ export async function handleDeliveryOrder({ session, message, business, tenant, 
         // recording it here at placement time counted unconfirmed/later-rejected orders
         // as revenue. See adminCommandService.js AUDIT-FIX-4 for full rationale.
         // [FIX-DELIVERY-3] trackOrderAnalytics wrong positional call — same bug as retail
-        trackOrderAnalytics(item?.name, null, qty, totalPrice || 0, session.tenantId).catch(() => {});
+        trackOrderAnalytics(itemLabel(item, data.variant), null, qty, totalPrice || 0, session.tenantId).catch(() => {});
       } catch (err) {
         logger.error('[Delivery] saveOrder error:', err.message);
         // [FIX-SAVE-ERR-DELIVERY] Don't proceed to payment/admin-confirm for an order
@@ -540,7 +544,7 @@ export async function handleDeliveryOrder({ session, message, business, tenant, 
               body:
                 `🔔 *New Delivery Order — ${business?.name || 'Delivery'}*\n\n` +
                 `📞 Customer: *${session.customerPhone}*\n` +
-                `📦 *${qty}× ${item?.name}*\n` +
+                `📦 *${qty}× ${itemLabel(item, data.variant)}*\n` +
                 `📍 Address: *${address}*\n` +
                 `⏱ Slot: *${slot}*\n` +
                 `💰 Total: *${currency}${totalPrice}*\n` +
@@ -566,7 +570,7 @@ export async function handleDeliveryOrder({ session, message, business, tenant, 
             body:
               `🔔 *New Delivery Order — ${business?.name || 'Delivery'}*\n\n` +
               `📞 Customer: *${session.customerPhone}*\n` +
-              `📦 *${qty}× ${item?.name}*\n` +
+              `📦 *${qty}× ${itemLabel(item, data.variant)}*\n` +
               `📍 Address: *${address}*\n` +
               `⏱ Slot: *${slot}*\n` +
               (totalPrice ? `💰 Total: *${currency}${totalPrice}*\n` : '') +
@@ -590,7 +594,7 @@ export async function handleDeliveryOrder({ session, message, business, tenant, 
         type: 'text',
         body:
           `✅ *Order Received!* 🚚\n\n` +
-          `*${item?.name}* × ${qty}\n` +
+          `*${itemLabel(item, data.variant)}* × ${qty}\n` +
           `📍 Delivering to: *${address}*\n` +
           `⏱ Requested slot: *${slot}*\n\n` +
           `⏳ Our team will confirm your order and assign a rider shortly. Please wait for confirmation before placing a new one. 🙏`,
