@@ -73,7 +73,7 @@ export function registerAction(action, handler) {
 export function buildWelcomeSequence(business, cfg) {
   const customWelcome = business?.customMessages?.welcomeMessage;
   const greeting = customWelcome || cfg.messages?.welcome || '👋 Welcome! How can I help you today?';
-  const promptBody = cfg.messages?.chooseOptionPrompt;
+  const promptBody = cfg.messages?.chooseOptionPrompt || '';
 
   // [AUDIT-FIX-CATALOG-WELCOME] waCatalogConfig.js's shouldShowCatalogButton() /
   // withCatalogWelcomeOption() were fully implemented (see [CATALOG-UX-BUTTON])
