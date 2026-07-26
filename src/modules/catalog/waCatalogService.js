@@ -155,15 +155,83 @@ export async function sendCatalogMessage(to, business, tenant, { productRetailer
 // GET /:tenantId/wacatalog/health can distinguish "hasn't changed" from
 // "has been failing" — never throws outward, mirrors the lastSyncedAt write
 // pattern already used on the success path below.
-async function recordSyncError(businessId, reason) {
+async function recordSyncError(businessId, reason, detail = null) {
   try {
     const { default: BusinessConfig } = await import('../../models/BusinessConfig.js');
     await BusinessConfig.updateOne(
       { _id: businessId },
-      { $set: { 'waCatalog.lastSyncError': { reason, at: new Date() } } },
+      { $set: { 'waCatalog.lastSyncError': { reason, detail, at: new Date() } } },
     );
   } catch (err) {
     logger.debug('[WACatalog] recordSyncError write failed (non-fatal)', { err: err.message });
+  }
+}
+
+// [CATALOG-ASYNC-VERIFY-1] Single check_batch_request_status call for one
+// handle. Never throws — a network hiccup while checking is treated the
+// same as "still pending," since the handle stays in pendingBatchHandles
+// and gets retried on the next sync either way.
+async function checkBatchRequestStatus(handle, token, version) {
+  try {
+    const ctrl  = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 10000);
+    const resp  = await fetch(
+      `https://graph.facebook.com/${version}/check_batch_request_status?handle=${encodeURIComponent(handle)}`,
+      { signal: ctrl.signal, headers: { Authorization: `Bearer ${token}` } },
+    );
+    clearTimeout(timer);
+    if (!resp.ok) return { resolved: false };
+    const json = await resp.json().catch(() => null);
+    const entry = json?.data?.[0];
+    if (!entry) return { resolved: false };
+    if (entry.status === 'finished' || entry.status === 'canceled' || entry.status === 'error') {
+      return {
+        resolved: true,
+        hasErrors: (entry.errors_total_count || 0) > 0 || entry.status !== 'finished',
+        errors: entry.errors || [],
+        status: entry.status,
+      };
+    }
+    // 'dispatched' / 'started' — genuinely still in progress.
+    return { resolved: false };
+  } catch (err) {
+    logger.debug('[WACatalog] checkBatchRequestStatus failed (non-fatal, will retry)', { err: err.message });
+    return { resolved: false };
+  }
+}
+
+// [CATALOG-ASYNC-VERIFY-1] Self-healing check of any handles left over from
+// a PREVIOUS sync attempt that hadn't resolved yet. Called at the top of
+// syncMenuToCatalog() (both the manual /wacatalog/sync route and the
+// debounced autosync scheduler run through it), so a tenant's catalog
+// health reflects reality within one sync cycle without needing a separate
+// cron job. Never throws outward.
+async function resolvePendingBatchHandles(business, token, version) {
+  const pending = business?.waCatalog?.pendingBatchHandles || [];
+  if (!pending.length) return;
+
+  const stillPending = [];
+  let sawError = null;
+
+  for (const p of pending) {
+    const result = await checkBatchRequestStatus(p.handle, token, version);
+    if (!result.resolved) {
+      stillPending.push(p);
+      continue;
+    }
+    if (result.hasErrors) {
+      const firstMsg = result.errors?.[0]?.message || `batch ${result.status}`;
+      sawError = `Batch ${p.handle.slice(0, 12)}… ${result.status}: ${firstMsg}`.slice(0, 500);
+    }
+  }
+
+  try {
+    const { default: BusinessConfig } = await import('../../models/BusinessConfig.js');
+    const update = { 'waCatalog.pendingBatchHandles': stillPending };
+    if (sawError) update['waCatalog.lastSyncError'] = { reason: 'BATCH_VALIDATION_ERROR', detail: sawError, at: new Date() };
+    await BusinessConfig.updateOne({ _id: business._id }, { $set: update });
+  } catch (err) {
+    logger.debug('[WACatalog] resolvePendingBatchHandles write failed (non-fatal)', { err: err.message });
   }
 }
 
@@ -174,6 +242,12 @@ export async function syncMenuToCatalog(business, tenant) {
   const rawToken = tenant?.whatsapp?.accessToken;
   const token = decryptToken(rawToken);
   if (!token) return { ok: false, reason: 'NO_TOKEN' };
+
+  const version = tenant?.whatsapp?.apiVersion || process.env.META_API_VERSION || 'v21.0';
+
+  // [CATALOG-ASYNC-VERIFY-1] Reconcile any handles left unresolved from the
+  // previous sync BEFORE sending new ones — self-healing, no separate cron.
+  await resolvePendingBatchHandles(business, token, version).catch(() => {});
 
   // [CATALOG-CRUD-2] All current items, available or not — availability is
   // reflected via the `availability` field below, not by omission.
@@ -287,7 +361,6 @@ export async function syncMenuToCatalog(business, tenant) {
     return { ok: true, synced: 0, deleted: 0, skipped: allCurrentItems.length, invalidSkipped: invalidSkipped.length };
   }
 
-  const version = tenant?.whatsapp?.apiVersion || process.env.META_API_VERSION || 'v21.0';
   const url = `https://graph.facebook.com/${version}/${catalogId}/items_batch`;
 
   try {
@@ -296,15 +369,51 @@ export async function syncMenuToCatalog(business, tenant) {
     const resp  = await fetch(url, {
       method: 'POST', signal: ctrl.signal,
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-      body: JSON.stringify({ requests }),
+      // [FIX-CATALOG-ITEM-TYPE] Meta's Catalog Batch API rejects the ENTIRE
+      // batch with GRAPH_ERROR (400) unless `item_type` is present as a
+      // top-level field on the request body (every documented items_batch
+      // example — including the HOTEL vertical — sends it alongside
+      // `requests`). This field was missing here, so every sync attempt for
+      // every tenant on this codebase failed with 400 regardless of menu
+      // content — the exact error surfaced on the Catalog admin page
+      // ("Last error: GRAPH_ERROR (400)"). Commerce/product catalogs (as
+      // opposed to HOTEL/VEHICLE/FLIGHT) use 'PRODUCT_ITEM', which matches
+      // every menu item this platform uploads (see buildItemData above —
+      // plain retail product fields: name/price/currency/availability/
+      // image_url).
+      body: JSON.stringify({ item_type: 'PRODUCT_ITEM', requests }),
     });
     clearTimeout(timer);
 
     if (!resp.ok) {
       const errText = await resp.text().catch(() => '');
       logger.error('[WACatalog] syncMenuToCatalog failed', { status: resp.status, err: errText.slice(0, 300) });
-      await recordSyncError(business._id, `GRAPH_ERROR (${resp.status})`);
+      await recordSyncError(business._id, `GRAPH_ERROR (${resp.status})`, errText.slice(0, 500));
       return { ok: false, reason: 'GRAPH_ERROR', status: resp.status };
+    }
+
+    // [CATALOG-ASYNC-VERIFY-1] A 200 here only means Meta ACCEPTED the batch
+    // for async processing — it returns `handles` to check later, not proof
+    // the items are live. Give each handle one quick check (batches for a
+    // small menu often resolve within a second or two); anything still
+    // in-flight after that is persisted to pendingBatchHandles and picked
+    // up by resolvePendingBatchHandles() on the NEXT sync, rather than this
+    // function blocking indefinitely or, worse, silently reporting success
+    // for a batch that hasn't actually finished.
+    const acceptedJson = await resp.json().catch(() => null);
+    const handles = Array.isArray(acceptedJson?.handles) ? acceptedJson.handles : [];
+
+    await new Promise(r => setTimeout(r, 1500)); // brief grace period before the first check
+    const stillPending = [];
+    let batchErrorDetail = null;
+    for (const handle of handles) {
+      const result = await checkBatchRequestStatus(handle, token, version);
+      if (!result.resolved) {
+        stillPending.push({ handle, at: new Date() });
+      } else if (result.hasErrors) {
+        const firstMsg = result.errors?.[0]?.message || `batch ${result.status}`;
+        batchErrorDetail = `Batch ${handle.slice(0, 12)}… ${result.status}: ${firstMsg}`.slice(0, 500);
+      }
     }
 
     try {
@@ -322,8 +431,14 @@ export async function syncMenuToCatalog(business, tenant) {
             // the ones that changed this run) so the next sync's diff is
             // accurate for the whole catalog, not just what just changed.
             'waCatalog.syncedItemHashes': Object.fromEntries(allCurrentItems.map(i => [i.retailer_id, i.hash])),
-            // [CATALOG-HEALTH-4] A successful sync clears any stale failure flag.
-            'waCatalog.lastSyncError': { reason: null, at: null },
+            'waCatalog.pendingBatchHandles': stillPending,
+            // A batch that came back with per-item errors is a REAL failure
+            // even though the POST itself returned 200 — don't clear
+            // lastSyncError in that case. Otherwise a successful sync clears
+            // any stale failure flag as before.
+            'waCatalog.lastSyncError': batchErrorDetail
+              ? { reason: 'BATCH_VALIDATION_ERROR', detail: batchErrorDetail, at: new Date() }
+              : { reason: null, detail: null, at: null },
           },
         },
       );
@@ -332,7 +447,11 @@ export async function syncMenuToCatalog(business, tenant) {
       logger.debug('[WACatalog] lastSyncedAt write failed (non-fatal)', { err: err.message });
     }
 
-    return { ok: true, synced: updateRequests.length, deleted: deleteRequests.length, skipped: allCurrentItems.length - updateRequests.length, invalidSkipped: invalidSkipped.length };
+    if (batchErrorDetail) {
+      return { ok: false, reason: 'BATCH_VALIDATION_ERROR', detail: batchErrorDetail };
+    }
+
+    return { ok: true, synced: updateRequests.length, deleted: deleteRequests.length, skipped: allCurrentItems.length - updateRequests.length, invalidSkipped: invalidSkipped.length, pendingVerification: stillPending.length };
   } catch (err) {
     logger.error('[WACatalog] syncMenuToCatalog network error', { err: err.message });
     await recordSyncError(business._id, 'NETWORK_ERROR');

@@ -28,6 +28,14 @@ const menuItemSchema = new mongoose.Schema({
   description: { type: String, default: '', trim: true, maxlength: 300 },
   keywords:    { type: [String], default: [], validate: { validator: v => v.length <= 20, message: 'Max 20 keywords per item' } },
   available:   { type: Boolean, default: true },
+  // [FIX-STOCKCOUNT-SCHEMA] MenuPage.jsx's MENU-FIELDS-1 comment claims
+  // menuItemSchema already supports stockCount ("per-item inventory —
+  // auto-decrements on order, flips available:false at 0") — but the field
+  // was never actually added here. Every stockCount write from the create
+  // and edit forms has been silently dropped by Mongoose strict mode; no
+  // item has ever had a persisted stock count. null = unlimited stock
+  // (matches the frontend's "blank = unlimited" placeholder).
+  stockCount:  { type: Number, default: null, min: 0 },
   // [v1-SALON] category: 'services'|'service' = appointment service; anything else = retail product.
   // Salon flow uses this to split the menu into bookable services vs purchasable products.
   category:    { type: String, default: null, trim: true, maxlength: 60 },
@@ -227,10 +235,29 @@ const businessConfigSchema = new mongoose.Schema({
     // sync — lets the next sync only re-send items whose data actually
     // changed, instead of re-uploading the tenant's entire catalog every time.
     syncedItemHashes: { type: Map, of: String, default: {} },
+    // [CATALOG-ASYNC-VERIFY-1] Meta's items_batch POST is async — a 200
+    // response only means the batch was ACCEPTED, returning `handles` to
+    // check later via check_batch_request_status. Treating that 200 as
+    // "the items are now live" (as this code previously did) is a
+    // false-confidence bug: a batch can be accepted, then fail per-item
+    // validation moments later, and this codebase would still show a green
+    // "last synced" timestamp. Any handle whose status hasn't resolved to
+    // finished/error by the end of a sync attempt is persisted here so the
+    // NEXT sync call (manual or autosync) can check on it first — no
+    // separate cron needed, since every route that can trigger a sync
+    // already runs through syncMenuToCatalog().
+    pendingBatchHandles: {
+      type: [{ handle: String, at: Date, _id: false }],
+      default: [],
+    },
     lastSyncedAt: { type: Date, default: null },
     // [CATALOG-HEALTH-4] Cleared on the next successful sync.
     lastSyncError: {
       reason: { type: String, default: null },
+      // [CATALOG-HEALTH-4] Meta's actual error.message/body text (truncated),
+      // so a GRAPH_ERROR is diagnosable from the dashboard alone rather than
+      // requiring a server-log lookup for the specifics.
+      detail: { type: String, default: null },
       at:     { type: Date,   default: null },
     },
   },
@@ -294,6 +321,18 @@ const businessConfigSchema = new mongoose.Schema({
     promptMessage: { type: String, default: null, trim: true, maxlength: 500 }, // custom opening line
     thankYouMsg:   { type: String, default: null, trim: true, maxlength: 300 }, // custom thank-you
     notifyAdmin:   { type: Boolean, default: true }, // send admin a WhatsApp alert per lead
+  },
+
+  // [FIX-MULTIITEMCART-SCHEMA] PreferencesPage.jsx builds and saves a
+  // "Multi-Item Cart" toggle (multiItemCart.enabled / multiItemCart.maxItems)
+  // but this field was entirely absent from the schema — under Mongoose's
+  // default strict mode every save silently dropped it. Never persisted
+  // anything until now. Same "missing schema field → silent data loss"
+  // pattern already hit repeatedly elsewhere in this codebase (menuItemSchema
+  // variants, waCatalog, Tenant.whatsapp timestamps, etc.).
+  multiItemCart: {
+    enabled:  { type: Boolean, default: false },
+    maxItems: { type: Number,  default: 10, min: 1, max: 100 },
   },
 
   settings: {

@@ -642,7 +642,7 @@ export async function updateTenant(req, res) {
           {
             $set: {
               'waCatalog.catalogId':    catalogIdUpdate,
-              'waCatalog.lastSyncError': { reason: null, at: null },
+              'waCatalog.lastSyncError': { reason: null, detail: null, at: null },
             },
           },
           { new: true },

@@ -144,6 +144,21 @@ export async function updateBusinessConfig(req, res) {
       delete update.waCatalog;
     }
 
+    // [FIX-MULTIITEMCART-BIZ-1] Same $set-replaces-whole-subdocument hazard
+    // as [CATALOG-BIZ-1] above applies to multiItemCart and settings — flatten
+    // both to dot-notation so a partial payload from any future caller can't
+    // wipe sibling fields it didn't intend to touch. PreferencesPage.jsx
+    // currently always sends the full object for each, so this is
+    // defense-in-depth rather than a fix for an active symptom.
+    for (const key of ['multiItemCart', 'settings']) {
+      if (update[key] && typeof update[key] === 'object') {
+        for (const [k, v] of Object.entries(update[key])) {
+          update[`${key}.${k}`] = v;
+        }
+        delete update[key];
+      }
+    }
+
     const biz = await BusinessConfig.findOneAndUpdate(
       { tenantId },
       { $set: update },
@@ -198,13 +213,16 @@ export async function updateMenu(req, res) {
 export async function addMenuItem(req, res) {
   try {
     const { tenantId } = req.params;
-    const { name, price, description, available = true, showImageOnSelect = true } = req.body;
+    const {
+      name, price, description, available = true, showImageOnSelect = true,
+      category = null, currency = null, duration = null, prep = null,
+    } = req.body;
 
     if (!name || !name.trim()) {
       return res.status(400).json({ error: 'name is required' });
     }
 
-    // ── Parse array fields (keywords, tags) — arrive as strings from multipart ─
+    // ── Parse array fields (keywords, tags, variants) — arrive as strings from multipart ─
     let keywords = req.body.keywords ?? [];
     if (typeof keywords === 'string') {
       try { keywords = JSON.parse(keywords); } catch { keywords = keywords ? [keywords] : []; }
@@ -213,6 +231,20 @@ export async function addMenuItem(req, res) {
     if (typeof tags === 'string') {
       try { tags = JSON.parse(tags); } catch { tags = tags ? [tags] : []; }
     }
+    // [FIX-ADDMENUITEM-FIELDS] category/stockCount/currency/duration/prep/variants
+    // are all schema-supported (see menuItemSchema) and sent by MenuPage.jsx's
+    // create form's "Advanced options" section, but were previously never read
+    // from req.body here — silently omitted from the $push object below, not
+    // even reaching Mongoose (a plain JS gap, not a strict-mode drop). A tenant
+    // filling out variants/stock/duration/etc. on item CREATION had all of it
+    // discarded; only the edit path (separate handler) may have honored them.
+    let variants = req.body.variants ?? [];
+    if (typeof variants === 'string') {
+      try { variants = JSON.parse(variants); } catch { variants = variants ? [variants] : []; }
+    }
+    const stockCountRaw = req.body.stockCount;
+    const stockCount = (stockCountRaw === undefined || stockCountRaw === null || stockCountRaw === '')
+      ? null : Number(stockCountRaw);
 
     // ── Cloudinary image upload (optional) ────────────────────────────────────
     let image = { url: null, public_id: null };
@@ -241,6 +273,12 @@ export async function addMenuItem(req, res) {
             available:        available === 'false' ? false : Boolean(available),
             keywords,
             tags,
+            variants,
+            category:   typeof category === 'string' ? (category.trim() || null) : category,
+            currency:   typeof currency === 'string' ? (currency.trim() || null) : currency,
+            duration:   (duration === '' || duration === null || duration === undefined) ? null : Number(duration),
+            prep:       typeof prep === 'string' ? (prep.trim() || null) : prep,
+            stockCount,
             showImageOnSelect: showImageOnSelect === 'false' ? false : Boolean(showImageOnSelect),
             image,
           },
@@ -331,7 +369,7 @@ export async function syncWaCatalog(req, res) {
       // NO_TOKEN/NO_CATALOG_ID are caller-fixable configuration gaps (400);
       // anything else (GRAPH_ERROR, NETWORK_ERROR) is an upstream failure (502).
       const status = result.reason === 'NO_TOKEN' || result.reason === 'NO_CATALOG_ID' ? 400 : 502;
-      return res.status(status).json({ error: result.reason || 'Sync failed' });
+      return res.status(status).json({ error: result.reason || 'Sync failed', detail: result.detail || undefined });
     }
 
     // [AUDIT-FIX-CATALOG-INVISIBLE-SKIPS] syncMenuToCatalog() validates every
@@ -393,6 +431,8 @@ export async function getWaCatalogHealth(req, res) {
       catalogId:      business.waCatalog?.catalogId || null,
       lastSyncedAt:   business.waCatalog?.lastSyncedAt || null,
       lastSyncError:  business.waCatalog?.lastSyncError?.reason || null,
+      lastSyncErrorDetail: business.waCatalog?.lastSyncError?.detail || null,
+      pendingVerification: (business.waCatalog?.pendingBatchHandles || []).length,
       totalItems:     menu.length,
       itemsReady:     menu.length - skipped.length,
       itemsSkipped:   skipped.length,
