@@ -279,8 +279,25 @@ export function isSyncableForCatalog(item) {
   return { ok: reasons.length === 0, reasons };
 }
 
+/**
+ * [FIX-CATALOG-VISIBLE-SECTIONS-1] buildCategorizedSections() previously
+ * filtered only on `available !== false`, NOT on isSyncableForCatalog() — the
+ * exact same gate syncMenuToCatalog() (waCatalogService.js) uses to decide
+ * what actually gets uploaded to Meta. That mismatch meant a customer-facing
+ * "Browse Catalog" message could reference retailer_ids for items that were
+ * NEVER pushed to Meta's catalog (missing image / invalid price), since sync
+ * silently skips those. Meta has no product to show for an unrecognized
+ * retailer_id, so the referenced row (or, depending on Meta's validation,
+ * the whole product_list message) renders broken or empty — "catalog not
+ * showing items" from the customer's side, even though sync itself reports
+ * Healthy. Filtering here with the same isSyncableForCatalog() check keeps
+ * the customer-facing message in lockstep with what's actually live in
+ * Meta's catalog at all times, with zero extra network calls (pure, same
+ * BusinessConfig.menuItems data already in memory).
+ */
+
 export function buildCategorizedSections(business, { maxSections = 10, maxItemsPerSection = 30 } = {}) {
-  const menu = (business?.menuItems || []).filter(i => i.available !== false);
+  const menu = (business?.menuItems || []).filter(i => i.available !== false && isSyncableForCatalog(i).ok);
   if (!menu.length) return [];
 
   const byCategory = new Map(); // categoryTitle -> productRetailerIds[]

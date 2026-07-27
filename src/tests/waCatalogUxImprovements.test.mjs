@@ -23,15 +23,16 @@ const { shouldShowCatalogButton, withCatalogWelcomeOption } =
   await import('../modules/catalog/waCatalogConfig.js');
 
 function makeBusiness(overrides = {}) {
+  const img = { url: 'https://example.com/img.jpg' };
   return {
     tenantId: 't1',
     waCatalog: { enabled: true, catalogId: 'CAT_1', mode: 'AI_DECIDES', lastSyncedAt: new Date(), syncedRetailerIds: ['i1'] },
     menuItems: [
-      { _id: 'i1', name: 'Burger',   category: 'Mains',  available: true },
-      { _id: 'i2', name: 'Fries',    category: 'Mains',  available: true },
-      { _id: 'i3', name: 'Cola',     category: 'Drinks', available: true },
-      { _id: 'i4', name: 'Old Item', category: 'Mains',  available: false }, // excluded
-      { _id: 'i5', name: 'T-Shirt',  category: 'Apparel', available: true, variants: ['S', 'M'] },
+      { _id: 'i1', name: 'Burger',   category: 'Mains',  available: true, price: 5, image: img },
+      { _id: 'i2', name: 'Fries',    category: 'Mains',  available: true, price: 3, image: img },
+      { _id: 'i3', name: 'Cola',     category: 'Drinks', available: true, price: 2, image: img },
+      { _id: 'i4', name: 'Old Item', category: 'Mains',  available: false, price: 4, image: img }, // excluded
+      { _id: 'i5', name: 'T-Shirt',  category: 'Apparel', available: true, price: 10, image: img, variants: ['S', 'M'] },
     ],
     ...overrides,
   };
@@ -55,11 +56,29 @@ test('buildCategorizedSections excludes unavailable items entirely', () => {
   assert.ok(!allIds.includes('i4'));
 });
 
+// [FIX-CATALOG-VISIBLE-SECTIONS-1] regression test — an item missing an
+// image or a valid price is never actually pushed to Meta by
+// syncMenuToCatalog() (see isSyncableForCatalog / CATALOG-SYNC-VALIDATE-1),
+// so it must never appear in the customer-facing catalog message either —
+// otherwise the message references a retailer_id Meta has no product for.
+test('buildCategorizedSections excludes items that would never actually sync (missing image / invalid price)', () => {
+  const business = makeBusiness({
+    menuItems: [
+      { _id: 'ok',       name: 'Synced Item',  category: 'Mains', available: true, price: 5, image: { url: 'https://example.com/x.jpg' } },
+      { _id: 'no-image', name: 'No Image',     category: 'Mains', available: true, price: 5 }, // never synced — no image
+      { _id: 'no-price', name: 'No Price',     category: 'Mains', available: true, image: { url: 'https://example.com/y.jpg' } }, // never synced — no price
+    ],
+  });
+  const sections = buildCategorizedSections(business);
+  const allIds = sections.flatMap(s => s.productRetailerIds);
+  assert.deepEqual(allIds, ['ok']);
+});
+
 test('buildCategorizedSections falls back to a single "Products" section when no item has a category', () => {
   const business = makeBusiness({
     menuItems: [
-      { _id: 'a', name: 'A', available: true },
-      { _id: 'b', name: 'B', available: true },
+      { _id: 'a', name: 'A', available: true, price: 1, image: { url: 'https://example.com/a.jpg' } },
+      { _id: 'b', name: 'B', available: true, price: 1, image: { url: 'https://example.com/b.jpg' } },
     ],
   });
   const sections = buildCategorizedSections(business);
@@ -67,6 +86,7 @@ test('buildCategorizedSections falls back to a single "Products" section when no
   assert.equal(sections[0].title, 'Products');
   assert.deepEqual(sections[0].productRetailerIds, ['a', 'b']);
 });
+
 
 test('buildCategorizedSections returns [] for a tenant with no sellable items (never throws)', () => {
   assert.deepEqual(buildCategorizedSections(makeBusiness({ menuItems: [] })), []);
