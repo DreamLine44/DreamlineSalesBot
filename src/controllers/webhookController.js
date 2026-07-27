@@ -2888,12 +2888,25 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
   // reply tone only, per spec — never routing. (This codebase's AI classify step
   // no longer returns its own emotion signal, so unlike an earlier iteration of
   // this wiring, there is no AI-derived fallback here — regex detection only.)
+  //
+  // [FIX-EMOTION-INTERACTIVE-1] messageText for a button/list tap is the
+  // internal id (extractMessage() prefers btn.id over btn.title, correctly,
+  // for intent routing) — e.g. "BROWSE_CATALOG", "VIEW_MENU", "CONFIRM_ORDER".
+  // Running detectPreFlowEmotion on that id is a category error: the
+  // shouting/all-caps heuristic (built to catch a customer typing in caps)
+  // fires on almost any ALL_CAPS_SNAKE_CASE id >=6 letters, misclassifying it
+  // as FRUSTRATED and prepending "😔 Sorry about that — let's sort this out
+  // quickly." to what should be a normal, happy-path button-driven reply.
+  // A button tap is a selection, not customer prose — never a sentiment
+  // signal — so emotion detection only runs for actual typed text.
   let finalEmotion = 'NEUTRAL';
-  try {
-    const { detectPreFlowEmotion } = await import('../core/sentiment/emotionEngine.js');
-    finalEmotion = detectPreFlowEmotion(messageText).emotion;
-  } catch (err) {
-    logger.debug('[Webhook] emotion detection skipped', { err: err.message });
+  if (!isInteractive) {
+    try {
+      const { detectPreFlowEmotion } = await import('../core/sentiment/emotionEngine.js');
+      finalEmotion = detectPreFlowEmotion(messageText).emotion;
+    } catch (err) {
+      logger.debug('[Webhook] emotion detection skipped', { err: err.message });
+    }
   }
 
   let reply = await route({

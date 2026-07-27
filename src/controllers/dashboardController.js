@@ -602,6 +602,19 @@ export async function updateBusinessSettings(req, res) {
     for (const key of allowed) {
       if (req.body[key] !== undefined) updates[key] = req.body[key];
     }
+
+    // [FIX-CATALOG-SAVE-1] waCatalog needs its own handling: it's a nested
+    // subdocument that also holds admin-only fields (catalogId, lastSyncedAt,
+    // lastSyncError). A tenant is only allowed to touch `enabled`/`mode`.
+    // Doing `updates.waCatalog = req.body.waCatalog` would let $set REPLACE
+    // the whole subdocument — silently wiping catalogId and sync history the
+    // moment a tenant saves this form. Dot-notation on just the two
+    // tenant-editable leaves keeps everything else untouched.
+    if (req.body.waCatalog && typeof req.body.waCatalog === 'object') {
+      if (req.body.waCatalog.enabled !== undefined) updates['waCatalog.enabled'] = !!req.body.waCatalog.enabled;
+      if (req.body.waCatalog.mode !== undefined) updates['waCatalog.mode'] = req.body.waCatalog.mode;
+    }
+
     if (!Object.keys(updates).length) return res.status(400).json({ error: 'No valid fields to update' });
 
     // [FIX-TONE-3] findOneAndUpdate bypasses Mongoose pre('save') hooks — inline
