@@ -423,9 +423,11 @@ export async function route({ action, intent, session, message, business, tenant
     // moduleRegistry.js's START_ORDER action already uses: PATH A (no
     // catalog configured) goes straight to the unchanged startFlow('ORDER')
     // call below with zero added cost; PATH B (catalog enabled + synced)
-    // tries the catalog first and only falls back to startFlow('ORDER') if
-    // that send itself fails (browseCatalogExplicit already handles that
-    // fallback internally — see waCatalogFlow.js).
+    // uses the catalog only — [CATALOG-ONLY-1] browseCatalogExplicit() no
+    // longer falls back to startFlow('ORDER') on a send failure, since a
+    // catalog-enabled tenant no longer has a text/list menu at all. See
+    // waCatalogFlow.js for the "catalog unavailable, try again" notice it
+    // returns instead.
     case 'VIEW_MENU': {
       if (isCatalogEnabled(business) && hasSellableProducts(business)) {
         const { browseCatalogExplicit } = await import('../../modules/catalog/waCatalogFlow.js');

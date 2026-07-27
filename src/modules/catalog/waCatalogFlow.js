@@ -99,8 +99,24 @@ export async function offerCatalogOnStartOrder({ session, business, tenant, inte
  * waCatalog.mode/AI intent classification, since a direct tap is an
  * unambiguous "show me the catalog" signal on its own. This is also the
  * concrete trigger MANUAL_ONLY mode was documented as reserving room for.
- * → UIResponse | null (null on any failure — caller falls back to a normal
- * text reply so a Graph API hiccup is never a dead end for the customer).
+ *
+ * [CATALOG-ONLY-1] This function is ONLY ever reached for a tenant where
+ * isCatalogEnabled(business) && hasSellableProducts(business) are both true
+ * — every caller (moduleRouter.js VIEW_MENU and BROWSE_CATALOG cases) gates
+ * on that same check before importing/calling this file, and the welcome
+ * button that leads here (shouldShowCatalogButton()) uses the identical
+ * condition. A tenant who never enabled WA Catalog never reaches this
+ * function at all, and keeps their normal text/list ORDER menu untouched.
+ *
+ * Previously a Graph API send failure here fell back to the module's own
+ * text/list ORDER menu (startFlow('ORDER')) — which meant a catalog-enabled
+ * tenant's "View Menu"/"Browse Catalog" could silently look identical to a
+ * plain text-menu tenant on any hiccup. By explicit product decision,
+ * catalog-enabled tenants no longer have a text-menu fallback at all: on
+ * failure this now returns a distinct "catalog unavailable, try again"
+ * message instead of ever rendering the text/list menu.
+ * → UIResponse (never null — always a message the customer sees, either the
+ * catalog send confirmation or the retry notice below).
  */
 export async function browseCatalogExplicit({ session, business, tenant }) {
   try {
@@ -109,9 +125,17 @@ export async function browseCatalogExplicit({ session, business, tenant }) {
   } catch (err) {
     logger.warn('[WACatalog] browseCatalogExplicit failed', { err: err.message, tenantId: business?.tenantId });
   }
-  // [Failure handling] Fall back to the module's own ORDER flow rather than a dead end.
-  const { startFlow } = await import('../../core/conversations/flowEngine.js');
-  return startFlow({ flowName: 'ORDER', session, business, tenant });
+  // [CATALOG-ONLY-1] No text-menu fallback for catalog-enabled tenants —
+  // surface an honest "temporarily unavailable" notice with a retry, rather
+  // than silently rendering the text/list ORDER menu instead.
+  return {
+    type: 'buttons',
+    body: '🛍 Our product catalog is temporarily unavailable. Please try again in a moment.',
+    buttons: [
+      { id: 'BROWSE_CATALOG', title: '🔄 Try Again' },
+      { id: 'SUPPORT',        title: '💬 Get Help'  },
+    ],
+  };
 }
 
 /**
