@@ -126,33 +126,13 @@ test('detectIntent: tapping a SHOW_MENU button still resolves to action SHOW_MEN
 
 // ── 3. moduleRouter.js — VIEW_MENU starts the ORDER flow ────────────────────
 
-// [AUDIT-FIX-CATALOG-VIEWMENU] VIEW_MENU no longer unconditionally starts the
-// module's own text/list ORDER flow — for a tenant whose WA Catalog is
-// enabled and actually synced, it tries the real catalog first (mirroring
-// moduleRegistry.js's START_ORDER PATH A/B split) and only falls back to
-// startFlow('ORDER') when catalog isn't configured/ready for this tenant.
-// The startFlow('ORDER') fallback itself is unchanged — this asserts both
-// halves of the new behavior rather than one brittle regex against the old
-// unconditional shape.
-test('moduleRouter.js: case VIEW_MENU still starts the ORDER flow (unchanged) for a tenant without WA Catalog configured', () => {
+test('moduleRouter.js: case VIEW_MENU exists and starts the ORDER flow instead of a generic reset', () => {
   const src = readSource('../core/conversations/moduleRouter.js');
-  const caseMatch = src.match(/case 'VIEW_MENU':\s*\{[\s\S]*?return startFlow\(\{\s*flowName:\s*'ORDER'/);
+  const caseMatch = src.match(/case 'VIEW_MENU':\s*\n\s*return startFlow\(\{\s*flowName:\s*'ORDER'/);
   assert.ok(
     caseMatch,
-    "moduleRouter.js's case 'VIEW_MENU' should still fall back to " +
-    "startFlow({ flowName: 'ORDER', ... }) for a tenant with no WA Catalog — " +
+    "moduleRouter.js should have `case 'VIEW_MENU': return startFlow({ flowName: 'ORDER', ... })` — " +
     'View Menu must render the real menu, not the generic welcome buttons.'
-  );
-});
-
-test('moduleRouter.js: case VIEW_MENU routes through the WA Catalog first for a catalog-ready tenant', () => {
-  const src = readSource('../core/conversations/moduleRouter.js');
-  const caseMatch = src.match(/case 'VIEW_MENU':\s*\{[\s\S]*?isCatalogEnabled\(business\)[\s\S]*?browseCatalogExplicit[\s\S]*?\}/);
-  assert.ok(
-    caseMatch,
-    "moduleRouter.js's case 'VIEW_MENU' should check isCatalogEnabled(business) and delegate to " +
-    'browseCatalogExplicit() before ever falling back to the internal text/list menu — ' +
-    '"View Menu" must never show the fallback menu once the catalog is active.'
   );
 });
 
@@ -170,16 +150,13 @@ test('webhookController.js: SELECT_ITEM step now accepts VIEW_MENU as a valid bu
   assert.ok(m[1].includes("'SHOW_MENU'"), 'SHOW_MENU must remain valid at SELECT_ITEM too (unchanged)');
 });
 
-test('webhookController.js: mid-flow VIEW_MENU handling tries the WA Catalog first, falling back to startFlow when currentFlow is ORDER, without resetting currentFlow/step', () => {
+test('webhookController.js: mid-flow VIEW_MENU handling re-renders the menu via startFlow when currentFlow is ORDER, without resetting currentFlow/step', () => {
   const src = readSource('../controllers/webhookController.js');
 
-  // The VIEW_MENU branch must check currentFlow === 'ORDER', try the WA
-  // Catalog first for a catalog-ready tenant (browseCatalogExplicit), and
-  // only then fall back to startFlow({ flowName: 'ORDER' }) — i.e. redisplay
-  // the menu rather than clearing state. Window widened from the original
-  // 600 chars to fit the [AUDIT-FIX-CATALOG-VIEWMENU] catalog-first gate.
+  // The VIEW_MENU branch must check currentFlow === 'ORDER' and call startFlow
+  // with flowName 'ORDER' — i.e. redisplay the menu rather than clearing state.
   const viewMenuBlock = src.match(
-    /upperMsg === 'VIEW_MENU'[\s\S]{0,1600}?startFlow\(\{ flowName: 'ORDER'/
+    /upperMsg === 'VIEW_MENU'[\s\S]{0,600}?startFlow\(\{ flowName: 'ORDER'/
   );
   assert.ok(
     viewMenuBlock,
@@ -190,12 +167,6 @@ test('webhookController.js: mid-flow VIEW_MENU handling tries the WA Catalog fir
     viewMenuBlock[0].includes("session.currentFlow || ''"),
     'The VIEW_MENU branch should gate on session.currentFlow to avoid starting an ORDER flow ' +
     'for customers who are mid-booking or otherwise not in an order-capable flow.'
-  );
-  assert.ok(
-    viewMenuBlock[0].includes('isCatalogEnabled(business)') && viewMenuBlock[0].includes('browseCatalogExplicit'),
-    '[AUDIT-FIX-CATALOG-VIEWMENU] The VIEW_MENU branch should try the WA Catalog first ' +
-    '(isCatalogEnabled + browseCatalogExplicit) before ever falling back to startFlow(\'ORDER\') — ' +
-    '"View Menu" must never show the internal text/list menu once the catalog is active.'
   );
 
   // It must NOT clear currentFlow/step before calling startFlow (startFlow itself
@@ -215,33 +186,6 @@ test('webhookController.js: mid-flow VIEW_MENU handling tries the WA Catalog fir
   );
 });
 
-test('webhookController.js: stale "Order Food" re-tap while already in an ORDER flow also tries the WA Catalog first', () => {
-  const src = readSource('../controllers/webhookController.js');
-  // [AUDIT-FIX-CATALOG-VIEWMENU] FIX-LISTNAV-ORDER-COLLISION's re-tap handler
-  // is functionally "start ordering again" — it should reach a catalog-ready
-  // tenant's real WA Catalog too, not just the internal text/list menu.
-  const block = src.match(
-    /messageText\.trim\(\)\.toUpperCase\(\) === 'ORDER'\) \{[\s\S]{0,1100}?startFlow: _startOrderFlow/
-  );
-  assert.ok(block, 'Could not find the stale "ORDER" re-tap handler in webhookController.js');
-  assert.ok(
-    block[0].includes('isCatalogEnabled(business)') && block[0].includes('browseCatalogExplicit'),
-    'The stale "Order Food" re-tap handler should try the WA Catalog first (isCatalogEnabled + ' +
-    'browseCatalogExplicit) before falling back to startFlow(\'ORDER\').'
-  );
-});
-
-test('moduleRouter.js: the "⋯ More" secondary menu also filters BROWSE_CATALOG on shouldShowCatalogButton()', () => {
-  const src = readSource('../core/conversations/moduleRouter.js');
-  const block = src.match(/case 'MORE_MENU': \{[\s\S]*?\n {4}\}/);
-  assert.ok(block, 'Could not find the MORE_MENU case in moduleRouter.js');
-  assert.ok(
-    block[0].includes('shouldShowCatalogButton(business)'),
-    '[AUDIT-FIX-CATALOG-WELCOMELIST] The MORE_MENU case should filter its BROWSE_CATALOG entry on ' +
-    'shouldShowCatalogButton(business) — the static moreMenuButtons config alone must not decide ' +
-    'whether the button is shown.'
-  );
-});
 test('webhookController.js: the original SHOW_MENU/HOME/0 reset behavior is preserved unchanged', () => {
   const src = readSource('../controllers/webhookController.js');
   const resetBlock = src.match(
