@@ -86,7 +86,7 @@ test('bakery/flows/orderFlow.js: _buildBakeryMenu no longer truncates to 10 item
   const src = read('../modules/bakery/flows/orderFlow.js');
   const idx = src.indexOf('function _buildBakeryMenu');
   assert.ok(idx !== -1, '_buildBakeryMenu not found');
-  const body = src.slice(idx, idx + 900);
+  const body = src.slice(idx, idx + 1600);
 
   assert.doesNotMatch(body, /\.slice\(0,\s*10\)/, 'no build-time 10-item slice expected');
   assert.match(body, /menu\.map\(\(item, i\)/, 'expected the full menu to be mapped unsliced');

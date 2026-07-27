@@ -32,7 +32,7 @@ import { INTENT_PATTERNS } from '../core/intents/patterns.js';
 function catalogBusiness(overrides = {}) {
   return {
     businessMode: 'RETAIL',
-    waCatalog: { enabled: true, catalogId: 'CAT_1', mode: 'MANUAL_ONLY' },
+    waCatalog: { enabled: true, catalogId: 'CAT_1', mode: 'MANUAL_ONLY', lastSyncedAt: new Date(), syncedRetailerIds: ['i1'] },
     menuItems: [{ _id: 'i1', name: 'Widget', available: true }],
     ...overrides,
   };
@@ -62,13 +62,18 @@ test('buildWelcomeSequence: catalog-disabled tenant sees no Browse Catalog optio
   assert.ok(!ids.includes('BROWSE_CATALOG'));
 });
 
-test('buildWelcomeSequence: RESTAURANT is unaffected — still exactly its static 3-button Order/Book/⋯More set', () => {
+test('buildWelcomeSequence: RESTAURANT uses its LIST-NAV-1 welcomeList (single list message), which already includes Browse Catalog', () => {
+  // [LIST-NAV-1] RESTAURANT_CONFIG now defines cfg.ui.welcomeList, which
+  // buildWelcomeSequence() checks FIRST and returns early for — superseding
+  // the old NAV-META3 3-button + "⋯ More" array format this test used to
+  // assert. RESTAURANT's welcomeList rows already hard-code a Browse Catalog
+  // row, so it doesn't go through withCatalogWelcomeOption at all.
   const cfg = getModeConfig({ businessMode: 'RESTAURANT' });
   const business = catalogBusiness({ businessMode: 'RESTAURANT' });
   const seq = buildWelcomeSequence(business, cfg);
 
-  assert.equal(seq[1].type, 'buttons');
-  assert.deepEqual(seq[1].buttons.map(b => b.id), ['ORDER', 'BOOK', 'MORE_MENU']);
+  assert.equal(seq.type, 'list', 'RESTAURANT should return a single welcomeList message, not a [text, buttons] array');
+  assert.deepEqual(seq.rows.map(r => r.id), ['ORDER', 'BOOK', 'BROWSE_CATALOG', 'QUESTION']);
 });
 
 // ── 2. MAIN_MENU / VIEW_MENU collision ───────────────────────────────────────

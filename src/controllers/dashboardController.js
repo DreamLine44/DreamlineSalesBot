@@ -583,7 +583,7 @@ export async function getBusinessSettings(req, res) {
   try {
     const { tenantId } = req.params;
     const business = await BusinessConfig.findOne({ tenantId })
-      .select('name description businessMode adminPhone menuItems services faq payment leadCapture hours customMessages addOns settings')
+      .select('name description businessMode adminPhone menuItems services faq payment leadCapture hours customMessages addOns settings waCatalog')
       .lean();
     if (!business) return res.status(404).json({ error: 'Business not found' });
     res.json({ business });

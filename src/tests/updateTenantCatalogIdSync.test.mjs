@@ -85,7 +85,7 @@ test('updateTenant(): clears any stale waCatalog.lastSyncError when a new catalo
   const nearby = body.slice(idx, idx + 300);
   assert.match(
     nearby,
-    /waCatalog\.lastSyncError['"]:\s*\{\s*reason:\s*null,\s*at:\s*null\s*\}/,
+    /waCatalog\.lastSyncError['"]:\s*\{\s*reason:\s*null,\s*detail:\s*null,\s*at:\s*null\s*\}/,
     'setting a new catalog ID must clear waCatalog.lastSyncError — otherwise a stale ' +
     'GRAPH_ERROR from before the ID was fixed keeps showing on the tenant Catalog page ' +
     'even once the real problem is resolved'

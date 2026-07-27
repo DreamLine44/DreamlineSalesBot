@@ -71,7 +71,8 @@ test('businessRoutes.js registers GET /:tenantId/wacatalog/health', () => {
 test('businessController.js syncWaCatalog response surfaces skippedInvalid', () => {
   const src = read('../controllers/businessController.js');
   const idx = src.indexOf('export async function syncWaCatalog');
-  const body = src.slice(idx, idx + 2600);
+  const end = src.indexOf('\nexport async function getWaCatalogHealth', idx);
+  const body = src.slice(idx, end === -1 ? idx + 4000 : end);
   assert.match(body, /skippedInvalid:\s*result\.invalidSkipped \|\| 0,/);
 });
 
