@@ -2068,8 +2068,20 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
     // flow" (restart via startFlow, same as a fresh tap) instead of feeding the
     // literal string 'ORDER' to the item picker.
     if (isListReply && session.currentFlow === 'ORDER' && messageText.trim().toUpperCase() === 'ORDER') {
-      const { startFlow: _startOrderFlow } = await import('../core/conversations/flowEngine.js');
+      // [AUDIT-FIX-CATALOG-VIEWMENU] Same catalog-first gate as the other two
+      // fixes above/below — a stale "🍔 Order Food" re-tap is functionally a
+      // fresh "start ordering" request, so it should reach a catalog-ready
+      // tenant's real WA Catalog instead of unconditionally re-rendering the
+      // internal text/list menu.
       const freshOrderSession = await getSession(from, tenantId) || session;
+      const { isCatalogEnabled, hasSellableProducts } = await import('../modules/catalog/waCatalogConfig.js');
+      if (isCatalogEnabled(business) && hasSellableProducts(business)) {
+        const { browseCatalogExplicit } = await import('../modules/catalog/waCatalogFlow.js');
+        const reply = await browseCatalogExplicit({ session: freshOrderSession, business, tenant: tenantDoc });
+        if (reply) await dispatchMessage(from, reply, tenantDoc);
+        return;
+      }
+      const { startFlow: _startOrderFlow } = await import('../core/conversations/flowEngine.js');
       const reply = await _startOrderFlow({ flowName: 'ORDER', session: freshOrderSession, business, tenant: tenantDoc });
       if (reply) {
         const payloads = Array.isArray(reply) ? reply : [reply];
@@ -2339,6 +2351,21 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
         || upperMsg === 'VIEW MENU' || upperMsg === 'SEE MENU' || upperMsg === 'MAIN MENU'
         || upperMsg === 'BACK TO MENU') {
       if ((session.currentFlow || '').toUpperCase() === 'ORDER') {
+        // [AUDIT-FIX-CATALOG-VIEWMENU] This branch used to call
+        // startFlow('ORDER') unconditionally, which renders the module's own
+        // internal text/list menu (buildMenuUI, etc.) even for a tenant whose
+        // WA Catalog is enabled and fully synced — the same "View Menu shows
+        // the fallback instead of the real catalog" gap fixed in
+        // moduleRouter.js's VIEW_MENU case. Mirrored here since mid-flow
+        // "menu"/"View Menu" taps are intercepted at this earlier point in
+        // route(), before moduleRouter.js's case even runs.
+        const { isCatalogEnabled, hasSellableProducts } = await import('../modules/catalog/waCatalogConfig.js');
+        if (isCatalogEnabled(business) && hasSellableProducts(business)) {
+          const { browseCatalogExplicit } = await import('../modules/catalog/waCatalogFlow.js');
+          const reply = await browseCatalogExplicit({ session, business, tenant: tenantDoc });
+          if (reply) await dispatchMessage(from, reply, tenantDoc);
+          return;
+        }
         const { startFlow } = await import('../core/conversations/flowEngine.js');
         const reply = await startFlow({ flowName: 'ORDER', session, business, tenant: tenantDoc });
         if (reply) await dispatchMessage(from, reply, tenantDoc);

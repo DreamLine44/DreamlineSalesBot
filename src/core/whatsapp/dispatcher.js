@@ -212,24 +212,14 @@ function buildPayload(to, ui) {
       })
       .filter(sec => sec.product_items.length > 0);
 
-    // [FIX-CATALOG-HEADER-1] Unlike 'list' above, Meta's Cloud API REQUIRES
-    // interactive.header on a 'product_list' (multi_product) message — Graph
-    // API rejects it with 400 "(#131009) ... interactive['header'] is
-    // required" otherwise. Refusing here (rather than silently omitting
-    // header, which is what let this ship broken in the first place — see
-    // waCatalogService.js [FIX-CATALOG-HEADER-1]) means no future caller can
-    // reintroduce this exact failure: a missing header now fails fast and
-    // falls back to the caller's normal text/list UI, the same "never
-    // silently send a payload Meta will reject" guarantee already given to
-    // missing catalogId/sections above.
-    if (!ui.catalogId || !sections.length || !ui.header) return null;
+    if (!ui.catalogId || !sections.length) return null;
 
     return {
       messaging_product: 'whatsapp', recipient_type: 'individual',
       to, type: 'interactive',
       interactive: {
         type: 'product_list',
-        header: { type: 'text', text: String(ui.header).slice(0, 60) },
+        ...(ui.header ? { header: { type: 'text', text: String(ui.header).slice(0, 60) } } : {}),
         body: { text: String(ui.body || '').slice(0, 1024) },
         action: {
           catalog_id: String(ui.catalogId),

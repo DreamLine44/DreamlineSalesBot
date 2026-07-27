@@ -87,22 +87,6 @@ export async function sendCatalogMessage(to, business, tenant, { productRetailer
   const bodyText = business?.customMessages?.orderPrompt
     || `🛍 Browse our products below — tap any item to see more.`;
 
-  // [FIX-CATALOG-HEADER-1] Meta's Cloud API REQUIRES interactive.header on a
-  // 'product_list' (multi_product) message — unlike the plain 'list' type,
-  // where header is optional (see dispatcher.js line ~157 vs ~222, both of
-  // which only add header when ui.header is truthy). This ui object never
-  // set ui.header, so every product_list send hit Graph API 400
-  // "(#131009) ... interactive['header'] is required" and dispatchMessage()
-  // correctly returned null on that error — which sendAndArmCatalog()
-  // (waCatalogFlow.js) then correctly treated as a failure and silently fell
-  // back to the tenant's plain-text/list menu ("View Menu"), exactly as the
-  // [Failure handling] contract says it should. The catalog itself was never
-  // broken — every product_list send was failing before it ever reached the
-  // customer, so the fallback UI was ALL any tenant with <=30 sellable items
-  // (the product_list branch below) could ever see. catalog_message (the
-  // >30-item branch) has no header requirement and was unaffected.
-  const headerText = (business?.name || 'Our Products').slice(0, 60);
-
   let ui;
   if (productRetailerIds?.length) {
     // Curated list — caller (e.g. a specific promo/upsell context) asked for
@@ -110,7 +94,6 @@ export async function sendCatalogMessage(to, business, tenant, { productRetailer
     ui = {
       type: 'product_list',
       catalogId,
-      header: headerText,
       body: bodyText,
       sections: [{ title: sectionTitle.slice(0, 24), productRetailerIds: productRetailerIds.slice(0, 30) }],
     };
@@ -119,7 +102,7 @@ export async function sendCatalogMessage(to, business, tenant, { productRetailer
     const totalRows = sections.reduce((n, s) => n + s.productRetailerIds.length, 0);
 
     ui = (totalRows > 0 && totalRows <= INLINE_LIST_ROW_THRESHOLD)
-      ? { type: 'product_list', catalogId, header: headerText, body: bodyText, sections }
+      ? { type: 'product_list', catalogId, body: bodyText, sections }
       : { type: 'catalog_message', catalogId, body: bodyText };
   }
 

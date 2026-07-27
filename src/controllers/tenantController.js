@@ -506,34 +506,6 @@ export async function updateTenant(req, res) {
     }
     const ignoredFields = findIgnoredFields(req.body);
 
-    // [FIX-CRED-BLANK-GUARD] Every field below is a real Meta/WhatsApp
-    // credential — there is no legitimate product reason to ever SET one of
-    // these to an empty string (see catalogIdUpdate above, which already
-    // treats a blank value as "no change" rather than "clear this field," for
-    // the exact same reason). Before this fix, the loop below only checked
-    // `!== undefined`, so any request that included e.g.
-    // `whatsapp: { accessToken: '' }` — trivial to trigger from an admin-panel
-    // form that resubmits every field on the screen, including ones the
-    // operator never touched and whose real (encrypted) value it never held
-    // locally in the first place — would pass '' straight through: '' is
-    // falsy, so the encryption block just below (`if (updates['whatsapp.
-    // accessToken'])`) skips it, and Tenant.findByIdAndUpdate's `$set` then
-    // overwrites the real, working, encrypted secret with a plain empty
-    // string. That silently breaks WhatsApp sending/receiving and webhook
-    // signature verification for the tenant on a save that had nothing to do
-    // with credentials, with no error surfaced anywhere. Any field on this
-    // list is now only accepted into `updates` when it's a non-blank string
-    // after trimming — a blank/whitespace-only value is treated as "not
-    // supplied," exactly like leaving the field out of the request entirely.
-    const BLANK_GUARDED_FIELDS = new Set([
-      'whatsapp.phone', 'whatsapp.phoneNumberId', 'whatsapp.wabaId',
-      'whatsapp.accessToken', 'whatsapp.verifyToken', 'whatsapp.webhookSecret', 'whatsapp.apiVersion',
-      'meta.appId', 'meta.appSecret',
-    ]);
-    function isBlank(v) {
-      return typeof v === 'string' && !v.trim();
-    }
-
     // Accept both nested { whatsapp: { accessToken } } and flat { 'whatsapp.accessToken': '...' }
     const updates = {};
     for (const field of ALLOWED) {
@@ -542,14 +514,8 @@ export async function updateTenant(req, res) {
         if (req.body[field] !== undefined) updates[field] = req.body[field];
       } else {
         const [top, sub] = parts;
-        const nestedVal = req.body[top]?.[sub];
-        const flatVal   = req.body[field];
-        if (nestedVal !== undefined && !(BLANK_GUARDED_FIELDS.has(field) && isBlank(nestedVal))) {
-          updates[`${top}.${sub}`] = nestedVal;
-        }
-        if (flatVal !== undefined && !(BLANK_GUARDED_FIELDS.has(field) && isBlank(flatVal))) {
-          updates[field] = flatVal;
-        }
+        if (req.body[top]?.[sub]  !== undefined) updates[`${top}.${sub}`] = req.body[top][sub];
+        if (req.body[field]       !== undefined) updates[field]           = req.body[field];
       }
     }
 
