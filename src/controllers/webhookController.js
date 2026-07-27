@@ -136,7 +136,7 @@ import { route }                                     from '../core/conversations
 import { dispatchMessage }                           from '../core/whatsapp/dispatcher.js';
 import { getModeConfig }                             from '../config/modes.js';
 import { buildOptionsReply }                         from '../core/shared/uiOptionsHelper.js';
-import { decryptToken }                              from './tenantController.js';
+import { decryptToken, fingerprintSecret }           from './tenantController.js';
 // [FIX-IMPORT-1] handlePostFlowMessage was called at step 14 but never imported —
 // every postFlowAck message fell through to the default-case "unknown ackCtx" path in
 // postFlowHandler.js, sending a generic menu instead of the correct contextual reply.
@@ -316,8 +316,17 @@ export function _verifyTenantWebhookSignature(req, tenant, wamid) {
   // secret values themselves, only which sources were available/tried and
   // basic shape info about the request that can rule things in or out fast
   // (rawBody length vs Content-Length, which secret source(s) existed).
+  // [FIX-SIG-FINGERPRINT] Fingerprints (not the secrets themselves) of every
+  // candidate that was tried. Compare against the fingerprint logged when the
+  // secret was saved (tenantController.js updateTenant) or compute a fresh one
+  // via POST /admin/webhook-secret-fingerprint against the value currently
+  // shown in the Meta App Dashboard — a mismatch here means the stored value
+  // is simply wrong, not that something else is misconfigured.
   logger.warn('[Webhook] ✗ Signature mismatch for tenant — message dropped', {
     tenantId: String(tenant?._id),
+    tenantSecretFingerprint: fingerprintSecret(tenantSecret),
+    webhookSecretFingerprint: fingerprintSecret(waSecret),
+    globalSecretFingerprint: fingerprintSecret(globalSecret),
     wamid: wamid || null,
     hadTenantSecret: !!tenantSecret,
     hadWebhookSecret: !!waSecret,
@@ -2068,8 +2077,20 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
     // flow" (restart via startFlow, same as a fresh tap) instead of feeding the
     // literal string 'ORDER' to the item picker.
     if (isListReply && session.currentFlow === 'ORDER' && messageText.trim().toUpperCase() === 'ORDER') {
-      const { startFlow: _startOrderFlow } = await import('../core/conversations/flowEngine.js');
+      // [AUDIT-FIX-CATALOG-VIEWMENU] Same catalog-first gate as the other two
+      // fixes above/below — a stale "🍔 Order Food" re-tap is functionally a
+      // fresh "start ordering" request, so it should reach a catalog-ready
+      // tenant's real WA Catalog instead of unconditionally re-rendering the
+      // internal text/list menu.
       const freshOrderSession = await getSession(from, tenantId) || session;
+      const { isCatalogEnabled, hasSellableProducts } = await import('../modules/catalog/waCatalogConfig.js');
+      if (isCatalogEnabled(business) && hasSellableProducts(business)) {
+        const { browseCatalogExplicit } = await import('../modules/catalog/waCatalogFlow.js');
+        const reply = await browseCatalogExplicit({ session: freshOrderSession, business, tenant: tenantDoc });
+        if (reply) await dispatchMessage(from, reply, tenantDoc);
+        return;
+      }
+      const { startFlow: _startOrderFlow } = await import('../core/conversations/flowEngine.js');
       const reply = await _startOrderFlow({ flowName: 'ORDER', session: freshOrderSession, business, tenant: tenantDoc });
       if (reply) {
         const payloads = Array.isArray(reply) ? reply : [reply];
@@ -2339,6 +2360,21 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
         || upperMsg === 'VIEW MENU' || upperMsg === 'SEE MENU' || upperMsg === 'MAIN MENU'
         || upperMsg === 'BACK TO MENU') {
       if ((session.currentFlow || '').toUpperCase() === 'ORDER') {
+        // [AUDIT-FIX-CATALOG-VIEWMENU] This branch used to call
+        // startFlow('ORDER') unconditionally, which renders the module's own
+        // internal text/list menu (buildMenuUI, etc.) even for a tenant whose
+        // WA Catalog is enabled and fully synced — the same "View Menu shows
+        // the fallback instead of the real catalog" gap fixed in
+        // moduleRouter.js's VIEW_MENU case. Mirrored here since mid-flow
+        // "menu"/"View Menu" taps are intercepted at this earlier point in
+        // route(), before moduleRouter.js's case even runs.
+        const { isCatalogEnabled, hasSellableProducts } = await import('../modules/catalog/waCatalogConfig.js');
+        if (isCatalogEnabled(business) && hasSellableProducts(business)) {
+          const { browseCatalogExplicit } = await import('../modules/catalog/waCatalogFlow.js');
+          const reply = await browseCatalogExplicit({ session, business, tenant: tenantDoc });
+          if (reply) await dispatchMessage(from, reply, tenantDoc);
+          return;
+        }
         const { startFlow } = await import('../core/conversations/flowEngine.js');
         const reply = await startFlow({ flowName: 'ORDER', session, business, tenant: tenantDoc });
         if (reply) await dispatchMessage(from, reply, tenantDoc);
@@ -3094,9 +3130,16 @@ export async function receiveWebhook(req, res) {
                   tenantId: String(tenant._id), wamid: msg.id, from,
                 });
               } else {
-                logger.warn('[Webhook] ✗✗ Signature mismatch and NO successful duplicate found for this wamid — ' +
-                  'customer likely did not receive a reply. Check for a second/legacy Meta App still ' +
-                  'subscribed to this WABA\'s webhook, or a stale meta.appSecret/META_APP_SECRET.', {
+                // [FIX-SIG-FINGERPRINT] Escalated from warn → error: unlike the
+                // duplicate-noise branch above, this is not routine — no valid
+                // copy of this message was ever processed, so the customer got
+                // no reply at all. Includes fingerprints so the fix (re-enter
+                // the correct secret vs. hunt for a legacy subscribed app) is
+                // directly actionable from this one log line.
+                logger.error('[Webhook] ✗✗ Signature mismatch and NO successful duplicate found for this wamid — ' +
+                  'customer did NOT receive a reply. Check for a second/legacy Meta App still ' +
+                  'subscribed to this WABA\'s webhook, or re-verify meta.appSecret/META_APP_SECRET via ' +
+                  'POST /admin/webhook-secret-fingerprint.', {
                   tenantId: String(tenant._id), wamid: msg.id, from, phoneNumberId,
                 });
               }

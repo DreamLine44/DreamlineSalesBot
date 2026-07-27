@@ -127,6 +127,32 @@ export function encryptToken(plaintext) {
 }
 
 /**
+ * [FIX-SIG-FINGERPRINT] Non-reversible fingerprint of a secret, safe to log.
+ *
+ * The webhook signature mismatches seen in production (see webhookController.js
+ * _verifyTenantWebhookSignature) all share one root-cause pattern: a secret is
+ * stored, it decrypts fine (hadTenantSecret: true), and it STILL never matches
+ * what Meta signs with — because the wrong value was pasted in (a copy from
+ * the wrong Meta App, a truncated paste, the App ID pasted where the App
+ * Secret belongs, etc). Every log line up to now could say "a secret exists"
+ * but never "whether it's the RIGHT secret," which left operators guessing.
+ *
+ * This fingerprint (first 12 hex chars of sha256(trimmed-plaintext)) lets an
+ * operator answer that conclusively without ever exposing/transmitting the
+ * real secret twice: log this fingerprint at save time, then independently
+ * compute the same fingerprint of the value shown in the Meta App Dashboard
+ * (via POST /admin/webhook-secret-fingerprint — see adminRoutes.js) and
+ * compare the two 12-char strings. Match → stored secret is correct, the
+ * mismatch has some other cause (second Meta App subscribed, wrong
+ * phoneNumberId routing, etc). No match → the stored secret is simply wrong;
+ * re-enter it.
+ */
+export function fingerprintSecret(plaintext) {
+  if (!plaintext) return null;
+  return crypto.createHash('sha256').update(String(plaintext).trim(), 'utf8').digest('hex').slice(0, 12);
+}
+
+/**
  * Decrypt a token produced by encryptToken.
  * Passes through plaintext values (no enc: prefix) transparently.
  */
@@ -576,8 +602,28 @@ export async function updateTenant(req, res) {
       updates['whatsapp.tokenUpdatedAt'] = new Date();
     }
     if (updates['whatsapp.verifyToken'])   updates['whatsapp.verifyToken']   = encryptToken(updates['whatsapp.verifyToken']);
-    if (updates['whatsapp.webhookSecret']) updates['whatsapp.webhookSecret'] = encryptToken(updates['whatsapp.webhookSecret']);
-    if (updates['meta.appSecret'])         updates['meta.appSecret']         = encryptToken(updates['meta.appSecret']);
+    // [FIX-SIG-FINGERPRINT] Log the fingerprint of each webhook-signing secret
+    // at the moment it's saved — BEFORE encryption, using the same trimmed
+    // plaintext that will actually be used for HMAC verification. This is the
+    // one point in the whole system where we still hold the real value; once
+    // it's encrypted+stored, the only way to check "is this the secret Meta
+    // is actually signing with" is to compare fingerprints (see
+    // POST /admin/webhook-secret-fingerprint in adminRoutes.js). Never logs
+    // the plaintext secret itself, only its 12-char fingerprint.
+    if (updates['whatsapp.webhookSecret']) {
+      logger.info('[TenantCtrl] whatsapp.webhookSecret saved', {
+        tenantId: req.params.id,
+        fingerprint: fingerprintSecret(updates['whatsapp.webhookSecret']),
+      });
+      updates['whatsapp.webhookSecret'] = encryptToken(updates['whatsapp.webhookSecret']);
+    }
+    if (updates['meta.appSecret']) {
+      logger.info('[TenantCtrl] meta.appSecret saved', {
+        tenantId: req.params.id,
+        fingerprint: fingerprintSecret(updates['meta.appSecret']),
+      });
+      updates['meta.appSecret'] = encryptToken(updates['meta.appSecret']);
+    }
 
     // Load current state — needed for step gate and ONE-SHOT effective-value resolution
     const current = await Tenant.findById(req.params.id)

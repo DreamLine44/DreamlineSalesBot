@@ -39,7 +39,7 @@ import { startFlow, cancelFlow } from './flowEngine.js';
 import { updateSession }         from '../sessions/sessionService.js';
 import { dispatchText, dispatchMessage }          from '../whatsapp/dispatcher.js';
 import { getModeConfig }         from '../../config/modes.js';
-import { withCatalogWelcomeOption } from '../../modules/catalog/waCatalogConfig.js';
+import { withCatalogWelcomeOption, shouldShowCatalogButton, isCatalogEnabled, hasSellableProducts } from '../../modules/catalog/waCatalogConfig.js';
 import { buildOptionsReply } from '../shared/uiOptionsHelper.js';
 import logger from '../../config/logger.js';
 
@@ -114,11 +114,31 @@ export function buildWelcomeSequence(business, cfg) {
   // through to the moreMenuButtons/withCatalogWelcomeOption logic below,
   // completely untouched.
   if (cfg.ui?.welcomeList) {
+    // [AUDIT-FIX-CATALOG-WELCOMELIST] cfg.ui.welcomeList.rows is a static,
+    // hand-written config array (modules/restaurant/configs/index.js) that
+    // included a 'BROWSE_CATALOG' row unconditionally — unlike the
+    // withCatalogWelcomeOption() path just below (used by every other
+    // mode), which only ever surfaces that row when
+    // shouldShowCatalogButton(business) is true (catalog enabled +
+    // configured + at least one completed sync — see waCatalogConfig.js).
+    // That meant a RESTAURANT tenant who had never enabled WA Catalog, or
+    // had enabled it but never successfully synced, still saw "🛍 Browse
+    // Catalog" in the welcome list. Tapping it reached browseCatalogExplicit()
+    // (waCatalogFlow.js), which correctly detected catalog wasn't ready and
+    // gracefully fell back to the tenant's normal text/list ORDER menu — but
+    // from the customer's side that reads as "I tapped Browse Catalog and
+    // got the same old text menu," not as the button simply not being there.
+    // Filtering here brings RESTAURANT in line with every other mode: the
+    // row only appears once shouldShowCatalogButton() is actually true, so a
+    // tap on it is guaranteed to reach a catalog-ready tenant.
+    const rows = (cfg.ui.welcomeList.rows || []).filter(
+      row => row.id !== 'BROWSE_CATALOG' || shouldShowCatalogButton(business),
+    );
     return {
       type:   'list',
       body:   `${greeting}\n\n${promptBody}`,
       button: cfg.ui.welcomeList.button || 'Choose an option',
-      rows:   cfg.ui.welcomeList.rows || [],
+      rows,
     };
   }
 
@@ -394,8 +414,25 @@ export async function route({ action, intent, session, message, business, tenant
     // which already builds and returns the real menu/product list for that
     // business (restaurant, delivery, retail, bakery, etc.) — no per-module
     // menu-rendering duplication needed here.
-    case 'VIEW_MENU':
+    // [AUDIT-FIX-CATALOG-VIEWMENU] Previously always ran startFlow('ORDER'),
+    // which renders each module's own internal text/list menu (buildMenuUI,
+    // etc.) unconditionally — even for a tenant whose WA Catalog is fully
+    // enabled and synced. "View Menu" is exactly the customer-intent WA
+    // Catalog exists to serve, so it should never bypass the catalog for a
+    // catalog-ready tenant. Mirrors the same PATH A / PATH B split
+    // moduleRegistry.js's START_ORDER action already uses: PATH A (no
+    // catalog configured) goes straight to the unchanged startFlow('ORDER')
+    // call below with zero added cost; PATH B (catalog enabled + synced)
+    // tries the catalog first and only falls back to startFlow('ORDER') if
+    // that send itself fails (browseCatalogExplicit already handles that
+    // fallback internally — see waCatalogFlow.js).
+    case 'VIEW_MENU': {
+      if (isCatalogEnabled(business) && hasSellableProducts(business)) {
+        const { browseCatalogExplicit } = await import('../../modules/catalog/waCatalogFlow.js');
+        return browseCatalogExplicit({ session, business, tenant });
+      }
       return startFlow({ flowName: 'ORDER', session, business, tenant });
+    }
 
     case 'SHOW_MENU': {
       const cfg = getModeConfig(business);
@@ -419,13 +456,18 @@ export async function route({ action, intent, session, message, business, tenant
     // slots.
     case 'MORE_MENU': {
       const cfg = getModeConfig(business);
+      // [AUDIT-FIX-CATALOG-WELCOMELIST] Same gate as buildWelcomeSequence()'s
+      // welcomeList filtering above — moreMenuButtons is the other static
+      // config array (modules/restaurant/configs/index.js) that included
+      // 'BROWSE_CATALOG' unconditionally.
+      const buttons = (cfg.ui?.moreMenuButtons || [
+        { id: 'QUESTION',  title: '❓ Ask a Question' },
+        { id: 'MAIN_MENU', title: '🏠 Main Menu'      },
+      ]).filter(b => b.id !== 'BROWSE_CATALOG' || shouldShowCatalogButton(business));
       return {
         type:    'buttons',
         body:    cfg.messages?.moreMenuPrompt || 'What else would you like to do?',
-        buttons: cfg.ui?.moreMenuButtons || [
-          { id: 'QUESTION',  title: '❓ Ask a Question' },
-          { id: 'MAIN_MENU', title: '🏠 Main Menu'      },
-        ],
+        buttons,
       };
     }
 

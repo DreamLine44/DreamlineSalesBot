@@ -508,4 +508,33 @@ r.patch('/notifications/:id/read', async (req, res) => {
   }
 });
 
+// ── Webhook secret fingerprint (diagnostic only) ────────────────────────────
+// [FIX-SIG-FINGERPRINT] Webhook signature mismatches (see webhookController.js
+// _verifyTenantWebhookSignature) are indistinguishable in the logs between
+// "the stored secret is wrong" and "something else is misconfigured" — both
+// just say hadTenantSecret: true, mismatch. This endpoint closes that gap:
+// paste the App Secret currently shown in the Meta App Dashboard here, get
+// back its 12-char fingerprint, and compare it against the fingerprint that
+// was logged when the tenant's meta.appSecret/whatsapp.webhookSecret was
+// saved (tenantController.js updateTenant) or against the fingerprint on a
+// live mismatch log line. Match → the stored secret is correct and the real
+// cause is elsewhere (e.g. a second/legacy Meta App still subscribed to this
+// WABA's webhook). No match → the stored secret is simply wrong; re-enter it.
+//
+// The posted secret is used only in-memory for this one hash computation —
+// it is never persisted, never written to a log, and never echoed back.
+r.post('/webhook-secret-fingerprint', async (req, res) => {
+  try {
+    const { secret } = req.body || {};
+    if (!secret || typeof secret !== 'string' || !secret.trim()) {
+      return res.status(400).json({ error: 'Body must include a non-empty "secret" string.' });
+    }
+    const { fingerprintSecret } = await import('../controllers/tenantController.js');
+    return res.json({ fingerprint: fingerprintSecret(secret) });
+  } catch (err) {
+    logger.error('[AdminRoutes] webhook-secret-fingerprint failed', { err: err.message });
+    return res.status(500).json({ error: 'Failed to compute fingerprint.' });
+  }
+});
+
 export default r;
