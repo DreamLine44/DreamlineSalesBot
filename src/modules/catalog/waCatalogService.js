@@ -252,7 +252,7 @@ async function resolvePendingBatchHandles(business, token, version) {
   }
 }
 
-export async function syncMenuToCatalog(business, tenant, { force = false } = {}) {
+export async function syncMenuToCatalog(business, tenant) {
   const catalogId = business?.waCatalog?.catalogId;
   if (!catalogId) return { ok: false, reason: 'NO_CATALOG_ID' };
 
@@ -287,7 +287,19 @@ export async function syncMenuToCatalog(business, tenant, { force = false } = {}
   // exact same plain "<menuItemId>" entry as before — zero behavioural change
   // for every non-variant item in every tenant's catalog.
   const buildItemData = (item, variantName = null) => ({
-    name: variantName ? `${item.name} - ${variantName}` : item.name,
+    // [FIX-CATALOG-FIELD-NAMES] Meta's Catalog Batch API product schema has
+    // no `name` or `image_url` field — it expects `title` and `image_link`
+    // (see the Catalog Batch API / product feed reference). Sending `name`/
+    // `image_url` was accepted at the transport level (valid JSON, valid
+    // method/retailer_id) so items_batch returned 200 + a handle, and
+    // check_batch_request_status reported "finished, no errors" — but Meta
+    // silently created each product with no title and no image, since it
+    // doesn't recognize those two field names. This is why the catalog
+    // showed blank "Title" placeholder rows instead of failing outright.
+    // Confirmed live against the Graph API (v25.0/{catalogId}/items_batch):
+    // identical payload with `title`/`image_link` created real, visible
+    // products; `name`/`image_url` did not.
+    title: variantName ? `${item.name} - ${variantName}` : item.name,
     // [FIX-CATALOG-PRICE] Meta's Catalog Batch API expects `price` as a plain
     // decimal STRING in major currency units (e.g. "10.00"), with `currency`
     // as a separate field — see the Catalog Batch API reference examples
@@ -297,9 +309,22 @@ export async function syncMenuToCatalog(business, tenant, { force = false } = {}
     price:        (Number(item.price) || 0).toFixed(2),
     currency:     item.currency || business?.payment?.currency || 'USD',
     availability: item.available !== false ? 'in stock' : 'out of stock',
+    // [FIX-CATALOG-REQUIRED-FIELDS] `condition` and `link` are core required
+    // fields in Meta's product schema and were missing entirely. `condition`
+    // is always 'new' for menu items. `link` needs some destination URL —
+    // there's no per-product storefront page yet, so this falls back to the
+    // tenant's WhatsApp chat link (matches the confirmed-working manual
+    // Graph API test). Replace with a real per-product URL if/when one
+    // exists.
+    condition:    'new',
+    link:         business?.adminPhone
+      ? `https://wa.me/${String(business.adminPhone).replace(/\D/g, '')}`
+      : '',
     ...(item.description ? { description: item.description } : {}),
-    ...(item.image?.url  ? { image_url:  item.image.url }   : {}),
+    ...(item.image?.url  ? { image_link: item.image.url }   : {}),
   });
+
+
 
   // [CATALOG-SYNC-VALIDATE-1] Validate BEFORE building sync entries — an item
   // missing an image or with an invalid/zero price is excluded from
@@ -353,27 +378,9 @@ export async function syncMenuToCatalog(business, tenant, { force = false } = {}
       .filter(Boolean);
   });
 
-  // [FIX-CATALOG-FORCE-RESYNC-1] The manual "Sync Now" button (CatalogPage.jsx)
-  // is documented to the tenant as forcing "a full catalog resync" — the right
-  // recovery path when Meta's side of the catalog has drifted out from under
-  // this app's own syncedItemHashes/syncedRetailerIds snapshot (e.g. products
-  // were deleted directly in Meta Commerce Manager, or a catalog was
-  // reset/recreated) without that drift ever being reflected back into this
-  // codebase's local "what Meta already has" bookkeeping. Previously this
-  // function had no such escape hatch: it always diffed against
-  // syncedItemHashes, so if every item's hash still matched last time's
-  // snapshot, the diff came back empty and the call returned `synced: 0`
-  // with NO network request made at all — even though Meta's catalog was
-  // actually empty. force=true (passed by the manual sync route only — the
-  // debounced autosync scheduler never passes it, so day-to-day edits keep
-  // their efficient delta behavior) treats previousHashes as empty, so every
-  // current item is resent as an UPDATE regardless of what this app
-  // previously believed was already live.
-  const previousHashes = force
-    ? new Map()
-    : (business?.waCatalog?.syncedItemHashes instanceof Map
-        ? business.waCatalog.syncedItemHashes
-        : new Map(Object.entries(business?.waCatalog?.syncedItemHashes || {})));
+  const previousHashes = business?.waCatalog?.syncedItemHashes instanceof Map
+    ? business.waCatalog.syncedItemHashes
+    : new Map(Object.entries(business?.waCatalog?.syncedItemHashes || {}));
 
   // [CATALOG-DELTA-1] An item with no prior hash entry (new item, or a tenant
   // synced before this field existed) is always treated as changed — this is
