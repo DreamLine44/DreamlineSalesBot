@@ -18,4 +18,35 @@ API Key: 646486d1108c039eba65da2734b00c18aee18be668f7a92b4fd0570a5fb85f2b
 YM STOE:-
 
 accessToken: 
-EAAbkidZCLWOEBSDxOztaMkZCgJoUfGXpYGJXC8bxblE9tosrPt4ORSAb50Lg4v2WMROq631FbCZA8FrZA08v8tp32JPWzLTNDsy1zMQIEVPXZAtYZBi3hv5wjB12s7xnYVDDSCGZCZCPxeqOocVZBkN9tqLpmD7DP7LeAEqbxiG2xIRL7nILHxVkDKfRWtVcV7QZDZD
+
+EAAbkidZCLWOEBSM2menl8hp0C6v3toV8rBgkm45ZAYdF0NFepoutVSJL4xDUZBXxdJs09QsjvnxIcaw8nakglKQkzsm2ZA5WbDLnAyniCYLXZC462FIQNk70EISINKjQjVOVqXKAquJTRdeWhOK6oNunIk4gDkRuIIvihKyJJZCunEtj7QzlzUyYCTHJEiPgZDZD
+
+
+
+
+
+
+
+
+{
+  "whatsapp": {
+    "phoneNumberId": "<META_PHONE_NUMBER_ID>",
+    "accessToken": "EAAbkidZCLWOEBSM2menl8hp0C6v3toV8rBgkm45ZAYdF0NFepoutVSJL4xDUZBXxdJs09QsjvnxIcaw8nakglKQkzsm2ZA5WbDLnAyniCYLXZC462FIQNk70EISINKjQjVOVqXKAquJTRdeWhOK6oNunIk4gDkRuIIvihKyJJZCunEtj7QzlzUyYCTHJEiPgZDZD",
+    "phone": "<YOUR_WHATSAPP_NUMBER>",
+    "wabaId": "<YOUR_WABA_ID>"
+  },
+  "meta": {
+    "appId": "<YOUR_META_APP_ID>",
+    "appSecret": "<YOUR_META_APP_SECRET>"
+  },
+  "catalog": {
+    "catalogId": "<META_CATALOG_ID>",
+    "businessId": "<META_BUSINESS_MANAGER_ID>",
+    "syncEnabled": true
+  },
+  "activate": true
+}
+
+EAAbkidZCLWOEBSM2menl8hp0C6v3toV8rBgkm45ZAYdF0NFepoutVSJL4xDUZBXxdJs09QsjvnxIcaw8nakglKQkzsm2ZA5WbDLnAyniCYLXZC462FIQNk70EISINKjQjVOVqXKAquJTRdeWhOK6oNunIk4gDkRuIIvihKyJJZCunEtj7QzlzUyYCTHJEiPgZDZD
+
+
