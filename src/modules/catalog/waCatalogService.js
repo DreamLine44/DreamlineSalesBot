@@ -252,7 +252,7 @@ async function resolvePendingBatchHandles(business, token, version) {
   }
 }
 
-export async function syncMenuToCatalog(business, tenant) {
+export async function syncMenuToCatalog(business, tenant, { force = false } = {}) {
   const catalogId = business?.waCatalog?.catalogId;
   if (!catalogId) return { ok: false, reason: 'NO_CATALOG_ID' };
 
@@ -353,9 +353,27 @@ export async function syncMenuToCatalog(business, tenant) {
       .filter(Boolean);
   });
 
-  const previousHashes = business?.waCatalog?.syncedItemHashes instanceof Map
-    ? business.waCatalog.syncedItemHashes
-    : new Map(Object.entries(business?.waCatalog?.syncedItemHashes || {}));
+  // [FIX-CATALOG-FORCE-RESYNC-1] The manual "Sync Now" button (CatalogPage.jsx)
+  // is documented to the tenant as forcing "a full catalog resync" — the right
+  // recovery path when Meta's side of the catalog has drifted out from under
+  // this app's own syncedItemHashes/syncedRetailerIds snapshot (e.g. products
+  // were deleted directly in Meta Commerce Manager, or a catalog was
+  // reset/recreated) without that drift ever being reflected back into this
+  // codebase's local "what Meta already has" bookkeeping. Previously this
+  // function had no such escape hatch: it always diffed against
+  // syncedItemHashes, so if every item's hash still matched last time's
+  // snapshot, the diff came back empty and the call returned `synced: 0`
+  // with NO network request made at all — even though Meta's catalog was
+  // actually empty. force=true (passed by the manual sync route only — the
+  // debounced autosync scheduler never passes it, so day-to-day edits keep
+  // their efficient delta behavior) treats previousHashes as empty, so every
+  // current item is resent as an UPDATE regardless of what this app
+  // previously believed was already live.
+  const previousHashes = force
+    ? new Map()
+    : (business?.waCatalog?.syncedItemHashes instanceof Map
+        ? business.waCatalog.syncedItemHashes
+        : new Map(Object.entries(business?.waCatalog?.syncedItemHashes || {})));
 
   // [CATALOG-DELTA-1] An item with no prior hash entry (new item, or a tenant
   // synced before this field existed) is always treated as changed — this is

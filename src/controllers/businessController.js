@@ -363,7 +363,12 @@ export async function syncWaCatalog(req, res) {
     if (!tenant) return res.status(404).json({ error: 'Tenant not found' });
 
     const { syncMenuToCatalog } = await import('../modules/catalog/waCatalogService.js');
-    const result = await syncMenuToCatalog(business, tenant);
+    // [FIX-CATALOG-FORCE-RESYNC-1] This endpoint is the tenant-facing "Sync
+    // Now" button, documented on CatalogPage.jsx as forcing a full resync —
+    // force: true makes that actually true (see waCatalogService.js). The
+    // debounced autosync scheduler (waCatalogSyncScheduler.js) intentionally
+    // does NOT set this, so routine menu edits still only send what changed.
+    const result = await syncMenuToCatalog(business, tenant, { force: true });
 
     if (!result.ok) {
       // NO_TOKEN/NO_CATALOG_ID are caller-fixable configuration gaps (400);
