@@ -432,6 +432,15 @@ export async function getWaCatalogHealth(req, res) {
       lastSyncedAt:   business.waCatalog?.lastSyncedAt || null,
       lastSyncError:  business.waCatalog?.lastSyncError?.reason || null,
       lastSyncErrorDetail: business.waCatalog?.lastSyncError?.detail || null,
+      // [FIX-CATALOG-SEND-HEALTH] The SYNC (items_batch upload) and the SEND
+      // (customer-facing catalog_message/product_list) hit different Graph
+      // API resources and can fail independently — a tenant can have a
+      // perfectly clean sync (products live in Commerce Manager, no
+      // lastSyncError) while every send still fails, most commonly because
+      // the catalog isn't connected to this WABA in WhatsApp Manager yet.
+      // See dispatcher.js [FIX-CATALOG-SEND-HEALTH] for where this is written.
+      lastSendError:       business.waCatalog?.lastSendError?.reason || null,
+      lastSendErrorDetail: business.waCatalog?.lastSendError?.detail || null,
       pendingVerification: (business.waCatalog?.pendingBatchHandles || []).length,
       totalItems:     menu.length,
       itemsReady:     menu.length - skipped.length,

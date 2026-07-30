@@ -260,7 +260,24 @@ const businessConfigSchema = new mongoose.Schema({
       detail: { type: String, default: null },
       at:     { type: Date,   default: null },
     },
+    // [FIX-CATALOG-SEND-HEALTH] Distinct from lastSyncError above: that field
+    // only ever tracks the PRODUCT SYNC (items_batch upload into Meta's
+    // catalog). It says nothing about whether the actual customer-facing
+    // 'catalog_message'/'product_list' interactive SEND (waCatalogService.js
+    // sendCatalogMessage() → dispatcher.js) is succeeding — a tenant's sync
+    // can be perfectly healthy (products live in Commerce Manager) while
+    // every send still 400/403s from Meta (e.g. catalog not connected to the
+    // WABA in WhatsApp Manager, or missing catalog permission on the system
+    // user), which previously was only visible in server logs. dispatcher.js
+    // now writes here on every failed catalog-type send so this is
+    // diagnosable from getWaCatalogHealth() alone.
+    lastSendError: {
+      reason: { type: String, default: null },
+      detail: { type: String, default: null },
+      at:     { type: Date,   default: null },
+    },
   },
+
 
   nlp: {
     synonyms: { type: Map, of: [String], default: {} },
