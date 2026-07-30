@@ -55,8 +55,16 @@ export async function uploadMenuImage(filePathOrDataUri, { tenantId, publicId } 
     throw new Error('Cloudinary is not configured. Set CLOUDINARY_CLOUD_NAME, CLOUDINARY_API_KEY, and CLOUDINARY_API_SECRET.');
   }
 
+  // [FIX-CLOUDINARY-PATH-DUP] `publicId`, when provided, is the FULL public_id
+  // Cloudinary returned from the ORIGINAL upload — which already includes the
+  // `folder` prefix baked in (e.g. "whatsalesagent/tenants/<id>/menu/abc123").
+  // Sending `folder` alongside a `public_id` that already contains that same
+  // path makes Cloudinary prepend it a second time, producing a broken,
+  // doubled path (".../menu/whatsalesagent/tenants/<id>/menu/abc123") that
+  // 404s on every subsequent replace. `folder` is only needed to organise a
+  // BRAND NEW upload (no publicId yet) — a replace should reuse the existing
+  // full path as-is and never pass `folder` at all.
   const uploadOptions = {
-    folder:        `whatsalesagent/tenants/${tenantId}/menu`,
     resource_type: 'image',
     // Resize to max 800px wide, keep aspect ratio — stored at this size
     width:         800,
@@ -64,8 +72,9 @@ export async function uploadMenuImage(filePathOrDataUri, { tenantId, publicId } 
     // quality and format are top-level delivery options, NOT inside transformation[]
     // (transformation[] only accepts geometric/colour ops; quality/format are upload params)
     quality:       'auto:good',
-    // Overwrite if same public_id (replace existing image cleanly)
-    ...(publicId ? { public_id: publicId, overwrite: true, invalidate: true } : {}),
+    ...(publicId
+      ? { public_id: publicId, overwrite: true, invalidate: true } // replace existing — full path already in publicId
+      : { folder: `whatsalesagent/tenants/${tenantId}/menu` }),    // new upload — organise into the tenant's folder
   };
 
   const result = await cloudinary.uploader.upload(filePathOrDataUri, uploadOptions);

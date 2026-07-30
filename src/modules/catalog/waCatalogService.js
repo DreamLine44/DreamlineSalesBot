@@ -286,45 +286,46 @@ export async function syncMenuToCatalog(business, tenant) {
   // instead of a single ambiguous base entry. Items with no variants keep the
   // exact same plain "<menuItemId>" entry as before — zero behavioural change
   // for every non-variant item in every tenant's catalog.
-  const buildItemData = (item, variantName = null) => ({
-    // [FIX-CATALOG-FIELD-NAMES] Meta's Catalog Batch API product schema has
-    // no `name` or `image_url` field — it expects `title` and `image_link`
-    // (see the Catalog Batch API / product feed reference). Sending `name`/
-    // `image_url` was accepted at the transport level (valid JSON, valid
-    // method/retailer_id) so items_batch returned 200 + a handle, and
-    // check_batch_request_status reported "finished, no errors" — but Meta
-    // silently created each product with no title and no image, since it
-    // doesn't recognize those two field names. This is why the catalog
-    // showed blank "Title" placeholder rows instead of failing outright.
-    // Confirmed live against the Graph API (v25.0/{catalogId}/items_batch):
-    // identical payload with `title`/`image_link` created real, visible
-    // products; `name`/`image_url` did not.
-    title: variantName ? `${item.name} - ${variantName}` : item.name,
-    // [FIX-CATALOG-PRICE] Meta's Catalog Batch API expects `price` as a plain
-    // decimal STRING in major currency units (e.g. "10.00"), with `currency`
-    // as a separate field — see the Catalog Batch API reference examples
-    // ("price": "10.00", "currency": "USD"). This previously sent
-    // Math.round(price * 100) — a JS number in minor units (cents) — which
-    // Meta either rejects (wrong type) or reads as a price 100x too high.
-    price:        (Number(item.price) || 0).toFixed(2),
-    currency:     item.currency || business?.payment?.currency || 'USD',
-    availability: item.available !== false ? 'in stock' : 'out of stock',
-    // [FIX-CATALOG-REQUIRED-FIELDS] `condition` and `link` are core required
-    // fields in Meta's product schema and were missing entirely. `condition`
-    // is always 'new' for menu items. `link` needs some destination URL —
-    // there's no per-product storefront page yet, so this falls back to the
-    // tenant's WhatsApp chat link (matches the confirmed-working manual
-    // Graph API test). Replace with a real per-product URL if/when one
-    // exists.
-    condition:    'new',
-    link:         business?.adminPhone
-      ? `https://wa.me/${String(business.adminPhone).replace(/\D/g, '')}`
-      : '',
-    ...(item.description ? { description: item.description } : {}),
-    ...(item.image?.url  ? { image_link: item.image.url }   : {}),
-  });
+  // [FIX-CATALOG-FIELD-NAMES] Empirically confirmed against a live Meta
+  // catalog (manual items_batch calls via Bruno, July 2026 — see
+  // /areas/whatsales.md for the full debugging trail) that items_batch uses
+  // the STANDARD PRODUCT FEED field names, not the Graph-object names this
+  // previously assumed:
+  //   - `name`      → Meta silently returns "Unrecognised field: name" and
+  //                   the item's Title stays "Missing" in Commerce Manager.
+  //                   Correct field is `title`.
+  //   - `image_url` → accepted with no warning at all, but the image never
+  //                   attaches (Commerce Manager shows Images: Missing).
+  //                   Correct field is `image_link`.
+  //   - `price` + `currency` as two separate fields → `currency` alone comes
+  //     back "Unrecognised field", and price silently fails to apply even
+  //     though no warning is raised for it. Meta wants ONE combined string,
+  //     e.g. "175.00 GMD".
+  //   - `link` (a product URL) is REQUIRED — Commerce Manager showed
+  //     "Product Link: Missing" the whole time this field didn't exist here.
+  //     There's no storefront webpage in this platform, so the sensible
+  //     value is a WhatsApp click-to-chat link to the tenant's OWN bot
+  //     number (tenant.whatsapp.phone) — tapping the product in Meta's
+  //     catalog UI should lead to ordering via this business's bot, not to
+  //     the admin's personal WhatsApp.
+  // Bot's own WhatsApp number, digits-only, for the `link` field below — same
+  // for every item in this sync run, so computed once outside the per-item
+  // builder (unlike price/currency, which vary per item and must stay inside).
+  const botPhoneDigits = String(tenant?.whatsapp?.phone || '').replace(/[^\d]/g, '');
 
-
+  const buildItemData = (item, variantName = null) => {
+    const priceMajorUnits = (Number(item.price) || 0).toFixed(2);
+    const currencyCode = item.currency || business?.payment?.currency || 'USD';
+    return {
+      title:        variantName ? `${item.name} - ${variantName}` : item.name,
+      price:        `${priceMajorUnits} ${currencyCode}`,
+      availability: item.available !== false ? 'in stock' : 'out of stock',
+      condition:    'new',
+      ...(item.description ? { description: item.description } : {}),
+      ...(item.image?.url  ? { image_link: item.image.url }    : {}),
+      ...(botPhoneDigits   ? { link: `https://wa.me/${botPhoneDigits}` } : {}),
+    };
+  };
 
   // [CATALOG-SYNC-VALIDATE-1] Validate BEFORE building sync entries — an item
   // missing an image or with an invalid/zero price is excluded from
@@ -388,13 +389,21 @@ export async function syncMenuToCatalog(business, tenant) {
   const changedItems = allCurrentItems.filter(
     i => previousHashes.get(i.retailer_id) !== i.hash,
   );
-  const updateRequests = changedItems.map(i => ({ method: 'UPDATE', retailer_id: i.retailer_id, data: i.data }));
+  // [FIX-CATALOG-ID-FIELD] Meta's items_batch endpoint rejects a request with
+  // "Can not find required field id" unless the identifying value is nested
+  // as data.id — a top-level `retailer_id` sibling (the shape this
+  // previously sent) is not what the API actually checks for UPDATE/DELETE,
+  // confirmed via live Bruno testing against this platform's own catalog.
+  const updateRequests = changedItems.map(i => ({
+    method: 'UPDATE',
+    data: { id: i.retailer_id, ...i.data },
+  }));
 
   const currentRetailerIds = new Set(allCurrentItems.map(i => i.retailer_id));
   const previouslySynced = business?.waCatalog?.syncedRetailerIds || [];
   const deleteRequests = previouslySynced
     .filter(id => id && !currentRetailerIds.has(id))
-    .map(retailer_id => ({ method: 'DELETE', retailer_id }));
+    .map(retailer_id => ({ method: 'DELETE', data: { id: retailer_id } }));
 
   const requests = [...updateRequests, ...deleteRequests];
   if (!requests.length) {

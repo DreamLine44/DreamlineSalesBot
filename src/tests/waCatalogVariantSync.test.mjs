@@ -34,8 +34,12 @@ test('syncMenuToCatalog still uses a plain per-item retailer_id (no variant suff
   assert.match(svcSrc, /const retailer_id = buildRetailerId\(item\);/);
 });
 
-test('variant names are folded into the synced product name so items are distinguishable in the Meta catalog UI', () => {
-  assert.match(svcSrc, /name: variantName \? `\$\{item\.name\} - \$\{variantName\}` : item\.name/);
+test('variant names are folded into the synced product title so items are distinguishable in the Meta catalog UI', () => {
+  // [FIX-CATALOG-FIELD-NAMES] Meta's items_batch wants `title`, not `name` —
+  // see the corresponding comment block in waCatalogService.js. Variant
+  // folding behavior itself (item.name + variantName) is unchanged; only the
+  // output field key changed.
+  assert.match(svcSrc, /title:\s*variantName \? `\$\{item\.name\} - \$\{variantName\}` : item\.name/);
 });
 
 test('variant entries accept both string variants (["M","L"]) and object variants ([{name:"M"}])', () => {

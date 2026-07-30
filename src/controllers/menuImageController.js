@@ -14,6 +14,18 @@
 import BusinessConfig from '../models/BusinessConfig.js';
 import { uploadMenuImage, deleteMenuImage, CLOUDINARY_ENABLED } from '../config/cloudinary.js';
 import logger from '../config/logger.js';
+// [FIX-CATALOG-IMAGE-AUTOSYNC] Every other menu-mutating endpoint
+// (addMenuItem/updateMenuItem/deleteMenuItem in dashboardController.js,
+// PATCH /:itemId in businessController.js) calls scheduleWaCatalogSync()
+// after a successful write. This file — the dedicated image upload/remove
+// endpoints — never did, so attaching or removing a menu item's photo
+// through this route silently never reached Meta's catalog on its own; it
+// only synced once some OTHER field on the item happened to change too.
+// Since the image is very often the ONLY thing being changed (exactly the
+// case that motivated this endpoint's existence per the module header
+// above), that gap meant the single most catalog-relevant field update had
+// no automatic sync path at all.
+import { scheduleWaCatalogSync } from '../modules/catalog/waCatalogSyncScheduler.js';
 
 /**
  * POST /:tenantId/menu/:itemId/image
@@ -78,6 +90,10 @@ export async function uploadMenuItemImage(req, res) {
     const updatedItem = biz.menuItems.find(i => String(i._id) === itemId);
     logger.info('[MenuImage] Uploaded', { tenantId, itemId, public_id: uploaded.public_id });
 
+    // [FIX-CATALOG-IMAGE-AUTOSYNC] See import comment above — this is the
+    // write that was previously never followed by a sync trigger.
+    scheduleWaCatalogSync(tenantId);
+
     res.json({
       ok: true,
       image: uploaded,
@@ -118,6 +134,9 @@ export async function removeMenuItemImage(req, res) {
 
     // Delete from Cloudinary (non-fatal)
     if (publicId) await deleteMenuImage(publicId);
+
+    // [FIX-CATALOG-IMAGE-AUTOSYNC] See import comment above.
+    scheduleWaCatalogSync(tenantId);
 
     logger.info('[MenuImage] Removed', { tenantId, itemId });
     res.json({ ok: true });
