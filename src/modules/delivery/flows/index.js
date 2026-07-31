@@ -17,6 +17,14 @@
  * via ACTION_REGISTRY (see core/shared/moduleRegistry.js registerAction('TRACK_ORDER', ...)
  * and core/conversations/moduleRouter.js case 'TRACK_ORDER') — it is not module-specific
  * and has no handler here. Comment corrected to avoid implying a missing implementation.
+ *
+ * [MULTICART-FLOW-1] SELECT_ITEM → [CART_REVIEW ↔ (checkout)] → QUANTITY →
+ * DELIVERY_ADDRESS → DELIVERY_SLOT → CONFIRM → [PAYMENT?]. CART_REVIEW is only
+ * entered when a message names 2+ known items at once — delivery items carry no
+ * variants, so (unlike retail) there is no extra gating condition, same shape as
+ * modules/restaurant/flows/orderFlow.js. Checkout from CART_REVIEW skips the
+ * per-item QUANTITY step (quantities already known per line) straight into
+ * DELIVERY_ADDRESS.
  */
 
 import { updateSession }  from '../../../core/sessions/sessionService.js';
@@ -26,6 +34,7 @@ import { updateSession }  from '../../../core/sessions/sessionService.js';
 // confusion during future audits about where flow completion happens.
 import { getAIReply }     from '../../../core/ai/providers/aiRouter.js';
 import { findBestMatch }  from '../../../utils/matchEngine.js';
+import { extractCartLines } from '../../../utils/multiItemParser.js';
 import { saveOrder }      from '../../../services/orderService.js';
 import { parseQuantity }  from '../../../utils/parseQuantity.js';
 import { trackOrderAnalytics } from '../../../core/analytics/analyticsService.js';
@@ -105,6 +114,17 @@ export async function handleDeliveryOrder({ session, message, business, tenant, 
       }
       if (clean.length < 2) return _buildMenuUI(menu, business);
 
+      // [MULTICART-FLOW-1] Only branches into the cart flow when 2+ distinct
+      // KNOWN items are named in this one message — a single (or zero) match
+      // falls straight through to the existing index/fuzzy logic below.
+      const cartParse = extractCartLines(raw, menu);
+      if (cartParse.matchedCount >= 2) {
+        await updateSession(session.customerPhone, session.tenantId, {
+          step: 'CART_REVIEW', data: { ...data, cart: cartParse.lines }, menuViewed: true,
+        });
+        return _buildCartSummaryUI(cartParse.lines, business);
+      }
+
       // [AUDIT-FIX-PARSEINT] parseInt("2 red shirts", 10) === 2, NOT NaN — so any
       // message merely STARTING with a digit silently hijacked the menu index
       // once menuViewed was true (the normal case). Only trust the parsed index
@@ -165,6 +185,60 @@ export async function handleDeliveryOrder({ session, message, business, tenant, 
         ],
         footer: 'Or type any number e.g. 4, 5, 10',
       };
+    }
+
+    // ── CART_REVIEW ──────────────────────────────────────────────────────────
+    // [MULTICART-FLOW-1] Reached only after a message named 2+ known items.
+    case 'CART_REVIEW': {
+      const cart = Array.isArray(data.cart) ? data.cart : [];
+
+      const wantsCheckout = /^(checkout|check\s*out|confirm|done|finish|that'?s all|cart_checkout|place\s*order)$/i.test(clean);
+      if (wantsCheckout) {
+        if (!cart.length) return _buildMenuUI(menu, business);
+        // [MULTICART-FLOW-1] Cart quantities are already known per line, so
+        // checkout skips the per-item QUANTITY step and goes straight to
+        // DELIVERY_ADDRESS.
+        await updateSession(session.customerPhone, session.tenantId, {
+          step: 'DELIVERY_ADDRESS', data: { ...data },
+        });
+
+        const savedAddress = session.savedAddress || null;
+        if (savedAddress) {
+          return {
+            type: 'buttons',
+            body: `📍 *Delivery Address*\n\nDeliver to your usual address?\n\n_${savedAddress}_`,
+            buttons: [
+              { id: 'USE_SAVED_ADDRESS', title: '✅ Yes, use this'     },
+              { id: 'NEW_ADDRESS',       title: '📝 Use different one' },
+            ],
+          };
+        }
+        return {
+          type: 'buttons',
+          body: `📍 *Delivery Address*\n\nPlease type your full delivery address below.\n\n` +
+                `_Include: street name, area/neighbourhood, and a landmark for the rider._\n\n` +
+                `*Example:* 15 Kairaba Ave, Bakau, near the mosque`,
+          buttons: [{ id: 'CANCEL', title: '❌ Cancel' }],
+          footer: 'Type your address and send',
+        };
+      }
+
+      const wantsAddMore = /^(add\s*more|add|more|cart_add_more)$/i.test(clean);
+      if (wantsAddMore) {
+        return {
+          type: 'text',
+          body: `What else would you like to add? You can type one item, or several at once (e.g. "2 pizzas and a drink").`,
+        };
+      }
+
+      const parsed = extractCartLines(raw, menu);
+      if (parsed.matchedCount >= 1) {
+        const merged = _mergeCartLines(cart, parsed.lines);
+        await updateSession(session.customerPhone, session.tenantId, { data: { ...data, cart: merged } });
+        return _buildCartSummaryUI(merged, business);
+      }
+
+      return _buildCartSummaryUI(cart, business);
     }
 
     // ── QUANTITY ──────────────────────────────────────────────────────────────
@@ -335,10 +409,18 @@ export async function handleDeliveryOrder({ session, message, business, tenant, 
       }
       if (SCHED_MAP[raw.toUpperCase()]) {
         const resolvedScheduled = SCHED_MAP[raw.toUpperCase()];
+        const isCart   = Array.isArray(data.cart) && data.cart.length > 0;
+        const address  = data.deliveryAddress;
+        const currency = business?.payment?.currency || 'D';
         const item     = data.item;
         const qty      = data.quantity || 1;
-        const address  = data.deliveryAddress;
-        const subtotal = item?.price ? item.price * qty : null;
+        const cartAllPriced = isCart && data.cart.every(l => typeof l.item.price === 'number');
+        const subtotal = isCart
+          ? (cartAllPriced ? data.cart.reduce((sum, l) => sum + l.item.price * l.quantity, 0) : null)
+          : (item?.price ? item.price * qty : null);
+        const itemsLine = isCart
+          ? data.cart.map(l => `${l.quantity}× ${itemLabel(l.item, l.variant)}`).join(', ')
+          : `${itemLabel(item, data.variant)} × ${qty}`;
         await updateSession(session.customerPhone, session.tenantId, {
           step: 'CONFIRM',
           data: { ...data, deliverySlot: resolvedScheduled },
@@ -346,10 +428,10 @@ export async function handleDeliveryOrder({ session, message, business, tenant, 
         return {
           type: 'buttons',
           body: `🧾 *Order Summary*\n\n` +
-            `🚚 *Item:* ${itemLabel(item, data.variant)} × ${qty}\n` +
+            `🚚 *Item:* ${itemsLine}\n` +
             `📍 *Deliver to:* ${address}\n` +
             `⏱ *When:* ${resolvedScheduled}` +
-            (subtotal ? `\n💰 *Total:* ${item.currency || business?.payment?.currency || 'D'}${subtotal.toFixed(2)}` : '') +
+            (subtotal ? `\n💰 *Total:* ${currency}${subtotal.toFixed ? subtotal.toFixed(2) : subtotal}` : '') +
             `\n\nReady to confirm?`,
           buttons: [
             { id: 'CONFIRM', title: '✅ Confirm Order' },
@@ -424,10 +506,18 @@ export async function handleDeliveryOrder({ session, message, business, tenant, 
         }
       }
 
+      const isCart    = Array.isArray(data.cart) && data.cart.length > 0;
       const item      = data.item;
       const qty       = data.quantity || 1;
       const address   = data.deliveryAddress;
-      const subtotal  = item?.price ? item.price * qty : null;
+      const currency  = business?.payment?.currency || 'D';
+      const cartAllPriced = isCart && data.cart.every(l => typeof l.item.price === 'number');
+      const subtotal  = isCart
+        ? (cartAllPriced ? data.cart.reduce((sum, l) => sum + l.item.price * l.quantity, 0) : null)
+        : (item?.price ? item.price * qty : null);
+      const itemsLine = isCart
+        ? data.cart.map(l => `${l.quantity}× ${itemLabel(l.item, l.variant)}`).join(', ')
+        : `${itemLabel(item, data.variant)} × ${qty}`;
 
       await updateSession(session.customerPhone, session.tenantId, {
         step: 'CONFIRM',
@@ -437,10 +527,10 @@ export async function handleDeliveryOrder({ session, message, business, tenant, 
       return {
         type: 'buttons',
         body: `🧾 *Order Summary*\n\n` +
-          `🚚 *Item:* ${itemLabel(item, data.variant)} × ${qty}\n` +
+          `🚚 *Item:* ${itemsLine}\n` +
           `📍 *Deliver to:* ${address}\n` +
           `⏱ *When:* ${slot}` +
-          (subtotal ? `\n💰 *Total:* ${item.currency || business?.payment?.currency || 'D'}${subtotal.toFixed(2)}` : '') +
+          (subtotal ? `\n💰 *Total:* ${currency}${subtotal.toFixed(2)}` : '') +
           `\n\nReady to confirm?`,
         buttons: [
           { id: 'CONFIRM', title: '✅ Confirm Order' },
@@ -462,11 +552,19 @@ export async function handleDeliveryOrder({ session, message, business, tenant, 
         };
       }
 
+      const isCart     = Array.isArray(data.cart) && data.cart.length > 0;
       const item       = data.item;
       const qty        = data.quantity || 1;
       const address    = data.deliveryAddress;
       const slot       = data.deliverySlot || 'ASAP';
-      const totalPrice = item?.price ? item.price * qty : null;
+      // [MULTICART-FLOW-1] mirrors modules/restaurant/flows/orderFlow.js
+      const cartAllPriced = isCart && data.cart.every(l => typeof l.item.price === 'number');
+      const totalPrice = isCart
+        ? (cartAllPriced ? data.cart.reduce((sum, l) => sum + l.item.price * l.quantity, 0) : null)
+        : (item?.price ? item.price * qty : null);
+      const displayItemsLine = isCart
+        ? data.cart.map(l => `${l.quantity}× ${itemLabel(l.item, l.variant)}`).join(', ')
+        : `${qty}× ${itemLabel(item, data.variant)}`;
 
       // [FIX-BUG4-DELIVERY] saveOrder previously hardcoded status:'confirmed', bypassing
       // admin review. Now saved as 'pending' so APPROVE_/REJECT_ flow works correctly.
@@ -479,12 +577,19 @@ export async function handleDeliveryOrder({ session, message, business, tenant, 
           // [AUDIT-FIX-CATALOG-VARIANT-LOSS] data.variant is set by
           // waCatalogFlow.js when this item was chosen via WA Catalog; delivery
           // had no variant-specific step of its own and previously dropped it.
-          item:          itemLabel(item, data.variant),
-          quantity:      qty,
+          item:          isCart ? undefined : itemLabel(item, data.variant),
+          quantity:      isCart ? undefined : qty,
           notes:         `Delivery to: ${address} | Slot: ${slot}`,
           status:        'pending',
           // [FIX-DELIVERY-1] totalAmount → totalPrice (same bug as retail — see retail fix)
           totalPrice:    totalPrice || undefined,
+          items:         isCart
+            ? data.cart.map(l => ({
+                item:      itemLabel(l.item, l.variant),
+                quantity:  l.quantity,
+                unitPrice: typeof l.item.price === 'number' ? l.item.price : undefined,
+              }))
+            : undefined,
           // [FIX-DELIVERY-4] businessId was missing here — every other module's saveOrder()
           // call passes business._id, but delivery omitted it. Order.businessId stayed null
           // for every delivery order, breaking any business-scoped admin view/report that
@@ -497,7 +602,7 @@ export async function handleDeliveryOrder({ session, message, business, tenant, 
         // recording it here at placement time counted unconfirmed/later-rejected orders
         // as revenue. See adminCommandService.js AUDIT-FIX-4 for full rationale.
         // [FIX-DELIVERY-3] trackOrderAnalytics wrong positional call — same bug as retail
-        trackOrderAnalytics(itemLabel(item, data.variant), null, qty, totalPrice || 0, session.tenantId).catch(() => {});
+        trackOrderAnalytics(displayItemsLine, null, qty, totalPrice || 0, session.tenantId).catch(() => {});
       } catch (err) {
         logger.error('[Delivery] saveOrder error:', err.message);
         // [FIX-SAVE-ERR-DELIVERY] Don't proceed to payment/admin-confirm for an order
@@ -544,7 +649,7 @@ export async function handleDeliveryOrder({ session, message, business, tenant, 
               body:
                 `🔔 *New Delivery Order — ${business?.name || 'Delivery'}*\n\n` +
                 `📞 Customer: *${session.customerPhone}*\n` +
-                `📦 *${qty}× ${itemLabel(item, data.variant)}*\n` +
+                `📦 *${displayItemsLine}*\n` +
                 `📍 Address: *${address}*\n` +
                 `⏱ Slot: *${slot}*\n` +
                 `💰 Total: *${currency}${totalPrice}*\n` +
@@ -570,7 +675,7 @@ export async function handleDeliveryOrder({ session, message, business, tenant, 
             body:
               `🔔 *New Delivery Order — ${business?.name || 'Delivery'}*\n\n` +
               `📞 Customer: *${session.customerPhone}*\n` +
-              `📦 *${qty}× ${itemLabel(item, data.variant)}*\n` +
+              `📦 *${displayItemsLine}*\n` +
               `📍 Address: *${address}*\n` +
               `⏱ Slot: *${slot}*\n` +
               (totalPrice ? `💰 Total: *${currency}${totalPrice}*\n` : '') +
@@ -594,7 +699,7 @@ export async function handleDeliveryOrder({ session, message, business, tenant, 
         type: 'text',
         body:
           `✅ *Order Received!* 🚚\n\n` +
-          `*${itemLabel(item, data.variant)}* × ${qty}\n` +
+          `*${displayItemsLine}*\n` +
           `📍 Delivering to: *${address}*\n` +
           `⏱ Requested slot: *${slot}*\n\n` +
           `⏳ Our team will confirm your order and assign a rider shortly. Please wait for confirmation before placing a new one. 🙏`,
@@ -612,6 +717,36 @@ export async function handleDeliveryOrder({ session, message, business, tenant, 
 }
 
 // ── UI Helpers ────────────────────────────────────────────────────────────────
+
+// ── Cart helpers [MULTICART-FLOW-1] ─────────────────────────────────────────
+function _mergeCartLines(existingLines, newLines) {
+  const merged = existingLines.map(l => ({ item: l.item, quantity: l.quantity }));
+  for (const line of newLines) {
+    const key = line.item._id ? String(line.item._id) : line.item.name.toLowerCase();
+    const existing = merged.find(l => (l.item._id ? String(l.item._id) : l.item.name.toLowerCase()) === key);
+    if (existing) existing.quantity += line.quantity;
+    else merged.push({ item: line.item, quantity: line.quantity });
+  }
+  return merged;
+}
+
+function _buildCartSummaryUI(lines, business) {
+  const currency  = business?.payment?.currency || 'D';
+  const allPriced = lines.every(l => typeof l.item.price === 'number');
+  const total     = allPriced ? lines.reduce((sum, l) => sum + l.item.price * l.quantity, 0) : null;
+  const rows = lines
+    .map(l => `• *${l.quantity}× ${l.item.name}*${typeof l.item.price === 'number' ? ` — ${currency}${l.item.price * l.quantity}` : ''}`)
+    .join('\n');
+  return {
+    type: 'buttons',
+    body: `🛒 *Your Cart*\n\n${rows}${total !== null ? `\n\n💰 Total: *${currency}${total}*` : ''}\n\nWhat would you like to do?`,
+    buttons: [
+      { id: 'CART_CHECKOUT', title: '✅ Checkout'  },
+      { id: 'CART_ADD_MORE', title: '➕ Add More'  },
+      { id: 'CANCEL',        title: '❌ Cancel'    },
+    ],
+  };
+}
 
 function _buildMenuUI(menu, business) {
   if (!menu.length) {

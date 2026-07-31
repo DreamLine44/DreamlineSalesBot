@@ -1,15 +1,32 @@
 /**
  * modules/fashion/flows/index.js
  * Fashion module — product catalog + variants + recommendations
+ *
+ * [MULTICART-FLOW-1] SELECT_ITEM → [CART_REVIEW ↔ (checkout)] → SELECT_SIZE →
+ * SELECT_COLOR → QUANTITY → CONFIRM → [PAYMENT?]. CART_REVIEW is only entered
+ * when a message names 2+ known items at once AND every matched item has zero
+ * variants (same gating shape as modules/retail/flows/index.js) — fashion has
+ * no per-cart-line size/colour sub-flow, so an item with variants always falls
+ * through to the existing single-item SELECT_SIZE flow unchanged rather than
+ * silently guessing a size/colour. Checkout from CART_REVIEW skips
+ * SELECT_SIZE/SELECT_COLOR/QUANTITY straight into CONFIRM, same shape as
+ * modules/salon/flows/index.js's product-order sub-flow.
  */
 import { updateSession }  from '../../../core/sessions/sessionService.js';
 import { getAIReply }     from '../../../core/ai/providers/aiRouter.js';
 import { findBestMatch }  from '../../../utils/matchEngine.js';
+import { extractCartLines } from '../../../utils/multiItemParser.js';
 import { saveOrder }      from '../../../services/orderService.js';
 import { parseQuantity }  from '../../../utils/parseQuantity.js';
 import { trackOrderAnalytics } from '../../../core/analytics/analyticsService.js';
 import logger             from '../../../config/logger.js';
 import { buildWhatsAppImageUrl } from '../../../config/cloudinary.js';
+
+// [MULTICART-FLOW-1] A matched cart line is only eligible for the no-variant-picker
+// cart flow if the item has no variants — fashion has no per-cart-line
+// size/colour-selection sub-step, so an item with variants must go through the
+// existing single-item SELECT_SIZE flow instead of silently defaulting to "no size".
+const _hasNoVariants = (l) => !(l.item.variants && l.item.variants.length > 0);
 
 export const FASHION_CONFIG = {
   businessMode: 'FASHION',
@@ -113,6 +130,22 @@ export async function handleFashionOrder({ session, message, business, tenant, i
         await updateSession(session.customerPhone, session.tenantId, { menuViewed: true });
         return buildCatalogUI(business, scopedMenu, data.category || null);
       }
+
+      // [MULTICART-FLOW-1] Only branches into the cart flow when 2+ distinct
+      // KNOWN items are named in this one message AND none of them have
+      // variants — a single match, a zero match, or any matched item carrying
+      // variants all fall straight through to the existing index/fuzzy logic
+      // below unchanged.
+      if (clean.length >= 2) {
+        const cartParse = extractCartLines(raw, menu);
+        if (cartParse.matchedCount >= 2 && cartParse.lines.every(_hasNoVariants)) {
+          await updateSession(session.customerPhone, session.tenantId, {
+            step: 'CART_REVIEW', data: { ...data, cart: cartParse.lines }, menuViewed: true,
+          });
+          return _buildCartSummaryUI(cartParse.lines, business);
+        }
+      }
+
       // [AUDIT-FIX-PARSEINT] parseInt("2 red shirts", 10) === 2, NOT NaN — so any
       // message merely STARTING with a digit silently hijacked the menu index
       // once menuViewed was true (the normal case). Only trust the parsed index
@@ -183,6 +216,51 @@ export async function handleFashionOrder({ session, message, business, tenant, i
         ];
       }
       return nextPrompt;
+    }
+
+    // ── CART_REVIEW ─────────────────────────────────────────────────────────
+    // [MULTICART-FLOW-1] Reached only after a message named 2+ known,
+    // variant-free items at once.
+    case 'CART_REVIEW': {
+      const cart = Array.isArray(data.cart) ? data.cart : [];
+
+      const wantsCheckout = /^(checkout|check\s*out|confirm|done|finish|that'?s all|cart_checkout|place\s*order)$/i.test(clean);
+      if (wantsCheckout) {
+        if (!cart.length) return buildCatalogUI(business);
+        const allPriced = cart.every(l => typeof l.item.price === 'number');
+        const total = allPriced ? cart.reduce((sum, l) => sum + l.item.price * l.quantity, 0) : null;
+        const totalQty = cart.reduce((sum, l) => sum + l.quantity, 0);
+        const currency = business?.payment?.currency || 'D';
+        // [MULTICART-FLOW-1] Cart items have no variants (gated on entry) and
+        // quantities are already known per line, so checkout skips
+        // SELECT_SIZE/SELECT_COLOR/QUANTITY straight into CONFIRM.
+        await updateSession(session.customerPhone, session.tenantId, {
+          step: 'CONFIRM', data: { ...data, quantity: totalQty, totalPrice: total },
+        });
+        const itemsLine = cart.map(l => `${l.quantity}× ${l.item.name}`).join(', ');
+        return {
+          type: 'buttons',
+          body: `🧾 *Order Summary*\n\n👗 *${itemsLine}*${total !== null ? `\n💰 ${currency}${total}` : ''}\n\nConfirm?`,
+          buttons: [{ id: 'CONFIRM', title: '✅ Confirm Order' }, { id: 'CANCEL', title: '❌ Cancel' }],
+        };
+      }
+
+      const wantsAddMore = /^(add\s*more|add|more|cart_add_more)$/i.test(clean);
+      if (wantsAddMore) {
+        return {
+          type: 'text',
+          body: `What else would you like to add? You can type one item, or several at once (e.g. "2 t-shirts and a scarf").`,
+        };
+      }
+
+      const parsed = extractCartLines(raw, menu);
+      if (parsed.matchedCount >= 1 && parsed.lines.every(_hasNoVariants)) {
+        const merged = _mergeCartLines(cart, parsed.lines);
+        await updateSession(session.customerPhone, session.tenantId, { data: { ...data, cart: merged } });
+        return _buildCartSummaryUI(merged, business);
+      }
+
+      return _buildCartSummaryUI(cart, business);
     }
 
     case 'SELECT_SIZE': {
@@ -323,10 +401,25 @@ export async function handleFashionOrder({ session, message, business, tenant, i
           buttons: [{ id: 'CONFIRM', title: '✅ Confirm Order' }, { id: 'CANCEL', title: '❌ Cancel' }],
         };
       }
+      const isCart = Array.isArray(data.cart) && data.cart.length > 0;
+      // [MULTICART-FLOW-1] mirrors modules/restaurant/flows/orderFlow.js
+      const displayItem = isCart
+        ? data.cart.map(l => `${l.quantity}× ${l.item.name}`).join(', ')
+        : `${data.item?.name}${data.size ? ` (${data.size})` : ''}${data.color ? ` — ${data.color}` : ''}`;
+
       let savedOrder = null;
       try {
-        savedOrder = await saveOrder({ item: `${data.item?.name}${data.size ? ` (${data.size})` : ''}${data.color ? ` — ${data.color}` : ''}`,
-          quantity: data.quantity, totalPrice: data.totalPrice,
+        savedOrder = await saveOrder({
+          item:          isCart ? undefined : displayItem,
+          quantity:      isCart ? undefined : data.quantity,
+          totalPrice:    data.totalPrice,
+          items:         isCart
+            ? data.cart.map(l => ({
+                item:      l.item.name,
+                quantity:  l.quantity,
+                unitPrice: typeof l.item.price === 'number' ? l.item.price : undefined,
+              }))
+            : undefined,
           customerName: session.customerName || null, // [FIX-SAVE-2]
           customerPhone: session.customerPhone, tenantId: session.tenantId, businessId: business._id });
       } catch (err) {
@@ -379,8 +472,9 @@ export async function handleFashionOrder({ session, message, business, tenant, i
           const { buildAdminOrderAlertBody } = await import('../../restaurant/handlers/uiBuilders.js');
           const alertBody = buildAdminOrderAlertBody({
             customerPhone: session.customerPhone,
-            item: `${data.item?.name}${data.size ? ` (${data.size})` : ''}`,
-            quantity: data.quantity, totalPrice: data.totalPrice,
+            item:          displayItem,
+            quantity:      isCart ? 1 : data.quantity, // displayItem already carries per-line quantities for a cart
+            totalPrice: data.totalPrice,
             shortId: savedOrder.shortId, business,
           });
           const { dispatchMessage } = await import('../../../core/whatsapp/dispatcher.js');
@@ -397,7 +491,7 @@ export async function handleFashionOrder({ session, message, business, tenant, i
 
       // Track analytics BEFORE parking session
       trackOrderAnalytics(
-        `${data.item?.name}${data.size ? ` (${data.size})` : ''}`,
+        displayItem,
         null, data.quantity, data.totalPrice || 0, session.tenantId
       ).catch(() => {});
       // [AUDIT-FIX-4] recordRevenue() moved to adminCommandService.confirmPayment() —
@@ -415,7 +509,7 @@ export async function handleFashionOrder({ session, message, business, tenant, i
       // the admin confirms/rejects via APPROVE_/REJECT_ buttons. Customer gets a waiting message.
       return {
         type: 'text',
-        body: `✅ *Order received!*\n\n👗 *${data.quantity}× ${data.item?.name}${data.size ? ` (${data.size})` : ''}*\n\n⏳ Our team will confirm your order shortly. We'll send you a message when it's ready! 🙏`,
+        body: `✅ *Order received!*\n\n👗 *${displayItem}*\n\n⏳ Our team will confirm your order shortly. We'll send you a message when it's ready! 🙏`,
       };
     }
 
@@ -425,6 +519,36 @@ export async function handleFashionOrder({ session, message, business, tenant, i
 
 function _getCategories(menu) {
   return [...new Set(menu.map(i => i.category).filter(Boolean))];
+}
+
+// ── Cart helpers [MULTICART-FLOW-1] ─────────────────────────────────────────
+function _mergeCartLines(existingLines, newLines) {
+  const merged = existingLines.map(l => ({ item: l.item, quantity: l.quantity }));
+  for (const line of newLines) {
+    const key = line.item._id ? String(line.item._id) : line.item.name.toLowerCase();
+    const existing = merged.find(l => (l.item._id ? String(l.item._id) : l.item.name.toLowerCase()) === key);
+    if (existing) existing.quantity += line.quantity;
+    else merged.push({ item: line.item, quantity: line.quantity });
+  }
+  return merged;
+}
+
+function _buildCartSummaryUI(lines, business) {
+  const currency  = business?.payment?.currency || 'D';
+  const allPriced = lines.every(l => typeof l.item.price === 'number');
+  const total     = allPriced ? lines.reduce((sum, l) => sum + l.item.price * l.quantity, 0) : null;
+  const rows = lines
+    .map(l => `• *${l.quantity}× ${l.item.name}*${typeof l.item.price === 'number' ? ` — ${currency}${l.item.price * l.quantity}` : ''}`)
+    .join('\n');
+  return {
+    type: 'buttons',
+    body: `🛒 *Your Cart*\n\n${rows}${total !== null ? `\n\n💰 Total: *${currency}${total}*` : ''}\n\nWhat would you like to do?`,
+    buttons: [
+      { id: 'CART_CHECKOUT', title: '✅ Checkout'  },
+      { id: 'CART_ADD_MORE', title: '➕ Add More'  },
+      { id: 'CANCEL',        title: '❌ Cancel'    },
+    ],
+  };
 }
 
 function buildCategoryUI(categories, business) {

@@ -51,7 +51,10 @@ test('retail/flows/index.js: SELECT_ITEM resolves numeric/interactive taps again
   const src = read('../modules/retail/flows/index.js');
   const idx = src.indexOf("case 'SELECT_ITEM':");
   assert.ok(idx !== -1, 'SELECT_ITEM case not found');
-  const body = src.slice(idx, idx + 2400);
+  // [MULTICART-FLOW-1] Window widened from 2400 — the multi-item cart-parse
+  // branch (extractCartLines) now runs earlier in this case body, pushing the
+  // scopedMenu[numIdx] resolution further down. Still scoped to SELECT_ITEM only.
+  const body = src.slice(idx, idx + 3600);
 
   assert.match(
     body,

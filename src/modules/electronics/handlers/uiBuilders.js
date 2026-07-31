@@ -155,6 +155,69 @@ export function buildItemDetail(item, currency = 'D') {
 // Order summary
 // ─────────────────────────────────────────────────────────────────────────────
 
+// [MULTICART-FLOW-1] Cart-aware equivalents of buildOrderSummary/buildOrderSuccess
+// — used when the customer named 2+ known products in one message (see
+// utils/multiItemParser.js). `itemsLine` already carries each line's own
+// quantity (e.g. "2× TV, 1× Speaker"), so unlike the single-item versions it
+// is NOT re-prefixed with an outer quantity.
+export function buildCartSummaryUI(lines, business) {
+  const currency  = business?.payment?.currency || 'D';
+  const allPriced = lines.every(l => typeof l.item.price === 'number');
+  const total     = allPriced ? lines.reduce((sum, l) => sum + l.item.price * l.quantity, 0) : null;
+  const rows = lines
+    .map(l => `• *${l.quantity}× ${l.item.name}*${typeof l.item.price === 'number' ? ` — ${currency}${l.item.price * l.quantity}` : ''}`)
+    .join('\n');
+  return {
+    type: 'buttons',
+    body: `🛒 *Your Cart*\n\n${rows}${total !== null ? `\n\n💰 Total: *${currency}${total}*` : ''}\n\nWhat would you like to do?`,
+    buttons: [
+      { id: 'CART_CHECKOUT', title: '✅ Checkout'  },
+      { id: 'CART_ADD_MORE', title: '➕ Add More'  },
+      { id: 'CANCEL',        title: '❌ Cancel'    },
+    ],
+  };
+}
+
+export function buildCartOrderSummary(itemsLine, total, fulfilment, business) {
+  const currency   = business?.payment?.currency || 'D';
+  const fulfilLine = fulfilment === 'DELIVERY'
+    ? '\n🚚 *Fulfilment:* Delivery'
+    : (fulfilment ? '\n🏪 *Fulfilment:* In-store pick-up' : '');
+  return {
+    type: 'buttons',
+    body:
+      `🧾 *Order Summary*\n\n` +
+      `📱 *${itemsLine}*` +
+      (total ? `\n💰 Total: *${currency}${total}*` : '') +
+      fulfilLine +
+      `\n\nReady to confirm?`,
+    buttons: [
+      { id: 'CONFIRM', title: '✅ Confirm Order' },
+      { id: 'CANCEL',  title: '❌ Cancel'         },
+    ],
+  };
+}
+
+export function buildCartOrderSuccess(itemsLine, fulfilment) {
+  const pickup    = fulfilment === 'PICKUP';
+  const afterLine = pickup
+    ? '🏪 We\'ll prepare it for *pick-up*. Our team will confirm when it\'s ready.'
+    : '🚚 We\'ll confirm delivery details with you shortly.';
+  return {
+    type: 'buttons',
+    body:
+      `✅ *Order received!*\n\n` +
+      `📱 *${itemsLine}*\n\n` +
+      `${afterLine}\n\n` +
+      `Thank you for choosing us! 📱`,
+    buttons: [
+      { id: 'ORDER',        title: '🛒 Shop More'       },
+      { id: 'SPEC_REQUEST', title: '📋 Tech Questions'  },
+      { id: 'SHOW_MENU',    title: '🔄 Start Over'      },
+    ],
+  };
+}
+
 export function buildOrderSummary({ item, qty, total, fulfilment, business }) {
   const currency    = business?.payment?.currency || 'D';
   const itemName    = typeof item === 'object' ? item.name : item;

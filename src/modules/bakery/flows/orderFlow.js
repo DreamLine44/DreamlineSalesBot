@@ -9,12 +9,20 @@
  *   • Custom message notes (e.g. "wedding cake, write Happy Anniversary")
  *   • Payment via Wave/cash — same payment service as restaurant
  *
- * Steps: SELECT_ITEM → QUANTITY → NOTES → FULFILMENT → PICKUP_TIME → CONFIRM → [PAYMENT?]
+ * Steps: SELECT_ITEM → [CART_REVIEW ↔ (checkout)] → QUANTITY → NOTES → FULFILMENT → PICKUP_TIME → CONFIRM → [PAYMENT?]
+ * (CART_REVIEW is only entered when a message names 2+ known items at once —
+ * see [MULTICART-FLOW-1] in modules/restaurant/flows/orderFlow.js for the
+ * full rationale; this is the same fix reused here via
+ * utils/multiItemParser.js. A single-item message is unaffected. Checkout
+ * from CART_REVIEW skips the per-item QUANTITY step — quantities are already
+ * known per line — straight into NOTES, which the rest of the flow doesn't
+ * need to change for.)
  */
 
 import { updateSession }  from '../../../core/sessions/sessionService.js';
 import { completeFlow }   from '../../../core/conversations/flowEngine.js';
 import { findBestMatch }  from '../../../utils/matchEngine.js';
+import { extractCartLines } from '../../../utils/multiItemParser.js';
 import { parseQuantity }  from '../../../utils/parseQuantity.js';
 import { saveOrder }      from '../../../services/orderService.js';
 import { trackOrderAnalytics } from '../../../core/analytics/analyticsService.js';
@@ -104,6 +112,17 @@ export async function handleBakeryOrderFlow({ session, message, business, tenant
       }
       if (clean.length < 2) return _buildBakeryMenu(scopedMenu, business, data.category || null);
 
+      // [MULTICART-FLOW-1] Only branches into the cart flow when 2+ distinct
+      // KNOWN items are named in this one message — a single (or zero) match
+      // falls straight through to the existing index/fuzzy logic below.
+      const cartParse = extractCartLines(raw, menu);
+      if (cartParse.matchedCount >= 2) {
+        await updateSession(session.customerPhone, session.tenantId, {
+          step: 'CART_REVIEW', data: { ...data, cart: cartParse.lines }, menuViewed: true,
+        });
+        return _buildCartSummaryUI(cartParse.lines, business);
+      }
+
       // [AUDIT-FIX-PARSEINT] parseInt("2 red buns", 10) === 2, NOT NaN — so any
       // message merely STARTING with a digit silently hijacked the menu index
       // once menuViewed was true (the normal case). Only trust the parsed index
@@ -163,6 +182,51 @@ export async function handleBakeryOrderFlow({ session, message, business, tenant
         ];
       }
       return qtyPrompt;
+    }
+
+    // ── CART_REVIEW ──────────────────────────────────────────────────────────
+    // [MULTICART-FLOW-1] Reached only after a message named 2+ known items.
+    case 'CART_REVIEW': {
+      const cart = Array.isArray(data.cart) ? data.cart : [];
+
+      const wantsCheckout = /^(checkout|check\s*out|confirm|done|finish|that'?s all|cart_checkout|place\s*order)$/i.test(clean);
+      if (wantsCheckout) {
+        if (!cart.length) return _buildBakeryMenu(menu, business);
+        const allPriced = cart.every(l => typeof l.item.price === 'number');
+        const total = allPriced ? cart.reduce((sum, l) => sum + l.item.price * l.quantity, 0) : null;
+        const totalQty = cart.reduce((sum, l) => sum + l.quantity, 0);
+        // [MULTICART-FLOW-1] Cart quantities are already known per line, so
+        // checkout skips the per-item QUANTITY step and goes straight to NOTES.
+        await updateSession(session.customerPhone, session.tenantId, {
+          step: 'NOTES', data: { ...data, quantity: totalQty, totalPrice: total },
+        });
+        return {
+          type: 'buttons',
+          body: `🎂 *${cart.map(l => `${l.quantity}× ${l.item.name}`).join(', ')}*\n\nAny special message or notes?\n_(e.g. "Write Happy Birthday Sara", "No nuts", "Extra icing")_`,
+          buttons: [
+            { id: 'NOTES_NONE', title: '✅ No special notes' },
+            { id: 'CANCEL',     title: '❌ Cancel'            },
+          ],
+          footer: 'Or type your message/notes and send',
+        };
+      }
+
+      const wantsAddMore = /^(add\s*more|add|more|cart_add_more)$/i.test(clean);
+      if (wantsAddMore) {
+        return {
+          type: 'text',
+          body: `What else would you like to add? You can type one item, or several at once (e.g. "2 croissants and a loaf of bread").`,
+        };
+      }
+
+      const parsed = extractCartLines(raw, menu);
+      if (parsed.matchedCount >= 1) {
+        const merged = _mergeCartLines(cart, parsed.lines);
+        await updateSession(session.customerPhone, session.tenantId, { data: { ...data, cart: merged } });
+        return _buildCartSummaryUI(merged, business);
+      }
+
+      return _buildCartSummaryUI(cart, business);
     }
 
     // ── QUANTITY ──────────────────────────────────────────────────────────────
@@ -294,12 +358,17 @@ export async function handleBakeryOrderFlow({ session, message, business, tenant
         return _buildPickupTimeUI(business);
       }
 
+      const isCart   = Array.isArray(data.cart) && data.cart.length > 0;
       const item     = data.item;
       const qty      = data.quantity || 1;
       const total    = data.totalPrice;
       const notes    = data.notes;
       const method   = data.fulfilment || 'Collection';
       const address  = data.deliveryAddress || null;
+      const currency = business?.payment?.currency || item?.currency || 'D';
+      const itemsLine = isCart
+        ? data.cart.map(l => `${l.quantity}× ${itemLabel(l.item, l.variant)}`).join(', ')
+        : `${qty}× ${itemLabel(item, data.variant)}`;
 
       await updateSession(session.customerPhone, session.tenantId, {
         step: 'CONFIRM', data: { ...data, pickupTime: slot },
@@ -307,13 +376,13 @@ export async function handleBakeryOrderFlow({ session, message, business, tenant
 
       const notesLine   = notes   ? `\n📝 *Notes:* ${notes}` : '';
       const addressLine = address ? `\n📍 *Deliver to:* ${address}` : '';
-      const totalLine   = total   ? `\n💰 *Total:* ${item.currency || 'D'}${total}` : '';
+      const totalLine   = total   ? `\n💰 *Total:* ${currency}${total}` : '';
 
       return {
         type: 'buttons',
         body:
           `🧾 *Order Summary*\n\n` +
-          `🧁 *${qty}× ${itemLabel(item, data.variant)}*\n` +
+          `🧁 *${itemsLine}*\n` +
           `📦 *${method}*` +
           addressLine +
           `\n⏰ *${method === 'Delivery' ? 'Delivery' : 'Collection'} Time:* ${slot}` +
@@ -340,6 +409,12 @@ export async function handleBakeryOrderFlow({ session, message, business, tenant
         };
       }
 
+      // [MULTICART-FLOW-1] mirrors modules/restaurant/flows/orderFlow.js
+      const isCart = Array.isArray(data.cart) && data.cart.length > 0;
+      const displayItemsLine = isCart
+        ? data.cart.map(l => `${l.quantity}× ${itemLabel(l.item, l.variant)}`).join(', ')
+        : `${data.quantity || 1}× ${itemLabel(data.item, data.variant)}`;
+
       let savedOrder = null;
       try {
         savedOrder = await saveOrder({
@@ -349,9 +424,16 @@ export async function handleBakeryOrderFlow({ session, message, business, tenant
           // [AUDIT-FIX-CATALOG-VARIANT-LOSS] data.variant is set by
           // waCatalogFlow.js when this item was chosen via WA Catalog; bakery
           // has no variant-specific step of its own and previously dropped it.
-          item:          itemLabel(data.item, data.variant),
-          quantity:      data.quantity || 1,
+          item:          isCart ? undefined : itemLabel(data.item, data.variant),
+          quantity:      isCart ? undefined : (data.quantity || 1),
           totalPrice:    data.totalPrice || 0,
+          items:         isCart
+            ? data.cart.map(l => ({
+                item:      itemLabel(l.item, l.variant),
+                quantity:  l.quantity,
+                unitPrice: typeof l.item.price === 'number' ? l.item.price : undefined,
+              }))
+            : undefined,
           notes:         [
             data.notes         ? `Message: ${data.notes}`        : null,
             data.fulfilment    ? `Fulfilment: ${data.fulfilment}` : null,
@@ -421,7 +503,7 @@ export async function handleBakeryOrderFlow({ session, message, business, tenant
             body:
               `🔔 *New Bakery Order — ${business?.name || 'Bakery'}*\n\n` +
               `📞 Customer: *${session.customerPhone}*\n` +
-              `🧁 *${data.quantity}× ${itemLabel(data.item, data.variant)}*\n` +
+              `🧁 *${displayItemsLine}*\n` +
               `📦 Fulfilment: *${data.fulfilment || 'Collection'}*\n` +
               `⏰ Time: *${data.pickupTime || 'ASAP'}*` +
               addressLine + notesLine + totalLine +
@@ -434,7 +516,7 @@ export async function handleBakeryOrderFlow({ session, message, business, tenant
         }
       } catch {}
 
-      trackOrderAnalytics(itemLabel(data.item, data.variant), null, data.quantity, data.totalPrice || 0, session.tenantId).catch(() => {});
+      trackOrderAnalytics(isCart ? displayItemsLine : itemLabel(data.item, data.variant), null, data.quantity, data.totalPrice || 0, session.tenantId).catch(() => {});
       // [AUDIT-FIX-4] recordRevenue() moved to adminCommandService.confirmPayment() —
       // recording it here at placement time counted unconfirmed/later-rejected orders
       // as revenue. See adminCommandService.js AUDIT-FIX-4 for full rationale.
@@ -449,7 +531,7 @@ export async function handleBakeryOrderFlow({ session, message, business, tenant
         type: 'text',
         body:
           `✅ *Order Received!* 🥐\n\n` +
-          `🧁 *${data.quantity}× ${itemLabel(data.item, data.variant)}*\n` +
+          `🧁 *${displayItemsLine}*\n` +
           `📦 ${data.fulfilment || 'Collection'} — ${data.pickupTime || 'ASAP'}\n` +
           (data.notes ? `📝 ${data.notes}\n` : '') +
           `\n⏳ Our team will confirm your order shortly. Please wait for confirmation before placing a new one. 🙏`,
@@ -463,6 +545,36 @@ export async function handleBakeryOrderFlow({ session, message, business, tenant
 }
 
 // ── UI Helpers ────────────────────────────────────────────────────────────────
+
+// ── Cart helpers [MULTICART-FLOW-1] ─────────────────────────────────────────
+function _mergeCartLines(existingLines, newLines) {
+  const merged = existingLines.map(l => ({ item: l.item, quantity: l.quantity }));
+  for (const line of newLines) {
+    const key = line.item._id ? String(line.item._id) : line.item.name.toLowerCase();
+    const existing = merged.find(l => (l.item._id ? String(l.item._id) : l.item.name.toLowerCase()) === key);
+    if (existing) existing.quantity += line.quantity;
+    else merged.push({ item: line.item, quantity: line.quantity });
+  }
+  return merged;
+}
+
+function _buildCartSummaryUI(lines, business) {
+  const currency  = business?.payment?.currency || 'D';
+  const allPriced = lines.every(l => typeof l.item.price === 'number');
+  const total     = allPriced ? lines.reduce((sum, l) => sum + l.item.price * l.quantity, 0) : null;
+  const rows = lines
+    .map(l => `• *${l.quantity}× ${l.item.name}*${typeof l.item.price === 'number' ? ` — ${currency}${l.item.price * l.quantity}` : ''}`)
+    .join('\n');
+  return {
+    type: 'buttons',
+    body: `🛒 *Your Cart*\n\n${rows}${total !== null ? `\n\n💰 Total: *${currency}${total}*` : ''}\n\nWhat would you like to do?`,
+    buttons: [
+      { id: 'CART_CHECKOUT', title: '✅ Checkout'  },
+      { id: 'CART_ADD_MORE', title: '➕ Add More'  },
+      { id: 'CANCEL',        title: '❌ Cancel'    },
+    ],
+  };
+}
 
 function _getCategories(menu) {
   return [...new Set(menu.map(i => i.category).filter(Boolean))];

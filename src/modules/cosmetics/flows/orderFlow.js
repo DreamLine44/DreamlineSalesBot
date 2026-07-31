@@ -11,7 +11,17 @@
  *   • Delivery only (no dine-in / table)
  *   • Optional personalisation note ("gift wrap", "send with card")
  *
- * Steps: SKIN_CONTEXT → SELECT_ITEM → SELECT_SHADE → QUANTITY → GIFT_NOTE → CONFIRM → [PAYMENT?]
+ * Steps: SKIN_CONTEXT → SELECT_ITEM → [CART_REVIEW ↔ (checkout)] → SELECT_SHADE → QUANTITY → GIFT_NOTE → CONFIRM → [PAYMENT?]
+ *
+ * [MULTICART-FLOW-1] SELECT_ITEM also tries utils/multiItemParser.js's
+ * extractCartLines() to catch a message naming 2+ known products at once
+ * (e.g. "2 lipsticks and a foundation") — same fix as
+ * modules/restaurant/flows/orderFlow.js. It ONLY branches into CART_REVIEW
+ * when every matched product has zero shade options — a product requiring a
+ * shade pick cannot safely be added to a cart via free text (there's no
+ * sub-flow here to collect a shade per cart line), so any message naming a
+ * shaded product falls straight through to the original single-item flow
+ * unchanged, same as a single-item message always has.
  *
  * SKIN_CONTEXT is skippable — if customer taps "Shop Products" directly they go
  * straight to SELECT_ITEM without being forced through the skin-type wizard.
@@ -21,6 +31,7 @@ import { updateSession }  from '../../../core/sessions/sessionService.js';
 import { completeFlow }   from '../../../core/conversations/flowEngine.js';
 import { getAIReply }     from '../../../core/ai/providers/aiRouter.js';
 import { findBestMatch }  from '../../../utils/matchEngine.js';
+import { extractCartLines } from '../../../utils/multiItemParser.js';
 import { parseQuantity }  from '../../../utils/parseQuantity.js';
 import { saveOrder }      from '../../../services/orderService.js';
 import { trackOrderAnalytics } from '../../../core/analytics/analyticsService.js';
@@ -109,6 +120,18 @@ export async function handleCosmeticsOrderFlow({ session, message, business, ten
         return _buildCosmeticsMenu(menu, business, data.skinType || null);
       }
       if (clean.length < 2) return _buildCosmeticsMenu(menu, business, data.skinType || null);
+
+      // [MULTICART-FLOW-1] Only branches into the cart flow when 2+ distinct
+      // KNOWN products are named AND none of them require a shade pick (see
+      // header comment). A single match, zero matches, or any shaded product
+      // in the mix falls straight through to the existing logic below.
+      const cartParse = extractCartLines(raw, menu);
+      if (cartParse.matchedCount >= 2 && cartParse.lines.every(l => _shadeOptions(l.item).length === 0)) {
+        await updateSession(session.customerPhone, session.tenantId, {
+          step: 'CART_REVIEW', data: { ...data, cart: cartParse.lines }, menuViewed: true,
+        });
+        return _buildCartSummaryUI(cartParse.lines, business);
+      }
 
       // [AUDIT-FIX-PARSEINT] parseInt("2 red shirts", 10) === 2, NOT NaN — so any
       // message merely STARTING with a digit silently hijacked the menu index
@@ -217,6 +240,54 @@ export async function handleCosmeticsOrderFlow({ session, message, business, ten
       };
     }
 
+    // ── CART_REVIEW ──────────────────────────────────────────────────────────
+    // [MULTICART-FLOW-1] Reached only after a message named 2+ known,
+    // shade-less products at once.
+    case 'CART_REVIEW': {
+      const cart = Array.isArray(data.cart) ? data.cart : [];
+
+      const wantsCheckout = /^(checkout|check\s*out|confirm|done|finish|that'?s all|cart_checkout|place\s*order)$/i.test(clean);
+      if (wantsCheckout) {
+        if (!cart.length) return _buildCosmeticsMenu(menu, business, data.skinType || null);
+        const allPriced = cart.every(l => typeof l.item.price === 'number');
+        const total = allPriced ? cart.reduce((sum, l) => sum + l.item.price * l.quantity, 0) : null;
+        const totalQty = cart.reduce((sum, l) => sum + l.quantity, 0);
+        // [MULTICART-FLOW-1] Quantities are already known per line — skip
+        // straight to GIFT_NOTE (also skips SELECT_SHADE, guaranteed unneeded
+        // since cart entry required zero shade options on every line).
+        await updateSession(session.customerPhone, session.tenantId, {
+          step: 'GIFT_NOTE', data: { ...data, quantity: totalQty, totalPrice: total },
+        });
+        return {
+          type: 'buttons',
+          body: `🎁 Any special requests?\n_(e.g. "Gift wrap", "Include a card", "Fragrance-free packaging")_`,
+          buttons: [
+            { id: 'GIFT_NONE', title: '✅ No special requests' },
+            { id: 'CANCEL',    title: '❌ Cancel'               },
+          ],
+          footer: 'Or type your request and send',
+        };
+      }
+
+      const wantsAddMore = /^(add\s*more|add|more|cart_add_more)$/i.test(clean);
+      if (wantsAddMore) {
+        return {
+          type: 'text',
+          body: `What else would you like to add? You can type one item, or several at once — just make sure any shaded items are added one at a time.`,
+        };
+      }
+
+      const parsed = extractCartLines(raw, menu);
+      const addable = parsed.lines.filter(l => _shadeOptions(l.item).length === 0);
+      if (addable.length >= 1) {
+        const merged = _mergeCartLines(cart, addable);
+        await updateSession(session.customerPhone, session.tenantId, { data: { ...data, cart: merged } });
+        return _buildCartSummaryUI(merged, business);
+      }
+
+      return _buildCartSummaryUI(cart, business);
+    }
+
     // ── QUANTITY ──────────────────────────────────────────────────────────────
     case 'QUANTITY': {
       const QTY = { 'QTY_1': 1, 'QTY_2': 2, 'QTY_3': 3 };
@@ -261,6 +332,7 @@ export async function handleCosmeticsOrderFlow({ session, message, business, ten
     // ── GIFT_NOTE ─────────────────────────────────────────────────────────────
     case 'GIFT_NOTE': {
       const giftNote = raw.toUpperCase() === 'GIFT_NONE' ? null : raw;
+      const isCart   = Array.isArray(data.cart) && data.cart.length > 0;
       const item     = data.item;
       const qty      = data.quantity || 1;
       // [AUDIT-FIX-CATALOG-VARIANT-LOSS] data.shade is set by the in-chat
@@ -271,6 +343,10 @@ export async function handleCosmeticsOrderFlow({ session, message, business, ten
       const shadeVal = data.shade || data.variant;
       const shade    = shadeVal ? ` (${shadeVal})` : '';
       const total    = data.totalPrice;
+      const currency = business?.payment?.currency || item?.currency || 'D';
+      const itemsLine = isCart
+        ? data.cart.map(l => `${l.quantity}× ${l.item.name}`).join(', ')
+        : `${qty}× ${item?.name}${shade}`;
 
       await updateSession(session.customerPhone, session.tenantId, {
         step: 'CONFIRM', data: { ...data, giftNote: giftNote || null },
@@ -280,8 +356,8 @@ export async function handleCosmeticsOrderFlow({ session, message, business, ten
         type: 'buttons',
         body:
           `🧾 *Order Summary*\n\n` +
-          `💄 *${qty}× ${item?.name}${shade}*\n` +
-          (total ? `💰 *Total:* ${item.currency || 'D'}${total}\n` : '') +
+          `💄 *${itemsLine}*\n` +
+          (total ? `💰 *Total:* ${currency}${total}\n` : '') +
           (giftNote ? `🎁 *Note:* ${giftNote}\n` : '') +
           `\nReady to confirm?`,
         buttons: [
@@ -307,6 +383,11 @@ export async function handleCosmeticsOrderFlow({ session, message, business, ten
       const shadeVal = data.shade || data.variant;
       const shade    = shadeVal ? ` (${shadeVal})` : '';
       const skinNote = data.skinType ? `Skin type: ${data.skinType}` : null;
+      // [MULTICART-FLOW-1] mirrors modules/restaurant/flows/orderFlow.js
+      const isCart = Array.isArray(data.cart) && data.cart.length > 0;
+      const displayItemsLine = isCart
+        ? data.cart.map(l => `${l.quantity}× ${l.item.name}`).join(', ')
+        : `${data.quantity || 1}× ${data.item?.name}${shade}`;
 
       let savedOrder = null;
       try {
@@ -314,9 +395,16 @@ export async function handleCosmeticsOrderFlow({ session, message, business, ten
           tenantId:      session.tenantId,
           customerPhone: session.customerPhone,
           customerName:  session.customerName,
-          item:          `${data.item?.name}${shade}`,
-          quantity:      data.quantity || 1,
+          item:          isCart ? undefined : `${data.item?.name}${shade}`,
+          quantity:      isCart ? undefined : (data.quantity || 1),
           totalPrice:    data.totalPrice || 0,
+          items:         isCart
+            ? data.cart.map(l => ({
+                item:      l.item.name,
+                quantity:  l.quantity,
+                unitPrice: typeof l.item.price === 'number' ? l.item.price : undefined,
+              }))
+            : undefined,
           notes:         [skinNote, data.giftNote].filter(Boolean).join(' | ') || undefined,
           businessId:    business._id,
         });
@@ -373,7 +461,7 @@ export async function handleCosmeticsOrderFlow({ session, message, business, ten
             body:
               `🔔 *New Cosmetics Order — ${business?.name || 'Beauty'}*\n\n` +
               `📞 Customer: *${session.customerPhone}*\n` +
-              `💄 *${data.quantity}× ${data.item?.name}${shade}*\n` +
+              `💄 *${displayItemsLine}*\n` +
               (skinNote ? `🌿 ${skinNote}\n` : '') +
               (data.giftNote ? `🎁 ${data.giftNote}\n` : '') +
               (data.totalPrice ? `💰 Total: *${currency}${data.totalPrice}*\n` : '') +
@@ -386,7 +474,7 @@ export async function handleCosmeticsOrderFlow({ session, message, business, ten
         }
       } catch {}
 
-      trackOrderAnalytics(`${data.item?.name}${shade}`, null, data.quantity, data.totalPrice || 0, session.tenantId).catch(() => {});
+      trackOrderAnalytics(displayItemsLine, null, data.quantity, data.totalPrice || 0, session.tenantId).catch(() => {});
       // [AUDIT-FIX-4] recordRevenue() moved to adminCommandService.confirmPayment() —
       // recording it here at placement time counted unconfirmed/later-rejected orders
       // as revenue. See adminCommandService.js AUDIT-FIX-4 for full rationale.
@@ -401,7 +489,7 @@ export async function handleCosmeticsOrderFlow({ session, message, business, ten
         type: 'text',
         body:
           `✅ *Order Received!* 💄\n\n` +
-          `*${data.quantity}× ${data.item?.name}${shade}*\n` +
+          `*${displayItemsLine}*\n` +
           (data.giftNote ? `🎁 ${data.giftNote}\n` : '') +
           `\n⏳ Our team will confirm your order shortly. Please wait for confirmation before placing a new one. 🙏`,
       };
@@ -414,6 +502,36 @@ export async function handleCosmeticsOrderFlow({ session, message, business, ten
 }
 
 // ── UI Helpers ────────────────────────────────────────────────────────────────
+
+// ── Cart helpers [MULTICART-FLOW-1] ─────────────────────────────────────────
+function _mergeCartLines(existingLines, newLines) {
+  const merged = existingLines.map(l => ({ item: l.item, quantity: l.quantity }));
+  for (const line of newLines) {
+    const key = line.item._id ? String(line.item._id) : line.item.name.toLowerCase();
+    const existing = merged.find(l => (l.item._id ? String(l.item._id) : l.item.name.toLowerCase()) === key);
+    if (existing) existing.quantity += line.quantity;
+    else merged.push({ item: line.item, quantity: line.quantity });
+  }
+  return merged;
+}
+
+function _buildCartSummaryUI(lines, business) {
+  const currency  = business?.payment?.currency || 'D';
+  const allPriced = lines.every(l => typeof l.item.price === 'number');
+  const total     = allPriced ? lines.reduce((sum, l) => sum + l.item.price * l.quantity, 0) : null;
+  const rows = lines
+    .map(l => `• *${l.quantity}× ${l.item.name}*${typeof l.item.price === 'number' ? ` — ${currency}${l.item.price * l.quantity}` : ''}`)
+    .join('\n');
+  return {
+    type: 'buttons',
+    body: `🛒 *Your Cart*\n\n${rows}${total !== null ? `\n\n💰 Total: *${currency}${total}*` : ''}\n\nWhat would you like to do?`,
+    buttons: [
+      { id: 'CART_CHECKOUT', title: '✅ Checkout'  },
+      { id: 'CART_ADD_MORE', title: '➕ Add More'  },
+      { id: 'CANCEL',        title: '❌ Cancel'    },
+    ],
+  };
+}
 
 function _buildCosmeticsMenu(items, business, skinType = null) {
   const name   = business?.businessName || business?.name || 'Beauty';

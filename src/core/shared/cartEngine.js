@@ -3,6 +3,15 @@
  *
  * [MULTICART-v39-PHASE2] Flow-layer multi-item cart support.
  *
+ * [MULTICART-HYBRID-PARSE] parseMultiItemMessage() below now falls back to
+ * utils/multiItemParser.js's extractCartLines() (a separate, complementary
+ * parsing strategy — direct known-name scanning instead of separator-based
+ * splitting) whenever the segment-split pass resolves fewer than 2 distinct
+ * items. This closes the gap for messages with no explicit connector word
+ * ("2 burgers 3 cokes") or where a fuzzy-match miss on one segment would
+ * otherwise sink the whole multi-item read. See that function's own comment
+ * below for exactly how and why the two passes are merged.
+ *
  * BACKGROUND — the gap this closes:
  *   Phase 1 (services/orderService.js resolveOrderFields/saveOrder) already
  *   accepts an `items[]` cart array and normalizes/sums it correctly — see
@@ -65,6 +74,7 @@
 import { findBestMatch } from '../../utils/matchEngine.js';
 import { parseQuantity } from '../../utils/parseQuantity.js';
 import { itemLabel } from '../../utils/itemLabel.js';
+import { extractCartLines } from '../../utils/multiItemParser.js';
 
 const norm = (s = '') =>
   s.toLowerCase().replace(/[^\w\s]/g, ' ').replace(/\s+/g, ' ').trim();
@@ -127,31 +137,64 @@ export function parseMultiItemMessage(menu = [], text = '') {
     .map(s => s.trim())
     .filter(Boolean);
 
-  if (segments.length < 2) return null; // single phrase — not a multi-item message
-
   const lines = [];
   const unmatchedSegments = [];
   const seenIds = new Set();
 
-  for (const segment of segments) {
-    const { quantity, name } = extractQuantityAndName(segment);
-    if (norm(name).length < 2) continue; // too short to be a real item name fragment
+  if (segments.length >= 2) {
+    for (const segment of segments) {
+      const { quantity, name } = extractQuantityAndName(segment);
+      if (norm(name).length < 2) continue; // too short to be a real item name fragment
 
-    const { item, confidenceLevel } = findBestMatch(menu, name);
-    if (!item || confidenceLevel === 'NONE') {
-      unmatchedSegments.push(segment);
-      continue;
-    }
+      const { item, confidenceLevel } = findBestMatch(menu, name);
+      if (!item || confidenceLevel === 'NONE') {
+        unmatchedSegments.push(segment);
+        continue;
+      }
 
-    const id = String(item._id);
-    if (seenIds.has(id)) {
-      // Same item mentioned twice in one message ("2 burgers ... 1 burger") — merge.
-      const existing = lines.find(l => String(l.item._id) === id);
-      if (existing) existing.quantity += quantity;
-      continue;
+      const id = String(item._id);
+      if (seenIds.has(id)) {
+        // Same item mentioned twice in one message ("2 burgers ... 1 burger") — merge.
+        const existing = lines.find(l => String(l.item._id) === id);
+        if (existing) existing.quantity += quantity;
+        continue;
+      }
+      seenIds.add(id);
+      lines.push({ item, quantity, variant: null, confidenceLevel });
     }
-    seenIds.add(id);
-    lines.push({ item, quantity, variant: null, confidenceLevel });
+  }
+
+  // [MULTICART-HYBRID-PARSE] Direct-scan fallback (utils/multiItemParser.js).
+  // Always runs alongside the segment-split pass above, for two reasons:
+  //   1. Coverage — the segment-split pass depends on an explicit separator
+  //      (",", "and", "+", ...) between items. A message like "2 burgers 3
+  //      cokes" (no connector at all) never resolves 2+ segments there.
+  //      extractCartLines() takes the opposite approach: it never splits the
+  //      text, it searches directly for every KNOWN menu item name actually
+  //      present (longest-name-first, so a compound name like "Fish and
+  //      Chips" is claimed whole before "Fish"/"Chips" could be torn apart
+  //      by the very connector words this function splits on).
+  //   2. Quantity accuracy — a segment like "chips 2 fries" (produced when
+  //      splitting "fish and chips 2 fries" on "and") has a non-numeric
+  //      leading token ("chips"), so extractQuantityAndName() falls back to
+  //      treating the WHOLE segment as the item name and loses the embedded
+  //      "2" — findBestMatch() still resolves it to "Fries", but at the
+  //      wrong quantity (1, not 2). extractCartLines()'s lookback scan reads
+  //      the quantity token immediately before the matched name in the
+  //      ORIGINAL text, so it gets this right. Where both passes agree on an
+  //      item, the higher of the two quantities wins — the direct scan is
+  //      generally the more reliable one for quantity, and taking the max
+  //      never silently drops a real explicit quantity either pass found.
+  const scanned = extractCartLines(raw, menu);
+  for (const { item, quantity } of scanned.lines) {
+    const id = String(item._id ?? item.name.toLowerCase());
+    const existing = lines.find(l => String(l.item._id ?? l.item.name.toLowerCase()) === id);
+    if (existing) {
+      existing.quantity = Math.max(existing.quantity, quantity);
+    } else {
+      seenIds.add(id);
+      lines.push({ item, quantity, variant: null, confidenceLevel: 'DIRECT' });
+    }
   }
 
   // Require at least 2 DISTINCT resolved items — otherwise this reads better
