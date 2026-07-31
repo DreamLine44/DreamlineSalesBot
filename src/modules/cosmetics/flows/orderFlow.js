@@ -11,17 +11,7 @@
  *   • Delivery only (no dine-in / table)
  *   • Optional personalisation note ("gift wrap", "send with card")
  *
- * Steps: SKIN_CONTEXT → SELECT_ITEM → [CART_REVIEW ↔ (checkout)] → SELECT_SHADE → QUANTITY → GIFT_NOTE → CONFIRM → [PAYMENT?]
- *
- * [MULTICART-FLOW-1] SELECT_ITEM also tries utils/multiItemParser.js's
- * extractCartLines() to catch a message naming 2+ known products at once
- * (e.g. "2 lipsticks and a foundation") — same fix as
- * modules/restaurant/flows/orderFlow.js. It ONLY branches into CART_REVIEW
- * when every matched product has zero shade options — a product requiring a
- * shade pick cannot safely be added to a cart via free text (there's no
- * sub-flow here to collect a shade per cart line), so any message naming a
- * shaded product falls straight through to the original single-item flow
- * unchanged, same as a single-item message always has.
+ * Steps: SKIN_CONTEXT → SELECT_ITEM → SELECT_SHADE → QUANTITY → GIFT_NOTE → CONFIRM → [PAYMENT?]
  *
  * SKIN_CONTEXT is skippable — if customer taps "Shop Products" directly they go
  * straight to SELECT_ITEM without being forced through the skin-type wizard.
@@ -31,12 +21,16 @@ import { updateSession }  from '../../../core/sessions/sessionService.js';
 import { completeFlow }   from '../../../core/conversations/flowEngine.js';
 import { getAIReply }     from '../../../core/ai/providers/aiRouter.js';
 import { findBestMatch }  from '../../../utils/matchEngine.js';
-import { extractCartLines } from '../../../utils/multiItemParser.js';
 import { parseQuantity }  from '../../../utils/parseQuantity.js';
 import { saveOrder }      from '../../../services/orderService.js';
 import { trackOrderAnalytics } from '../../../core/analytics/analyticsService.js';
 import logger             from '../../../config/logger.js';
 import { buildWhatsAppImageUrl } from '../../../config/cloudinary.js';
+import {
+  parseMultiItemMessage, mergeCartLines, enforceCartLimit,
+  cartTotal, cartToOrderItems, formatCartSummary, buildUnmatchedNote,
+  parseCartModification, applyCartModification,
+} from '../../../core/shared/cartEngine.js';
 
 const norm = (s = '') => s.toLowerCase().replace(/[^\w\s]/g, ' ').replace(/\s+/g, ' ').trim();
 
@@ -121,16 +115,25 @@ export async function handleCosmeticsOrderFlow({ session, message, business, ten
       }
       if (clean.length < 2) return _buildCosmeticsMenu(menu, business, data.skinType || null);
 
-      // [MULTICART-FLOW-1] Only branches into the cart flow when 2+ distinct
-      // KNOWN products are named AND none of them require a shade pick (see
-      // header comment). A single match, zero matches, or any shaded product
-      // in the mix falls straight through to the existing logic below.
-      const cartParse = extractCartLines(raw, menu);
-      if (cartParse.matchedCount >= 2 && cartParse.lines.every(l => _shadeOptions(l.item).length === 0)) {
+      // [CART-AI] Try multi-item parsing FIRST — "a lipstick and 2 cleansers"
+      // resolves to 2+ distinct product lines and jumps straight to
+      // CART_REVIEW. Restricted to messages where NONE of the resolved
+      // items have shade/variant options — a multi-item cart line has no
+      // per-line shade picker (yet), so a shade-bearing product always
+      // falls through to the existing single-item SELECT_SHADE flow below,
+      // one product at a time, exactly as before.
+      const multi = parseMultiItemMessage(menu, raw);
+      if (multi && !multi.lines.some(l => _shadeOptions(l.item).length)) {
+        const merged = mergeCartLines(Array.isArray(data.cart) ? data.cart : [], multi.lines);
+        const { cart: cappedCart, overflowCount } = enforceCartLimit(merged, business);
         await updateSession(session.customerPhone, session.tenantId, {
-          step: 'CART_REVIEW', data: { ...data, cart: cartParse.lines }, menuViewed: true,
+          step: 'CART_REVIEW', data: { ...data, cart: cappedCart }, menuViewed: true,
         });
-        return _buildCartSummaryUI(cartParse.lines, business);
+        let note = buildUnmatchedNote(multi.unmatchedSegments);
+        if (overflowCount > 0) {
+          note += `\n\n_(Your cart can hold up to ${business?.multiItemCart?.maxItems || 10} items — ${overflowCount} extra item${overflowCount > 1 ? 's were' : ' was'} left out.)_`;
+        }
+        return _buildCosmeticsCartSummaryUI(cappedCart, business, note);
       }
 
       // [AUDIT-FIX-PARSEINT] parseInt("2 red shirts", 10) === 2, NOT NaN — so any
@@ -208,6 +211,79 @@ export async function handleCosmeticsOrderFlow({ session, message, business, ten
       return nextPrompt;
     }
 
+    // ── CART_REVIEW ───────────────────────────────────────────────────────────
+    // [CART-AI] Reached once data.cart has 2+ distinct shade-less products.
+    // Checkout skips SELECT_SHADE/QUANTITY (already resolved per line) and
+    // goes straight to GIFT_NOTE, same convergence point the single-item
+    // path uses before CONFIRM.
+    case 'CART_REVIEW': {
+      const cart = Array.isArray(data.cart) ? data.cart : [];
+
+      const isCheckout = raw === 'CONFIRM' || /^(yes|y|yeah|yep|confirm|ok|okay|sure|checkout|place|done)$/i.test(clean);
+      if (isCheckout) {
+        await updateSession(session.customerPhone, session.tenantId, {
+          step: 'GIFT_NOTE', data: { ...data, totalPrice: cartTotal(cart) },
+        });
+        return {
+          type: 'buttons',
+          body: `💄 *Your Order:*\n\n${formatCartSummary(cart, business)}\n\nAny special requests for the whole order?\n_(e.g. "Gift wrap", "Include a card")_`,
+          buttons: [
+            { id: 'GIFT_NONE', title: '✅ No special requests' },
+            { id: 'CANCEL',    title: '❌ Cancel'               },
+          ],
+          footer: 'Or type your request and send',
+        };
+      }
+
+      const isExplicitAddMore = raw === 'ADD_ANOTHER_ITEM' || /^(add more|add another|add another item|another item|add item|more items?)$/i.test(clean);
+      if (isExplicitAddMore) {
+        await updateSession(session.customerPhone, session.tenantId, { step: 'SELECT_ITEM' });
+        return _buildCosmeticsMenu(menu, business, data.skinType || null);
+      }
+
+      // [CART-AI-MODIFY] "remove the lipstick" / "make it 2 cleansers" —
+      // resolved against items ALREADY in the cart, checked before treating
+      // the message as an attempt to add a brand-new product.
+      const mod = parseCartModification(cart, raw);
+      if (mod) {
+        const updatedCart = applyCartModification(cart, mod);
+        await updateSession(session.customerPhone, session.tenantId, { data: { ...data, cart: updatedCart } });
+        if (!updatedCart.length) {
+          await updateSession(session.customerPhone, session.tenantId, { step: 'SELECT_ITEM', data: { ...data, cart: [] } });
+          return _buildCosmeticsMenu(menu, business, data.skinType || null);
+        }
+        return _buildCosmeticsCartSummaryUI(updatedCart, business,
+          mod.type === 'remove' ? '\n\n_(Removed from your cart.)_' : '\n\n_(Updated the quantity.)_');
+      }
+
+      // Treat the message itself as more products to add — same shade-less
+      // restriction as SELECT_ITEM above.
+      const multiAdd = parseMultiItemMessage(menu, raw);
+      let newLines = null;
+      if (multiAdd && !multiAdd.lines.some(l => _shadeOptions(l.item).length)) {
+        newLines = multiAdd.lines;
+      } else {
+        const { item: singleItem, confidenceLevel: singleConf } = findBestMatch(menu, clean);
+        if (singleItem && singleConf === 'HIGH' && !_shadeOptions(singleItem).length) {
+          newLines = [{ item: singleItem, quantity: 1, variant: null }];
+        }
+      }
+
+      if (newLines) {
+        const merged = mergeCartLines(cart, newLines);
+        const { cart: cappedCart, overflowCount } = enforceCartLimit(merged, business);
+        await updateSession(session.customerPhone, session.tenantId, { data: { ...data, cart: cappedCart } });
+        let note = multiAdd ? buildUnmatchedNote(multiAdd.unmatchedSegments) : '';
+        if (overflowCount > 0) {
+          note += `\n\n_(Your cart can hold up to ${business?.multiItemCart?.maxItems || 10} items — ${overflowCount} extra item${overflowCount > 1 ? 's were' : ' was'} left out.)_`;
+        }
+        return _buildCosmeticsCartSummaryUI(cappedCart, business, note);
+      }
+
+      return _buildCosmeticsCartSummaryUI(cart, business,
+        `\n\n_(I didn't catch a product in that — try naming something, or tap Checkout/Add More.)_`);
+    }
+
     // ── SELECT_SHADE ──────────────────────────────────────────────────────────
     case 'SELECT_SHADE': {
       const item = data.item;
@@ -238,54 +314,6 @@ export async function handleCosmeticsOrderFlow({ session, message, business, ten
         ],
         footer: 'Or type any number',
       };
-    }
-
-    // ── CART_REVIEW ──────────────────────────────────────────────────────────
-    // [MULTICART-FLOW-1] Reached only after a message named 2+ known,
-    // shade-less products at once.
-    case 'CART_REVIEW': {
-      const cart = Array.isArray(data.cart) ? data.cart : [];
-
-      const wantsCheckout = /^(checkout|check\s*out|confirm|done|finish|that'?s all|cart_checkout|place\s*order)$/i.test(clean);
-      if (wantsCheckout) {
-        if (!cart.length) return _buildCosmeticsMenu(menu, business, data.skinType || null);
-        const allPriced = cart.every(l => typeof l.item.price === 'number');
-        const total = allPriced ? cart.reduce((sum, l) => sum + l.item.price * l.quantity, 0) : null;
-        const totalQty = cart.reduce((sum, l) => sum + l.quantity, 0);
-        // [MULTICART-FLOW-1] Quantities are already known per line — skip
-        // straight to GIFT_NOTE (also skips SELECT_SHADE, guaranteed unneeded
-        // since cart entry required zero shade options on every line).
-        await updateSession(session.customerPhone, session.tenantId, {
-          step: 'GIFT_NOTE', data: { ...data, quantity: totalQty, totalPrice: total },
-        });
-        return {
-          type: 'buttons',
-          body: `🎁 Any special requests?\n_(e.g. "Gift wrap", "Include a card", "Fragrance-free packaging")_`,
-          buttons: [
-            { id: 'GIFT_NONE', title: '✅ No special requests' },
-            { id: 'CANCEL',    title: '❌ Cancel'               },
-          ],
-          footer: 'Or type your request and send',
-        };
-      }
-
-      const wantsAddMore = /^(add\s*more|add|more|cart_add_more)$/i.test(clean);
-      if (wantsAddMore) {
-        return {
-          type: 'text',
-          body: `What else would you like to add? You can type one item, or several at once — just make sure any shaded items are added one at a time.`,
-        };
-      }
-
-      const parsed = extractCartLines(raw, menu);
-      const addable = parsed.lines.filter(l => _shadeOptions(l.item).length === 0);
-      if (addable.length >= 1) {
-        const merged = _mergeCartLines(cart, addable);
-        await updateSession(session.customerPhone, session.tenantId, { data: { ...data, cart: merged } });
-        return _buildCartSummaryUI(merged, business);
-      }
-
-      return _buildCartSummaryUI(cart, business);
     }
 
     // ── QUANTITY ──────────────────────────────────────────────────────────────
@@ -332,7 +360,8 @@ export async function handleCosmeticsOrderFlow({ session, message, business, ten
     // ── GIFT_NOTE ─────────────────────────────────────────────────────────────
     case 'GIFT_NOTE': {
       const giftNote = raw.toUpperCase() === 'GIFT_NONE' ? null : raw;
-      const isCart   = Array.isArray(data.cart) && data.cart.length > 0;
+      const cart     = Array.isArray(data.cart) ? data.cart : [];
+      const isCart   = cart.length > 0;
       const item     = data.item;
       const qty      = data.quantity || 1;
       // [AUDIT-FIX-CATALOG-VARIANT-LOSS] data.shade is set by the in-chat
@@ -342,22 +371,22 @@ export async function handleCosmeticsOrderFlow({ session, message, business, ten
       // catalog-resolved shade isn't lost from here on.
       const shadeVal = data.shade || data.variant;
       const shade    = shadeVal ? ` (${shadeVal})` : '';
-      const total    = data.totalPrice;
-      const currency = business?.payment?.currency || item?.currency || 'D';
+      const currency = business?.payment?.currency || 'D';
+      const total    = isCart ? cartTotal(cart) : data.totalPrice;
       const itemsLine = isCart
-        ? data.cart.map(l => `${l.quantity}× ${l.item.name}`).join(', ')
-        : `${qty}× ${item?.name}${shade}`;
+        ? formatCartSummary(cart, business)
+        : `💄 *${qty}× ${item?.name}${shade}*`;
 
       await updateSession(session.customerPhone, session.tenantId, {
-        step: 'CONFIRM', data: { ...data, giftNote: giftNote || null },
+        step: 'CONFIRM', data: { ...data, giftNote: giftNote || null, totalPrice: total },
       });
 
       return {
         type: 'buttons',
         body:
           `🧾 *Order Summary*\n\n` +
-          `💄 *${itemsLine}*\n` +
-          (total ? `💰 *Total:* ${currency}${total}\n` : '') +
+          `${itemsLine}\n` +
+          (total != null ? `💰 *Total:* ${currency}${total}\n` : '') +
           (giftNote ? `🎁 *Note:* ${giftNote}\n` : '') +
           `\nReady to confirm?`,
         buttons: [
@@ -383,11 +412,8 @@ export async function handleCosmeticsOrderFlow({ session, message, business, ten
       const shadeVal = data.shade || data.variant;
       const shade    = shadeVal ? ` (${shadeVal})` : '';
       const skinNote = data.skinType ? `Skin type: ${data.skinType}` : null;
-      // [MULTICART-FLOW-1] mirrors modules/restaurant/flows/orderFlow.js
-      const isCart = Array.isArray(data.cart) && data.cart.length > 0;
-      const displayItemsLine = isCart
-        ? data.cart.map(l => `${l.quantity}× ${l.item.name}`).join(', ')
-        : `${data.quantity || 1}× ${data.item?.name}${shade}`;
+      const cart     = Array.isArray(data.cart) ? data.cart : [];
+      const isCart   = cart.length > 0;
 
       let savedOrder = null;
       try {
@@ -395,16 +421,15 @@ export async function handleCosmeticsOrderFlow({ session, message, business, ten
           tenantId:      session.tenantId,
           customerPhone: session.customerPhone,
           customerName:  session.customerName,
-          item:          isCart ? undefined : `${data.item?.name}${shade}`,
-          quantity:      isCart ? undefined : (data.quantity || 1),
-          totalPrice:    data.totalPrice || 0,
-          items:         isCart
-            ? data.cart.map(l => ({
-                item:      l.item.name,
-                quantity:  l.quantity,
-                unitPrice: typeof l.item.price === 'number' ? l.item.price : undefined,
-              }))
-            : undefined,
+          // [CART-AI] Multi-item cart → items[]; orderService.resolveOrderFields()
+          // mirrors items[0] into item/quantity/addOns for backward-compat readers.
+          ...(isCart
+            ? { items: cartToOrderItems(cart), totalPrice: cartTotal(cart) }
+            : {
+                item:       `${data.item?.name}${shade}`,
+                quantity:   data.quantity || 1,
+                totalPrice: data.totalPrice || 0,
+              }),
           notes:         [skinNote, data.giftNote].filter(Boolean).join(' | ') || undefined,
           businessId:    business._id,
         });
@@ -456,12 +481,15 @@ export async function handleCosmeticsOrderFlow({ session, message, business, ten
         if (adminPhone && tenant && savedOrder) {
           const { dispatchMessage } = await import('../../../core/whatsapp/dispatcher.js');
           const currency = business?.payment?.currency || 'D';
+          const itemsLine = isCart
+            ? `💄 ${formatCartSummary(cart, business).replace(/\n/g, '\n💄 ')}\n`
+            : `💄 *${data.quantity}× ${data.item?.name}${shade}*\n`;
           await dispatchMessage(adminPhone, {
             type: 'buttons',
             body:
               `🔔 *New Cosmetics Order — ${business?.name || 'Beauty'}*\n\n` +
               `📞 Customer: *${session.customerPhone}*\n` +
-              `💄 *${displayItemsLine}*\n` +
+              itemsLine +
               (skinNote ? `🌿 ${skinNote}\n` : '') +
               (data.giftNote ? `🎁 ${data.giftNote}\n` : '') +
               (data.totalPrice ? `💰 Total: *${currency}${data.totalPrice}*\n` : '') +
@@ -474,7 +502,13 @@ export async function handleCosmeticsOrderFlow({ session, message, business, ten
         }
       } catch {}
 
-      trackOrderAnalytics(displayItemsLine, null, data.quantity, data.totalPrice || 0, session.tenantId).catch(() => {});
+      trackOrderAnalytics(
+        isCart ? formatCartSummary(cart, business) : `${data.item?.name}${shade}`,
+        null,
+        isCart ? cart.reduce((n, l) => n + l.quantity, 0) : data.quantity,
+        data.totalPrice || 0,
+        session.tenantId,
+      ).catch(() => {});
       // [AUDIT-FIX-4] recordRevenue() moved to adminCommandService.confirmPayment() —
       // recording it here at placement time counted unconfirmed/later-rejected orders
       // as revenue. See adminCommandService.js AUDIT-FIX-4 for full rationale.
@@ -489,7 +523,9 @@ export async function handleCosmeticsOrderFlow({ session, message, business, ten
         type: 'text',
         body:
           `✅ *Order Received!* 💄\n\n` +
-          `*${displayItemsLine}*\n` +
+          (isCart
+            ? `${formatCartSummary(cart, business)}\n`
+            : `*${data.quantity}× ${data.item?.name}${shade}*\n`) +
           (data.giftNote ? `🎁 ${data.giftNote}\n` : '') +
           `\n⏳ Our team will confirm your order shortly. Please wait for confirmation before placing a new one. 🙏`,
       };
@@ -503,32 +539,16 @@ export async function handleCosmeticsOrderFlow({ session, message, business, ten
 
 // ── UI Helpers ────────────────────────────────────────────────────────────────
 
-// ── Cart helpers [MULTICART-FLOW-1] ─────────────────────────────────────────
-function _mergeCartLines(existingLines, newLines) {
-  const merged = existingLines.map(l => ({ item: l.item, quantity: l.quantity }));
-  for (const line of newLines) {
-    const key = line.item._id ? String(line.item._id) : line.item.name.toLowerCase();
-    const existing = merged.find(l => (l.item._id ? String(l.item._id) : l.item.name.toLowerCase()) === key);
-    if (existing) existing.quantity += line.quantity;
-    else merged.push({ item: line.item, quantity: line.quantity });
-  }
-  return merged;
-}
-
-function _buildCartSummaryUI(lines, business) {
-  const currency  = business?.payment?.currency || 'D';
-  const allPriced = lines.every(l => typeof l.item.price === 'number');
-  const total     = allPriced ? lines.reduce((sum, l) => sum + l.item.price * l.quantity, 0) : null;
-  const rows = lines
-    .map(l => `• *${l.quantity}× ${l.item.name}*${typeof l.item.price === 'number' ? ` — ${currency}${l.item.price * l.quantity}` : ''}`)
-    .join('\n');
+function _buildCosmeticsCartSummaryUI(cart, business, note = '') {
+  const currency = business?.payment?.currency || 'D';
+  const total = cartTotal(cart);
   return {
     type: 'buttons',
-    body: `🛒 *Your Cart*\n\n${rows}${total !== null ? `\n\n💰 Total: *${currency}${total}*` : ''}\n\nWhat would you like to do?`,
+    body: `🧾 *Your Order*\n\n${formatCartSummary(cart, business)}${total != null ? `\n\n💰 Total: *${currency}${total}*` : ''}${note}\n\nReady to checkout, or add something else?`,
     buttons: [
-      { id: 'CART_CHECKOUT', title: '✅ Checkout'  },
-      { id: 'CART_ADD_MORE', title: '➕ Add More'  },
-      { id: 'CANCEL',        title: '❌ Cancel'    },
+      { id: 'CONFIRM',          title: '✅ Checkout'  },
+      { id: 'ADD_ANOTHER_ITEM', title: '➕ Add More'   },
+      { id: 'CANCEL',           title: '❌ Cancel'     },
     ],
   };
 }

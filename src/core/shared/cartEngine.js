@@ -3,15 +3,6 @@
  *
  * [MULTICART-v39-PHASE2] Flow-layer multi-item cart support.
  *
- * [MULTICART-HYBRID-PARSE] parseMultiItemMessage() below now falls back to
- * utils/multiItemParser.js's extractCartLines() (a separate, complementary
- * parsing strategy — direct known-name scanning instead of separator-based
- * splitting) whenever the segment-split pass resolves fewer than 2 distinct
- * items. This closes the gap for messages with no explicit connector word
- * ("2 burgers 3 cokes") or where a fuzzy-match miss on one segment would
- * otherwise sink the whole multi-item read. See that function's own comment
- * below for exactly how and why the two passes are merged.
- *
  * BACKGROUND — the gap this closes:
  *   Phase 1 (services/orderService.js resolveOrderFields/saveOrder) already
  *   accepts an `items[]` cart array and normalizes/sums it correctly — see
@@ -69,12 +60,28 @@
  *     wherever a flow adds lines to a cart, so a runaway "add another item"
  *     loop (or a garbled multi-item message that over-matches) can never
  *     build an unbounded cart before saveOrder()'s own 50-item hard cap.
+ *
+ * [CART-AI-2] Two further additions so the bot treats the cart as one
+ * editable set of items rather than an append-only list:
+ *
+ *   Trailing quantities — extractQuantityAndName() now also recognises
+ *   "Burger x2", "Fries (3)", "Coke *2" (quantity AFTER the name), not just
+ *   the original leading form ("2 burgers"). Compound number words
+ *   ("twenty five", "twenty-five") are handled by parseQuantity().
+ *
+ *   parseCartModification(cart, text) / applyCartModification(cart, mod)
+ *     Lets a customer already reviewing their cart say "remove the coke",
+ *     "no fries", or "make it 3 burgers" and have that resolve against the
+ *     items ALREADY in the cart (matched by name via findBestMatch, same
+ *     fuzzy engine as everything else), instead of only ever being able to
+ *     append more lines. Returns null for anything that doesn't read as a
+ *     removal/resize, so callers fall through to their existing "treat this
+ *     as more items to add" path unchanged.
  */
 
 import { findBestMatch } from '../../utils/matchEngine.js';
 import { parseQuantity } from '../../utils/parseQuantity.js';
 import { itemLabel } from '../../utils/itemLabel.js';
-import { extractCartLines } from '../../utils/multiItemParser.js';
 
 const norm = (s = '') =>
   s.toLowerCase().replace(/[^\w\s]/g, ' ').replace(/\s+/g, ' ').trim();
@@ -85,19 +92,39 @@ const norm = (s = '') =>
 const SEGMENT_SPLIT_RE = /\s*(?:,|;|\n|\+|&|\band\b|\balso\b|\bplus\b)\s*/i;
 
 // Leading-quantity extraction: "2 burgers", "two burgers", "2x burgers",
-// "2× burgers", "a burger". Falls back to quantity 1 when no leading
-// quantity token is present ("burger" alone).
-const LEADING_QTY_RE = /^\s*(\d+|[a-z]+)\s*[x×]?\s+(.+)$/i;
+// "2× burgers", "a burger", "twenty five burgers". Falls back to quantity 1
+// when no leading quantity token is present ("burger" alone).
+const LEADING_QTY_RE = /^\s*(\d+|[a-z]+(?:[\s-][a-z]+)?)\s*[x×]?\s+(.+)$/i;
+
+// [CART-AI-TRAILING-QTY] Trailing-quantity extraction: "Burger x2",
+// "Burgers x 2", "Fries (3)", "Coke *2". Some customers put the quantity
+// AFTER the item name rather than before it — the leading-quantity check
+// above never matches these (there's no number at the start of the
+// segment), so without this the "x2"/"(3)" always defaulted to quantity 1,
+// silently losing the customer's actual count.
+const TRAILING_QTY_RE = /^(.+?)\s*(?:[x×]\s*(\d+)|\((\d+)\)|\*\s*(\d+))\s*$/i;
 
 function extractQuantityAndName(segment) {
   const trimmed = segment.trim();
-  const m = trimmed.match(LEADING_QTY_RE);
-  if (m) {
-    const qty = parseQuantity(m[1]);
+
+  const leadingMatch = trimmed.match(LEADING_QTY_RE);
+  if (leadingMatch) {
+    const qty = parseQuantity(leadingMatch[1]);
     if (qty && qty > 0) {
-      return { quantity: qty, name: m[2].trim() };
+      return { quantity: qty, name: leadingMatch[2].trim() };
     }
   }
+
+  // Only tried when leading didn't resolve — leading always wins if present.
+  const trailingMatch = trimmed.match(TRAILING_QTY_RE);
+  if (trailingMatch) {
+    const qtyStr = trailingMatch[2] || trailingMatch[3] || trailingMatch[4];
+    const qty = parseQuantity(qtyStr);
+    if (qty && qty > 0 && trailingMatch[1].trim().length >= 2) {
+      return { quantity: qty, name: trailingMatch[1].trim() };
+    }
+  }
+
   return { quantity: 1, name: trimmed };
 }
 
@@ -137,64 +164,31 @@ export function parseMultiItemMessage(menu = [], text = '') {
     .map(s => s.trim())
     .filter(Boolean);
 
+  if (segments.length < 2) return null; // single phrase — not a multi-item message
+
   const lines = [];
   const unmatchedSegments = [];
   const seenIds = new Set();
 
-  if (segments.length >= 2) {
-    for (const segment of segments) {
-      const { quantity, name } = extractQuantityAndName(segment);
-      if (norm(name).length < 2) continue; // too short to be a real item name fragment
+  for (const segment of segments) {
+    const { quantity, name } = extractQuantityAndName(segment);
+    if (norm(name).length < 2) continue; // too short to be a real item name fragment
 
-      const { item, confidenceLevel } = findBestMatch(menu, name);
-      if (!item || confidenceLevel === 'NONE') {
-        unmatchedSegments.push(segment);
-        continue;
-      }
-
-      const id = String(item._id);
-      if (seenIds.has(id)) {
-        // Same item mentioned twice in one message ("2 burgers ... 1 burger") — merge.
-        const existing = lines.find(l => String(l.item._id) === id);
-        if (existing) existing.quantity += quantity;
-        continue;
-      }
-      seenIds.add(id);
-      lines.push({ item, quantity, variant: null, confidenceLevel });
+    const { item, confidenceLevel } = findBestMatch(menu, name);
+    if (!item || confidenceLevel === 'NONE') {
+      unmatchedSegments.push(segment);
+      continue;
     }
-  }
 
-  // [MULTICART-HYBRID-PARSE] Direct-scan fallback (utils/multiItemParser.js).
-  // Always runs alongside the segment-split pass above, for two reasons:
-  //   1. Coverage — the segment-split pass depends on an explicit separator
-  //      (",", "and", "+", ...) between items. A message like "2 burgers 3
-  //      cokes" (no connector at all) never resolves 2+ segments there.
-  //      extractCartLines() takes the opposite approach: it never splits the
-  //      text, it searches directly for every KNOWN menu item name actually
-  //      present (longest-name-first, so a compound name like "Fish and
-  //      Chips" is claimed whole before "Fish"/"Chips" could be torn apart
-  //      by the very connector words this function splits on).
-  //   2. Quantity accuracy — a segment like "chips 2 fries" (produced when
-  //      splitting "fish and chips 2 fries" on "and") has a non-numeric
-  //      leading token ("chips"), so extractQuantityAndName() falls back to
-  //      treating the WHOLE segment as the item name and loses the embedded
-  //      "2" — findBestMatch() still resolves it to "Fries", but at the
-  //      wrong quantity (1, not 2). extractCartLines()'s lookback scan reads
-  //      the quantity token immediately before the matched name in the
-  //      ORIGINAL text, so it gets this right. Where both passes agree on an
-  //      item, the higher of the two quantities wins — the direct scan is
-  //      generally the more reliable one for quantity, and taking the max
-  //      never silently drops a real explicit quantity either pass found.
-  const scanned = extractCartLines(raw, menu);
-  for (const { item, quantity } of scanned.lines) {
-    const id = String(item._id ?? item.name.toLowerCase());
-    const existing = lines.find(l => String(l.item._id ?? l.item.name.toLowerCase()) === id);
-    if (existing) {
-      existing.quantity = Math.max(existing.quantity, quantity);
-    } else {
-      seenIds.add(id);
-      lines.push({ item, quantity, variant: null, confidenceLevel: 'DIRECT' });
+    const id = String(item._id);
+    if (seenIds.has(id)) {
+      // Same item mentioned twice in one message ("2 burgers ... 1 burger") — merge.
+      const existing = lines.find(l => String(l.item._id) === id);
+      if (existing) existing.quantity += quantity;
+      continue;
     }
+    seenIds.add(id);
+    lines.push({ item, quantity, variant: null, confidenceLevel });
   }
 
   // Require at least 2 DISTINCT resolved items — otherwise this reads better
@@ -204,6 +198,86 @@ export function parseMultiItemMessage(menu = [], text = '') {
   if (lines.length < 2) return null;
 
   return { lines, unmatchedSegments };
+}
+
+// [CART-AI-MODIFY] Phrasing customers use to remove or resize a line already
+// in the cart while reviewing it — "remove the coke", "no fries please",
+// "take out 1 burger", "make it 3 burgers", "change fries to 2". Captured as
+// two prefix families (remove vs. resize) plus, for resize, a leading target
+// quantity to apply to whichever cart line the remaining text best matches.
+const REMOVE_PREFIX_RE = /^(?:remove|delete|cancel|drop|take out|no more|actually no|no)\s+(?:the\s+|my\s+|a\s+|an\s+)?(.+)$/i;
+// "change fries to 2", "set the coke to 5", "update burgers to 3" — item name, THEN quantity.
+const RESIZE_PREFIX_RE = /^(?:change|update|set)\s+(?:the\s+|my\s+)?(.+?)\s+to\s+(\d+|[a-z]+)$/i;
+// "make it 3 fries", "make it three cokes" — quantity, THEN item name.
+const MAKE_IT_QTY_FIRST_RE = /^make it\s+(\d+|[a-z]+)\s+(.+)$/i;
+const RESIZE_LEADING_RE = /^(\d+|[a-z]+)\s+(?:not|instead of)\s+\d+\s+(.+)$/i; // "3 not 1 burgers"
+
+/**
+ * parseCartModification(cart, text)
+ * → { type: 'remove', lineIndex } | { type: 'setQuantity', lineIndex, quantity } | null
+ *
+ * Pure — matches free text against the item NAMES already sitting in the
+ * cart (not the full menu), since a modification only ever makes sense
+ * against something the customer already added. Returns null when the text
+ * doesn't read as a removal/resize request at all, so callers (CART_REVIEW
+ * steps) can fall through to their normal "treat this as more items to add"
+ * path unchanged — this is purely additive, same pattern as
+ * parseMultiItemMessage.
+ */
+export function parseCartModification(cart = [], text = '') {
+  const raw = String(text || '').trim();
+  if (!raw || !cart.length) return null;
+
+  const findLine = (fragment) => {
+    const names = cart.map(l => ({ name: itemLabel(l.item, l.variant) }));
+    const { item, confidenceLevel } = findBestMatch(names.map((n, i) => ({ _id: i, name: n.name })), fragment);
+    if (!item || confidenceLevel === 'NONE') return -1;
+    return item._id;
+  };
+
+  const removeMatch = raw.match(REMOVE_PREFIX_RE);
+  if (removeMatch) {
+    const idx = findLine(removeMatch[1].trim());
+    if (idx >= 0) return { type: 'remove', lineIndex: idx };
+  }
+
+  const resizeMatch = raw.match(RESIZE_PREFIX_RE);
+  if (resizeMatch) {
+    const idx = findLine(resizeMatch[1].trim());
+    const qty = parseQuantity(resizeMatch[2]);
+    if (idx >= 0 && qty && qty > 0) return { type: 'setQuantity', lineIndex: idx, quantity: qty };
+  }
+
+  const makeItMatch = raw.match(MAKE_IT_QTY_FIRST_RE);
+  if (makeItMatch) {
+    const idx = findLine(makeItMatch[2].trim());
+    const qty = parseQuantity(makeItMatch[1]);
+    if (idx >= 0 && qty && qty > 0) return { type: 'setQuantity', lineIndex: idx, quantity: qty };
+  }
+
+  const resizeLeading = raw.match(RESIZE_LEADING_RE);
+  if (resizeLeading) {
+    const idx = findLine(resizeLeading[2].trim());
+    const qty = parseQuantity(resizeLeading[1]);
+    if (idx >= 0 && qty && qty > 0) return { type: 'setQuantity', lineIndex: idx, quantity: qty };
+  }
+
+  return null;
+}
+
+/**
+ * applyCartModification(cart, mod)
+ * → new cart array (does not mutate input)
+ */
+export function applyCartModification(cart = [], mod) {
+  if (!mod) return cart;
+  if (mod.type === 'remove') {
+    return cart.filter((_, i) => i !== mod.lineIndex);
+  }
+  if (mod.type === 'setQuantity') {
+    return cart.map((l, i) => (i === mod.lineIndex ? { ...l, quantity: mod.quantity } : l));
+  }
+  return cart;
 }
 
 /**

@@ -53,8 +53,8 @@ const adminUserSchema = new mongoose.Schema({
     //           but cannot manage other admins.
     // STAFF   — day-to-day access (orders, bookings, conversations) but
     //           cannot edit business settings/menu/payment config.
-    // Route-level enforcement lives in middleware/authMiddleware.js
-    // (requireRole) — this field is the source of truth, not a UI-only label.
+    // Route-level enforcement lives in middleware/adminAuthMiddleware.js —
+    // this field is the source of truth, not a UI-only label.
     enum: ['OWNER', 'MANAGER', 'STAFF'],
     default: 'STAFF',
   },

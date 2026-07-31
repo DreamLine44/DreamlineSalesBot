@@ -132,6 +132,7 @@ import { itemLabel }         from '../../../utils/itemLabel.js';
 import {
   parseMultiItemMessage, mergeCartLines, enforceCartLimit,
   cartTotal, cartToOrderItems, formatCartSummary, buildUnmatchedNote,
+  parseCartModification, applyCartModification,
 } from '../../../core/shared/cartEngine.js';
 import logger                from '../../../config/logger.js';
 
@@ -813,6 +814,21 @@ export async function handleSalonProductOrder({ session, message, business, tena
       if (isExplicitAddMore) {
         await updateSession(session.customerPhone, session.tenantId, { step: 'SELECT_ITEM' });
         return _buildProductMenu(menu, business, isBarbershop);
+      }
+
+      // [CART-AI-MODIFY] "remove the shampoo" / "make it 3 conditioners" —
+      // resolved against items ALREADY in the cart, checked BEFORE treating
+      // the message as an attempt to add a brand-new product.
+      const mod = parseCartModification(cart, raw);
+      if (mod) {
+        const updatedCart = applyCartModification(cart, mod);
+        await updateSession(session.customerPhone, session.tenantId, { data: { ...data, cart: updatedCart } });
+        if (!updatedCart.length) {
+          await updateSession(session.customerPhone, session.tenantId, { step: 'SELECT_ITEM', data: { ...data, cart: [] } });
+          return _buildProductMenu(menu, business, isBarbershop);
+        }
+        return _buildProductCartSummaryUI(updatedCart, business, isBarbershop,
+          mod.type === 'remove' ? '\n\n_(Removed from your cart.)_' : '\n\n_(Updated the quantity.)_');
       }
 
       // Treat the message itself as more products to add.

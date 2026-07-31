@@ -12,34 +12,17 @@
  * Flows:
  *   ORDER   — browse → category → item → variant → quantity → fulfilment → confirm
  *   ENQUIRY — product availability / stock check via AI
- *
- * [MULTICART-FLOW-1] SELECT_ITEM → [CART_REVIEW ↔ (checkout)] → SELECT_VARIANT →
- * QUANTITY → FULFILMENT → CONFIRM → [PAYMENT?]. CART_REVIEW is only entered when a
- * message names 2+ known items at once AND every matched item has zero variants
- * (see utils/multiItemParser.js and modules/restaurant/flows/orderFlow.js for the
- * full rationale) — retail has no per-cart-line variant-selection sub-step, so an
- * item with variants always falls through to the existing single-item
- * SELECT_VARIANT flow unchanged rather than silently guessing "no variant".
- * Checkout from CART_REVIEW skips SELECT_VARIANT/QUANTITY straight into FULFILMENT.
  */
 
 import { updateSession }  from '../../../core/sessions/sessionService.js';
 import { completeFlow }   from '../../../core/conversations/flowEngine.js';
 import { getAIReply }     from '../../../core/ai/providers/aiRouter.js';
 import { findBestMatch }  from '../../../utils/matchEngine.js';
-import { extractCartLines } from '../../../utils/multiItemParser.js';
 import { buildWhatsAppImageUrl } from '../../../config/cloudinary.js';
 import { saveOrder }      from '../../../services/orderService.js';
 import { parseQuantity }  from '../../../utils/parseQuantity.js';
 import { trackOrderAnalytics } from '../../../core/analytics/analyticsService.js';
-import { itemLabel as _itemLabel } from '../../../utils/itemLabel.js';
 import logger             from '../../../config/logger.js';
-
-// [MULTICART-FLOW-1] A matched cart line is only eligible for the no-variant-picker
-// cart flow if the item has no variants to choose between — retail has no per-line
-// variant-selection sub-step, so an item with variants must go through the existing
-// single-item SELECT_VARIANT flow instead of silently defaulting to "no variant".
-const _hasNoVariants = (l) => !(l.item.variants && l.item.variants.length > 0);
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
@@ -170,18 +153,6 @@ export async function handleRetailOrder({ session, message, business, tenant, is
       }
       if (clean.length < 2) return _buildProductList(scopedMenu, business, data.category || null);
 
-      // [MULTICART-FLOW-1] Only branches into the cart flow when 2+ distinct KNOWN
-      // items are named in this one message AND none of them have variants — a
-      // single match, a zero match, or any matched item carrying variants all fall
-      // straight through to the existing index/fuzzy logic below unchanged.
-      const cartParse = extractCartLines(raw, menu);
-      if (cartParse.matchedCount >= 2 && cartParse.lines.every(_hasNoVariants)) {
-        await updateSession(session.customerPhone, session.tenantId, {
-          step: 'CART_REVIEW', data: { ...data, cart: cartParse.lines }, menuViewed: true,
-        });
-        return _buildCartSummaryUI(cartParse.lines, business);
-      }
-
       // [AUDIT-FIX-PARSEINT] parseInt("2 red shirts", 10) === 2, NOT NaN — so any
       // message merely STARTING with a digit silently hijacked the menu index
       // once menuViewed was true (the normal case). Only trust the parsed index
@@ -231,49 +202,6 @@ export async function handleRetailOrder({ session, message, business, tenant, is
         menuViewed: true,
       });
       return _buildItemDetail(item, business); // [FIX-RETAIL-BUSINESS-SCOPE]
-    }
-
-    // ── CART_REVIEW ──────────────────────────────────────────────────────────
-    // [MULTICART-FLOW-1] Reached only after a message named 2+ known, variant-free
-    // items at once.
-    case 'CART_REVIEW': {
-      const cart = Array.isArray(data.cart) ? data.cart : [];
-
-      const wantsCheckout = /^(checkout|check\s*out|confirm|done|finish|that'?s all|cart_checkout|place\s*order)$/i.test(clean);
-      if (wantsCheckout) {
-        if (!cart.length) return _buildProductList(menu, business);
-        // [MULTICART-FLOW-1] Cart items have no variants (gated on entry) and
-        // quantities are already known per line, so checkout skips
-        // SELECT_VARIANT/QUANTITY straight into FULFILMENT.
-        await updateSession(session.customerPhone, session.tenantId, {
-          step: 'FULFILMENT', data: { ...data },
-        });
-        return {
-          type: 'buttons',
-          body: `📦 How would you like to receive your order?`,
-          buttons: [
-            { id: 'PICKUP',   title: '🏪 In-Store Pick-Up' },
-            { id: 'DELIVERY', title: '🚚 Delivery'          },
-          ],
-        };
-      }
-
-      const wantsAddMore = /^(add\s*more|add|more|cart_add_more)$/i.test(clean);
-      if (wantsAddMore) {
-        return {
-          type: 'text',
-          body: `What else would you like to add? You can type one item, or several at once (e.g. "2 t-shirts and a cap").`,
-        };
-      }
-
-      const parsed = extractCartLines(raw, menu);
-      if (parsed.matchedCount >= 1 && parsed.lines.every(_hasNoVariants)) {
-        const merged = _mergeCartLines(cart, parsed.lines);
-        await updateSession(session.customerPhone, session.tenantId, { data: { ...data, cart: merged } });
-        return _buildCartSummaryUI(merged, business);
-      }
-
-      return _buildCartSummaryUI(cart, business);
     }
 
     // ── SELECT_VARIANT ────────────────────────────────────────────────────────
@@ -414,35 +342,15 @@ export async function handleRetailOrder({ session, message, business, tenant, is
         };
       }
 
-      const isCart = Array.isArray(data.cart) && data.cart.length > 0;
-      const currency = business?.payment?.currency || 'D';
+      const item     = data.item;
+      const qty      = data.quantity || 1;
+      const variant  = data.variant  ? ` (${data.variant})` : '';
+      const price    = item?.price   ? `\n💰 *Price:* ${item.currency || business?.payment?.currency || 'D'}${(item.price * qty).toFixed(2)}` : '';
 
       await updateSession(session.customerPhone, session.tenantId, {
         step: 'CONFIRM',
         data: { ...data, fulfilment },
       });
-
-      if (isCart) {
-        const allPriced = data.cart.every(l => typeof l.item.price === 'number');
-        const total = allPriced ? data.cart.reduce((sum, l) => sum + l.item.price * l.quantity, 0) : null;
-        const itemsLine = data.cart.map(l => `${l.quantity}× ${_itemLabel(l.item, l.variant)}`).join(', ');
-        const priceLine = total !== null ? `\n💰 *Price:* ${currency}${total}` : '';
-        return {
-          type: 'buttons',
-          body: `🧾 *Order Summary*\n\n` +
-            `🛍 *Items:* ${itemsLine}\n` +
-            `📦 *Fulfilment:* ${fulfilment}` + priceLine + `\n\nReady to confirm?`,
-          buttons: [
-            { id: 'CONFIRM', title: '✅ Confirm Order' },
-            { id: 'CANCEL',  title: '❌ Cancel'         },
-          ],
-        };
-      }
-
-      const item     = data.item;
-      const qty      = data.quantity || 1;
-      const variant  = data.variant  ? ` (${data.variant})` : '';
-      const price    = item?.price   ? `\n💰 *Price:* ${item.currency || currency}${(item.price * qty).toFixed(2)}` : '';
 
       return {
         type: 'buttons',
@@ -470,24 +378,12 @@ export async function handleRetailOrder({ session, message, business, tenant, is
         };
       }
 
-      const isCart     = Array.isArray(data.cart) && data.cart.length > 0;
       const item       = data.item;
       const qty        = data.quantity || 1;
       const variant    = data.variant  || null;
       const fulfilment = data.fulfilment || 'In-Store Pick-Up';
-      // [MULTICART-FLOW-1] mirrors modules/restaurant/flows/orderFlow.js
-      const cartAllPriced = isCart && data.cart.every(l => typeof l.item.price === 'number');
-      const totalPrice = isCart
-        ? (cartAllPriced ? data.cart.reduce((sum, l) => sum + l.item.price * l.quantity, 0) : null)
-        : (item?.price ? item.price * qty : null);
-      const itemLabel  = isCart
-        ? data.cart.map(l => `${l.quantity}× ${_itemLabel(l.item, l.variant)}`).join(', ')
-        : _itemLabel(item, variant);
-      // [MULTICART-FLOW-1] itemLabel already bakes per-line quantities in for a
-      // cart, so the display string must not be prefixed with the single-item
-      // `qty` again — this is the one line every admin alert/success message
-      // below reads from instead of raw `${qty}× ${itemLabel}`.
-      const displayItemsLine = isCart ? itemLabel : `${qty}× ${itemLabel}`;
+      const totalPrice = item?.price ? item.price * qty : null;
+      const itemLabel  = variant ? `${item?.name} (${variant})` : item?.name;
 
       // [FIX-BUG4-RETAIL] saveOrder previously hardcoded status:'confirmed', bypassing
       // admin review entirely. Now saved as 'pending' so APPROVE_/REJECT_ buttons work.
@@ -497,8 +393,8 @@ export async function handleRetailOrder({ session, message, business, tenant, is
           tenantId:      session.tenantId,
           customerPhone: session.customerPhone,
           customerName:  session.customerName,
-          item:          isCart ? undefined : itemLabel,
-          quantity:      isCart ? undefined : qty,
+          item:          itemLabel,
+          quantity:      qty,
           notes:         `Fulfilment: ${fulfilment}`,
           status:        'pending',
           // [FIX-RETAIL-1] totalAmount renamed to totalPrice — orderService.saveOrder
@@ -506,13 +402,6 @@ export async function handleRetailOrder({ session, message, business, tenant, is
           // every retail order had totalPrice=undefined in the DB, breaking payment
           // amount display in admin alerts and the receiveProof order lookup.
           totalPrice:    totalPrice || undefined,
-          items:         isCart
-            ? data.cart.map(l => ({
-                item:      _itemLabel(l.item, l.variant),
-                quantity:  l.quantity,
-                unitPrice: typeof l.item.price === 'number' ? l.item.price : undefined,
-              }))
-            : undefined,
           // [FIX-RETAIL-3] businessId was missing — every other module's saveOrder()
           // call passes business._id; retail omitted it, leaving Order.businessId null
           // for every retail order and breaking business-scoped admin views/reports.
@@ -573,7 +462,7 @@ export async function handleRetailOrder({ session, message, business, tenant, is
               body:
                 `🔔 *New Retail Order — ${business?.name || 'Store'}*\n\n` +
                 `📞 Customer: *${session.customerPhone}*\n` +
-                `🛍 *${displayItemsLine}*\n` +
+                `🛍 *${qty}× ${itemLabel}*\n` +
                 `📦 Fulfilment: *${fulfilment}*\n` +
                 `💰 Total: *${currency}${totalPrice}*\n` +
                 `📝 Ref: *${ref}*\n\n` +
@@ -599,7 +488,7 @@ export async function handleRetailOrder({ session, message, business, tenant, is
             body:
               `🔔 *New Retail Order — ${business?.name || 'Store'}*\n\n` +
               `📞 Customer: *${session.customerPhone}*\n` +
-              `🛍 *${displayItemsLine}*\n` +
+              `🛍 *${qty}× ${itemLabel}*\n` +
               `📦 Fulfilment: *${fulfilment}*\n` +
               (totalPrice ? `💰 Total: *${currency}${totalPrice}*\n` : '') +
               `🔖 Ref: \`${savedOrder?.shortId || 'N/A'}\``,
@@ -622,7 +511,7 @@ export async function handleRetailOrder({ session, message, business, tenant, is
         type: 'text',
         body:
           `✅ *Order Received!* 🛍\n\n` +
-          `*${displayItemsLine}*\n` +
+          `*${itemLabel}* × ${qty}\n` +
           `📦 *${fulfilment}*\n\n` +
           `⏳ Our team will confirm your order shortly. Please wait for confirmation before placing a new one. 🙏`,
       };
@@ -661,36 +550,6 @@ export async function handleProductQuery({ session, message, business, tenant })
 }
 
 // ── UI Helpers ────────────────────────────────────────────────────────────────
-
-// ── Cart helpers [MULTICART-FLOW-1] ─────────────────────────────────────────
-function _mergeCartLines(existingLines, newLines) {
-  const merged = existingLines.map(l => ({ item: l.item, quantity: l.quantity }));
-  for (const line of newLines) {
-    const key = line.item._id ? String(line.item._id) : line.item.name.toLowerCase();
-    const existing = merged.find(l => (l.item._id ? String(l.item._id) : l.item.name.toLowerCase()) === key);
-    if (existing) existing.quantity += line.quantity;
-    else merged.push({ item: line.item, quantity: line.quantity });
-  }
-  return merged;
-}
-
-function _buildCartSummaryUI(lines, business) {
-  const currency  = business?.payment?.currency || 'D';
-  const allPriced = lines.every(l => typeof l.item.price === 'number');
-  const total     = allPriced ? lines.reduce((sum, l) => sum + l.item.price * l.quantity, 0) : null;
-  const rows = lines
-    .map(l => `• *${l.quantity}× ${l.item.name}*${typeof l.item.price === 'number' ? ` — ${currency}${l.item.price * l.quantity}` : ''}`)
-    .join('\n');
-  return {
-    type: 'buttons',
-    body: `🛒 *Your Cart*\n\n${rows}${total !== null ? `\n\n💰 Total: *${currency}${total}*` : ''}\n\nWhat would you like to do?`,
-    buttons: [
-      { id: 'CART_CHECKOUT', title: '✅ Checkout'  },
-      { id: 'CART_ADD_MORE', title: '➕ Add More'  },
-      { id: 'CANCEL',        title: '❌ Cancel'    },
-    ],
-  };
-}
 
 function _getCategories(menu) {
   const cats = [...new Set(menu.map(i => i.category).filter(Boolean))];

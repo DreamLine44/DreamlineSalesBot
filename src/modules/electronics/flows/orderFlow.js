@@ -14,12 +14,6 @@
  *   ORDER:
  *     BROWSE_CATEGORY → SELECT_ITEM → SUGGEST_CONFIRM → ITEM_DETAIL
  *       → QUANTITY → FULFILMENT → CONFIRM → [PAYMENT?] → DONE
- *     [MULTICART-FLOW-1]: SELECT_ITEM also tries utils/multiItemParser.js's
- *     extractCartLines() for a message naming 2+ known products at once
- *     (e.g. "2 chargers and a case"). Only then does it branch into
- *     CART_REVIEW → FULFILMENT → CONFIRM, skipping the per-item spec-card/
- *     quantity steps (quantities are already known per line). A single-item
- *     message is unaffected and still goes through ITEM_DETAIL as before.
  *   SPEC_REQUEST:
  *     SPEC_QUESTION (open AI Q&A, no purchase)
  *   COMPARE:
@@ -54,7 +48,6 @@ import { updateSession }  from '../../../core/sessions/sessionService.js';
 import { completeFlow, startFlow } from '../../../core/conversations/flowEngine.js';
 import { getAIReply }     from '../../../core/ai/providers/aiRouter.js';
 import { findBestMatch }  from '../../../utils/matchEngine.js';
-import { extractCartLines } from '../../../utils/multiItemParser.js';
 import { saveOrder }      from '../../../services/orderService.js';
 import { parseQuantity }  from '../../../utils/parseQuantity.js';
 import { trackOrderAnalytics } from '../../../core/analytics/analyticsService.js';
@@ -69,9 +62,6 @@ import {
   buildOrderSuccess,
   buildComparisonCard,
   buildAdminOrderAlertBody,
-  buildCartSummaryUI,
-  buildCartOrderSummary,
-  buildCartOrderSuccess,
 } from '../handlers/uiBuilders.js';
 import { itemLabel } from '../../../utils/itemLabel.js';
 import logger from '../../../config/logger.js';
@@ -208,18 +198,6 @@ export async function handleElectronicsOrder({
         return buildProductList(listMenu, business, data.category);
       }
 
-      // [MULTICART-FLOW-1] Only branches into the cart flow when 2+ distinct
-      // KNOWN products are named in this one message — a single (or zero)
-      // match falls straight through to the existing index/fuzzy logic below,
-      // which still routes through the ITEM_DETAIL spec card as before.
-      const cartParse = extractCartLines(raw, listMenu);
-      if (cartParse.matchedCount >= 2) {
-        await updateSession(session.customerPhone, session.tenantId, {
-          step: 'CART_REVIEW', data: { ...data, cart: cartParse.lines }, menuViewed: true,
-        });
-        return buildCartSummaryUI(cartParse.lines, business);
-      }
-
       // Numeric selection from list
       // [AUDIT-FIX-PARSEINT] parseInt("2 red shirts", 10) === 2, NOT NaN — so any
       // message merely STARTING with a digit silently hijacked the menu index
@@ -270,71 +248,6 @@ export async function handleElectronicsOrder({
         menuViewed: true,
       });
       return buildItemDetail(item, currency);
-    }
-
-    // ── CART_REVIEW ──────────────────────────────────────────────────────────
-    // [MULTICART-FLOW-1] Reached only after a message named 2+ known products.
-    case 'CART_REVIEW': {
-      const cart = Array.isArray(data.cart) ? data.cart : [];
-
-      const wantsCheckout = /^(checkout|check\s*out|confirm|done|finish|that'?s all|cart_checkout|place\s*order)$/i.test(clean);
-      if (wantsCheckout) {
-        if (!cart.length) return buildProductList(menu, business, data.category);
-        const allPriced = cart.every(l => typeof l.item.price === 'number');
-        const total = allPriced ? cart.reduce((sum, l) => sum + l.item.price * l.quantity, 0) : null;
-        const itemsLine = cart.map(l => `${l.quantity}× ${l.item.name}`).join(', ');
-
-        // [MULTICART-FLOW-1] Quantities are already known per line — skip the
-        // per-item QUANTITY/ITEM_DETAIL steps and go straight to fulfilment,
-        // mirroring the same hasDelivery/hasPickup skip logic QUANTITY uses.
-        const hasDelivery = business?.settings?.delivery !== false;
-        const hasPickup   = business?.settings?.pickup   !== false;
-
-        if (hasDelivery && !hasPickup) {
-          await updateSession(session.customerPhone, session.tenantId, {
-            step: 'CONFIRM', data: { ...data, totalPrice: total, fulfilment: 'DELIVERY' },
-          });
-          return buildCartOrderSummary(itemsLine, total, 'DELIVERY', business);
-        }
-        if (hasPickup && !hasDelivery) {
-          await updateSession(session.customerPhone, session.tenantId, {
-            step: 'CONFIRM', data: { ...data, totalPrice: total, fulfilment: 'PICKUP' },
-          });
-          return buildCartOrderSummary(itemsLine, total, 'PICKUP', business);
-        }
-
-        await updateSession(session.customerPhone, session.tenantId, {
-          step: 'FULFILMENT', data: { ...data, totalPrice: total },
-        });
-        return {
-          type: 'buttons',
-          body:
-            `📦 *${itemsLine}*\n` +
-            (total ? `💰 *${currency}${total}*\n` : '') +
-            `\nHow would you like to receive your order?`,
-          buttons: [
-            { id: 'PICKUP',   title: '🏪 Pick Up In-Store' },
-            { id: 'DELIVERY', title: '🚚 Delivery'          },
-          ],
-        };
-      }
-
-      const wantsAddMore = /^(add\s*more|add|more|cart_add_more)$/i.test(clean);
-      if (wantsAddMore) {
-        return {
-          type: 'text',
-          body: `What else would you like to add? You can name one product, or several at once.`,
-        };
-      }
-
-      const parsed = extractCartLines(raw, menu);
-      if (parsed.matchedCount >= 1) {
-        const merged = _mergeCartLines(cart, parsed.lines);
-        await updateSession(session.customerPhone, session.tenantId, { data: { ...data, cart: merged } });
-        return buildCartSummaryUI(merged, business);
-      }
-
-      return buildCartSummaryUI(cart, business);
     }
 
     // ── SUGGEST_CONFIRM ──────────────────────────────────────────────────────
@@ -498,11 +411,6 @@ export async function handleElectronicsOrder({
         step: 'CONFIRM',
         data: { ...data, fulfilment },
       });
-      const isCart = Array.isArray(data.cart) && data.cart.length > 0;
-      if (isCart) {
-        const itemsLine = data.cart.map(l => `${l.quantity}× ${l.item.name}`).join(', ');
-        return buildCartOrderSummary(itemsLine, data.totalPrice, fulfilment, business);
-      }
       return buildOrderSummary({
         item: itemLabel(data.item, data.variant), qty: data.quantity, total: data.totalPrice, fulfilment, business,
       });
@@ -510,20 +418,12 @@ export async function handleElectronicsOrder({
 
     // ── CONFIRM ──────────────────────────────────────────────────────────────
     case 'CONFIRM': {
-      // [MULTICART-FLOW-1] mirrors modules/restaurant/flows/orderFlow.js
-      const isCart = Array.isArray(data.cart) && data.cart.length > 0;
-      const displayItemsLine = isCart
-        ? data.cart.map(l => `${l.quantity}× ${l.item.name}`).join(', ')
-        : itemLabel(data.item, data.variant);
-
       const isConfirm = /^(yes|y|confirm|ok|okay|sure|place|confirmed)$/i.test(clean);
       if (!isConfirm) {
-        return isCart
-          ? buildCartOrderSummary(displayItemsLine, data.totalPrice, data.fulfilment, business)
-          : buildOrderSummary({
-              item: itemLabel(data.item, data.variant), qty: data.quantity, total: data.totalPrice,
-              fulfilment: data.fulfilment, business,
-            });
+        return buildOrderSummary({
+          item: itemLabel(data.item, data.variant), qty: data.quantity, total: data.totalPrice,
+          fulfilment: data.fulfilment, business,
+        });
       }
 
       const payment = business?.payment;
@@ -535,19 +435,9 @@ export async function handleElectronicsOrder({
           // [AUDIT-FIX-CATALOG-VARIANT-LOSS] data.variant is set by
           // waCatalogFlow.js when this item was chosen via WA Catalog;
           // electronics had no variant-specific step and previously dropped it.
-          item:          isCart ? undefined : itemLabel(data.item, data.variant),
-          quantity:      isCart ? undefined : data.quantity,
+          item:          itemLabel(data.item, data.variant),
+          quantity:      data.quantity,
           totalPrice:    data.totalPrice,
-          // [MULTICART-FLOW-1] Cart orders save through the real items[]
-          // contract (services/orderService.js resolveOrderFields/saveOrder),
-          // the same path the WhatsApp Catalog tap-to-cart flow already uses.
-          items:         isCart
-            ? data.cart.map(l => ({
-                item:      l.item.name,
-                quantity:  l.quantity,
-                unitPrice: typeof l.item.price === 'number' ? l.item.price : undefined,
-              }))
-            : undefined,
           // [AUDIT-FIX-ELEC-1] orderService.saveOrder() destructures a fixed set of
           // fields ({ item, quantity, totalPrice, addOns, notes, customerName,
           // customerPhone, tenantId, businessId, status }) — `fulfilment` is not one
@@ -570,7 +460,7 @@ export async function handleElectronicsOrder({
         });
 
         trackOrderAnalytics(
-          displayItemsLine,
+          itemLabel(data.item, data.variant),
           business.phoneNumberId || null,
           data.quantity,
           data.totalPrice || 0,
@@ -622,7 +512,7 @@ export async function handleElectronicsOrder({
               body:
                 `🔔 *New Order — ${business.name || 'Electronics Store'}*\n\n` +
                 `👤 Customer: *${session.customerPhone}*\n` +
-                `📱 *${displayItemsLine}*\n` +
+                `📱 *${data.quantity}× ${itemLabel(data.item, data.variant)}*\n` +
                 `💰 Total: *${currency}${data.totalPrice}*\n` +
                 `📦 Fulfilment: *${data.fulfilment === 'DELIVERY' ? 'Delivery' : 'In-store pick-up'}*\n` +
                 `📝 Ref: *${ref}*\n\n` +
@@ -642,8 +532,8 @@ export async function handleElectronicsOrder({
           // [FIX-1] Static import — dispatchMessage already imported at top of file
           const alertBody = buildAdminOrderAlertBody({
             customerPhone: session.customerPhone,
-            item:          isCart ? displayItemsLine : itemLabel(data.item, data.variant),
-            quantity:      isCart ? 1 : data.quantity, // displayItemsLine already carries per-line quantities for a cart
+            item:          itemLabel(data.item, data.variant),
+            quantity:      data.quantity,
             totalPrice:    data.totalPrice,
             fulfilment:    data.fulfilment,
             shortId:       savedOrder.shortId,
@@ -951,18 +841,6 @@ export async function handleWarranty({ session, message, business, tenant }) {
 // ─────────────────────────────────────────────────────────────────────────────
 // Internal helpers
 // ─────────────────────────────────────────────────────────────────────────────
-
-// ── Cart helper [MULTICART-FLOW-1] ──────────────────────────────────────────
-function _mergeCartLines(existingLines, newLines) {
-  const merged = existingLines.map(l => ({ item: l.item, quantity: l.quantity }));
-  for (const line of newLines) {
-    const key = line.item._id ? String(line.item._id) : line.item.name.toLowerCase();
-    const existing = merged.find(l => (l.item._id ? String(l.item._id) : l.item.name.toLowerCase()) === key);
-    if (existing) existing.quantity += line.quantity;
-    else merged.push({ item: line.item, quantity: line.quantity });
-  }
-  return merged;
-}
 
 function _getCategories(menu) {
   return [...new Set(menu.map(i => i.category).filter(Boolean))];

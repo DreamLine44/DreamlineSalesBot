@@ -58,6 +58,7 @@ import { itemLabel }        from '../../../utils/itemLabel.js';
 import {
   parseMultiItemMessage, mergeCartLines, enforceCartLimit,
   cartTotal, cartToOrderItems, formatCartSummary, buildUnmatchedNote,
+  parseCartModification, applyCartModification,
 } from '../../../core/shared/cartEngine.js';
 import logger               from '../../../config/logger.js';
 
@@ -264,6 +265,26 @@ export async function handleOrderFlow({ session, message, business, tenant, isIn
       if (isExplicitAddMore) {
         await updateSession(session.customerPhone, session.tenantId, { step: 'SELECT_ITEM' });
         return buildMenuUI(business);
+      }
+
+      // [CART-AI-MODIFY] "remove the coke" / "make it 3 fries" — resolved
+      // against the items ALREADY in the cart. Checked BEFORE the "treat as
+      // more items to add" fallback below so a removal/resize request can
+      // never be misread as an attempt to add a brand-new line.
+      const mod = parseCartModification(cart, raw);
+      if (mod) {
+        const updatedCart = applyCartModification(cart, mod);
+        await updateSession(session.customerPhone, session.tenantId, { data: { ...data, cart: updatedCart } });
+        if (!updatedCart.length) {
+          await updateSession(session.customerPhone, session.tenantId, { step: 'SELECT_ITEM', data: { ...data, cart: [] } });
+          return buildMenuUI(business);
+        }
+        return buildCartSummaryUI({
+          summaryText: formatCartSummary(updatedCart, business),
+          total: cartTotal(updatedCart),
+          business,
+          note: mod.type === 'remove' ? '\n\n_(Removed from your cart.)_' : '\n\n_(Updated the quantity.)_',
+        });
       }
 
       // Treat the message itself as more items to add to the existing cart.

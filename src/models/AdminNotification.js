@@ -57,7 +57,7 @@ const adminNotificationSchema = new mongoose.Schema(
     },
 
     // Set only when the sender authenticated via an AdminUser Bearer token
-    // (see middleware/authMiddleware.js tryBearerAuth) — null for super-admin sends and
+    // (see authMiddleware.tryBearerAuth) — null for super-admin sends and
     // for legacy shared-tenant-API-key sends (which predate individual
     // logins and have no single "who sent this" identity).
     fromAdminUserId: {
