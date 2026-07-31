@@ -408,6 +408,19 @@ export async function syncWaCatalog(req, res) {
  * same isSyncableForCatalog() gate syncMenuToCatalog() itself uses, so this
  * reflects "what would happen on the next sync," not stale data from the
  * last one.
+ *
+ * [FIX-CATALOG-HEALTH-ISLIVE] Before this fix, a tenant could have
+ * `catalogId` set, `lastSyncedAt` set, `lastSyncError: null`, and
+ * `itemsReady > 0` — every field this endpoint returned looking green —
+ * and STILL fail `isCatalogEnabled()` (waCatalogConfig.js) if
+ * `waCatalog.syncedRetailerIds` was empty, because that field was never
+ * exposed here. That's exactly the gate every send path (shouldOfferCatalog,
+ * shouldShowCatalogButton) actually checks, so the health check could show
+ * "all clear" while the real answer was "not live." This endpoint now runs
+ * the literal `isCatalogEnabled()` function tenants' sends are gated on
+ * (not a re-derived approximation of it) and returns it as `isLive`, plus
+ * `blockedBy` naming every failing precondition by key so there's no gap
+ * between what this reports and what actually decides whether catalog shows.
  */
 export async function getWaCatalogHealth(req, res) {
   try {
@@ -416,6 +429,7 @@ export async function getWaCatalogHealth(req, res) {
     if (!business) return res.status(404).json({ error: 'Not found' });
 
     const { isSyncableForCatalog } = await import('../modules/catalog/waCatalogHelpers.js');
+    const { isCatalogEnabled, hasSellableProducts } = await import('../modules/catalog/waCatalogConfig.js');
     const menu = business.menuItems || [];
     const skipped = menu
       .map(item => ({ item, check: isSyncableForCatalog(item) }))
@@ -426,22 +440,31 @@ export async function getWaCatalogHealth(req, res) {
         reasons: check.reasons,
       }));
 
+    const wc = business.waCatalog || {};
+    const syncedRetailerCount = Array.isArray(wc.syncedRetailerIds) ? wc.syncedRetailerIds.length : 0;
+
+    // Named individually (not just re-run isCatalogEnabled()) so the caller
+    // sees exactly which precondition(s) are failing, not just that one is.
+    const blockedBy = [];
+    if (!wc.enabled) blockedBy.push('not_enabled');
+    if (!wc.catalogId) blockedBy.push('no_catalog_id');
+    if (!wc.lastSyncedAt) blockedBy.push('never_synced');
+    if (syncedRetailerCount === 0) blockedBy.push('no_synced_retailer_ids');
+    if (!hasSellableProducts(business)) blockedBy.push('no_sellable_products');
+
     res.json({
-      enabled:        !!business.waCatalog?.enabled,
-      catalogId:      business.waCatalog?.catalogId || null,
-      lastSyncedAt:   business.waCatalog?.lastSyncedAt || null,
-      lastSyncError:  business.waCatalog?.lastSyncError?.reason || null,
-      lastSyncErrorDetail: business.waCatalog?.lastSyncError?.detail || null,
-      // [FIX-CATALOG-SEND-HEALTH] The SYNC (items_batch upload) and the SEND
-      // (customer-facing catalog_message/product_list) hit different Graph
-      // API resources and can fail independently — a tenant can have a
-      // perfectly clean sync (products live in Commerce Manager, no
-      // lastSyncError) while every send still fails, most commonly because
-      // the catalog isn't connected to this WABA in WhatsApp Manager yet.
-      // See dispatcher.js [FIX-CATALOG-SEND-HEALTH] for where this is written.
-      lastSendError:       business.waCatalog?.lastSendError?.reason || null,
-      lastSendErrorDetail: business.waCatalog?.lastSendError?.detail || null,
-      pendingVerification: (business.waCatalog?.pendingBatchHandles || []).length,
+      // The literal boolean every send path (shouldOfferCatalog,
+      // shouldShowCatalogButton) actually gates on — not a re-derived copy.
+      isLive:         isCatalogEnabled(business),
+      blockedBy,
+      enabled:        !!wc.enabled,
+      catalogId:      wc.catalogId || null,
+      lastSyncedAt:   wc.lastSyncedAt || null,
+      lastReconciledAt: wc.lastReconciledAt || null,
+      lastSyncError:  wc.lastSyncError?.reason || null,
+      lastSyncErrorDetail: wc.lastSyncError?.detail || null,
+      syncedRetailerIds: syncedRetailerCount,
+      pendingVerification: (wc.pendingBatchHandles || []).length,
       totalItems:     menu.length,
       itemsReady:     menu.length - skipped.length,
       itemsSkipped:   skipped.length,

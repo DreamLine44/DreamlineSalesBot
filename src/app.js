@@ -50,6 +50,7 @@ import { WEBHOOK_BUILD_MARKER } from './controllers/webhookController.js';
 import simulateRoutes    from './routes/simulateRoutes.js';
 import businessRoutes    from './routes/businessRoutes.js';
 import dashboardRoutes   from './routes/dashboardRoutes.js';
+import adminUserRoutes   from './routes/adminUserRoutes.js';
 import tenantRoutes      from './routes/tenantRoutes.js';
 import adminRoutes                 from './routes/adminRoutes.js';
 import whatsappOnboardingRoutes from './routes/whatsappOnboardingRoutes.js';
@@ -152,6 +153,16 @@ if (!isProduction && process.env.SIMULATION_MODE === 'true') {
 
 // Business management
 app.use('/business', createRateLimiter(120), requireApiKey, businessRoutes);
+
+// [FIX-ORPHAN-ROUTE-1] adminUserRoutes was built and fully wired to
+// adminUserController.js but never imported/mounted here, leaving every route
+// in it (including /dashboard/auth/login and /dashboard/auth/accept-invite)
+// unreachable in production. Must be mounted at '/' BEFORE the /dashboard
+// requireApiKey mount below — the file declares its own full paths and its
+// login/accept-invite routes are intentionally unauthenticated (that's how a
+// session token is obtained in the first place); mounting after the
+// requireApiKey('/dashboard') line would make login permanently 401.
+app.use('/', adminUserRoutes);
 
 // Dashboard
 app.use('/dashboard', createRateLimiter(120), requireApiKey, dashboardRoutes);

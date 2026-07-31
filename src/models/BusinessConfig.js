@@ -251,6 +251,16 @@ const businessConfigSchema = new mongoose.Schema({
       default: [],
     },
     lastSyncedAt: { type: Date, default: null },
+    // [FIX-CATALOG-DRIFT-RECONCILE] Timestamp of the last time items already
+    // marked CONFIRMED (syncedRetailerIds) were cross-checked against Meta's
+    // live catalog, independent of whether anything in the tenant's menu
+    // changed. Without this, an item whose hash still matches what's stored
+    // (nothing about the item itself changed) is never re-examined by the
+    // ordinary delta-hash diff — so a confirmed-but-actually-missing item
+    // (e.g. one wrongly confirmed by a version of this code that predates
+    // FIX-CATALOG-OPTIMISTIC-CONFIRM, or one Meta silently dropped after
+    // confirmation) would otherwise stay wrong forever.
+    lastReconciledAt: { type: Date, default: null },
     // [CATALOG-HEALTH-4] Cleared on the next successful sync.
     lastSyncError: {
       reason: { type: String, default: null },
@@ -260,24 +270,7 @@ const businessConfigSchema = new mongoose.Schema({
       detail: { type: String, default: null },
       at:     { type: Date,   default: null },
     },
-    // [FIX-CATALOG-SEND-HEALTH] Distinct from lastSyncError above: that field
-    // only ever tracks the PRODUCT SYNC (items_batch upload into Meta's
-    // catalog). It says nothing about whether the actual customer-facing
-    // 'catalog_message'/'product_list' interactive SEND (waCatalogService.js
-    // sendCatalogMessage() → dispatcher.js) is succeeding — a tenant's sync
-    // can be perfectly healthy (products live in Commerce Manager) while
-    // every send still 400/403s from Meta (e.g. catalog not connected to the
-    // WABA in WhatsApp Manager, or missing catalog permission on the system
-    // user), which previously was only visible in server logs. dispatcher.js
-    // now writes here on every failed catalog-type send so this is
-    // diagnosable from getWaCatalogHealth() alone.
-    lastSendError: {
-      reason: { type: String, default: null },
-      detail: { type: String, default: null },
-      at:     { type: Date,   default: null },
-    },
   },
-
 
   nlp: {
     synonyms: { type: Map, of: [String], default: {} },

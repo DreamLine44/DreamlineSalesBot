@@ -84,18 +84,42 @@ test('webhookController.js: a genuinely lost message (no matching duplicate) log
   );
 });
 
-test('adminRoutes.js: exposes POST /webhook-secret-fingerprint and never echoes the posted secret back', () => {
-  const src = readSource('../routes/adminRoutes.js');
-  assert.ok(
-    src.includes("r.post('/webhook-secret-fingerprint'"),
-    'adminRoutes.js should expose POST /webhook-secret-fingerprint for comparing a pasted ' +
-    'Meta App Dashboard secret against the fingerprint recorded when a tenant secret was saved.'
+test('adminRoutes.js: exposes POST /webhook-secret-fingerprint and never echoes the posted secret back', async () => {
+  const { default: adminRouter } = await import('../routes/adminRoutes.js');
+
+  // Find the actual registered route handler instead of pattern-matching source
+  // text (a substring check like "does the response object contain the word
+  // 'secret' anywhere" false-positives on `fingerprintSecret(secret)` — the
+  // function name and argument name, not a leaked field. Invoking the real
+  // handler and inspecting the real response body tests the actual behavior.)
+  const layer = adminRouter.stack.find(
+    (l) => l.route && l.route.path === '/webhook-secret-fingerprint' && l.route.methods.post
   );
-  const routeBlock = src.match(/r\.post\('\/webhook-secret-fingerprint'[\s\S]*?\n\}\);/);
-  assert.ok(routeBlock, 'Could not find the webhook-secret-fingerprint route body');
+  assert.ok(layer, 'Could not find the POST /webhook-secret-fingerprint route');
+  const handler = layer.route.stack[layer.route.stack.length - 1].handle;
+
+  const plaintextSecret = 'sup3r-s3cr3t-app-value';
+  const req = { body: { secret: plaintextSecret } };
+  let statusCode = 200;
+  let body = null;
+  const res = {
+    status(code) { statusCode = code; return this; },
+    json(payload) { body = payload; return this; },
+  };
+
+  await handler(req, res);
+
+  assert.equal(statusCode, 200, 'expected a successful response');
+  assert.ok(body, 'expected a JSON response body');
+  assert.deepEqual(
+    Object.keys(body),
+    ['fingerprint'],
+    'the response must contain only a "fingerprint" field — no other keys'
+  );
+  assert.notEqual(body.fingerprint, plaintextSecret, 'the fingerprint must not equal the plaintext secret');
   assert.ok(
-    !/res\.json\(\{[^}]*secret[^}]*\}\)/.test(routeBlock[0].replace('fingerprint', '')),
-    'The endpoint must never echo the plaintext secret back in the response — only its fingerprint.'
+    !JSON.stringify(body).includes(plaintextSecret),
+    'the plaintext secret must not appear anywhere in the response body'
   );
 });
 

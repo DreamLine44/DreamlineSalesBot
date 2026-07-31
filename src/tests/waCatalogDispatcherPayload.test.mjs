@@ -30,6 +30,27 @@ test('catalog_message builds a valid Meta interactive catalog_message payload', 
   assert.equal(payload.interactive.action.name, 'catalog_message');
 });
 
+test('[FIX-CATALOG-MSG-PARAM] catalog_message never puts catalog_id on the wire (not a valid field for this message type)', async () => {
+  const ui = { type: 'catalog_message', catalogId: 'CATALOG_123', body: 'Browse our products!' };
+  const { payload } = await dispatchMessage('1234567890', ui, {});
+
+  assert.equal('parameters' in payload.interactive.action, false);
+  assert.equal(JSON.stringify(payload).includes('CATALOG_123'), false);
+});
+
+test('[FIX-CATALOG-MSG-PARAM] catalog_message includes thumbnail_product_retailer_id when provided, and only that key', async () => {
+  const ui = {
+    type: 'catalog_message', catalogId: 'CATALOG_123', body: 'Browse our products!',
+    thumbnailProductRetailerId: 'menuitem123',
+  };
+  const { payload } = await dispatchMessage('1234567890', ui, {});
+
+  assert.deepEqual(payload.interactive.action, {
+    name: 'catalog_message',
+    parameters: { thumbnail_product_retailer_id: 'menuitem123' },
+  });
+});
+
 test('catalog_message with no catalogId is refused (returns null payload, never sent malformed)', async () => {
   const ui = { type: 'catalog_message', body: 'Browse our products!' };
   const { payload } = await dispatchMessage('1234567890', ui, {});

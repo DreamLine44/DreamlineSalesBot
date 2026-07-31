@@ -171,6 +171,18 @@ function buildPayload(to, ui) {
   // payload, never sent malformed) when required fields are missing —
   // consistent with the 'list'/'image' guards above.
   if (type === 'catalog_message') {
+    // [FIX-CATALOG-MSG-PARAM] catalog_id is NOT a valid field anywhere on a
+    // catalog_message action — confirmed against Meta's own Cloud API
+    // reference and matching 360dialog/CM.com implementations. The only
+    // documented key under action.parameters for this message type is
+    // thumbnail_product_retailer_id (optional). WhatsApp always renders
+    // whichever catalog is linked to the SENDING PHONE NUMBER in Commerce
+    // Manager — that binding lives in Meta's system, not in this payload —
+    // so ui.catalogId can never select a catalog here. It's kept below only
+    // as the pre-existing "does this tenant have a catalog configured at
+    // all" guard, exactly as before; it is deliberately never put on the
+    // wire. If Meta's schema validation rejects unrecognized action.parameters
+    // keys, this was also the direct cause of the tenant 400s.
     if (!ui.catalogId) return null;
     return {
       messaging_product: 'whatsapp', recipient_type: 'individual',
@@ -180,7 +192,9 @@ function buildPayload(to, ui) {
         body: { text: String(ui.body || '').slice(0, 1024) },
         action: {
           name: 'catalog_message',
-          parameters: { catalog_id: String(ui.catalogId) },
+          ...(ui.thumbnailProductRetailerId
+            ? { parameters: { thumbnail_product_retailer_id: String(ui.thumbnailProductRetailerId) } }
+            : {}),
         },
       },
     };
@@ -368,57 +382,10 @@ export async function dispatchMessage(to, ui, tenant) {
         err: err.slice(0, 300),
         tenantId: tenant?._id,
       });
-
-      // [FIX-CATALOG-SEND-HEALTH] Catalog-type sends previously failed
-      // silently from the dashboard's point of view — the error above only
-      // ever reached server logs, so a tenant whose Commerce Manager sync
-      // looked perfectly healthy had no way to see WHY "Browse Catalog" kept
-      // looping to the "temporarily unavailable" retry message. Persist the
-      // real Graph error onto waCatalog.lastSendError (fire-and-forget, never
-      // blocks or throws into the send path) so getWaCatalogHealth() can
-      // surface it directly. Common cause at this exact point: the catalog
-      // exists and is synced, but isn't CONNECTED to this WABA in WhatsApp
-      // Manager (a separate step from Commerce Manager's Data sources
-      // sharing) — Meta then rejects the send itself, not the sync.
-      if ((ui.type === 'catalog_message' || ui.type === 'product_list') && tenant?._id) {
-        (async () => {
-          try {
-            const { default: BusinessConfig } = await import('../../models/BusinessConfig.js');
-            await BusinessConfig.updateOne(
-              { tenantId: tenant._id },
-              { $set: {
-                'waCatalog.lastSendError': {
-                  reason: `GRAPH_ERROR (${resp.status})`,
-                  detail: err.slice(0, 500),
-                  at: new Date(),
-                },
-              } },
-            );
-          } catch (writeErr) {
-            logger.debug('[Dispatch] lastSendError write failed (non-fatal)', { err: writeErr.message });
-          }
-        })();
-      }
-
       // [FIX-DISPATCH-FALSE-SUCCESS] A Meta 4xx/5xx must not be handed back to
       // callers as a truthy value — sendCatalogMessage() and friends treat any
       // truthy return as "message actually sent" and skip fallback behavior.
       return null;
-    }
-
-    // [FIX-CATALOG-SEND-HEALTH] A successful send after a previously-recorded
-    // failure means whatever was wrong got fixed — clear the stale error so
-    // the dashboard doesn't keep showing a resolved problem as current.
-    if ((ui.type === 'catalog_message' || ui.type === 'product_list') && tenant?._id) {
-      (async () => {
-        try {
-          const { default: BusinessConfig } = await import('../../models/BusinessConfig.js');
-          await BusinessConfig.updateOne(
-            { tenantId: tenant._id, 'waCatalog.lastSendError.reason': { $ne: null } },
-            { $set: { 'waCatalog.lastSendError': { reason: null, detail: null, at: null } } },
-          );
-        } catch { /* non-fatal */ }
-      })();
     }
     logger.debug('[Dispatch] ✓ Message sent via Meta API', {
       to,

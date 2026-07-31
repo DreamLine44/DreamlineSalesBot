@@ -54,17 +54,25 @@ test('syncMenuToCatalog builds DELETE requests for retailer_ids dropped since th
   assert.match(svcSrc, /filter\(id => id && !currentRetailerIds\.has\(id\)\)/);
 });
 
-test('syncMenuToCatalog sends UPDATE and DELETE requests in a single combined batch', () => {
-  assert.match(svcSrc, /const requests = \[\.\.\.updateRequests, \.\.\.deleteRequests\]/);
+test('syncMenuToCatalog sends UPDATE, drift-reconciliation, and DELETE requests in a single combined batch [FIX-CATALOG-DRIFT-RECONCILE]', () => {
+  assert.match(svcSrc, /const requests = \[\.\.\.updateRequests, \.\.\.driftRequests, \.\.\.deleteRequests\]/);
 });
 
-test('syncMenuToCatalog persists the new syncedRetailerIds snapshot after a successful sync', () => {
-  assert.match(svcSrc, /'waCatalog\.syncedRetailerIds':\s*\[\.\.\.currentRetailerIds\]/);
+test('syncMenuToCatalog persists the new syncedRetailerIds snapshot after a successful sync [FIX-CATALOG-OPTIMISTIC-CONFIRM]', () => {
+  // Superseded by [FIX-CATALOG-OPTIMISTIC-CONFIRM]: the snapshot now holds only
+  // CONFIRMED-live retailer_ids (previouslySynced ∩ currentRetailerIds, plus
+  // whatever just cleared its batch handle with no errors) — not every current
+  // item unconditionally, since a 200 on the POST doesn't mean every item
+  // actually validated on Meta's side.
+  assert.match(svcSrc, /'waCatalog\.syncedRetailerIds':\s*\[\.\.\.confirmedRetailerIds\]/);
 });
 
 test('syncMenuToCatalog returns synced and deleted counts separately', () => {
   assert.match(svcSrc, /return \{ ok: true, synced: 0, deleted: 0, skipped: allCurrentItems\.length, invalidSkipped: invalidSkipped\.length \}/);
-  assert.match(svcSrc, /return \{ ok: true, synced: updateRequests\.length, deleted: deleteRequests\.length, skipped:/);
+  // [FIX-CATALOG-OPTIMISTIC-CONFIRM] `synced` now counts only items whose
+  // batch handle actually resolved clean this run (newlyConfirmed), not every
+  // item that was merely included in the UPDATE request.
+  assert.match(svcSrc, /synced:\s*newlyConfirmed\.length,/);
 });
 
 // [CATALOG-DELTA-1] New regression guards for delta sync: only items whose
@@ -76,8 +84,16 @@ test('syncMenuToCatalog computes a content hash per item and only re-sends chang
   assert.match(svcSrc, /previousHashes\.get\(i\.retailer_id\) !== i\.hash/);
 });
 
-test('syncMenuToCatalog persists a full syncedItemHashes snapshot (not just changed items) after a successful sync', () => {
-  assert.match(svcSrc, /'waCatalog\.syncedItemHashes':\s*Object\.fromEntries\(allCurrentItems\.map\(i => \[i\.retailer_id, i\.hash\]\)\)/);
+test('syncMenuToCatalog persists syncedItemHashes only for CONFIRMED items — unconfirmed/failed items keep retrying [FIX-CATALOG-OPTIMISTIC-CONFIRM]', () => {
+  // Superseded by [FIX-CATALOG-OPTIMISTIC-CONFIRM]: writing every current
+  // item's hash unconditionally (the old assertion here) meant an item Meta
+  // silently rejected got marked "synced" forever, since the next run's
+  // delta-diff would see its hash already matching and never re-upload it.
+  // The new snapshot merges unchanged-and-already-confirmed items with only
+  // the subset of THIS run's changed items whose batch handle resolved clean.
+  assert.match(svcSrc, /const confirmedHashes = \{/);
+  assert.match(svcSrc, /'waCatalog\.syncedItemHashes':\s*confirmedHashes/);
+  assert.match(svcSrc, /allHandlesCleanNow = handles\.length > 0/);
 });
 
 test('BusinessConfig schema stores waCatalog.syncedRetailerIds as a string array defaulting to empty', () => {

@@ -55,7 +55,10 @@ function read(relPath) {
 test('businessController.js exports getWaCatalogHealth', () => {
   const src = read('../controllers/businessController.js');
   assert.match(src, /export async function getWaCatalogHealth\(req, res\)/);
-  assert.match(src, /lastSyncError:\s*business\.waCatalog\?\.lastSyncError\?\.reason/);
+  // [FIX-CATALOG-HEALTH-ISLIVE] renamed the local from `business.waCatalog`
+  // to a `wc` alias (reused across isLive/blockedBy/syncedRetailerIds) —
+  // same field, same intent, cosmetic rename only.
+  assert.match(src, /lastSyncError:\s*wc\.lastSyncError\?\.reason/);
   assert.match(src, /itemsSkipped:\s*skipped\.length/);
 });
 
