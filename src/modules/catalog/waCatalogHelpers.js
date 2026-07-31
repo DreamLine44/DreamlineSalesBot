@@ -296,7 +296,35 @@ export function isSyncableForCatalog(item) {
  * BusinessConfig.menuItems data already in memory).
  */
 
+/**
+ * [FIX-CATALOG-CONFIRMED-ONLY] isSyncableForCatalog() above (and the
+ * [FIX-CATALOG-VISIBLE-SECTIONS-1] filter using it) only proves an item is
+ * LOCALLY eligible to sync (has an image, a valid price) — it says nothing
+ * about whether Meta has actually confirmed that specific retailer_id live
+ * in its catalog yet. That's a separate, async state: as of
+ * [FIX-CATALOG-OPTIMISTIC-CONFIRM] in waCatalogService.js,
+ * business.waCatalog.syncedRetailerIds only gains an entry once
+ * syncMenuToCatalog()'s batch-handle check resolves clean — a batch that's
+ * still pending, or that Meta rejected per-item, leaves the retailer_id out
+ * of that set even though isSyncableForCatalog() happily says "ok".
+ *
+ * Without this filter, a product_list message could reference retailer_ids
+ * Meta has never confirmed — which Meta responds to with GRAPH_ERROR 400
+ * "(#131009) ... None of the products provided could be sent," rejecting
+ * the ENTIRE message, not just the bad rows. This was reproduced live: a
+ * tenant with 25 locally-valid menu items but only 10 actually confirmed in
+ * Meta's catalog (the other 15 stuck pending batch verification) had every
+ * "Browse Catalog" tap fail and fall back to the generic unavailable
+ * message, while /wacatalog/health still reported itemsReady: 25.
+ *
+ * Intersecting against the confirmed set here means: if nothing is
+ * confirmed yet (fresh tenant, first sync still in flight), this returns
+ * [] and sendCatalogMessage()'s caller falls back to a full catalog_message
+ * browse-all — which references no retailer_ids at all and just opens
+ * whatever Meta already has live, so it can never hit this same failure.
+ */
 export function buildCategorizedSections(business, { maxSections = 10, maxItemsPerSection = 30 } = {}) {
+  const confirmedIds = new Set(business?.waCatalog?.syncedRetailerIds || []);
   const menu = (business?.menuItems || []).filter(i => i.available !== false && isSyncableForCatalog(i).ok);
   if (!menu.length) return [];
 
@@ -310,11 +338,12 @@ export function buildCategorizedSections(business, { maxSections = 10, maxItemsP
           .map(variantName => buildRetailerId(item, variantName))
           .filter(Boolean)
       : [buildRetailerId(item)].filter(Boolean);
-    if (!rows.length) continue;
+    const confirmedRows = rows.filter(id => confirmedIds.has(id));
+    if (!confirmedRows.length) continue;
 
     const title = String(item.category || 'Products').trim().slice(0, 24) || 'Products';
     if (!byCategory.has(title)) byCategory.set(title, []);
-    byCategory.get(title).push(...rows);
+    byCategory.get(title).push(...confirmedRows);
   }
 
   return [...byCategory.entries()]
