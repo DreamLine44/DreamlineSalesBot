@@ -37,16 +37,42 @@ export function buildMenuUI(business) {
   };
 }
 
-export function buildOrderSummary({ item, qty, total, addOns = [], business }) {
+export function buildOrderSummary({ item, qty, total, addOns = [], business, allowAddMore = false }) {
   const name     = typeof item === 'object' ? item.name : item;
   const currency = business?.payment?.currency || 'D';
   const addOnStr = addOns.length ? `\n➕ Add-ons: ${addOns.join(', ')}` : '';
+  const buttons  = [{ id: 'CONFIRM', title: '✅ Confirm Order' }];
+  // [MULTICART-v39-PHASE2] Additive — only shown when the caller explicitly
+  // opts in (orderFlow.js's CONFIRM step, once an item has reached this
+  // summary). Existing callers that don't pass allowAddMore keep the exact
+  // original two-button shape.
+  if (allowAddMore) buttons.push({ id: 'ADD_ANOTHER_ITEM', title: '➕ Add Another Item' });
+  buttons.push({ id: 'CANCEL', title: '❌ Cancel' });
   return {
     type: 'buttons',
     body: `🧾 *Order Summary*\n\n🍽 *${qty}× ${name}*${addOnStr}${total ? `\n💰 Total: *${currency}${total}*` : ''}\n\nConfirm your order?`,
+    buttons,
+  };
+}
+
+/**
+ * buildCartSummaryUI
+ * [MULTICART-v39-PHASE2] Multi-item counterpart to buildOrderSummary() — used
+ * by CART_REVIEW (orderFlow.js) once 2+ distinct items have been added to
+ * data.cart, whether from a single "2 burgers and a coke" message or from
+ * repeated "Add Another Item" taps. `summaryText` is pre-built by
+ * core/shared/cartEngine.js's formatCartSummary() so pricing/formatting stays
+ * identical to the WA-Catalog multi-item cart summary.
+ */
+export function buildCartSummaryUI({ summaryText, total, business, note = '' }) {
+  const currency = business?.payment?.currency || 'D';
+  return {
+    type: 'buttons',
+    body: `🧾 *Your Order*\n\n${summaryText}${total != null ? `\n\n💰 Total: *${currency}${total}*` : ''}${note}\n\nReady to checkout, or add something else?`,
     buttons: [
-      { id: 'CONFIRM', title: '✅ Confirm Order' },
-      { id: 'CANCEL',  title: '❌ Cancel'        },
+      { id: 'CONFIRM',          title: '✅ Checkout'       },
+      { id: 'ADD_ANOTHER_ITEM', title: '➕ Add More'        },
+      { id: 'CANCEL',           title: '❌ Cancel'          },
     ],
   };
 }

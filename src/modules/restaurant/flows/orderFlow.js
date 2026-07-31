@@ -20,13 +20,34 @@
  *
  * [FIX-4] Payment step was reusing session data without re-fetching — race condition
  *         on slow connections. Now reads totalPrice from confirmed data object.
+ *
+ * [MULTICART-v39-PHASE2] Added real multi-item cart support — see
+ *         core/shared/cartEngine.js module header for the full rationale.
+ *         Two new entry points into a cart, both purely additive (a normal
+ *         single-item order never touches either):
+ *           (a) SELECT_ITEM now tries parseMultiItemMessage() FIRST. A
+ *               message like "2 burgers and a coke" resolves to a cart with
+ *               2 distinct lines and jumps straight to CART_REVIEW. A normal
+ *               single-item message ("jollof rice") never resolves 2+ lines,
+ *               so it falls through to the exact pre-existing single-item
+ *               fuzzy-match path unchanged.
+ *           (b) The CONFIRM step's order summary now offers an "Add Another
+ *               Item" button. Tapping it pushes the current item into
+ *               data.cart and loops back to SELECT_ITEM instead of saving —
+ *               so a customer who picks items one at a time (browsing the
+ *               menu) can also build a multi-item order, not just one who
+ *               types everything in a single message.
+ *         Either path converges on CART_REVIEW/CONFIRM's items[] save via
+ *         saveOrder({ items: cartToOrderItems(cart) }) — orderService.js's
+ *         resolveOrderFields() already normalizes that exactly like a WA
+ *         Catalog multi-item cart order does.
  */
 
 import { updateSession }    from '../../../core/sessions/sessionService.js';
 import { completeFlow }     from '../../../core/conversations/flowEngine.js';
 import { getAIReply }       from '../../../core/ai/providers/aiRouter.js';
 import { findBestMatch }    from '../../../utils/matchEngine.js';
-import { buildMenuUI, buildOrderSummary, buildOrderSuccess } from '../handlers/uiBuilders.js';
+import { buildMenuUI, buildOrderSummary, buildOrderSuccess, buildCartSummaryUI } from '../handlers/uiBuilders.js';
 import { parseQuantity }    from '../../../utils/parseQuantity.js';
 import { saveOrder }        from '../../../services/orderService.js';
 import { trackOrderAnalytics } from '../../../core/analytics/analyticsService.js';
@@ -34,6 +55,10 @@ import { dispatchText }     from '../../../core/whatsapp/dispatcher.js';
 import { buildPaymentInstructionsUI } from '../../../services/paymentService.js';
 import { buildWhatsAppImageUrl }       from '../../../config/cloudinary.js';
 import { itemLabel }        from '../../../utils/itemLabel.js';
+import {
+  parseMultiItemMessage, mergeCartLines, enforceCartLimit,
+  cartTotal, cartToOrderItems, formatCartSummary, buildUnmatchedNote,
+} from '../../../core/shared/cartEngine.js';
 import logger               from '../../../config/logger.js';
 
 // ── Normalise — [FIX-1] /\s+/ was missing the 'g' flag ──────────────────────
@@ -148,6 +173,36 @@ export async function handleOrderFlow({ session, message, business, tenant, isIn
         };
       }
 
+      // [MULTICART-v39-PHASE2] Try multi-item parsing FIRST. A message like
+      // "2 burgers and a coke" resolves to 2+ distinct menu lines here and
+      // jumps straight to CART_REVIEW. A normal single-item message never
+      // resolves 2+ lines (parseMultiItemMessage returns null), so this is a
+      // pure no-op for the overwhelming majority of messages — the exact
+      // pre-existing single-item fuzzy match below still runs for those.
+      const multi = parseMultiItemMessage(menu, raw);
+      if (multi) {
+        const merged = mergeCartLines(Array.isArray(data.cart) ? data.cart : [], multi.lines);
+        const { cart: cappedCart, overflowCount } = enforceCartLimit(merged, business);
+
+        await updateSession(session.customerPhone, session.tenantId, {
+          step: 'CART_REVIEW',
+          data: { ...data, cart: cappedCart },
+          menuViewed: true,
+        });
+
+        let note = buildUnmatchedNote(multi.unmatchedSegments);
+        if (overflowCount > 0) {
+          note += `\n\n_(Your cart can hold up to ${business?.multiItemCart?.maxItems || 10} items — ${overflowCount} extra item${overflowCount > 1 ? 's were' : ' was'} left out.)_`;
+        }
+
+        return buildCartSummaryUI({
+          summaryText: formatCartSummary(cappedCart, business),
+          total: cartTotal(cappedCart),
+          business,
+          note,
+        });
+      }
+
       // Fuzzy name match
       const { item, confidenceLevel } = findBestMatch(menu, clean);
 
@@ -185,6 +240,65 @@ export async function handleOrderFlow({ session, message, business, tenant, isIn
         if (item) return await _selectItem(item, session, business, data);
       }
       return buildMenuUI(business);
+    }
+
+    // ────────────────────────────────────────────────────────────────────────
+    // [MULTICART-v39-PHASE2] Reached once data.cart has 2+ distinct items —
+    // either from a single multi-item message (SELECT_ITEM above) or from
+    // repeated "Add Another Item" taps from the CONFIRM step below.
+    case 'CART_REVIEW': {
+      const cart = Array.isArray(data.cart) ? data.cart : [];
+
+      // Checkout — same acceptance words as every other confirm-style step
+      // in this file (SUGGESTION_CONFIRM/UPSELL/CONFIRM all accept these).
+      const isCheckout = /^(yes|y|yeah|yep|confirm|ok|okay|sure|checkout|place|done)$/i.test(clean) || raw === 'CONFIRM';
+      if (isCheckout) {
+        return await _checkoutCart(cart, session, business, tenant);
+      }
+
+      // "Add more" — either the button tap or typed phrasing. Any other
+      // message is treated as more items to add (re-runs the exact same
+      // multi-/single-item resolution SELECT_ITEM uses), so a customer
+      // doesn't have to tap a button — typing "also 2 fries" just works.
+      const isExplicitAddMore = raw === 'ADD_ANOTHER_ITEM' || /^(add more|add another|add another item|another item|add item|more items?)$/i.test(clean);
+      if (isExplicitAddMore) {
+        await updateSession(session.customerPhone, session.tenantId, { step: 'SELECT_ITEM' });
+        return buildMenuUI(business);
+      }
+
+      // Treat the message itself as more items to add to the existing cart.
+      const multiAdd = parseMultiItemMessage(menu, raw);
+      let newLines = null;
+      if (multiAdd) {
+        newLines = multiAdd.lines;
+      } else {
+        const { item: singleItem, confidenceLevel: singleConf } = findBestMatch(menu, clean);
+        if (singleItem && singleConf === 'HIGH') newLines = [{ item: singleItem, quantity: 1, variant: null }];
+      }
+
+      if (newLines) {
+        const merged = mergeCartLines(cart, newLines);
+        const { cart: cappedCart, overflowCount } = enforceCartLimit(merged, business);
+        await updateSession(session.customerPhone, session.tenantId, { data: { ...data, cart: cappedCart } });
+        let note = multiAdd ? buildUnmatchedNote(multiAdd.unmatchedSegments) : '';
+        if (overflowCount > 0) {
+          note += `\n\n_(Your cart can hold up to ${business?.multiItemCart?.maxItems || 10} items — ${overflowCount} extra item${overflowCount > 1 ? 's were' : ' was'} left out.)_`;
+        }
+        return buildCartSummaryUI({
+          summaryText: formatCartSummary(cappedCart, business),
+          total: cartTotal(cappedCart),
+          business,
+          note,
+        });
+      }
+
+      // Couldn't resolve anything new — re-show the cart with a gentle nudge.
+      return buildCartSummaryUI({
+        summaryText: formatCartSummary(cart, business),
+        total: cartTotal(cart),
+        business,
+        note: `\n\n_(I didn't catch an item in that — try naming a dish, or tap Checkout/Add More.)_`,
+      });
     }
 
     // ────────────────────────────────────────────────────────────────────────
@@ -244,7 +358,7 @@ export async function handleOrderFlow({ session, message, business, tenant, isIn
       });
       // [AUDIT-FIX-CATALOG-VARIANT-LOSS] fold data.variant (set only when this
       // item was selected via WA Catalog — see waCatalogFlow.js) into the label.
-      return buildOrderSummary({ item: itemLabel(item, data.variant), qty, total, business });
+      return buildOrderSummary({ item: itemLabel(item, data.variant), qty, total, business, allowAddMore: true });
     }
 
     // ────────────────────────────────────────────────────────────────────────
@@ -263,16 +377,38 @@ export async function handleOrderFlow({ session, message, business, tenant, isIn
       await updateSession(session.customerPhone, session.tenantId, {
         step: 'CONFIRM', data: { ...data, totalPrice: finalTotal, addOns: addOnsList },
       });
-      return buildOrderSummary({ item: itemLabel(data.item, data.variant), qty: data.quantity, total: finalTotal, addOns: addOnsList, business });
+      return buildOrderSummary({ item: itemLabel(data.item, data.variant), qty: data.quantity, total: finalTotal, addOns: addOnsList, business, allowAddMore: true });
     }
 
     // ────────────────────────────────────────────────────────────────────────
     case 'CONFIRM': {
+      // [MULTICART-v39-PHASE2] "Add Another Item" — folds the item that just
+      // reached this summary into data.cart and loops back to item selection
+      // instead of saving. Checked BEFORE isConfirm so it can never be
+      // mistaken for a plain confirmation. See _addAnotherItem() below.
+      const wantsAddMore = raw === 'ADD_ANOTHER_ITEM' ||
+        /^(add more|add another|add another item|another item|add item|more items?)$/i.test(clean);
+      if (wantsAddMore && data.item) {
+        return await _addAnotherItem(session, business, data);
+      }
+
       // [FIX-CONFIRM-1] "yeah"/"yep" were missing here even though every other
       // confirm-style step in this file (SUGGESTION_CONFIRM, UPSELL) accepts them.
       const isConfirm = /^(yes|y|yeah|yep|confirm|ok|okay|sure|place|confirmed)$/i.test(clean);
       if (!isConfirm) {
-        return buildOrderSummary({ item: itemLabel(data.item, data.variant), qty: data.quantity, total: data.totalPrice, business });
+        return buildOrderSummary({ item: itemLabel(data.item, data.variant), qty: data.quantity, total: data.totalPrice, business, allowAddMore: true });
+      }
+
+      // [MULTICART-v39-PHASE2] If items were accumulated via prior "Add Another
+      // Item" taps, fold the current item into that cart and checkout as one
+      // multi-item order — same saveOrder({items}) path CART_REVIEW uses.
+      const priorCart = Array.isArray(data.cart) ? data.cart : [];
+      if (priorCart.length > 0) {
+        const fullCart = mergeCartLines(priorCart, [{
+          item: data.item, quantity: data.quantity || 1,
+          variant: data.variant || null, addOns: data.addOns || [],
+        }]);
+        return await _checkoutCart(fullCart, session, business, tenant);
       }
 
       // Save order
@@ -448,6 +584,161 @@ export async function handleOrderFlow({ session, message, business, tenant, isIn
     default:
       return buildMenuUI(business);
   }
+}
+
+// ── Add-another-item helper ───────────────────────────────────────────────────
+/**
+ * _addAnotherItem(session, business, data)
+ * [MULTICART-v39-PHASE2] Extracted out of the CONFIRM case body so that case
+ * stays short enough for existing source-text regression tests (e.g.
+ * v1RestaurantConfirmAudit.test.mjs) that slice a fixed window of characters
+ * after `case 'CONFIRM': {` to locate the isConfirm regex — a large inline
+ * block here would push that regex outside the window.
+ */
+async function _addAnotherItem(session, business, data) {
+  const priorCart = Array.isArray(data.cart) ? data.cart : [];
+  const merged = mergeCartLines(priorCart, [{
+    item: data.item, quantity: data.quantity || 1,
+    variant: data.variant || null, addOns: data.addOns || [],
+  }]);
+  const { cart: cappedCart, overflowCount } = enforceCartLimit(merged, business);
+  await updateSession(session.customerPhone, session.tenantId, {
+    step: 'SELECT_ITEM',
+    data: { cart: cappedCart }, // clear the single-item fields — they're folded into the cart now
+    upsellSent: false,
+  });
+  const overflowNote = overflowCount > 0
+    ? `\n\n_(Your cart can hold up to ${business?.multiItemCart?.maxItems || 10} items — ${overflowCount} extra item${overflowCount > 1 ? 's were' : ' was'} left out.)_`
+    : '';
+  const menuUI = buildMenuUI(business);
+  if (menuUI.type === 'buttons') return menuUI; // empty-menu guard already returned its own message
+  return { ...menuUI, body: `Added to your cart! 🛒${overflowNote}\n\n${menuUI.body}` };
+}
+
+// ── Cart checkout helper ──────────────────────────────────────────────────────
+/**
+ * _checkoutCart(cart, session, business, tenant)
+ * [MULTICART-v39-PHASE2] Multi-item counterpart to the CONFIRM step's
+ * single-item save logic above. Mirrors modules/catalog/waCatalogFlow.js's
+ * handleMultiItemCatalogOrder() — same saveOrder({items}) call, same
+ * payment-vs-cash branching, same admin alert shape — so a text-typed
+ * multi-item order and a WA-Catalog multi-item order behave identically
+ * from here on. Reached from CART_REVIEW's checkout path and from CONFIRM
+ * once items have been accumulated via "Add Another Item".
+ */
+async function _checkoutCart(cart, session, business, tenant) {
+  const data = session.data || {};
+
+  let savedOrder = null;
+  try {
+    savedOrder = await saveOrder({
+      items:         cartToOrderItems(cart),
+      customerName:  session.customerName || null,
+      customerPhone: session.customerPhone,
+      tenantId:      session.tenantId,
+      businessId:    business._id,
+    });
+
+    trackOrderAnalytics(
+      cart.map(l => l.item?.name).filter(Boolean).join(', '),
+      business.phoneNumberId || null,
+      cart.reduce((sum, l) => sum + (l.quantity || 0), 0),
+      savedOrder.totalPrice || 0,
+      session.tenantId
+    ).catch(() => {});
+  } catch (err) {
+    logger.error('[OrderFlow] _checkoutCart: saveOrder failed', { err: err.message });
+    await updateSession(session.customerPhone, session.tenantId, {
+      currentFlow: null, step: null, data: {},
+    });
+    return {
+      type:    'buttons',
+      body:    `⚠️ *Something went wrong saving your order.*\n\nPlease try again — tap below to start over.`,
+      buttons: [
+        { id: 'ORDER',   title: '🛒 Try Again'  },
+        { id: 'SUPPORT', title: '💬 Contact Us' },
+      ],
+    };
+  }
+
+  const totalPrice  = savedOrder.totalPrice;
+  const payment     = business?.payment;
+  const currency    = payment?.currency || 'D';
+  const cartSummary = formatCartSummary(cart, business);
+  const usePayment  = payment?.enabled && totalPrice != null;
+
+  if (usePayment) {
+    const shortId = savedOrder?.shortId || '';
+    const now = new Date();
+    const mm  = String(now.getMonth() + 1).padStart(2, '0');
+    const dd  = String(now.getDate()).padStart(2, '0');
+    const ref = `DSB-${mm}${dd}-${shortId}`;
+    if (savedOrder?._id) {
+      const { default: Order } = await import('../../../models/Order.js');
+      Order.updateOne({ _id: savedOrder._id }, { $set: { paymentReference: ref } }).catch(() => {});
+    }
+
+    await updateSession(session.customerPhone, session.tenantId, {
+      step: 'PAYMENT_PROOF', currentFlow: 'ORDER', data: {},
+    });
+
+    try {
+      const adminPhone = business?.adminPhone || tenant?.adminPhone;
+      if (adminPhone && tenant) {
+        const { dispatchMessage } = await import('../../../core/whatsapp/dispatcher.js');
+        await dispatchMessage(adminPhone, {
+          type: 'text',
+          body:
+            `🔔 *New Order — ${business.name || 'Restaurant'}*\n\n` +
+            `👤 Customer: *${session.customerPhone}*\n` +
+            `🛒 Items:\n${cartSummary}\n` +
+            `💰 Total: *${currency}${totalPrice}*\n` +
+            `📝 Ref: *${ref}*\n\n` +
+            `⏳ Status: *Pending* — awaiting payment screenshot.`,
+        }, tenant).catch(() => {});
+      }
+    } catch { /* non-fatal */ }
+
+    return buildPaymentInstructionsUI(business, totalPrice, shortId, ref);
+  }
+
+  // Cash / no-payment branch — mirrors CONFIRM's own cash branch: always
+  // park at AWAIT_ADMIN_CONFIRM with tap-to-confirm admin buttons, never a
+  // silent flow reset (see waCatalogFlow.js [FIX-CATALOG-CART-3] for why
+  // this matters — a cash order with no AWAIT_ADMIN_CONFIRM lock lets the
+  // customer immediately start a second order while the first is unconfirmed).
+  try {
+    const adminPhone = business?.adminPhone || tenant?.adminPhone;
+    if (adminPhone && tenant && savedOrder) {
+      const { dispatchMessage } = await import('../../../core/whatsapp/dispatcher.js');
+      await dispatchMessage(adminPhone, {
+        type:    'buttons',
+        body:
+          `🔔 *New Order — ${business.name || 'Restaurant'}*\n\n` +
+          `👤 Customer: *${session.customerPhone}*\n` +
+          `🛒 Items:\n${cartSummary}\n` +
+          (totalPrice != null ? `💰 Total: *${currency}${totalPrice}*\n` : '') +
+          `🔖 Ref: \`#${savedOrder.shortId}\`\n\n` +
+          `⏳ Status: *Pending* — please confirm.`,
+        buttons: [
+          { id: `APPROVE_${savedOrder.shortId}`, title: '✅ Confirm Received' },
+          { id: `REJECT_${savedOrder.shortId}`,  title: '❌ Cancel Order'     },
+        ],
+      }, tenant).catch(() => {});
+    }
+  } catch { /* non-fatal */ }
+
+  await updateSession(session.customerPhone, session.tenantId, {
+    step: 'AWAIT_ADMIN_CONFIRM', currentFlow: 'ORDER', data: {},
+  });
+
+  return {
+    type: 'text',
+    body:
+      `✅ *Order received!*\n\n${cartSummary}\n\n` +
+      (totalPrice != null ? `💰 Total: *${currency}${totalPrice}*\n\n` : '') +
+      `⏳ Your order has been received. Please wait for our team to confirm it before placing a new one.`,
+  };
 }
 
 // ── Select item helper ────────────────────────────────────────────────────────
