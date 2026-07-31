@@ -439,7 +439,12 @@ r.post('/notifications', async (req, res) => {
       const notification = await AdminNotification.create({
         tenantId:  req.tenantId,
         direction: 'TO_ADMIN',
-        fromLabel: 'Tenant Admin',
+        // [AUDIT-FIX-ADMINNOTIFY-1] req.adminUser is only set for an AdminUser
+        // Bearer session (see middleware/authMiddleware.js tryBearerAuth) — a
+        // legacy shared-tenant-key send has no individual identity, so it
+        // keeps the generic label rather than fabricating one.
+        fromAdminUserId: req.adminUser?.id || null,
+        fromLabel: req.adminUser?.name || 'Tenant Admin',
         subject, body,
         ...(severity ? { severity } : {}),
       });
