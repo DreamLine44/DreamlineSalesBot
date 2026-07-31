@@ -1,0 +1,29 @@
+
+Benachin (Chicken), 175, Jollof-style rice with chicken
+Benachin (Fish), 150, Jollof-style rice with fish
+Domoda (Beef), 200, Rich groundnut stew with beef, served with rice
+Domoda (Chicken), 175, Rich groundnut stew with chicken, served with rice
+Superkanja, 150, Okra stew served with rice
+Yassa Chicken, 200, Grilled chicken in a tangy onion and lemon sauce
+Chura Gerteh (Porridge), 75, Traditional millet porridge
+Akara (Bean Fritters), 50, Deep-fried bean fritters
+Tapalapa Bread with Omelette, 85, Local bread served with a fresh omelette
+Plasas (Leaf Sauce with Rice), 150, Leaf sauce served with rice
+Grilled Tilapia with Rice, 225, Grilled tilapia fish served with rice
+Attaya (Mint Tea Set), 40, Traditional Gambian mint tea set
+Ginger Juice (Large), 60, Fresh homemade ginger juice
+Baobab Juice (Bouye), 60, Fresh baobab fruit juice
+
+
+https://graph.facebook.com/v25.0/1433141188635777/items_batch
+https://graph.facebook.com/v20.0/1433141188635777/items_batch
+https://whatsales-production.up.railway.app/business/6a68a2a3993701343d58a086
+
+
+
+curl -X GET \
+  "https://graph.facebook.com/v23.0/1433141188635777?fields=name,product_count,vertical" \
+  -H "Authorization: Bearer YOUR_TENANT_ACCESS_TOKEN"
+
+
+  https:///whatsales-production.up.railway.app/business/6a68a2a3993701343d58a086/wacatalog/health
