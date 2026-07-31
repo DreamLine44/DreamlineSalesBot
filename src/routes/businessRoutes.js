@@ -12,8 +12,7 @@ import {
   getModeInfo, listSupportedModes, syncWaCatalog, getWaCatalogHealth,
 } from '../controllers/businessController.js';
 import { CLOUDINARY_ENABLED } from '../config/cloudinary.js';
-import { uploadSingle, uploadMultiple } from '../middleware/uploadMiddleware.js';
-import { uploadMenuItemGalleryImages, removeMenuItemGalleryImage } from '../controllers/menuImageController.js';
+import { uploadSingle } from '../middleware/uploadMiddleware.js';
 import { catalogSyncLimiter } from '../middleware/rateLimiter.js';
 
 const r = Router();
@@ -48,11 +47,6 @@ r.put('/:tenantId/menu',                     enforceTenantScope, updateMenu);
 r.post('/:tenantId/menu',                    enforceTenantScope, uploadSingle, addMenuItem);
 // [FIX-BIZ-2] Changed :itemName → :itemId for safe, precise deletion by MongoDB _id
 r.delete('/:tenantId/menu/:itemId',          enforceTenantScope, deleteMenuItem);
-// [FEAT-MULTI-IMAGE] Gallery images (additional photos beyond the single
-// cover `image`) — additive to Meta catalog sync as `additional_image_urls`,
-// never affects the primary `image_link` sync field. See menuImageController.js.
-r.post('/:tenantId/menu/:itemId/images',              enforceTenantScope, uploadMultiple, uploadMenuItemGalleryImages);
-r.delete('/:tenantId/menu/:itemId/images/:imageId',   enforceTenantScope, removeMenuItemGalleryImage);
 // [CATALOG-SYNC-ROUTE-1] Manual WA Catalog sync trigger — tenant-scoped and
 // rate-limited since it hits Meta's Graph API directly.
 r.post('/:tenantId/wacatalog/sync',          enforceTenantScope, catalogSyncLimiter, syncWaCatalog);

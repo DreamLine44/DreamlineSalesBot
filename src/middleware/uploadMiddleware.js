@@ -54,37 +54,3 @@ export function uploadSingle(req, res, next) {
     return res.status(400).json({ error: err.message });
   });
 }
-
-// [FEAT-MULTI-IMAGE] Meta caps additional_image_urls at 10 per product, so
-// there's never a legitimate reason to accept more than 10 files in a single
-// gallery upload request regardless of how many slots the item has left —
-// menuImageController.js separately enforces the running total (existing +
-// new) against that same 10-item cap before any upload hits Cloudinary.
-const MAX_GALLERY_FILES = 10;
-
-/**
- * Multi-file upload middleware — field name "images" (repeated).
- * Attaches req.files (array) on success; responds 400 on validation failure.
- *
- *   import { uploadMultiple } from '../middleware/uploadMiddleware.js';
- *   router.post('/route', uploadMultiple, handler);
- *
- *   In handler: req.files → [{ buffer, mimetype, originalname, size }, ...]
- */
-export function uploadMultiple(req, res, next) {
-  upload.array('images', MAX_GALLERY_FILES)(req, res, (err) => {
-    if (!err) return next();
-
-    if (err instanceof multer.MulterError) {
-      if (err.code === 'LIMIT_FILE_SIZE') {
-        return res.status(400).json({ error: 'One or more images too large — maximum size is 5 MB each.' });
-      }
-      if (err.code === 'LIMIT_FILE_COUNT' || err.code === 'LIMIT_UNEXPECTED_FILE') {
-        return res.status(400).json({ error: `Too many images in one upload — maximum is ${MAX_GALLERY_FILES}.` });
-      }
-      return res.status(400).json({ error: `Upload error: ${err.message}` });
-    }
-    // fileFilter rejection or unknown error
-    return res.status(400).json({ error: err.message });
-  });
-}

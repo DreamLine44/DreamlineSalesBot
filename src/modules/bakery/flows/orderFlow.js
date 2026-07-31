@@ -21,11 +21,6 @@ import { trackOrderAnalytics } from '../../../core/analytics/analyticsService.js
 import { buildWhatsAppImageUrl } from '../../../config/cloudinary.js';
 import { itemLabel }      from '../../../utils/itemLabel.js';
 import logger             from '../../../config/logger.js';
-import {
-  parseMultiItemMessage, mergeCartLines, enforceCartLimit,
-  cartTotal, cartToOrderItems, formatCartSummary, buildUnmatchedNote,
-  parseCartModification, applyCartModification,
-} from '../../../core/shared/cartEngine.js';
 
 const norm = (s = '') => s.toLowerCase().replace(/[^\w\s]/g, ' ').replace(/\s+/g, ' ').trim();
 
@@ -109,26 +104,6 @@ export async function handleBakeryOrderFlow({ session, message, business, tenant
       }
       if (clean.length < 2) return _buildBakeryMenu(scopedMenu, business, data.category || null);
 
-      // [CART-AI] Try multi-item parsing FIRST — "2 croissants and a loaf of
-      // bread" resolves to 2+ distinct menu lines and jumps straight to
-      // CART_REVIEW. A normal single-item message ("croissant", "6 donuts")
-      // never resolves 2+ lines, so this is a pure no-op for the vast
-      // majority of messages — the existing single-item path below runs
-      // completely unchanged for those. Same pattern as restaurant/salon.
-      const multi = parseMultiItemMessage(menu, raw);
-      if (multi) {
-        const merged = mergeCartLines(Array.isArray(data.cart) ? data.cart : [], multi.lines);
-        const { cart: cappedCart, overflowCount } = enforceCartLimit(merged, business);
-        await updateSession(session.customerPhone, session.tenantId, {
-          step: 'CART_REVIEW', data: { ...data, cart: cappedCart }, menuViewed: true,
-        });
-        let note = buildUnmatchedNote(multi.unmatchedSegments);
-        if (overflowCount > 0) {
-          note += `\n\n_(Your cart can hold up to ${business?.multiItemCart?.maxItems || 10} items — ${overflowCount} extra item${overflowCount > 1 ? 's were' : ' was'} left out.)_`;
-        }
-        return _buildBakeryCartSummaryUI(cappedCart, business, note);
-      }
-
       // [AUDIT-FIX-PARSEINT] parseInt("2 red buns", 10) === 2, NOT NaN — so any
       // message merely STARTING with a digit silently hijacked the menu index
       // once menuViewed was true (the normal case). Only trust the parsed index
@@ -188,76 +163,6 @@ export async function handleBakeryOrderFlow({ session, message, business, tenant
         ];
       }
       return qtyPrompt;
-    }
-
-    // ── CART_REVIEW ───────────────────────────────────────────────────────────
-    // [CART-AI] Reached once data.cart has 2+ distinct items — either from a
-    // single multi-item message (SELECT_ITEM above) or repeated additions.
-    // Checkout skips the per-item QUANTITY step (each cart line already
-    // carries its own quantity) and goes straight to NOTES.
-    case 'CART_REVIEW': {
-      const cart = Array.isArray(data.cart) ? data.cart : [];
-
-      const isCheckout = raw === 'CONFIRM' || /^(yes|y|yeah|yep|confirm|ok|okay|sure|checkout|place|done)$/i.test(clean);
-      if (isCheckout) {
-        await updateSession(session.customerPhone, session.tenantId, {
-          step: 'NOTES', data: { ...data, totalPrice: cartTotal(cart) },
-        });
-        return {
-          type: 'buttons',
-          body: `🎂 *Your Order:*\n\n${formatCartSummary(cart, business)}\n\nAny special message or notes for the whole order?\n_(e.g. "Write Happy Birthday Sara", "No nuts")_`,
-          buttons: [
-            { id: 'NOTES_NONE', title: '✅ No special notes' },
-            { id: 'CANCEL',     title: '❌ Cancel'            },
-          ],
-          footer: 'Or type your message/notes and send',
-        };
-      }
-
-      const isExplicitAddMore = raw === 'ADD_ANOTHER_ITEM' || /^(add more|add another|add another item|another item|add item|more items?)$/i.test(clean);
-      if (isExplicitAddMore) {
-        await updateSession(session.customerPhone, session.tenantId, { step: 'SELECT_ITEM' });
-        return _buildBakeryMenu(menu, business, data.category || null);
-      }
-
-      // [CART-AI-MODIFY] "remove the croissant" / "make it 6 donuts" —
-      // resolved against items ALREADY in the cart, checked before treating
-      // the message as an attempt to add a brand-new item.
-      const mod = parseCartModification(cart, raw);
-      if (mod) {
-        const updatedCart = applyCartModification(cart, mod);
-        await updateSession(session.customerPhone, session.tenantId, { data: { ...data, cart: updatedCart } });
-        if (!updatedCart.length) {
-          await updateSession(session.customerPhone, session.tenantId, { step: 'SELECT_ITEM', data: { ...data, cart: [] } });
-          return _buildBakeryMenu(menu, business, data.category || null);
-        }
-        return _buildBakeryCartSummaryUI(updatedCart, business,
-          mod.type === 'remove' ? '\n\n_(Removed from your cart.)_' : '\n\n_(Updated the quantity.)_');
-      }
-
-      // Treat the message itself as more items to add.
-      const multiAdd = parseMultiItemMessage(menu, raw);
-      let newLines = null;
-      if (multiAdd) {
-        newLines = multiAdd.lines;
-      } else {
-        const { item: singleItem, confidenceLevel: singleConf } = findBestMatch(menu, clean);
-        if (singleItem && singleConf === 'HIGH') newLines = [{ item: singleItem, quantity: 1, variant: null }];
-      }
-
-      if (newLines) {
-        const merged = mergeCartLines(cart, newLines);
-        const { cart: cappedCart, overflowCount } = enforceCartLimit(merged, business);
-        await updateSession(session.customerPhone, session.tenantId, { data: { ...data, cart: cappedCart } });
-        let note = multiAdd ? buildUnmatchedNote(multiAdd.unmatchedSegments) : '';
-        if (overflowCount > 0) {
-          note += `\n\n_(Your cart can hold up to ${business?.multiItemCart?.maxItems || 10} items — ${overflowCount} extra item${overflowCount > 1 ? 's were' : ' was'} left out.)_`;
-        }
-        return _buildBakeryCartSummaryUI(cappedCart, business, note);
-      }
-
-      return _buildBakeryCartSummaryUI(cart, business,
-        `\n\n_(I didn't catch an item in that — try naming something, or tap Checkout/Add More.)_`);
     }
 
     // ── QUANTITY ──────────────────────────────────────────────────────────────
@@ -391,28 +296,24 @@ export async function handleBakeryOrderFlow({ session, message, business, tenant
 
       const item     = data.item;
       const qty      = data.quantity || 1;
-      const cart     = Array.isArray(data.cart) ? data.cart : [];
-      const isCart   = cart.length > 0;
-      const total    = isCart ? cartTotal(cart) : data.totalPrice;
+      const total    = data.totalPrice;
       const notes    = data.notes;
       const method   = data.fulfilment || 'Collection';
       const address  = data.deliveryAddress || null;
 
       await updateSession(session.customerPhone, session.tenantId, {
-        step: 'CONFIRM', data: { ...data, pickupTime: slot, totalPrice: total },
+        step: 'CONFIRM', data: { ...data, pickupTime: slot },
       });
 
       const notesLine   = notes   ? `\n📝 *Notes:* ${notes}` : '';
       const addressLine = address ? `\n📍 *Deliver to:* ${address}` : '';
-      const currency    = business?.payment?.currency || 'D';
-      const totalLine   = total  != null ? `\n💰 *Total:* ${currency}${total}` : '';
-      const itemsBlock  = isCart ? `🧁 ${formatCartSummary(cart, business).replace(/\n/g, '\n🧁 ')}` : `🧁 *${qty}× ${itemLabel(item, data.variant)}*`;
+      const totalLine   = total   ? `\n💰 *Total:* ${item.currency || 'D'}${total}` : '';
 
       return {
         type: 'buttons',
         body:
           `🧾 *Order Summary*\n\n` +
-          `${itemsBlock}\n` +
+          `🧁 *${qty}× ${itemLabel(item, data.variant)}*\n` +
           `📦 *${method}*` +
           addressLine +
           `\n⏰ *${method === 'Delivery' ? 'Delivery' : 'Collection'} Time:* ${slot}` +
@@ -439,28 +340,18 @@ export async function handleBakeryOrderFlow({ session, message, business, tenant
         };
       }
 
-      const cart   = Array.isArray(data.cart) ? data.cart : [];
-      const isCart = cart.length > 0;
-
       let savedOrder = null;
       try {
         savedOrder = await saveOrder({
           tenantId:      session.tenantId,
           customerPhone: session.customerPhone,
           customerName:  session.customerName,
-          // [CART-AI] Multi-item cart → items[]; orderService.resolveOrderFields()
-          // mirrors items[0] into item/quantity/addOns for backward-compat readers.
-          // Single-item order (no cart) → exactly the pre-existing shape.
-          ...(isCart
-            ? { items: cartToOrderItems(cart), totalPrice: cartTotal(cart) }
-            : {
-                // [AUDIT-FIX-CATALOG-VARIANT-LOSS] data.variant is set by
-                // waCatalogFlow.js when this item was chosen via WA Catalog; bakery
-                // has no variant-specific step of its own and previously dropped it.
-                item:       itemLabel(data.item, data.variant),
-                quantity:   data.quantity || 1,
-                totalPrice: data.totalPrice || 0,
-              }),
+          // [AUDIT-FIX-CATALOG-VARIANT-LOSS] data.variant is set by
+          // waCatalogFlow.js when this item was chosen via WA Catalog; bakery
+          // has no variant-specific step of its own and previously dropped it.
+          item:          itemLabel(data.item, data.variant),
+          quantity:      data.quantity || 1,
+          totalPrice:    data.totalPrice || 0,
           notes:         [
             data.notes         ? `Message: ${data.notes}`        : null,
             data.fulfilment    ? `Fulfilment: ${data.fulfilment}` : null,
@@ -525,15 +416,12 @@ export async function handleBakeryOrderFlow({ session, message, business, tenant
           const notesLine   = data.notes          ? `\n📝 Notes: ${data.notes}`             : '';
           const addressLine = data.deliveryAddress ? `\n📍 Address: ${data.deliveryAddress}` : '';
           const totalLine   = data.totalPrice      ? `\n💰 Total: *${currency}${data.totalPrice}*` : '';
-          const itemsLine   = isCart
-            ? `🧁 ${formatCartSummary(cart, business).replace(/\n/g, '\n🧁 ')}\n`
-            : `🧁 *${data.quantity}× ${itemLabel(data.item, data.variant)}*\n`;
           await dispatchMessage(adminPhone, {
             type: 'buttons',
             body:
               `🔔 *New Bakery Order — ${business?.name || 'Bakery'}*\n\n` +
               `📞 Customer: *${session.customerPhone}*\n` +
-              itemsLine +
+              `🧁 *${data.quantity}× ${itemLabel(data.item, data.variant)}*\n` +
               `📦 Fulfilment: *${data.fulfilment || 'Collection'}*\n` +
               `⏰ Time: *${data.pickupTime || 'ASAP'}*` +
               addressLine + notesLine + totalLine +
@@ -546,13 +434,7 @@ export async function handleBakeryOrderFlow({ session, message, business, tenant
         }
       } catch {}
 
-      trackOrderAnalytics(
-        isCart ? formatCartSummary(cart, business) : itemLabel(data.item, data.variant),
-        null,
-        isCart ? cart.reduce((n, l) => n + l.quantity, 0) : data.quantity,
-        data.totalPrice || 0,
-        session.tenantId,
-      ).catch(() => {});
+      trackOrderAnalytics(itemLabel(data.item, data.variant), null, data.quantity, data.totalPrice || 0, session.tenantId).catch(() => {});
       // [AUDIT-FIX-4] recordRevenue() moved to adminCommandService.confirmPayment() —
       // recording it here at placement time counted unconfirmed/later-rejected orders
       // as revenue. See adminCommandService.js AUDIT-FIX-4 for full rationale.
@@ -567,9 +449,7 @@ export async function handleBakeryOrderFlow({ session, message, business, tenant
         type: 'text',
         body:
           `✅ *Order Received!* 🥐\n\n` +
-          (isCart
-            ? `${formatCartSummary(cart, business)}\n`
-            : `🧁 *${data.quantity}× ${itemLabel(data.item, data.variant)}*\n`) +
+          `🧁 *${data.quantity}× ${itemLabel(data.item, data.variant)}*\n` +
           `📦 ${data.fulfilment || 'Collection'} — ${data.pickupTime || 'ASAP'}\n` +
           (data.notes ? `📝 ${data.notes}\n` : '') +
           `\n⏳ Our team will confirm your order shortly. Please wait for confirmation before placing a new one. 🙏`,
@@ -583,20 +463,6 @@ export async function handleBakeryOrderFlow({ session, message, business, tenant
 }
 
 // ── UI Helpers ────────────────────────────────────────────────────────────────
-
-function _buildBakeryCartSummaryUI(cart, business, note = '') {
-  const currency = business?.payment?.currency || 'D';
-  const total = cartTotal(cart);
-  return {
-    type: 'buttons',
-    body: `🧾 *Your Order*\n\n${formatCartSummary(cart, business)}${total != null ? `\n\n💰 Total: *${currency}${total}*` : ''}${note}\n\nReady to checkout, or add something else?`,
-    buttons: [
-      { id: 'CONFIRM',          title: '✅ Checkout'  },
-      { id: 'ADD_ANOTHER_ITEM', title: '➕ Add More'   },
-      { id: 'CANCEL',           title: '❌ Cancel'     },
-    ],
-  };
-}
 
 function _getCategories(menu) {
   return [...new Set(menu.map(i => i.category).filter(Boolean))];

@@ -26,7 +26,7 @@ function makeBusiness(overrides = {}) {
   const img = { url: 'https://example.com/img.jpg' };
   return {
     tenantId: 't1',
-    waCatalog: { enabled: true, catalogId: 'CAT_1', mode: 'AI_DECIDES', lastSyncedAt: new Date(), syncedRetailerIds: ['i1', 'i2', 'i3', 'i5::s', 'i5::m'] },
+    waCatalog: { enabled: true, catalogId: 'CAT_1', mode: 'AI_DECIDES', lastSyncedAt: new Date(), syncedRetailerIds: ['i1'] },
     menuItems: [
       { _id: 'i1', name: 'Burger',   category: 'Mains',  available: true, price: 5, image: img },
       { _id: 'i2', name: 'Fries',    category: 'Mains',  available: true, price: 3, image: img },
@@ -63,7 +63,6 @@ test('buildCategorizedSections excludes unavailable items entirely', () => {
 // otherwise the message references a retailer_id Meta has no product for.
 test('buildCategorizedSections excludes items that would never actually sync (missing image / invalid price)', () => {
   const business = makeBusiness({
-    waCatalog: { enabled: true, catalogId: 'CAT_1', syncedRetailerIds: ['ok', 'no-image', 'no-price'] },
     menuItems: [
       { _id: 'ok',       name: 'Synced Item',  category: 'Mains', available: true, price: 5, image: { url: 'https://example.com/x.jpg' } },
       { _id: 'no-image', name: 'No Image',     category: 'Mains', available: true, price: 5 }, // never synced — no image
@@ -77,7 +76,6 @@ test('buildCategorizedSections excludes items that would never actually sync (mi
 
 test('buildCategorizedSections falls back to a single "Products" section when no item has a category', () => {
   const business = makeBusiness({
-    waCatalog: { enabled: true, catalogId: 'CAT_1', syncedRetailerIds: ['a', 'b'] },
     menuItems: [
       { _id: 'a', name: 'A', available: true, price: 1, image: { url: 'https://example.com/a.jpg' } },
       { _id: 'b', name: 'B', available: true, price: 1, image: { url: 'https://example.com/b.jpg' } },
@@ -93,33 +91,6 @@ test('buildCategorizedSections falls back to a single "Products" section when no
 test('buildCategorizedSections returns [] for a tenant with no sellable items (never throws)', () => {
   assert.deepEqual(buildCategorizedSections(makeBusiness({ menuItems: [] })), []);
   assert.deepEqual(buildCategorizedSections({}), []);
-});
-
-test('[FIX-CATALOG-CONFIRMED-ONLY] buildCategorizedSections excludes items that are locally valid but not yet CONFIRMED live in Meta (still pending batch verification)', () => {
-  // Reproduces the exact production symptom: 3 locally-valid items, but
-  // Meta has only confirmed 1 of them (the other 2 are still pending or
-  // were never confirmed) — the message must reference only the confirmed one.
-  const business = makeBusiness({
-    waCatalog: { enabled: true, catalogId: 'CAT_1', syncedRetailerIds: ['confirmed'] },
-    menuItems: [
-      { _id: 'confirmed', name: 'Confirmed Item', category: 'Mains', available: true, price: 5, image: { url: 'https://example.com/a.jpg' } },
-      { _id: 'pending-1', name: 'Pending Item 1', category: 'Mains', available: true, price: 5, image: { url: 'https://example.com/b.jpg' } },
-      { _id: 'pending-2', name: 'Pending Item 2', category: 'Mains', available: true, price: 5, image: { url: 'https://example.com/c.jpg' } },
-    ],
-  });
-  const sections = buildCategorizedSections(business);
-  const allIds = sections.flatMap(s => s.productRetailerIds);
-  assert.deepEqual(allIds, ['confirmed']);
-});
-
-test('[FIX-CATALOG-CONFIRMED-ONLY] buildCategorizedSections returns [] when nothing is confirmed yet, even if everything is locally valid', () => {
-  const business = makeBusiness({
-    waCatalog: { enabled: true, catalogId: 'CAT_1', syncedRetailerIds: [] },
-    menuItems: [
-      { _id: 'a', name: 'A', available: true, price: 1, image: { url: 'https://example.com/a.jpg' } },
-    ],
-  });
-  assert.deepEqual(buildCategorizedSections(business), []);
 });
 
 test('buildCategorizedSections caps at 10 sections and 30 rows per section', () => {

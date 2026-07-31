@@ -19,11 +19,8 @@ import {
   getServices, addService, updateService, deleteService,
   getFaqs, addFaq, updateFaq, deleteFaq,
 } from '../controllers/dashboardController.js';
-import { uploadSingle, uploadMultiple } from '../middleware/uploadMiddleware.js';
-import {
-  uploadMenuItemImage, removeMenuItemImage,
-  uploadMenuItemGalleryImages, removeMenuItemGalleryImage,
-} from '../controllers/menuImageController.js';
+import { uploadSingle } from '../middleware/uploadMiddleware.js';
+import { uploadMenuItemImage, removeMenuItemImage } from '../controllers/menuImageController.js';
 import { overviewLimiter } from '../middleware/rateLimiter.js';
 
 const r = Router();
@@ -89,17 +86,6 @@ r.delete('/:tenantId/menu/:itemId',                   enforceTenantScope, delete
 // DELETE /:tenantId/menu/:itemId/image — removes image from item + Cloudinary
 r.post('/:tenantId/menu/:itemId/image',               enforceTenantScope, uploadSingle, uploadMenuItemImage);
 r.delete('/:tenantId/menu/:itemId/image',             enforceTenantScope, removeMenuItemImage);
-
-// ── Menu item GALLERY images (multiple photos, additive to the cover image) ───
-// [FEAT-MULTI-IMAGE] POST accepts 1–10 files under repeated field "images" and
-// appends them to menuItems[].images. Fully independent of the single `image`
-// (cover photo) above — never touches it, never removes it. Meta catalog sync
-// reads these as `additional_image_urls`; the cover `image` stays the sync's
-// `image_link` exactly as before.
-// POST   /:tenantId/menu/:itemId/images              — multipart/form-data, repeated field "images"
-// DELETE /:tenantId/menu/:itemId/images/:imageId      — removes one gallery image by its subdocument _id
-r.post('/:tenantId/menu/:itemId/images',              enforceTenantScope, uploadMultiple, uploadMenuItemGalleryImages);
-r.delete('/:tenantId/menu/:itemId/images/:imageId',   enforceTenantScope, removeMenuItemGalleryImage);
 
 // ── Services CRUD ─────────────────────────────────────────────────────────────
 r.get('/:tenantId/services',                          enforceTenantScope, getServices);

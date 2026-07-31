@@ -231,17 +231,16 @@ async function checkBatchRequestStatus(handle, token, version) {
   }
 }
 
-// [MERGE-v15+DRIFT-RECONCILE] Ported forward from the pre-v15 branch — v15
-// diverged before this landed, so this whole function was missing here even
-// though [CATALOG-ASYNC-VERIFY-1]'s handle-based confirmation above it isn't
-// proof an item actually exists in Meta's catalog: confirmed live against
-// this platform's own catalog (Bruno testing, July 2026) that a batch can
-// report clean while the catalog itself held only 10 of 25 attempted items
-// (GET /{catalogId} product_count: 10 vs. itemsReady: 25 / lastSyncError:
-// null). Meta silently drops some items during per-item validation without
-// surfacing it in the batch's `errors` array, so `hasErrors: false` from
-// checkBatchRequestStatus is necessary but not sufficient. This is the one
-// authoritative source of truth: ask Meta what's actually live right now.
+// [CATALOG-ASYNC-VERIFY-2] check_batch_request_status resolving 'finished'
+// with errors_total_count: 0 is NOT proof an item actually exists in Meta's
+// catalog — confirmed live against this platform's own catalog (Bruno
+// testing, July 2026): a batch reported clean while the catalog itself held
+// only 10 of 25 attempted items (GET /{catalogId} product_count: 10 vs.
+// itemsReady: 25 / lastSyncError: null). Meta silently drops some items
+// during per-item validation without surfacing it in the batch's `errors`
+// array, so `hasErrors: false` from checkBatchRequestStatus is necessary but
+// not sufficient. This is the one authoritative source of truth: ask Meta
+// what's actually live right now.
 //
 // Returns a Set of retailer_ids Meta confirms exist, or `null` if the
 // verification call itself failed (network/timeout/non-200). Callers MUST
@@ -286,7 +285,7 @@ async function resolvePendingBatchHandles(business, token, version) {
   if (!pending.length) return;
 
   const stillPending = [];
-  const confirmedNow = []; // { retailer_id, hash } — from handles that resolved with no errors
+  let confirmedNow = []; // { retailer_id, hash } — from handles that resolved with no errors
   let sawError = null;
 
   for (const p of pending) {
@@ -296,19 +295,8 @@ async function resolvePendingBatchHandles(business, token, version) {
       continue;
     }
     if (result.hasErrors) {
-      // [FIX-CATALOG-BATCH-ERROR-DETAIL] Previously only the FIRST item error
-      // in a batch was ever recorded — for a batch where e.g. 15 of 25 items
-      // failed for different reasons (bad image URL, missing required field,
-      // policy rejection, etc.), that hid 14 of the 15 root causes entirely.
-      // Aggregate every distinct message Meta returned (deduped, capped) so
-      // a mixed-failure batch is diagnosable from lastSyncErrorDetail alone
-      // instead of requiring a manual check_batch_request_status call.
-      const errList = result.errors || [];
-      const distinctMsgs = [...new Set(errList.map(e => e.message).filter(Boolean))].slice(0, 5);
-      const summary = distinctMsgs.length
-        ? distinctMsgs.join(' | ')
-        : `batch ${result.status}`;
-      sawError = `Batch ${p.handle.slice(0, 12)}… ${result.status} (${errList.length || 'unknown count'} item error(s)): ${summary}`.slice(0, 500);
+      const firstMsg = result.errors?.[0]?.message || `batch ${result.status}`;
+      sawError = `Batch ${p.handle.slice(0, 12)}… ${result.status}: ${firstMsg}`.slice(0, 500);
       // [FIX-CATALOG-OPTIMISTIC-CONFIRM] Deliberately NOT committing p.items
       // here — they stay unconfirmed, so the next syncMenuToCatalog() run
       // still sees their hash as unmatched (or absent) and retries uploading
@@ -317,6 +305,32 @@ async function resolvePendingBatchHandles(business, token, version) {
     } else {
       confirmedNow.push(...(p.items || []));
     }
+  }
+
+  // [CATALOG-ASYNC-VERIFY-2] Same authoritative check as syncMenuToCatalog()
+  // below — a clean batch resolution here doesn't prove the items are
+  // actually live in Meta's catalog either, so verify before committing.
+  // Items that fail verification simply stay unconfirmed (same self-healing
+  // pattern as the hasErrors branch above), NOT recorded as an error unless
+  // nothing else already flagged one — a real batch-level error is the more
+  // specific, more actionable message to surface.
+  if (confirmedNow.length) {
+    const catalogId = business?.waCatalog?.catalogId;
+    const liveIds = catalogId ? await fetchLiveCatalogRetailerIds(catalogId, token, version) : null;
+    if (liveIds) {
+      const missing = confirmedNow.filter(i => !liveIds.has(i.retailer_id));
+      if (missing.length) {
+        sawError = sawError || (
+          `Batch reported clean but ${missing.length}/${confirmedNow.length} item(s) not ` +
+          `found in live catalog (e.g. "${missing[0].retailer_id}") — Meta silently rejected ` +
+          `them during validation without a batch-level error.`
+        ).slice(0, 500);
+        confirmedNow = confirmedNow.filter(i => liveIds.has(i.retailer_id));
+      }
+    }
+    // liveIds === null (verification call itself failed) → fall back to
+    // trusting the batch result rather than un-confirming a healthy sync
+    // over a transient network error.
   }
 
   try {
@@ -408,14 +422,6 @@ export async function syncMenuToCatalog(business, tenant) {
   // builder (unlike price/currency, which vary per item and must stay inside).
   const botPhoneDigits = String(tenant?.whatsapp?.phone || '').replace(/[^\d]/g, '');
 
-  // [FEAT-MULTI-IMAGE] Meta's own cap on additional_image_urls per product —
-  // named constant (rather than a literal slice(0, 10)) so this doesn't
-  // read as, or collide with, the unrelated "list truncated to 10 items"
-  // bug pattern the v21 audit swept the rest of this codebase for (see
-  // v21CatalogImagesAudit.test.mjs) — this one is an intentional,
-  // Meta-mandated limit, not an accidental truncation.
-  const MAX_ADDITIONAL_IMAGES = 10;
-
   const buildItemData = (item, variantName = null) => {
     const priceMajorUnits = (Number(item.price) || 0).toFixed(2);
     const currencyCode = item.currency || business?.payment?.currency || 'USD';
@@ -426,18 +432,6 @@ export async function syncMenuToCatalog(business, tenant) {
       condition:    'new',
       ...(item.description ? { description: item.description } : {}),
       ...(item.image?.url  ? { image_link: item.image.url }    : {}),
-      // [FEAT-MULTI-IMAGE] `image_link` above stays the single required
-      // cover photo — unchanged contract, unchanged field. Any EXTRA gallery
-      // photos on the item (menuItemSchema.images, uploaded via the
-      // dedicated /menu/:itemId/images endpoint) are sent under Meta's own
-      // `additional_image_urls` product-feed field, capped at Meta's own
-      // 10-image limit for that field. Since this is part of `data` below,
-      // it's included in hashItemData()'s hash — adding, removing, or
-      // reordering gallery photos correctly marks the item as changed and
-      // triggers a re-sync, exactly like any other edited field.
-      ...(Array.isArray(item.images) && item.images.length
-        ? { additional_image_urls: item.images.slice(0, MAX_ADDITIONAL_IMAGES).map(img => img.url).filter(Boolean) }
-        : {}),
       ...(botPhoneDigits   ? { link: `https://wa.me/${botPhoneDigits}` } : {}),
     };
   };
@@ -520,14 +514,14 @@ export async function syncMenuToCatalog(business, tenant) {
     .filter(id => id && !currentRetailerIds.has(id))
     .map(retailer_id => ({ method: 'DELETE', data: { id: retailer_id } }));
 
-  // [MERGE-v15+FIX-CATALOG-DRIFT-RECONCILE] The delta-hash diff above only
-  // re-examines an item when ITS OWN DATA changed — an item that's unchanged
-  // locally but was silently dropped from Meta's catalog after being
-  // confirmed (or was wrongly confirmed in the first place, e.g. by a
-  // version of this code that predated FIX-CATALOG-OPTIMISTIC-CONFIRM) has a
-  // hash that still matches what's stored, so it would otherwise never be
-  // re-attempted — exactly the "itemsReady: 25 in the DB, product_count: 10
-  // in Meta, forever" failure mode this fix closes. Throttled to once per
+  // [FIX-CATALOG-DRIFT-RECONCILE] The delta-hash diff above only re-examines
+  // an item when ITS OWN DATA changed — an item that's unchanged locally but
+  // was silently dropped from Meta's catalog after being confirmed (or was
+  // wrongly confirmed in the first place, e.g. by a version of this code
+  // that predated FIX-CATALOG-OPTIMISTIC-CONFIRM) has a hash that still
+  // matches what's stored, so it would otherwise never be re-attempted —
+  // exactly the "itemsReady: 25 in the DB, product_count: 10 in Meta,
+  // forever" failure mode this fix closes. Throttled to once per
   // RECONCILE_INTERVAL_MS since it costs one full paginated live-catalog
   // read and syncMenuToCatalog can run every few minutes off a debounced
   // menu edit.
@@ -678,14 +672,13 @@ export async function syncMenuToCatalog(business, tenant) {
     const unchangedConfirmed = allCurrentItems.filter(i => !allChangedItems.includes(i));
     let newlyConfirmed = allHandlesCleanNow ? allChangedItems : [];
 
-    // [MERGE-v15+CATALOG-ASYNC-VERIFY-2] A clean handle resolution
-    // (allHandlesCleanNow) is necessary but not sufficient — see
-    // fetchLiveCatalogRetailerIds() above for why. Cross-check candidates
-    // against what Meta's catalog actually contains before writing them as
-    // confirmed. Anything that fails this check keeps its OLD hash entry (or
-    // none, if new) exactly like an unresolved/errored handle does, so it's
-    // retried on the next sync instead of being permanently marked "synced"
-    // while missing.
+    // [CATALOG-ASYNC-VERIFY-2] A clean handle resolution (allHandlesCleanNow)
+    // is necessary but not sufficient — see fetchLiveCatalogRetailerIds()
+    // above for why. Cross-check candidates against what Meta's catalog
+    // actually contains before writing them as confirmed. Anything that
+    // fails this check keeps its OLD hash entry (or none, if new) exactly
+    // like an unresolved/errored handle does, so it's retried on the next
+    // sync instead of being permanently marked "synced" while missing.
     let verificationMismatch = null;
     if (newlyConfirmed.length) {
       const liveIds = await fetchLiveCatalogRetailerIds(catalogId, token, version);
@@ -730,7 +723,7 @@ export async function syncMenuToCatalog(business, tenant) {
         {
           $set: {
             'waCatalog.lastSyncedAt': new Date(),
-            // [MERGE-v15+FIX-CATALOG-DRIFT-RECONCILE] Only advance this if a
+            // [FIX-CATALOG-DRIFT-RECONCILE] Only advance this if a
             // reconciliation check actually ran (and succeeded) this call —
             // otherwise leave the stored value alone so an untried check
             // isn't mistaken for a clean one.

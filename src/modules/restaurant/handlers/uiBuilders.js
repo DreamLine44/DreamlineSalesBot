@@ -77,6 +77,102 @@ export function buildCartSummaryUI({ summaryText, total, business, note = '' }) 
   };
 }
 
+/**
+ * buildItemAddedUI
+ * [MULTICART-v40-EDIT] Shown immediately after ANY item is added to the cart
+ * (single item, browsed one at a time). Replaces the old per-item "Confirm
+ * Order?" summary (buildOrderSummary) as the default post-add prompt — the
+ * customer is only asked whether they want to keep shopping or move to
+ * checkout, never asked to "confirm" an individual line.
+ */
+export function buildItemAddedUI({ item, qty, business, cartCount }) {
+  const name = typeof item === 'object' ? item.name : item;
+  const countNote = cartCount ? `\n\n🛒 *${cartCount} item${cartCount > 1 ? 's' : ''}* in your cart so far.` : '';
+  return {
+    type: 'buttons',
+    body: `✅ Added *${qty}× ${name}* to your cart.${countNote}\n\nWould you like to add another item?`,
+    buttons: [
+      { id: 'ADD_ANOTHER_ITEM', title: '➕ Add Another Item' },
+      { id: 'REVIEW_CART',      title: '🧾 Review & Checkout' },
+    ],
+  };
+}
+
+/**
+ * buildItemsAddedUI
+ * [MULTICART-v40-EDIT] Multi-line counterpart to buildItemAddedUI — used when
+ * a single typed message resolved to 2+ distinct menu lines at once (e.g.
+ * "2 burgers and a coke").
+ */
+export function buildItemsAddedUI({ addedSummary, business, cartCount, note = '' }) {
+  const countNote = cartCount ? `\n\n🛒 *${cartCount} item${cartCount > 1 ? 's' : ''}* in your cart so far.` : '';
+  return {
+    type: 'buttons',
+    body: `✅ Added to your cart:\n${addedSummary}${countNote}${note}\n\nWould you like to add another item?`,
+    buttons: [
+      { id: 'ADD_ANOTHER_ITEM', title: '➕ Add Another Item' },
+      { id: 'REVIEW_CART',      title: '🧾 Review & Checkout' },
+    ],
+  };
+}
+
+/**
+ * buildCartReviewUI
+ * [MULTICART-v40-EDIT] The single consolidated order summary — shown once,
+ * when the customer is done adding items. Exactly the 3 actions requested:
+ * Confirm / Edit / Cancel. Replaces buildCartSummaryUI as the checkout-time
+ * screen (buildCartSummaryUI is kept for backward compatibility / tests but
+ * is no longer used for the final review).
+ */
+export function buildCartReviewUI({ summaryText, total, itemCount, business, note = '' }) {
+  const currency = business?.payment?.currency || 'D';
+  const countLine = itemCount != null ? `\nItems: *${itemCount}*` : '';
+  return {
+    type: 'buttons',
+    body: `🧾 *Order Summary*\n\n${summaryText}\n${'━'.repeat(10)}${countLine}${total != null ? `\nTotal: *${currency}${total}*` : ''}${note}\n\nWould you like to confirm this order?`,
+    buttons: [
+      { id: 'CONFIRM',    title: '✅ Confirm Order' },
+      { id: 'EDIT_CART',  title: '✏️ Edit Order'    },
+      { id: 'CANCEL',     title: '❌ Cancel Order'  },
+    ],
+  };
+}
+
+/**
+ * buildEditCartMenuUI
+ * [MULTICART-v40-EDIT] Top-level Edit Order menu — list message so all 6
+ * actions fit (interactive buttons are capped at 3).
+ */
+export function buildEditCartMenuUI() {
+  return {
+    type:        'list',
+    header:      'Edit Order',
+    body:        'What would you like to change?',
+    buttonLabel: 'Choose an action',
+    rows: [
+      { id: 'EDIT_ADD',       title: '➕ Add Item',         description: 'Browse the menu and add another item' },
+      { id: 'EDIT_REMOVE',    title: '➖ Remove Item',      description: 'Take an item out of your cart' },
+      { id: 'EDIT_INCREASE',  title: '🔼 Increase Quantity', description: 'Add more of an item already in your cart' },
+      { id: 'EDIT_DECREASE',  title: '🔽 Decrease Quantity', description: 'Reduce the quantity of an item' },
+      { id: 'EDIT_CLEAR',     title: '🗑️ Clear Cart',       description: 'Empty your entire cart' },
+      { id: 'EDIT_BACK',      title: '⬅️ Back to Summary',  description: 'Return to the order summary' },
+    ],
+  };
+}
+
+/**
+ * buildEditCartPickerUI
+ * [MULTICART-v40-EDIT] Numbered cart list shown when the customer picks
+ * Remove/Increase/Decrease from the Edit Order menu — they reply with the
+ * line number to act on.
+ */
+export function buildEditCartPickerUI({ numberedSummary, actionLabel }) {
+  return {
+    type: 'text',
+    body: `${numberedSummary}\n\nReply with the *number* of the item you'd like to ${actionLabel}, or type *back* to return to the Edit Order menu.`,
+  };
+}
+
 export function buildOrderSuccess({ item, qty, business }) {
   const name     = typeof item === 'object' ? item.name : (item || 'your item');
   const quantity = qty || 1;

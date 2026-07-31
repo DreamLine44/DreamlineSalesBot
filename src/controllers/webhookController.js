@@ -2207,7 +2207,13 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
       SUGGESTION_CONFIRM:   new Set(['CONFIRM', 'SHOW_MENU', 'CANCEL']),
       QUANTITY:             new Set([]), // expects free text — no valid buttons
       UPSELL:               new Set(['UPSELL_YES', 'UPSELL_NO']),
-      CONFIRM:              new Set(['CONFIRM', 'CANCEL']),
+      // [MULTICART-v40-EDIT] ITEM_ADDED — shown after every item added to the
+      // cart; EDIT_CART_MENU/EDIT_CART_PICK — the Edit Order sub-flow. CONFIRM
+      // now also offers Edit Order (EDIT_CART) alongside Confirm/Cancel.
+      ITEM_ADDED:           new Set(['ADD_ANOTHER_ITEM', 'REVIEW_CART']),
+      CONFIRM:              new Set(['CONFIRM', 'CANCEL', 'EDIT_CART']),
+      EDIT_CART_MENU:       new Set(['EDIT_ADD', 'EDIT_REMOVE', 'EDIT_INCREASE', 'EDIT_DECREASE', 'EDIT_CLEAR', 'EDIT_BACK']),
+      EDIT_CART_PICK:       new Set([]), // expects free text (line number) or "back"
       PAYMENT_PROOF:        new Set(['DONE', 'SUPPORT', 'CANCEL', 'CANCEL_ORDER']),
       AWAIT_ADMIN_CONFIRM:  new Set(['CANCEL', 'CANCEL_ORDER']),
       // ── Electronics-specific steps ─────────────────────────────────────────

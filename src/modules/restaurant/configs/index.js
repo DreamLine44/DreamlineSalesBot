@@ -9,9 +9,7 @@ export const RESTAURANT_CONFIG = {
   persona:      'friendly restaurant host who knows every dish and loves recommending the best pairings',
 
   steps: {
-    // [MULTICART-v39-PHASE2] CART_REVIEW added — reached from SELECT_ITEM on a
-    // multi-item message, or from CONFIRM via "Add Another Item".
-    ORDER:   ['SELECT_ITEM', 'CART_REVIEW', 'QUANTITY', 'CONFIRM'],
+    ORDER:   ['SELECT_ITEM', 'QUANTITY', 'CONFIRM'],
     BOOKING: ['SELECT_SERVICE', 'DATE', 'DATE_CONFIRM', 'TIME', 'TIME_CONFIRM', 'CONFIRM'],
   },
 
