@@ -41,10 +41,8 @@ import {
   normalizeCatalogSelection,
   resolveNextOrderStep, pickNextQueuedLine,
   buildQueuedFollowUpNote, buildSkippedLinesNote,
-  buildCatalogCartItems,
 } from './waCatalogHelpers.js';
 import logger                        from '../../config/logger.js';
-import { formatMoney }               from '../../utils/formatCurrency.js';
 
 // [CATALOG-UX-BUTTON] Shared by offerCatalogOnStartOrder() (automatic offer)
 // and browseCatalogExplicit() (explicit "🛍 Browse Catalog" button tap) —
@@ -269,146 +267,83 @@ export async function handleCatalogOrderMessage({ session, business, tenant, cat
  * -> UIResponse
  *
  * [CATALOG-CART-1] The multi-item counterpart to the single-item handoff
- * above. Builds ONE Order.items[] from every resolvable line in this WA
- * cart (capped at business.multiItemCart.maxItems -- the same hard bound the
- * in-chat cart loop was always meant to enforce, per orderService.js's own
- * comment on HARD_MAX_CART_ITEMS) and saves it in a single saveOrder() call,
- * then sends the same payment-instructions-or-cash-message + admin-alert
- * pair every per-vertical module's own ORDER CONFIRM step sends -- just
- * built generically here instead of duplicated per module, since a WA
- * Catalog cart is never module-specific (menuItems + payment config are the
- * only per-tenant inputs either path needs).
+ * above.
  *
- * Never a dead end: a saveOrder() failure falls back to a retry prompt, same
- * as every other failure path in this file.
+ * [FIX-CATALOG-CART-CONFIRM] Previously this function called saveOrder()
+ * immediately and told the customer the order was already placed — no
+ * "Confirm / Add More Items / Cancel" step at all, unlike every per-vertical
+ * module's own CONFIRM step (restaurant/handlers/uiBuilders.js
+ * buildCartReviewUI() and its equivalents), which always shows the
+ * assembled cart and waits for an explicit tap before saving anything. That
+ * mismatch meant a customer whose WA cart had a mistake (wrong quantity, an
+ * item they changed their mind about) had no chance to fix or cancel it —
+ * the order was already in the database and the admin already alerted by
+ * the time they saw the confirmation text.
+ *
+ * It also independently duplicated saveOrder/payment/admin-alert logic that
+ * already exists, correctly, in every module's own CONFIRM case — so this
+ * function's copy could (and did) drift out of sync with it.
+ *
+ * Fixed by reusing that existing, already-tested machinery instead of
+ * re-implementing it: the resolved catalog lines are merged into
+ * session.data.cart (mergeCartLines() from core/shared/cartEngine.js — the
+ * SAME merge helper the typed/in-chat multi-item flow uses, so two catalog
+ * lines for the same item, e.g. two separate "Superkanja" cart entries, are
+ * summed into one line instead of appearing twice), session.step is set to
+ * 'CONFIRM' — the exact step name every module's own ORDER flow already
+ * defines for its final cart review — and flowEngine.advance() is called
+ * with an empty message. Every module's CONFIRM case already treats a
+ * non-yes/non-confirm message as "show the review prompt, don't save
+ * anything yet", so this naturally renders that same module's own
+ * Confirm-Order/Add-More-Items/Cancel-Order screen (buildCartReviewUI() for
+ * restaurant) built from the ACTUAL merged catalog cart. When the customer
+ * then taps Confirm, they land back in that same CONFIRM case with
+ * raw='CONFIRM' — which runs saveOrder(), the payment/cash branch, and the
+ * admin alert exactly the way a typed multi-item order already does, with
+ * zero duplicated logic here.
+ *
+ * Never a dead end: if this module has no menu/cart at all somehow, the
+ * module's own CONFIRM case still safely falls back to buildMenuUI().
  */
 async function handleMultiItemCatalogOrder({ session, business, tenant, normalized }) {
   const { resolvedLines, extraLinesSkipped } = normalized;
-  const maxItems      = business?.multiItemCart?.maxItems || 10;
-  const cappedLines    = resolvedLines.slice(0, maxItems);
-  const overflowCount  = resolvedLines.length - cappedLines.length;
-  const cartItems      = buildCatalogCartItems(cappedLines);
+  const { mergeCartLines, enforceCartLimit } = await import('../../core/shared/cartEngine.js');
 
-  const { saveOrder } = await import('../../services/orderService.js');
-  let savedOrder = null;
-  try {
-    savedOrder = await saveOrder({
-      items:         cartItems,
-      customerName:  session.customerName || null,
-      customerPhone: session.customerPhone,
-      tenantId:      session.tenantId,
-      businessId:    business._id,
-    });
-  } catch (err) {
-    logger.error('[WACatalog] handleMultiItemCatalogOrder: saveOrder failed', {
-      err: err.message, tenantId: business?.tenantId,
-    });
-    return {
-      type:    'buttons',
-      body:    "Something went wrong saving your order -- sorry about that! Let's try again.",
-      buttons: [{ id: 'ORDER', title: '🛍 Shop' }, { id: 'SUPPORT', title: '💬 Help' }],
-    };
-  }
+  // [FIX-CATALOG-CART-CONFIRM] Map each resolved catalog line into the exact
+  // cart-line shape core/shared/cartEngine.js expects ({item, quantity,
+  // variant, addOns}), then merge through mergeCartLines() so two lines for
+  // the SAME item+variant (e.g. the customer tapped "+1" on an item they'd
+  // already added earlier in the same WA cart session) are summed into one
+  // line — never shown to the customer as two separate duplicate rows.
+  const newLines = resolvedLines.map(line => ({
+    item:     line.item,
+    quantity: line.quantity,
+    variant:  line.variant || null,
+    addOns:   [],
+  }));
+  const merged = mergeCartLines([], newLines);
+  const { cart: cappedCart, overflowCount } = enforceCartLimit(merged, business);
 
-  const totalPrice  = savedOrder.totalPrice;
-  const payment     = business?.payment;
-  const currency    = payment?.currency || 'D';
-  const cartSummary = cartItems.map(it => `${it.quantity}× ${it.item}`).join('\n');
-  const usePayment  = payment?.enabled && totalPrice != null;
-
-  // [FIX-CATALOG-CART-3] Mirrors the per-module CONFIRM step exactly: PAYMENT_PROOF
-  // when payment is configured (customer still needs to send a screenshot — see
-  // paymentService.receiveProof(), which is DB-driven off (customerPhone, tenantId)
-  // and therefore doesn't need anything special in session.data to work here).
-  //
-  // The cash/no-payment branch previously cleared currentFlow/step to null
-  // immediately — unlike EVERY per-vertical orderFlow.js's own "payment not
-  // enabled" branch (see restaurant/flows/orderFlow.js [FIX-3]/[FIX-AWAIT],
-  // bakery/flows/orderFlow.js, etc.), which always parks at AWAIT_ADMIN_CONFIRM
-  // instead. That gap meant a cash WA Catalog cart order: (a) never went through
-  // webhookController's AWAIT_ADMIN_CONFIRM guard or its PENDING ORDER LOCK, so
-  // the customer could immediately start a second order while the first was still
-  // unconfirmed, and (b) the admin alert below had no APPROVE_/REJECT_ buttons, so
-  // there was no tap-to-confirm path at all for this order — it could only ever be
-  // actioned by an admin manually typing an APPROVE/REJECT command. Fixed to match
-  // every other module: park at AWAIT_ADMIN_CONFIRM for the cash branch too.
   await updateSession(session.customerPhone, session.tenantId, {
     currentFlow: 'ORDER',
-    step:        usePayment ? 'PAYMENT_PROOF' : 'AWAIT_ADMIN_CONFIRM',
-    data:        {},
+    step:        'CONFIRM',
+    data:        { cart: cappedCart },
     menuViewed:  true,
-    pendingCatalogQueue: [], // consolidated order -- no per-line queue to drain
+    pendingCatalogQueue: [], // consolidated cart -- no per-line queue to drain
   });
 
-  // Notify admin -- fire-and-forget, same pattern as every other admin alert
-  // in this file and every per-vertical CONFIRM step.
-  //
-  // [FIX-CATALOG-CART-3] The cash branch now sends the same APPROVE_/REJECT_
-  // interactive card every other module sends for a cash/no-payment order, so
-  // the admin has a one-tap way to confirm or cancel it (see adminCommandService
-  // .confirmPayment()/rejectPayment(), which resolve purely off the order's
-  // shortId and are already cart-shape-agnostic). The payment-required branch
-  // is left as a plain-text notice, unchanged — its own real approval card is
-  // sent later by paymentService.receiveProof() once the screenshot arrives,
-  // exactly like every other module's payment-enabled path.
-  try {
-    const adminPhone = business?.adminPhone || tenant?.adminPhone;
-    if (adminPhone && tenant) {
-      const { dispatchMessage } = await import('../../core/whatsapp/dispatcher.js');
-      const alertBody =
-        `🔔 *New Order — ${business.name || 'Business'}*\n\n` +
-        `👤 Customer: *${session.customerPhone}*\n` +
-        `🛒 Items:\n${cartSummary}\n` +
-        (totalPrice != null ? `💰 Total: *${currency}${formatMoney(totalPrice)}*\n` : '') +
-        `🔖 Ref: \`#${savedOrder.shortId}\`\n\n` +
-        `⏳ Status: *Pending*${usePayment ? ' — awaiting payment screenshot.' : ' — please confirm.'}`;
+  const freshSession = (await getSession(session.customerPhone, session.tenantId)) || session;
+  const reply = await advance({ session: freshSession, message: '', business, tenant, isInteractive: false });
 
-      await dispatchMessage(adminPhone, usePayment
-        ? { type: 'text', body: alertBody }
-        : {
-            type:    'buttons',
-            body:    alertBody,
-            buttons: [
-              { id: `APPROVE_${savedOrder.shortId}`, title: '✅ Confirm Received' },
-              { id: `REJECT_${savedOrder.shortId}`,  title: '❌ Cancel Order'     },
-            ],
-          },
-      tenant).catch(() => {});
+  if (reply && typeof reply.body === 'string') {
+    if (overflowCount > 0) {
+      const maxItems = business?.multiItemCart?.maxItems || 10;
+      reply.body += `\n\n_(Heads up — your cart had more items than we can process at once ` +
+        `(max ${maxItems}), so ${overflowCount} ${overflowCount > 1 ? 'were' : 'was'} left out. ` +
+        `Please contact us to add ${overflowCount > 1 ? 'them' : 'it'}.)_`;
     }
-  } catch { /* non-fatal -- mirrors every other admin-alert try/catch in this codebase */ }
-
-  let reply;
-  if (usePayment) {
-    const { buildPaymentInstructionsUI } = await import('../../services/paymentService.js');
-    reply = buildPaymentInstructionsUI(business, totalPrice, savedOrder.shortId);
-    // Store the reference on the order -- mirrors every per-module CONFIRM step.
-    if (savedOrder?._id) {
-      const now = new Date();
-      const mm  = String(now.getMonth() + 1).padStart(2, '0');
-      const dd  = String(now.getDate()).padStart(2, '0');
-      const ref = `DSB-${mm}${dd}-${savedOrder.shortId}`;
-      const { default: OrderModel } = await import('../../models/Order.js');
-      OrderModel.updateOne({ _id: savedOrder._id }, { $set: { paymentReference: ref } }).catch(() => {});
-    }
-  } else {
-    // [FIX-CATALOG-CART-3] Same "please wait for confirmation" framing every
-    // other module uses in its cash/AWAIT_ADMIN_CONFIRM branch, since the
-    // customer is now genuinely parked waiting on an admin tap, not done.
-    reply = {
-      type: 'text',
-      body:
-        `✅ *Order received!*\n\n${cartSummary}\n\n` +
-        (totalPrice != null ? `💰 Total: *${currency}${formatMoney(totalPrice)}*\n\n` : '') +
-        `⏳ Your order has been received. Please wait for our team to confirm it before placing a new one.`,
-    };
+    reply.body += buildSkippedLinesNote(extraLinesSkipped);
   }
-
-  if (overflowCount > 0) {
-    reply.body += `\n\n_(Heads up — your cart had more items than we can process at once ` +
-      `(max ${maxItems}), so ${overflowCount} ${overflowCount > 1 ? 'were' : 'was'} left out. ` +
-      `Please contact us to add ${overflowCount > 1 ? 'them' : 'it'}.)_`;
-  }
-  reply.body += buildSkippedLinesNote(extraLinesSkipped);
 
   return reply;
 }

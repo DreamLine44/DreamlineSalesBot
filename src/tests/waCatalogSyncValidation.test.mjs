@@ -93,22 +93,31 @@ test('Order.items[] subdocument schema declares menuItemId (previously silently 
   assert.match(orderModelSrc, /menuItemId:\s*\{\s*type:\s*mongoose\.Schema\.Types\.ObjectId,\s*default:\s*null\s*\}/);
 });
 
-// ── [FIX-CATALOG-CART-3] cash consolidated catalog order parity ─────────
+// ── [FIX-CATALOG-CART-CONFIRM] consolidated catalog cart routes through the
+//    module's own CONFIRM step instead of auto-saving ─────────────────────
 //
-// A consolidated (multiItemCart.enabled) WA Catalog order placed with no
-// payment configured must go through the same AWAIT_ADMIN_CONFIRM guard and
-// APPROVE_/REJECT_ admin card as every per-vertical orderFlow.js's own cash
-// branch (restaurant/flows/orderFlow.js [FIX-3]/[FIX-AWAIT] is the canonical
-// example) — previously it cleared the session immediately and sent only a
-// plain-text admin notice with no way to approve/reject it.
+// handleMultiItemCatalogOrder() no longer calls saveOrder()/parks at
+// AWAIT_ADMIN_CONFIRM/sends an APPROVE_/REJECT_ card itself — that duplicated
+// (and drifted from) logic that already exists, correctly, in every
+// per-vertical orderFlow.js's own CONFIRM case. Payment/cash parity
+// (AWAIT_ADMIN_CONFIRM + APPROVE_/REJECT_ card) is already covered by each
+// module's own tests (e.g. restaurant/flows/orderFlow.js's [FIX-3]/
+// [FIX-AWAIT] tests) since a WA Catalog cart now reaches that exact same
+// CONFIRM case. What this file now needs to guard is that the hand-off
+// itself is correct: merge the resolved catalog lines into session.data.cart
+// and land on step 'CONFIRM' so that shared machinery runs.
 
 const catalogFlowSrc = read('../modules/catalog/waCatalogFlow.js');
 
-test('handleMultiItemCatalogOrder parks the cash (no-payment) branch at AWAIT_ADMIN_CONFIRM, not a cleared session', () => {
-  assert.match(catalogFlowSrc, /step:\s*usePayment \? 'PAYMENT_PROOF' : 'AWAIT_ADMIN_CONFIRM'/);
+test('handleMultiItemCatalogOrder merges resolved catalog lines into session.data.cart via mergeCartLines (dedupes repeated items) instead of building an Order directly', () => {
+  assert.match(catalogFlowSrc, /mergeCartLines, enforceCartLimit \} = await import\('\.\.\/\.\.\/core\/shared\/cartEngine\.js'\)/);
+  assert.match(catalogFlowSrc, /const merged = mergeCartLines\(\[\], newLines\)/);
 });
 
-test('handleMultiItemCatalogOrder sends an APPROVE_/REJECT_ interactive card for the cash branch', () => {
-  assert.match(catalogFlowSrc, /id:\s*`APPROVE_\$\{savedOrder\.shortId\}`/);
-  assert.match(catalogFlowSrc, /id:\s*`REJECT_\$\{savedOrder\.shortId\}`/);
+test('handleMultiItemCatalogOrder sets step to CONFIRM and delegates to flowEngine.advance() rather than calling saveOrder itself', () => {
+  assert.match(catalogFlowSrc, /step:\s*'CONFIRM'/);
+  assert.match(catalogFlowSrc, /data:\s*\{\s*cart:\s*cappedCart\s*\}/);
+  assert.match(catalogFlowSrc, /const reply = await advance\(\{ session: freshSession, message: '', business, tenant, isInteractive: false \}\)/);
+  // Must NOT re-implement saveOrder/admin-alert logic in this function anymore.
+  assert.doesNotMatch(catalogFlowSrc, /step:\s*usePayment \? 'PAYMENT_PROOF' : 'AWAIT_ADMIN_CONFIRM'/);
 });
