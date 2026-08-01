@@ -828,6 +828,20 @@ export async function route({ action, intent, session, message, business, tenant
         return buildOptionsReply(cfg, cfg.messages?.welcome || '👋 How can I help you today?');
       }
 
+      // [FIX-DECLINE-1] A plain decline ("No thanks", "I'm good", "not
+      // interested") has no dedicated handling above and previously fell
+      // through to the AI as an unrecognized message — which replied with a
+      // generic "Welcome to X, how can I help?" and re-showed the exact same
+      // buttons the customer had just declined. Reads as the bot not having
+      // understood them at all. Kept in sync with tests/declineDetection.test.mjs.
+      const DECLINE_RE = /^(no+\s*(thanks?|thank\s*you)?|nah+|nope+|not\s*(now|really|interested|today)|i'?m\s*good|im\s*good|all\s*good|maybe\s*later|not\s*at\s*the\s*moment)[.!]?$/i;
+      if (DECLINE_RE.test(cleanMsg)) {
+        return buildOptionsReply(
+          cfg,
+          `No problem at all${business?.businessName ? ` — ${business.businessName} is` : ' — I\'m'} here whenever you're ready. 🙂`
+        );
+      }
+
       const aiText = await getAIReply({ customerMessage: message, business, session, intent });
       // [FIX-BUG1] cfg.messages.fallback not cfg.labels.fallback
       const fallbackMsg = business?.customMessages?.fallback || cfg.messages?.fallback;

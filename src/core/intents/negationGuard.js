@@ -71,7 +71,27 @@ const HESITATION_RE = /\b(maybe|perhaps|i\s*m\s*(?:just\s*)?thinking|not\s*sure|
 // workflow"). Free-form complement to the existing bare-word SUPPORT keyword
 // entries ('refund', 'complaint', 'wrong order', 'manager', ...), which only
 // match when they are the ENTIRE message.
-const COMPLAINT_RE = /\b(wrong\s*order|cold\s*food|late\s*delivery|poor\s*service|terrible\s*service|awful\s*service|missing\s*items?|speak\s*to\s*(?:a\s*)?manager|i\s*have\s*a\s*complaint|this\s*is\s*(?:wrong|unacceptable)|not\s*happy\s*with|order\s*was\s*wrong|food\s*was\s*cold|i\s*want\s*a\s*refund)\b/i;
+//
+// [AUDIT-FIX-COMPLAINT-BROADEN-1] This list used to only cover specific
+// product/order complaints ("wrong order", "cold food"...) and had zero
+// overlap with core/sentiment/emotionEngine.js's FRUSTRATED_RE, which detects
+// general anger/frustration at the BOT/CONVERSATION itself ("ridiculous",
+// "unacceptable", "fed up", "useless bot", "this is not working"...).
+// Because emotionEngine only ever prepends a short "sorry" tone line to
+// whatever route() already decided to send — it never changes the underlying
+// action — a customer typing "this is ridiculous, just give me a real
+// person" previously fell through to FALLBACK/CLARIFY (an AI reply plus the
+// same welcome menu) with only a one-line apology stuck on top, reading as
+// if the bot ignored what was actually said.
+// Folding that frustration vocabulary in here means the SAME message now
+// hits this guard (which runs BEFORE any flow-ownership / AI-skip check —
+// see intentEngine.js step 4.2) and is properly escalated to the existing
+// SUPPORT action: human handoff, admin alert, bot goes silent — instead of
+// only getting a softer tone on an unrelated reply.
+// Also added: free-form requests for a human ("talk to someone", "connect me
+// with an agent"...) that don't exactly equal one of the SUPPORT keyword
+// entries in patterns.js (those only match when they ARE the whole message).
+const COMPLAINT_RE = /\b(wrong\s*order|cold\s*food|late\s*delivery|poor\s*service|terrible\s*service|awful\s*service|missing\s*items?|speak\s*to\s*(?:a\s*)?manager|i\s*have\s*a\s*complaint|this\s*is\s*(?:wrong|unacceptable|ridiculous)|not\s*happy\s*with|order\s*was\s*wrong|food\s*was\s*cold|i\s*want\s*a\s*refund|ridiculous|unacceptable|fed\s*up|sick\s*of\s*this|so\s*annoy\w*|annoyed|frustrat\w*|waste\s*of\s*time|useless|worst\s*(?:service|bot|app|experience)|this\s*is\s*not\s*working|is\s*this\s*not\s*working|why\s*is\s*(?:n\s*t\s*)?this\s*working|(?:talk|speak|connect\s*me)\s*(?:to|with)\s*(?:an?\s*)?(?:real\s*)?(?:human|person|agent|someone|manager|owner)|i\s*(?:a|')?m\s*(?:so\s*)?(?:angry|furious|upset)|i\s*am\s*(?:so\s*)?(?:angry|furious|upset)|this\s*is\s*a\s*disaster|completely\s*unacceptable)\b/i;
 
 /**
  * analyzeMessage(rawMessage)

@@ -518,6 +518,20 @@ export async function handlePostFlowMessage({
         await dispatchMessage(from, buildOptionsReply(cfg, `You're welcome${custName}! 😊 We'll have your quote ready shortly. We'll reach out as soon as it's prepared.`), tenantDoc);
         return true;
       }
+      // [AUDIT-FIX-EXPRESSION-WINDOW-2] A complaint here previously fell into the
+      // generic "else" branch below and got the same upbeat "Thanks! Our team
+      // will be in touch" reply as an ordinary follow-up — ignoring the
+      // complaint entirely. Now escalates like every other ackCtx case.
+      if (isComplaint) {
+        const { getAIReply: _qfAI } = await import('../core/ai/providers/aiRouter.js');
+        const _qfReply = await _qfAI({ customerMessage: msg, business, intent: 'COMPLAINT' });
+        await dispatchMessage(from, {
+          type:    'buttons',
+          body:    _qfReply || `We're sorry to hear that${custName}. 😔 Let us know how we can help.`,
+          buttons: [{ id: 'SUPPORT', title: '💬 Speak to Team' }],
+        }, tenantDoc);
+        return true;
+      }
       // Question or other — show warm menu
       await dispatchMessage(from, buildOptionsReply(cfg, `Thanks${custName}! 😊 Our team will be in touch with your quote. Is there anything else we can help with?`), tenantDoc);
       return true;
@@ -529,14 +543,75 @@ export async function handlePostFlowMessage({
         await dispatchMessage(from, buildOptionsReply(cfg, `Glad to share! 😊 Let us know if you'd like to get started.`), tenantDoc);
         return true;
       }
+      // [AUDIT-FIX-EXPRESSION-WINDOW-2] A complaint here previously went through
+      // the generic AI QUESTION-intent reply below with no escalation path —
+      // the AI would improvise an answer without ever offering to connect the
+      // customer to a human. Now escalates like every other ackCtx case.
+      if (isComplaint) {
+        const { getAIReply: _aboutComplaintAI } = await import('../core/ai/providers/aiRouter.js');
+        const _aboutComplaintReply = await _aboutComplaintAI({ customerMessage: msg, business, intent: 'COMPLAINT' });
+        await dispatchMessage(from, {
+          type:    'buttons',
+          body:    _aboutComplaintReply || `We're sorry to hear that${custName}. 😔 Let us know how we can help.`,
+          buttons: [{ id: 'SUPPORT', title: '💬 Speak to Team' }],
+        }, tenantDoc);
+        return true;
+      }
       const { getAIReply: _aboutAI } = await import('../core/ai/providers/aiRouter.js');
       const _aboutReply = await _aboutAI({ customerMessage: msg, business, intent: 'QUESTION' });
       await dispatchMessage(from, buildOptionsReply(cfg, _aboutReply || `Happy to help${custName}! 😊`), tenantDoc);
       return true;
     }
 
-    // Legacy/generic postFlowAck (ORDER, BOOKING) — kept for backwards compat
+    // Legacy/generic postFlowAck (ORDER, BOOKING) — kept for backwards compat.
+    // [AUDIT-FIX-EXPRESSION-WINDOW-1] Previously these two cases ignored the
+    // customer's message entirely — isAck/isCompliment/isComplaint/isQuestion
+    // are computed once above for every OTHER ackCtx case in this file
+    // (ORDER_CONFIRMED, BOOKING_CONFIRMED, WALKIN, QUESTION...) but these two
+    // never checked them, so a customer replying "thank you so much!!" or
+    // "this took forever, I'm annoyed" or "can I add a drink?" right after
+    // placing an order/booking got the exact same canned "we're preparing
+    // your order" line regardless. That's the bakery ORDER path
+    // (modules/bakery/flows/index.js) and every mode that completes a
+    // booking through core/conversations/bookingFlow.js.
+    //
+    // Now mirrors the pattern used everywhere else in this file: a genuine
+    // compliment/thanks gets a warm plain-text reply with NO buttons — the
+    // customer volunteered a reaction, not a request, so meeting it with a
+    // button menu reads as transactional. A complaint escalates to SUPPORT
+    // (human handoff option) with an empathetic AI-drafted reply. A real
+    // question gets answered. Anything else falls back to the original
+    // status line. In every branch postFlowAck stays cleared (set to null at
+    // [PFH-2] above and never re-armed here) — the customer gets exactly one
+    // turn of open, button-free conversation before normal routing resumes,
+    // so this is a bounded courtesy, not an open-ended detour.
     case 'ORDER': {
+      if (isComplaint) {
+        const { getAIReply } = await import('../core/ai/providers/aiRouter.js');
+        const aiReply = await getAIReply({ customerMessage: msg, business, intent: 'COMPLAINT' });
+        await dispatchMessage(from, {
+          type:    'buttons',
+          body:    aiReply || `We're sorry to hear that${custName}. 😔 A member of our team will look into this right away.`,
+          buttons: [{ id: 'SUPPORT', title: '💬 Speak to Team' }],
+        }, tenantDoc);
+        return true;
+      }
+      if (isCompliment) {
+        await dispatchMessage(from, {
+          type: 'text',
+          body: `That means a lot to us${custName}! 😊 We're preparing your order — we'll let you know when it's ready!`,
+        }, tenantDoc);
+        return true;
+      }
+      if (isQuestion) {
+        const { getAIReply } = await import('../core/ai/providers/aiRouter.js');
+        const aiReply = await getAIReply({ customerMessage: msg, business, intent: 'QUESTION' });
+        await dispatchMessage(from, {
+          type: 'text',
+          body: (aiReply || `Happy to help${custName}! 😊`) + `\n\n_Your order is still being prepared — we'll notify you when it's ready._`,
+        }, tenantDoc);
+        return true;
+      }
       await dispatchMessage(from, {
         type: 'text',
         body: `You're welcome${custName}! 😊 We're preparing your order — we'll let you know when it's ready!`,
@@ -549,6 +624,32 @@ export async function handlePostFlowMessage({
       // the admin has NOT yet confirmed; the booking is PENDING admin review. Saying
       // "confirmed" is factually wrong and confuses customers who then ask why the admin
       // later sends a separate confirmation message. Changed to "booking request received".
+      if (isComplaint) {
+        const { getAIReply } = await import('../core/ai/providers/aiRouter.js');
+        const aiReply = await getAIReply({ customerMessage: msg, business, intent: 'COMPLAINT' });
+        await dispatchMessage(from, {
+          type:    'buttons',
+          body:    aiReply || `We're sorry to hear that${custName}. 😔 A member of our team will look into this right away.`,
+          buttons: [{ id: 'SUPPORT', title: '💬 Speak to Team' }],
+        }, tenantDoc);
+        return true;
+      }
+      if (isCompliment) {
+        await dispatchMessage(from, {
+          type: 'text',
+          body: `That's very kind${custName}! 😊 Your booking request has been received and is awaiting confirmation. We'll let you know as soon as it's confirmed!`,
+        }, tenantDoc);
+        return true;
+      }
+      if (isQuestion) {
+        const { getAIReply } = await import('../core/ai/providers/aiRouter.js');
+        const aiReply = await getAIReply({ customerMessage: msg, business, intent: 'QUESTION' });
+        await dispatchMessage(from, {
+          type: 'text',
+          body: (aiReply || `Happy to help${custName}! 😊`) + `\n\n_Your booking request is awaiting confirmation — we'll let you know as soon as it's confirmed!_`,
+        }, tenantDoc);
+        return true;
+      }
       const body = `You're welcome${custName}! 😊 Your booking request has been received and is awaiting confirmation. We'll let you know as soon as it's confirmed!`;
       await dispatchMessage(from, { type: 'text', body }, tenantDoc);
       return true;

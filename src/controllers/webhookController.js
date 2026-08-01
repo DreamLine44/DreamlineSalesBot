@@ -2952,8 +2952,37 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
     }
   }
 
+  // [AUDIT-FIX-EMOTION-ESCALATE-1] The tone-prefix wiring above (FEAT-EMOTION-WIRE-2)
+  // is purely cosmetic — it prepends "😔 Sorry about that" to whatever route()
+  // already decided to send, but never changes WHAT gets sent. That's fine when
+  // intent detection found something genuinely relevant, but FALLBACK/CLARIFY
+  // specifically mean "nothing matched — here's an AI guess plus the default menu
+  // buttons" (see moduleRouter.js FALLBACK/CLARIFY case). Stacking an apology on
+  // top of an unrelated menu dump reads as the bot ignoring an upset customer —
+  // exactly the "here's our menu" failure mode this fix targets.
+  //
+  // A message this angry that ALSO matches something specific (COMPLAINT_RE,
+  // CANCEL, a real keyword/direct-phrase/AI intent) already resolved to that
+  // more specific action upstream in detectIntent() and never reaches here as
+  // FALLBACK/CLARIFY — the broadened negationGuard.js COMPLAINT_RE
+  // ([AUDIT-FIX-COMPLAINT-BROADEN-1]) already escalates most of these cases
+  // earlier. This is the narrower net for whatever still slips through (e.g.
+  // frustration expressed only via punctuation/shouting, which the regex-only
+  // complaint guard can't see): redirect a FRUSTRATED customer with no other
+  // match straight into the existing SUPPORT flow (human handoff + admin
+  // alert + bot goes silent) instead of the generic fallback.
+  let effectiveAction = action;
+  let effectiveIntent = intent;
+  if (finalEmotion === 'FRUSTRATED' && (action === 'FALLBACK' || action === 'CLARIFY')) {
+    logger.info('[Webhook] FRUSTRATED + generic action — escalating to SUPPORT', {
+      from, tenantId, originalAction: action, messagePreview: messageText?.slice(0, 60),
+    });
+    effectiveAction = 'SUPPORT';
+    effectiveIntent = 'SUPPORT';
+  }
+
   let reply = await route({
-    action, intent, session,
+    action: effectiveAction, intent: effectiveIntent, session,
     message: messageText, business,
     tenant: tenantDoc, isInteractive, suggestion,
   });
@@ -2961,8 +2990,11 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
   // [FEAT-EMOTION-WIRE-2] Apply the tone prefix using the SAME finalEmotion
   // computed above (before route()) — no need to re-detect. NEUTRAL/URGENT
   // intentionally have no prefix (see emotionEngine.js TONE_PREFIX) so this is
-  // a no-op for those.
-  if (reply && finalEmotion !== 'NEUTRAL') {
+  // a no-op for those. [AUDIT-FIX-EMOTION-ESCALATE-1] Skipped when we just
+  // escalated to SUPPORT above — that reply already opens with its own
+  // apologetic framing ("I've flagged this to our team"), so a second, separate
+  // "Sorry about that" line on top would just be redundant.
+  if (reply && finalEmotion !== 'NEUTRAL' && effectiveAction !== 'SUPPORT') {
     try {
       const { applyEmotionTone } = await import('../core/sentiment/emotionEngine.js');
       reply = applyEmotionTone(reply, finalEmotion);
