@@ -31,6 +31,7 @@ import { getModeConfig }  from '../config/modes.js';
 import { dispatchMessage } from '../core/whatsapp/dispatcher.js';
 import { buildOptionsReply } from '../core/shared/uiOptionsHelper.js';
 import logger from '../config/logger.js';
+import { formatMoney } from '../utils/formatCurrency.js';
 
 // ── Name validation (duplicated from webhookController — avoids circular import) ──
 function isValidName(n) {
@@ -795,7 +796,7 @@ async function handleOrderConfirmed({
     const currency  = business?.payment?.currency || 'D';
     const ordItem   = ord?.item      || flowData.item     || '—';
     const ordQty    = ord?.quantity  || flowData.quantity || '—';
-    const ordTotal  = ord?.totalPrice ? `${currency}${ord.totalPrice}` : '—';
+    const ordTotal  = ord?.totalPrice ? `${currency}${formatMoney(ord.totalPrice)}` : '—';
     const ordRef    = ord?.shortId   || flowData.shortId || '—';
     const ordStatus = (ord?.status === 'confirmed') ? 'Being Prepared 🍳' : '⏳ Pending';
 

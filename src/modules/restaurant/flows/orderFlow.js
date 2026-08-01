@@ -58,11 +58,13 @@ import { dispatchText }     from '../../../core/whatsapp/dispatcher.js';
 import { buildPaymentInstructionsUI } from '../../../services/paymentService.js';
 import { buildWhatsAppImageUrl }       from '../../../config/cloudinary.js';
 import { itemLabel }        from '../../../utils/itemLabel.js';
+import { formatMoney }      from '../../../utils/formatCurrency.js';
 import {
   parseMultiItemMessage, mergeCartLines, enforceCartLimit,
   cartTotal, cartToOrderItems, formatCartSummary, buildUnmatchedNote,
   removeCartLine, incrementCartLine, decrementCartLine, clearCart,
   cartItemCount, formatNumberedCartSummary,
+  parseCartModification, applyCartModification,
 } from '../../../core/shared/cartEngine.js';
 import logger               from '../../../config/logger.js';
 
@@ -260,13 +262,12 @@ export async function handleOrderFlow({ session, message, business, tenant, isIn
       if (!cart.length) return buildMenuUI(business);
 
       const wantsReview = raw === 'REVIEW_CART' ||
-        /^(review|checkout|done|finish|finished|no|nope|that's all|thats all|i'?m done)$/i.test(clean);
+        /^(review|checkout|view cart|finish order|done|finish|finished|no|nope|that's all|thats all|i'?m done)$/i.test(clean);
       if (wantsReview) {
         await updateSession(session.customerPhone, session.tenantId, { step: 'CONFIRM' });
         return buildCartReviewUI({
           summaryText: formatCartSummary(cart, business),
           total:       cartTotal(cart),
-          itemCount:   cartItemCount(cart),
           business,
         });
       }
@@ -276,6 +277,24 @@ export async function handleOrderFlow({ session, message, business, tenant, isIn
       if (wantsMore) {
         await updateSession(session.customerPhone, session.tenantId, { step: 'SELECT_ITEM' });
         return buildMenuUI(business);
+      }
+
+      // [CART-AI-MODIFY] "remove the coke" / "make it 3 fries" — resolved
+      // against the items ALREADY in the cart. Checked BEFORE the "treat as
+      // more items to add" fallback below so a removal/resize request can
+      // never be misread as an attempt to add a brand-new line.
+      const modResult = await _resolveCartModification(session, business, data, cart, raw);
+      if (modResult) {
+        if (!modResult.updatedCart.length) return buildMenuUI(business);
+        const newCount = cartItemCount(modResult.updatedCart);
+        return {
+          type: 'buttons',
+          body: `${modResult.mod.type === 'remove' ? '🗑️ Removed from your cart.' : '✅ Updated the quantity.'}\n\n🛒 *${newCount} item${newCount > 1 ? 's' : ''}* in your cart.\n\nWould you like to add another item?`,
+          buttons: [
+            { id: 'ADD_ANOTHER_ITEM', title: '➕ Add Another Item'  },
+            { id: 'REVIEW_CART',      title: '🧾 Review & Checkout' },
+          ],
+        };
       }
 
       // Treat the message itself as more items to add to the existing cart —
@@ -360,7 +379,7 @@ export async function handleOrderFlow({ session, message, business, tenant, isIn
         });
         return {
           type:    'buttons',
-          body:    `You've chosen *${qty}× ${item.name}*${total ? ` — ${currency}${total}` : ''}.\n\nWould you like to add *${addOn.name}* for ${currency}${addOn.price}? 🥤`,
+          body:    `You've chosen *${qty}× ${item.name}*${total ? ` — ${currency}${formatMoney(total)}` : ''}.\n\nWould you like to add *${addOn.name}* for ${currency}${formatMoney(addOn.price)}? 🥤`,
           buttons: [
             { id: 'UPSELL_YES', title: '✅ Yes, add it' },
             { id: 'UPSELL_NO',  title: '❌ No thanks'   },
@@ -408,6 +427,29 @@ export async function handleOrderFlow({ session, message, business, tenant, isIn
       const cart = Array.isArray(data.cart) ? data.cart : [];
       if (!cart.length) return buildMenuUI(business);
 
+      // [FIX-CONFIRM-1] "yeah"/"yep" were missing here even though every other
+      // confirm-style step in this file (SUGGESTION_CONFIRM, UPSELL) accepts them.
+      const isConfirm = /^(yes|y|yeah|yep|confirm|ok|okay|sure|place|confirmed)$/i.test(clean);
+      if (isConfirm) {
+        // [MULTICART-v40-EDIT] One consolidated save — _checkoutCart already
+        // handles items[] persistence, payment-vs-cash branching, and admin
+        // notification for a cart of any size (1 line or many).
+        return await _checkoutCart(cart, session, business, tenant);
+      }
+
+      // [SIMPLE-CART-CONFIRM] Primary action on the final review screen —
+      // matches the requested button set (Confirm / Add More Items / Cancel)
+      // exactly. Goes straight back to the catalog; the cart is untouched.
+      const wantsAddMore = raw === 'ADD_MORE_ITEMS' ||
+        /^(add more items?|add more|continue shopping|keep shopping|browse|menu)$/i.test(clean);
+      if (wantsAddMore) {
+        await updateSession(session.customerPhone, session.tenantId, { step: 'SELECT_ITEM' });
+        return buildMenuUI(business);
+      }
+
+      // Typed "edit" still opens the fuller Remove/Increase/Decrease/Clear
+      // menu for anyone who wants it — not exposed as a button (keeps the
+      // 3-button screen simple) but the capability isn't removed.
       const wantsEdit = raw === 'EDIT_CART' || /^(edit|edit order|edit cart|change)$/i.test(clean);
       if (wantsEdit) {
         await updateSession(session.customerPhone, session.tenantId, { step: 'EDIT_CART_MENU' });
@@ -425,23 +467,27 @@ export async function handleOrderFlow({ session, message, business, tenant, isIn
         };
       }
 
-      // [FIX-CONFIRM-1] "yeah"/"yep" were missing here even though every other
-      // confirm-style step in this file (SUGGESTION_CONFIRM, UPSELL) accepts them.
-      const isConfirm = /^(yes|y|yeah|yep|confirm|ok|okay|sure|place|confirmed)$/i.test(clean);
-      if (!isConfirm) {
+      // [CART-AI-MODIFY] Let the customer type a fix directly at the review
+      // screen ("remove the coke", "make it 3 fries") instead of having to
+      // tap Edit Order first. Extracted to _resolveCartModification() —
+      // never overlaps isConfirm's exact yes/yeah/etc. match set above.
+      const modResult = await _resolveCartModification(session, business, data, cart, raw);
+      if (modResult) {
+        if (!modResult.updatedCart.length) return buildMenuUI(business);
         return buildCartReviewUI({
-          summaryText: formatCartSummary(cart, business),
-          total:       cartTotal(cart),
-          itemCount:   cartItemCount(cart),
+          summaryText: formatCartSummary(modResult.updatedCart, business),
+          total:       cartTotal(modResult.updatedCart),
           business,
+          note: modResult.mod.type === 'remove' ? '\n\n_(Removed from your cart.)_' : '\n\n_(Updated the quantity.)_',
         });
       }
 
-      // [MULTICART-v40-EDIT] One consolidated save — _checkoutCart already
-      // handles items[] persistence, payment-vs-cash branching, and admin
-      // notification for a cart of any size (1 line or many); it's the same
-      // path a typed "2 burgers and a coke" message has always used.
-      return await _checkoutCart(cart, session, business, tenant);
+      // Unrecognised — re-show the summary unchanged.
+      return buildCartReviewUI({
+        summaryText: formatCartSummary(cart, business),
+        total:       cartTotal(cart),
+        business,
+      });
     }
 
     // ────────────────────────────────────────────────────────────────────────
@@ -458,7 +504,6 @@ export async function handleOrderFlow({ session, message, business, tenant, isIn
         return buildCartReviewUI({
           summaryText: formatCartSummary(cart, business),
           total:       cartTotal(cart),
-          itemCount:   cartItemCount(cart),
           business,
         });
       }
@@ -547,7 +592,6 @@ export async function handleOrderFlow({ session, message, business, tenant, isIn
       return buildCartReviewUI({
         summaryText: formatCartSummary(cappedCart, business),
         total:       cartTotal(cappedCart),
-        itemCount:   cartItemCount(cappedCart),
         business,
         note: `\n\n_(Cart updated.)_`,
       });
@@ -556,6 +600,28 @@ export async function handleOrderFlow({ session, message, business, tenant, isIn
     default:
       return buildMenuUI(business);
   }
+}
+
+// ── Cart-modification helper ──────────────────────────────────────────────────
+/**
+ * _resolveCartModification(session, business, data, cart, raw)
+ * [CART-AI-MODIFY] Shared by ITEM_ADDED and CONFIRM — tries to read `raw` as
+ * a free-text edit against the items already in the cart ("remove the
+ * coke", "make it 3 fries"). Persists the updated cart itself (moving to
+ * SELECT_ITEM if it emptied out) so callers only need to build the
+ * follow-up UI. Returns null when `raw` doesn't read as a modification at
+ * all, so callers fall through to their normal handling unchanged.
+ */
+async function _resolveCartModification(session, business, data, cart, raw) {
+  const mod = parseCartModification(cart, raw);
+  if (!mod) return null;
+  const updatedCart = applyCartModification(cart, mod);
+  if (!updatedCart.length) {
+    await updateSession(session.customerPhone, session.tenantId, { step: 'SELECT_ITEM', data: { ...data, cart: [] } });
+  } else {
+    await updateSession(session.customerPhone, session.tenantId, { data: { ...data, cart: updatedCart } });
+  }
+  return { mod, updatedCart };
 }
 
 // ── Add-item-to-cart helper ───────────────────────────────────────────────────
@@ -666,7 +732,7 @@ async function _checkoutCart(cart, session, business, tenant) {
             `🔔 *New Order — ${business.name || 'Restaurant'}*\n\n` +
             `👤 Customer: *${session.customerPhone}*\n` +
             `🛒 Items:\n${cartSummary}\n` +
-            `💰 Total: *${currency}${totalPrice}*\n` +
+            `💰 Total: *${currency}${formatMoney(totalPrice)}*\n` +
             `📝 Ref: *${ref}*\n\n` +
             `⏳ Status: *Pending* — awaiting payment screenshot.`,
         }, tenant).catch(() => {});
@@ -691,7 +757,7 @@ async function _checkoutCart(cart, session, business, tenant) {
           `🔔 *New Order — ${business.name || 'Restaurant'}*\n\n` +
           `👤 Customer: *${session.customerPhone}*\n` +
           `🛒 Items:\n${cartSummary}\n` +
-          (totalPrice != null ? `💰 Total: *${currency}${totalPrice}*\n` : '') +
+          (totalPrice != null ? `💰 Total: *${currency}${formatMoney(totalPrice)}*\n` : '') +
           `🔖 Ref: \`#${savedOrder.shortId}\`\n\n` +
           `⏳ Status: *Pending* — please confirm.`,
         buttons: [
@@ -710,7 +776,7 @@ async function _checkoutCart(cart, session, business, tenant) {
     type: 'text',
     body:
       `✅ *Order received!*\n\n${cartSummary}\n\n` +
-      (totalPrice != null ? `💰 Total: *${currency}${totalPrice}*\n\n` : '') +
+      (totalPrice != null ? `💰 Total: *${currency}${formatMoney(totalPrice)}*\n\n` : '') +
       `⏳ Your order has been received. Please wait for our team to confirm it before placing a new one.`,
   };
 }
@@ -757,8 +823,8 @@ async function _selectItem(item, session, business, data) {
         type:    'image',
         url:     whatsappImageUrl,
         caption: item.description
-          ? `*${item.name}*\n${item.description}${item.price ? `\n💰 ${business?.payment?.currency || 'D'}${item.price}` : ''}`
-          : `*${item.name}*${item.price ? ` — ${business?.payment?.currency || 'D'}${item.price}` : ''}`,
+          ? `*${item.name}*\n${item.description}${item.price ? `\n💰 ${business?.payment?.currency || 'D'}${formatMoney(item.price)}` : ''}`
+          : `*${item.name}*${item.price ? ` — ${business?.payment?.currency || 'D'}${formatMoney(item.price)}` : ''}`,
       },
       quantityPrompt,
     ];

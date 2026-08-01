@@ -15,7 +15,9 @@ export const BAKERY_CONFIG = {
   flows: ['ORDER', 'BOOKING'],
   persona: 'warm bakery assistant who loves fresh baked goods and reminds customers about daily specials',
   steps: {
-    ORDER:   ['BROWSE_CATEGORY', 'SELECT_ITEM', 'QUANTITY', 'CONFIRM'],
+    // [CART-AI] CART_REVIEW added — reached from SELECT_ITEM on a multi-item
+    // message, mirroring restaurant/salon's MULTICART-v39-PHASE2 pattern.
+    ORDER:   ['BROWSE_CATEGORY', 'SELECT_ITEM', 'CART_REVIEW', 'QUANTITY', 'CONFIRM'],
     BOOKING: ['SELECT_SERVICE', 'DATE', 'DATE_CONFIRM', 'TIME', 'TIME_CONFIRM', 'CONFIRM'],
   },
   ui: {

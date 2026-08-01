@@ -38,6 +38,7 @@ import Order          from '../models/Order.js';
 import BusinessConfig from '../models/BusinessConfig.js';
 import { decryptToken } from '../controllers/tenantController.js';
 import logger from '../config/logger.js';
+import { formatMoney } from '../utils/formatCurrency.js';
 
 const PROOF_WINDOW_HOURS = Number(process.env.PROOF_ELIGIBLE_HOURS || 4);
 
@@ -143,7 +144,7 @@ export async function receiveProof(customerPhone, tenantId, imageId, tenantDoc) 
         `🆔 Order: *#${order.shortId}*\n` +
         `👤 Customer: *${customerPhone}*\n` +
         `🛒 Items: *${order.item}* × ${order.quantity}\n` +
-        `💰 Amount: *${currency}${order.totalPrice || '—'}*\n\n` +
+        `💰 Amount: *${currency}${order.totalPrice ? formatMoney(order.totalPrice) : '—'}*\n\n` +
         (imageForwarded
           ? `Screenshot sent above ↑\nPlease approve or reject:`
           : `⚠️ *Screenshot delivery failed* — ask the customer to resend.\nYou may still approve or reject based on other confirmation:`),
@@ -199,7 +200,7 @@ export async function handleDonePayment(customerPhone, tenantId, tenantDoc) {
             `✅ *Self-Confirmed Order*\n\n` +
             `👤 Customer: *${customerPhone}*\n` +
             `🛒 Item: *${order.item}* × ${order.quantity}\n` +
-            `💰 Total: *${currency}${order.totalPrice || '—'}*\n` +
+            `💰 Total: *${currency}${order.totalPrice ? formatMoney(order.totalPrice) : '—'}*\n` +
             `🔖 Ref: \`${order.shortId}\`\n\n` +
             `Customer confirmed (cash/no-proof). Tap ✅ to confirm, then 🍽️ Mark Ready when done.`,
           buttons: [
@@ -263,14 +264,14 @@ export function buildPaymentInstructionsUI(business, totalPrice, shortId, stored
   if (channels.length === 1) {
     const ch = channels[0];
     channelBlock =
-      `📲 Send *${currency}${totalPrice}* via *${ch.provider}* to:\n\n` +
+      `📲 Send *${currency}${formatMoney(totalPrice)}* via *${ch.provider}* to:\n\n` +
       `📱 *${ch.accountNo}*${ch.label ? ` (${ch.label})` : ''}`;
   } else if (channels.length > 1) {
     const lines = channels.map((ch, i) =>
       `${i + 1}. *${ch.provider}* → \`${ch.accountNo}\`${ch.label ? ` (${ch.label})` : ''}${ch.isDefault ? ' ⭐' : ''}`
     ).join('\n');
     channelBlock =
-      `📲 Send *${currency}${totalPrice}* to any of the following:\n\n${lines}`;
+      `📲 Send *${currency}${formatMoney(totalPrice)}* to any of the following:\n\n${lines}`;
   } else {
     channelBlock = `📲 Please contact us to get payment details.`;
   }
@@ -303,7 +304,7 @@ export function buildPaymentInstructionsUI(business, totalPrice, shortId, stored
     type: 'buttons',
     body:
       `💳 *Payment Instructions*\n\n` +
-      `🛒 Total: *${currency}${totalPrice}*` +
+      `🛒 Total: *${currency}${formatMoney(totalPrice)}*` +
       (ref ? `\n📝 Reference: *${ref}*` : '') +
       `\n\n─────────────────────\n` +
       `${channelBlock}\n` +

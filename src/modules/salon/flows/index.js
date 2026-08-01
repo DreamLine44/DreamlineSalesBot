@@ -129,6 +129,12 @@ import { saveOrder }         from '../../../services/orderService.js';
 import { saveBooking }       from '../../../services/bookingService.js';
 import { trackOrderAnalytics } from '../../../core/analytics/analyticsService.js';
 import { itemLabel }         from '../../../utils/itemLabel.js';
+import { formatMoney }       from '../../../utils/formatCurrency.js';
+import {
+  parseMultiItemMessage, mergeCartLines, enforceCartLimit,
+  cartTotal, cartToOrderItems, formatCartSummary, buildUnmatchedNote,
+  parseCartModification, applyCartModification,
+} from '../../../core/shared/cartEngine.js';
 import logger                from '../../../config/logger.js';
 
 // ── Salon Config ───────────────────────────────────────────────────────────────
@@ -140,7 +146,9 @@ export const SALON_CONFIG = {
   steps: {
     BOOKING: ['SELECT_SERVICE', 'SELECT_STYLIST', 'DATE', 'DATE_CONFIRM', 'TIME', 'TIME_CONFIRM', 'CONFIRM'],
     WALKIN:  ['SELECT_SERVICE', 'SELECT_STYLIST', 'CONFIRM'],
-    ORDER:   ['SELECT_ITEM', 'QUANTITY', 'CONFIRM'],
+    // [MULTICART-v39-PHASE2] CART_REVIEW added — reached from SELECT_ITEM on a
+    // multi-item message, or from CONFIRM via "Add Another Item".
+    ORDER:   ['SELECT_ITEM', 'CART_REVIEW', 'QUANTITY', 'CONFIRM'],
   },
   ui: {
     // Meta caps button messages at 3 buttons. ORDER is accessible via QUESTION or by typing.
@@ -175,7 +183,9 @@ export const BARBERSHOP_CONFIG = {
   steps: {
     BOOKING: ['SELECT_SERVICE', 'SELECT_STYLIST', 'DATE', 'DATE_CONFIRM', 'TIME', 'TIME_CONFIRM', 'CONFIRM'],
     WALKIN:  ['SELECT_SERVICE', 'SELECT_STYLIST', 'CONFIRM'],
-    ORDER:   ['SELECT_ITEM', 'QUANTITY', 'CONFIRM'],
+    // [MULTICART-v39-PHASE2] CART_REVIEW added — reached from SELECT_ITEM on a
+    // multi-item message, or from CONFIRM via "Add Another Item".
+    ORDER:   ['SELECT_ITEM', 'CART_REVIEW', 'QUANTITY', 'CONFIRM'],
   },
   ui: {
     welcomeButtons: [
@@ -742,6 +752,25 @@ export async function handleSalonProductOrder({ session, message, business, tena
               { id: 'SHOW_MENU', title: '🔄 Browse All'                         },
             ],
           };
+        } else {
+          // [MULTICART-v39-PHASE2] Neither a numeric index nor a single
+          // confident item name matched — try reading the message as MULTIPLE
+          // products before giving up ("2 shampoos and a conditioner"). A
+          // normal single-item message already resolved above and never
+          // reaches here, so this is purely additive.
+          const multi = parseMultiItemMessage(menu, raw);
+          if (multi) {
+            const merged = mergeCartLines(Array.isArray(data.cart) ? data.cart : [], multi.lines);
+            const { cart: cappedCart, overflowCount } = enforceCartLimit(merged, business);
+            await updateSession(session.customerPhone, session.tenantId, {
+              step: 'CART_REVIEW', data: { ...data, cart: cappedCart }, menuViewed: true,
+            });
+            let note = buildUnmatchedNote(multi.unmatchedSegments);
+            if (overflowCount > 0) {
+              note += `\n\n_(Your cart can hold up to ${business?.multiItemCart?.maxItems || 10} items — ${overflowCount} extra item${overflowCount > 1 ? 's were' : ' was'} left out.)_`;
+            }
+            return _buildProductCartSummaryUI(cappedCart, business, isBarbershop, note);
+          }
         }
       }
 
@@ -752,7 +781,7 @@ export async function handleSalonProductOrder({ session, message, business, tena
       });
 
       const currency = item.currency || business?.payment?.currency || 'D';
-      const price = item.price ? ` — ${currency}${item.price}` : '';
+      const price = item.price ? ` — ${currency}${formatMoney(item.price)}` : '';
       const desc  = item.description ? `\n_${item.description}_` : '';
       return {
         type: 'buttons',
@@ -764,6 +793,68 @@ export async function handleSalonProductOrder({ session, message, business, tena
         ],
         footer: 'Or type any number',
       };
+    }
+
+    // ────────────────────────────────────────────────────────────────────────
+    // [MULTICART-v39-PHASE2] Reached once data.cart has 2+ distinct products —
+    // either from a single multi-item message (SELECT_ITEM above) or from
+    // repeated "Add Another Item" taps from CONFIRM below.
+    case 'CART_REVIEW': {
+      const cart = Array.isArray(data.cart) ? data.cart : [];
+
+      if (['CANCEL', 'CANCEL_BOOKING', 'SHOW_MENU'].includes(raw.toUpperCase())) {
+        return cancelFlow(session, business);
+      }
+
+      const isCheckout = raw === 'CONFIRM' || /^(yes|y|yeah|yep|confirm|ok|okay|sure|checkout|place|done)$/i.test(clean);
+      if (isCheckout) {
+        return await _checkoutProductCart(cart, session, business, tenant, isBarbershop);
+      }
+
+      const isExplicitAddMore = raw === 'ADD_ANOTHER_ITEM' || /^(add more|add another|add another item|another item|add item|more items?)$/i.test(clean);
+      if (isExplicitAddMore) {
+        await updateSession(session.customerPhone, session.tenantId, { step: 'SELECT_ITEM' });
+        return _buildProductMenu(menu, business, isBarbershop);
+      }
+
+      // [CART-AI-MODIFY] "remove the shampoo" / "make it 3 conditioners" —
+      // resolved against items ALREADY in the cart, checked BEFORE treating
+      // the message as an attempt to add a brand-new product.
+      const mod = parseCartModification(cart, raw);
+      if (mod) {
+        const updatedCart = applyCartModification(cart, mod);
+        await updateSession(session.customerPhone, session.tenantId, { data: { ...data, cart: updatedCart } });
+        if (!updatedCart.length) {
+          await updateSession(session.customerPhone, session.tenantId, { step: 'SELECT_ITEM', data: { ...data, cart: [] } });
+          return _buildProductMenu(menu, business, isBarbershop);
+        }
+        return _buildProductCartSummaryUI(updatedCart, business, isBarbershop,
+          mod.type === 'remove' ? '\n\n_(Removed from your cart.)_' : '\n\n_(Updated the quantity.)_');
+      }
+
+      // Treat the message itself as more products to add.
+      const multiAdd = parseMultiItemMessage(menu, raw);
+      let newLines = null;
+      if (multiAdd) {
+        newLines = multiAdd.lines;
+      } else {
+        const { item: singleItem, confidenceLevel: singleConf } = findBestMatch(menu, clean);
+        if (singleItem && singleConf === 'HIGH') newLines = [{ item: singleItem, quantity: 1, variant: null }];
+      }
+
+      if (newLines) {
+        const merged = mergeCartLines(cart, newLines);
+        const { cart: cappedCart, overflowCount } = enforceCartLimit(merged, business);
+        await updateSession(session.customerPhone, session.tenantId, { data: { ...data, cart: cappedCart } });
+        let note = multiAdd ? buildUnmatchedNote(multiAdd.unmatchedSegments) : '';
+        if (overflowCount > 0) {
+          note += `\n\n_(Your cart can hold up to ${business?.multiItemCart?.maxItems || 10} items — ${overflowCount} extra item${overflowCount > 1 ? 's were' : ' was'} left out.)_`;
+        }
+        return _buildProductCartSummaryUI(cappedCart, business, isBarbershop, note);
+      }
+
+      return _buildProductCartSummaryUI(cart, business, isBarbershop,
+        `\n\n_(I didn't catch a product in that — try naming an item, or tap Checkout/Add More.)_`);
     }
 
     // ── QUANTITY ──────────────────────────────────────────────────────────
@@ -803,11 +894,12 @@ export async function handleSalonProductOrder({ session, message, business, tena
         body:
           `🧾 *Order Summary*\n\n` +
           `🛍 *${qty}× ${itemLabel(data.item, data.variant)}*\n` +
-          (total ? `💰 *Total:* ${currency}${total}\n` : '') +
+          (total ? `💰 *Total:* ${currency}${formatMoney(total)}\n` : '') +
           `\nReady to confirm?`,
         buttons: [
-          { id: 'CONFIRM',        title: '✅ Confirm Order' },
-          { id: 'CANCEL_BOOKING', title: '❌ Cancel'         },
+          { id: 'CONFIRM',          title: '✅ Confirm Order'    },
+          { id: 'ADD_ANOTHER_ITEM', title: '➕ Add Another Item' },
+          { id: 'CANCEL_BOOKING',   title: '❌ Cancel'           },
         ],
       };
     }
@@ -820,6 +912,13 @@ export async function handleSalonProductOrder({ session, message, business, tena
         return cancelFlow(session, business);
       }
 
+      // [MULTICART-v39-PHASE2] "Add Another Item" — folds the item that just
+      // reached this summary into data.cart and loops back to product
+      // selection instead of saving. See _addAnotherProduct() below.
+      if (raw === 'ADD_ANOTHER_ITEM' || /^(add more|add another|add another item|another item|add item|more items?)$/i.test(clean)) {
+        if (data.item) return await _addAnotherProduct(session, business, data, isBarbershop);
+      }
+
       if (!['CONFIRM', 'YES'].includes(raw.toUpperCase())) {
         const currency = data.item?.currency || business?.payment?.currency || 'D';
         const total = data.totalPrice || (data.item?.price || 0) * (data.quantity || 1);
@@ -829,13 +928,26 @@ export async function handleSalonProductOrder({ session, message, business, tena
           body:
             `🧾 *Order Summary*\n\n` +
             `🛍 *${data.quantity || 1}× ${itemLabel(data.item, data.variant)}*\n` +
-            (total ? `💰 *Total:* ${currency}${total}\n` : '') +
+            (total ? `💰 *Total:* ${currency}${formatMoney(total)}\n` : '') +
             `\n${emoji} Ready to place your order?`,
           buttons: [
-            { id: 'CONFIRM',        title: '✅ Confirm Order' },
-            { id: 'CANCEL_BOOKING', title: '❌ Cancel'         },
+            { id: 'CONFIRM',          title: '✅ Confirm Order'    },
+            { id: 'ADD_ANOTHER_ITEM', title: '➕ Add Another Item' },
+            { id: 'CANCEL_BOOKING',   title: '❌ Cancel'           },
           ],
         };
+      }
+
+      // [MULTICART-v39-PHASE2] Items accumulated via prior "Add Another Item"
+      // taps checkout as one multi-item order — same saveOrder({items}) path
+      // CART_REVIEW uses.
+      const priorCart = Array.isArray(data.cart) ? data.cart : [];
+      if (priorCart.length > 0) {
+        const fullCart = mergeCartLines(priorCart, [{
+          item: data.item, quantity: data.quantity || 1,
+          variant: data.variant || null, addOns: [],
+        }]);
+        return await _checkoutProductCart(fullCart, session, business, tenant, isBarbershop);
       }
 
       let savedOrder = null;
@@ -907,7 +1019,7 @@ export async function handleSalonProductOrder({ session, message, business, tena
                 `📞 Customer: ${session.customerPhone}\n` +
                 (session.customerName ? `👤 Name: ${session.customerName}\n` : '') +
                 `🛍 *${data.quantity}× ${itemLabel(data.item, data.variant)}*\n` +
-                (data.totalPrice ? `💰 Total: ${currency}${data.totalPrice}\n` : '') +
+                (data.totalPrice ? `💰 Total: ${currency}${formatMoney(data.totalPrice)}\n` : '') +
                 `🔖 Ref: \`${savedOrder?.shortId || 'N/A'}\``,
               buttons: [
                 { id: `APPROVE_${savedOrder.shortId}`, title: '✅ Confirm Order' },
@@ -935,7 +1047,7 @@ export async function handleSalonProductOrder({ session, message, business, tena
         body:
           `✅ *Order received!* ${emoji}\n\n` +
           `🛍 *${data.quantity}× ${itemLabel(data.item, data.variant)}*\n` +
-          (data.totalPrice ? `💰 Total: *${currency}${data.totalPrice}*\n` : '') +
+          (data.totalPrice ? `💰 Total: *${currency}${formatMoney(data.totalPrice)}*\n` : '') +
           `\n⏳ Our team will confirm your order shortly. We'll message you when it's ready! 🙏`,
       };
     }
@@ -947,6 +1059,135 @@ export async function handleSalonProductOrder({ session, message, business, tena
         message: null, business, tenant, isInteractive,
       });
   }
+}
+
+// ── Add-another-product helper ────────────────────────────────────────────────
+// [MULTICART-v39-PHASE2] Extracted out of the CONFIRM case body (same reason
+// as restaurant/flows/orderFlow.js's _addAnotherItem — keeps the case short
+// for any future source-window regression tests).
+async function _addAnotherProduct(session, business, data, isBarbershop) {
+  const priorCart = Array.isArray(data.cart) ? data.cart : [];
+  const merged = mergeCartLines(priorCart, [{
+    item: data.item, quantity: data.quantity || 1, variant: data.variant || null, addOns: [],
+  }]);
+  const { cart: cappedCart, overflowCount } = enforceCartLimit(merged, business);
+  await updateSession(session.customerPhone, session.tenantId, {
+    step: 'SELECT_ITEM',
+    data: { cart: cappedCart }, // single-item fields folded into the cart now
+  });
+  const overflowNote = overflowCount > 0
+    ? `\n\n_(Your cart can hold up to ${business?.multiItemCart?.maxItems || 10} items — ${overflowCount} extra item${overflowCount > 1 ? 's were' : ' was'} left out.)_`
+    : '';
+  const allItems = (business?.menuItems || []).filter(i => i.available !== false);
+  const menu = allItems.filter(i => !i.category || !['services', 'service'].includes(i.category?.toLowerCase()));
+  const menuUI = _buildProductMenu(menu, business, isBarbershop);
+  if (menuUI.type === 'buttons') return menuUI; // empty-catalog guard already returned its own message
+  return { ...menuUI, body: `Added to your cart! 🛒${overflowNote}\n\n${menuUI.body}` };
+}
+
+// ── Product cart checkout helper ──────────────────────────────────────────────
+// [MULTICART-v39-PHASE2] Multi-item counterpart to the CONFIRM step's
+// single-item save logic above — same saveOrder({items}) call, same
+// payment-vs-cash branching, same admin alert shape (salon-flavored: 'SLN-'
+// payment reference prefix, Product Order title), so a text-typed multi-item
+// product order behaves identically to a single-item one from here on.
+async function _checkoutProductCart(cart, session, business, tenant, isBarbershop) {
+  const emoji = isBarbershop ? '✂️' : '💇';
+  const currency = business?.payment?.currency || 'D';
+  const cartSummary = formatCartSummary(cart, business);
+  const total = cartTotal(cart);
+
+  let savedOrder = null;
+  try {
+    savedOrder = await saveOrder({
+      items:         cartToOrderItems(cart),
+      tenantId:      session.tenantId,
+      customerPhone: session.customerPhone,
+      customerName:  session.customerName,
+      businessId:    business._id,
+    });
+  } catch (err) {
+    logger.error('[SalonProduct] _checkoutProductCart: saveOrder failed', { err: err.message });
+    await updateSession(session.customerPhone, session.tenantId, {
+      currentFlow: null, step: null, data: {},
+    });
+    return {
+      type:    'buttons',
+      body:    `⚠️ *Something went wrong saving your order.*\n\nPlease try again — tap below to start over.`,
+      buttons: [
+        { id: 'ORDER',   title: '🛒 Try Again'  },
+        { id: 'SUPPORT', title: '💬 Contact Us' },
+      ],
+    };
+  }
+
+  const totalPrice = savedOrder.totalPrice ?? total;
+  const payment = business?.payment;
+  if (payment?.enabled && totalPrice) {
+    const { buildPaymentInstructionsUI } = await import('../../../services/paymentService.js');
+    await updateSession(session.customerPhone, session.tenantId, {
+      step: 'PAYMENT_PROOF', currentFlow: 'ORDER', data: {},
+    });
+    const shortIdRef = savedOrder?.shortId || '';
+    let ref = null;
+    if (shortIdRef) {
+      const now = new Date();
+      const mm  = String(now.getMonth() + 1).padStart(2, '0');
+      const dd  = String(now.getDate()).padStart(2, '0');
+      ref = `SLN-${mm}${dd}-${shortIdRef}`;
+      if (savedOrder?._id) {
+        const { default: Order } = await import('../../../models/Order.js');
+        Order.updateOne({ _id: savedOrder._id }, { $set: { paymentReference: ref } }).catch(() => {});
+      }
+    }
+    return buildPaymentInstructionsUI(business, totalPrice, shortIdRef || null, ref);
+  }
+
+  // Admin notify
+  try {
+    const adminPhone = business?.adminPhone || tenant?.adminPhone;
+    if (adminPhone && tenant && savedOrder) {
+      const { dispatchMessage } = await import('../../../core/whatsapp/dispatcher.js');
+      await dispatchMessage(
+        adminPhone,
+        {
+          type: 'buttons',
+          body:
+            `🔔 *New Product Order — ${business?.name || (isBarbershop ? 'Barbershop' : 'Salon')}*\n\n` +
+            `📞 Customer: ${session.customerPhone}\n` +
+            (session.customerName ? `👤 Name: ${session.customerName}\n` : '') +
+            `🛍 Items:\n${cartSummary}\n` +
+            (totalPrice ? `💰 Total: ${currency}${formatMoney(totalPrice)}\n` : '') +
+            `🔖 Ref: \`${savedOrder?.shortId || 'N/A'}\``,
+          buttons: [
+            { id: `APPROVE_${savedOrder.shortId}`, title: '✅ Confirm Order' },
+            { id: `REJECT_${savedOrder.shortId}`,  title: '❌ Cancel Order'  },
+          ],
+        },
+        tenant,
+      ).catch(e => logger.warn('[SalonProduct] admin notify failed', { err: e.message }));
+    }
+  } catch { /* non-fatal */ }
+
+  trackOrderAnalytics(
+    cart.map(l => l.item?.name).filter(Boolean).join(', '),
+    null,
+    cart.reduce((sum, l) => sum + (l.quantity || 0), 0),
+    totalPrice || 0,
+    session.tenantId
+  ).catch(() => {});
+
+  await updateSession(session.customerPhone, session.tenantId, {
+    step: 'AWAIT_ADMIN_CONFIRM', currentFlow: 'ORDER', data: {},
+  });
+
+  return {
+    type: 'text',
+    body:
+      `✅ *Order received!* ${emoji}\n\n🛍 Items:\n${cartSummary}\n` +
+      (totalPrice ? `💰 Total: *${currency}${formatMoney(totalPrice)}*\n` : '') +
+      `\n⏳ Our team will confirm your order shortly. We'll message you when it's ready! 🙏`,
+  };
 }
 
 // ── AI Question / Consultation Handler ────────────────────────────────────────
@@ -1053,7 +1294,7 @@ function _buildServiceMenu(business, mode = 'booking') {
   const toPrice = (s, business) => {
     const price = typeof s === 'string' ? null : s.price;
     const currency = (typeof s !== 'string' && s.currency) || business?.payment?.currency || 'D';
-    return price ? `${currency}${price}` : null;
+    return price ? `${currency}${formatMoney(price)}` : null;
   };
   const toDuration = s => (typeof s === 'string' ? null : s.duration ? `${s.duration} min` : null);
 
@@ -1133,6 +1374,27 @@ function _buildStylistMenu(staffList, business, isBarbershop, errorMsg = null) {
   };
 }
 
+// [MULTICART-v39-PHASE2] Multi-item counterpart to _buildProductMenu()'s single
+// pick — shown once 2+ distinct products are in data.cart, whether from one
+// "2 shampoos and a conditioner" message or repeated "Add Another Item" taps.
+function _buildProductCartSummaryUI(cart, business, isBarbershop, note = '') {
+  const emoji = isBarbershop ? '✂️' : '💇';
+  const total = cartTotal(cart);
+  const currency = business?.payment?.currency || 'D';
+  return {
+    type: 'buttons',
+    body:
+      `${emoji} 🧾 *Your Order*\n\n${formatCartSummary(cart, business)}` +
+      (total != null ? `\n\n💰 Total: *${currency}${formatMoney(total)}*` : '') +
+      `${note}\n\nReady to checkout, or add something else?`,
+    buttons: [
+      { id: 'CONFIRM',          title: '✅ Checkout'  },
+      { id: 'ADD_ANOTHER_ITEM', title: '➕ Add More'   },
+      { id: 'CANCEL_BOOKING',   title: '❌ Cancel'     },
+    ],
+  };
+}
+
 function _buildProductMenu(items, business, isBarbershop) {
   const name  = business?.businessName || business?.name || (isBarbershop ? 'Barbershop' : 'Salon');
   const emoji = isBarbershop ? '✂️' : '💇';
@@ -1158,7 +1420,7 @@ function _buildProductMenu(items, business, isBarbershop) {
     title:       item.name.slice(0, 24),
     description: [
       item.description?.slice(0, 40),
-      item.price ? `${item.currency || currency}${item.price}` : null,
+      item.price ? `${item.currency || currency}${formatMoney(item.price)}` : null,
     ].filter(Boolean).join(' — ').slice(0, 72) || undefined,
   }));
 

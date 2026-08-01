@@ -64,6 +64,7 @@ import {
   buildAdminOrderAlertBody,
 } from '../handlers/uiBuilders.js';
 import { itemLabel } from '../../../utils/itemLabel.js';
+import { formatMoney } from '../../../utils/formatCurrency.js';
 import logger from '../../../config/logger.js';
 
 // ── Normalise text for fuzzy comparisons ─────────────────────────────────────
@@ -380,7 +381,7 @@ export async function handleElectronicsOrder({
         type: 'buttons',
         body:
           `📦 *${qty}× ${itemLabel(data.item, data.variant)}*\n` +
-          (total ? `💰 *${currency}${total}*\n` : '') +
+          (total ? `💰 *${currency}${formatMoney(total)}*\n` : '') +
           `\nHow would you like to receive your order?`,
         buttons: [
           { id: 'PICKUP',   title: '🏪 Pick Up In-Store' },
@@ -513,7 +514,7 @@ export async function handleElectronicsOrder({
                 `🔔 *New Order — ${business.name || 'Electronics Store'}*\n\n` +
                 `👤 Customer: *${session.customerPhone}*\n` +
                 `📱 *${data.quantity}× ${itemLabel(data.item, data.variant)}*\n` +
-                `💰 Total: *${currency}${data.totalPrice}*\n` +
+                `💰 Total: *${currency}${formatMoney(data.totalPrice)}*\n` +
                 `📦 Fulfilment: *${data.fulfilment === 'DELIVERY' ? 'Delivery' : 'In-store pick-up'}*\n` +
                 `📝 Ref: *${ref}*\n\n` +
                 `⏳ Status: *Pending* — awaiting payment screenshot.`,
@@ -561,7 +562,7 @@ export async function handleElectronicsOrder({
       const hasChannels = Array.isArray(payment?.channels) && payment.channels.length > 0;
       const cashBody =
         `💳 *Payment*\n\n` +
-        `🛒 Total: *${currency}${data.totalPrice || 0}*\n\n` +
+        `🛒 Total: *${currency}${formatMoney(data.totalPrice || 0)}*\n\n` +
         (hasChannels
           ? (() => {
               const lines = (payment?.channels || []).map((ch, i) =>
@@ -571,7 +572,7 @@ export async function handleElectronicsOrder({
               ).join('\n');
               return `📲 Please pay to any of the following:\n\n${lines}\n\nThen send your payment screenshot in this chat.`;
             })()
-          : `💵 *Payment:* Cash on delivery / pick-up.\n\nPlease have *${currency}${data.totalPrice || 0}* ready.`
+          : `💵 *Payment:* Cash on delivery / pick-up.\n\nPlease have *${currency}${formatMoney(data.totalPrice || 0)}* ready.`
         );
 
       return {

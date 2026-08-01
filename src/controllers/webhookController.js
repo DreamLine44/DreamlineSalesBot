@@ -158,6 +158,7 @@ import ProcessedMessage from '../models/ProcessedMessage.js';
 // avoids a ReferenceError crash on any message received outside business hours.
 import Order            from '../models/Order.js';
 import logger           from '../config/logger.js';
+import { formatMoney }  from '../utils/formatCurrency.js';
 import crypto           from 'crypto';
 
 // [DEPLOY-VERIFY] Bumped whenever the signature-verification or catalog-gate logic in
@@ -1855,7 +1856,7 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
 ` +
           `Order *#${rejectedOrder.shortId}* — *${rejectedOrder.item}* × ${rejectedOrder.quantity}
 ` +
-          `💰 Amount: *${currency}${rejectedOrder.totalPrice || '—'}*
+          `💰 Amount: *${currency}${rejectedOrder.totalPrice ? formatMoney(rejectedOrder.totalPrice) : '—'}*
 
 ` +
           `Send a clear screenshot of your successful payment transfer in this chat.`,
@@ -1906,7 +1907,7 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
 ` +
             `🛒 *${pickedOrder.item}* × ${pickedOrder.quantity}
 ` +
-            (pickedOrder.totalPrice ? `💰 Total: *${currency}${pickedOrder.totalPrice}*
+            (pickedOrder.totalPrice ? `💰 Total: *${currency}${formatMoney(pickedOrder.totalPrice)}*
 ` : '') +
             `📊 Status: ${statusMap[pickedOrder.status] || pickedOrder.status}
 ` +
@@ -2211,7 +2212,7 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
       // cart; EDIT_CART_MENU/EDIT_CART_PICK — the Edit Order sub-flow. CONFIRM
       // now also offers Edit Order (EDIT_CART) alongside Confirm/Cancel.
       ITEM_ADDED:           new Set(['ADD_ANOTHER_ITEM', 'REVIEW_CART']),
-      CONFIRM:              new Set(['CONFIRM', 'CANCEL', 'EDIT_CART']),
+      CONFIRM:              new Set(['CONFIRM', 'CANCEL', 'ADD_MORE_ITEMS', 'EDIT_CART']),
       EDIT_CART_MENU:       new Set(['EDIT_ADD', 'EDIT_REMOVE', 'EDIT_INCREASE', 'EDIT_DECREASE', 'EDIT_CLEAR', 'EDIT_BACK']),
       EDIT_CART_PICK:       new Set([]), // expects free text (line number) or "back"
       PAYMENT_PROOF:        new Set(['DONE', 'SUPPORT', 'CANCEL', 'CANCEL_ORDER']),

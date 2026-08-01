@@ -12,6 +12,7 @@
  */
 
 import { buildWhatsAppImageUrl } from '../../../config/cloudinary.js';
+import { formatMoney } from '../../../utils/formatCurrency.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Category UI
@@ -67,7 +68,7 @@ export function buildProductList(items, business, categoryLabel = null) {
   // browsing (see _buildCategoryUI-style helpers elsewhere) so customers
   // aren't silently missing items past #10.
   const rows = items.map((item, i) => {
-    const priceStr = item.price ? `${currency}${item.price}` : '';
+    const priceStr = item.price ? `${currency}${formatMoney(item.price)}` : '';
     const specStr  = item.specs?.short || item.description || '';
     const detail   = [priceStr, specStr].filter(Boolean).join(' · ').slice(0, 72);
     return {
@@ -101,7 +102,7 @@ export function buildItemDetail(item, currency = 'D') {
 
   lines.push(`📱 *${item.name}*`);
 
-  if (item.price)       lines.push(`💰 Price: *${currency}${item.price}*`);
+  if (item.price)       lines.push(`💰 Price: *${currency}${formatMoney(item.price)}*`);
   if (item.condition)   lines.push(`📦 Condition: *${item.condition}*`); // New / Refurbished / Open Box
 
   // Specs block — supports both a structured object and plain description
@@ -143,7 +144,7 @@ export function buildItemDetail(item, currency = 'D') {
       {
         type:    'image',
         url:     buildWhatsAppImageUrl(imageUrl),
-        caption: `*${item.name}*${item.price ? ` — ${currency}${item.price}` : ''}`,
+        caption: `*${item.name}*${item.price ? ` — ${currency}${formatMoney(item.price)}` : ''}`,
       },
       detailCard,
     ];
@@ -167,7 +168,7 @@ export function buildOrderSummary({ item, qty, total, fulfilment, business }) {
     body:
       `🧾 *Order Summary*\n\n` +
       `📱 *${qty}× ${itemName}*` +
-      (total ? `\n💰 Total: *${currency}${total}*` : '') +
+      (total ? `\n💰 Total: *${currency}${formatMoney(total)}*` : '') +
       fulfilLine +
       `\n\nReady to confirm?`,
     buttons: [
@@ -225,8 +226,8 @@ export function buildComparisonCard(itemA, itemB, currency = 'D') {
   ];
 
   // Price row
-  const priceA = itemA.price ? `${currency}${itemA.price}` : 'N/A';
-  const priceB = itemB.price ? `${currency}${itemB.price}` : 'N/A';
+  const priceA = itemA.price ? `${currency}${formatMoney(itemA.price)}` : 'N/A';
+  const priceB = itemB.price ? `${currency}${formatMoney(itemB.price)}` : 'N/A';
   lines.push(`💰 *Price:*\n  ${nameA}: *${priceA}*\n  ${nameB}: *${priceB}*\n`);
 
   // Shared spec keys
@@ -272,7 +273,7 @@ export function buildAdminOrderAlertBody({ customerPhone, item, quantity, totalP
   const bizName    = business?.name || 'Electronics Store';
   const currency   = business?.payment?.currency || 'D';
   const payEnabled = business?.payment?.enabled;
-  const priceStr   = totalPrice ? `\n💰 Total: *${currency}${totalPrice}*` : '';
+  const priceStr   = totalPrice ? `\n💰 Total: *${currency}${formatMoney(totalPrice)}*` : '';
   const idStr      = shortId    ? `\n🔖 Ref: \`${shortId}\`` : '';
   const fulfilStr  = fulfilment === 'DELIVERY' ? '🚚 Delivery' : '🏪 In-store pick-up';
   const payMode    = payEnabled && totalPrice

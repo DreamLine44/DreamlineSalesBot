@@ -23,6 +23,7 @@ import { saveOrder }      from '../../../services/orderService.js';
 import { parseQuantity }  from '../../../utils/parseQuantity.js';
 import { trackOrderAnalytics } from '../../../core/analytics/analyticsService.js';
 import logger             from '../../../config/logger.js';
+import { formatMoney }    from '../../../utils/formatCurrency.js';
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
@@ -345,7 +346,7 @@ export async function handleRetailOrder({ session, message, business, tenant, is
       const item     = data.item;
       const qty      = data.quantity || 1;
       const variant  = data.variant  ? ` (${data.variant})` : '';
-      const price    = item?.price   ? `\n💰 *Price:* ${item.currency || business?.payment?.currency || 'D'}${(item.price * qty).toFixed(2)}` : '';
+      const price    = item?.price   ? `\n💰 *Price:* ${item.currency || business?.payment?.currency || 'D'}${(item.price * qty).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : '';
 
       await updateSession(session.customerPhone, session.tenantId, {
         step: 'CONFIRM',
@@ -464,7 +465,7 @@ export async function handleRetailOrder({ session, message, business, tenant, is
                 `📞 Customer: *${session.customerPhone}*\n` +
                 `🛍 *${qty}× ${itemLabel}*\n` +
                 `📦 Fulfilment: *${fulfilment}*\n` +
-                `💰 Total: *${currency}${totalPrice}*\n` +
+                `💰 Total: *${currency}${formatMoney(totalPrice)}*\n` +
                 `📝 Ref: *${ref}*\n\n` +
                 `⏳ Status: *Pending* — awaiting payment screenshot.`,
             }, tenant).catch(() => {});
@@ -490,7 +491,7 @@ export async function handleRetailOrder({ session, message, business, tenant, is
               `📞 Customer: *${session.customerPhone}*\n` +
               `🛍 *${qty}× ${itemLabel}*\n` +
               `📦 Fulfilment: *${fulfilment}*\n` +
-              (totalPrice ? `💰 Total: *${currency}${totalPrice}*\n` : '') +
+              (totalPrice ? `💰 Total: *${currency}${formatMoney(totalPrice)}*\n` : '') +
               `🔖 Ref: \`${savedOrder?.shortId || 'N/A'}\``,
             buttons: [
               { id: `APPROVE_${savedOrder.shortId}`, title: '✅ Confirm Order' },
@@ -612,7 +613,7 @@ function _buildProductList(items, business, category = null) {
     title:       item.name.slice(0, 24),
     description: [
       item.description ? item.description.slice(0, 40) : null,
-      item.price ? `${item.currency || 'D'}${item.price}` : null,
+      item.price ? `${item.currency || 'D'}${formatMoney(item.price)}` : null,
     ].filter(Boolean).join(' — ').slice(0, 72) || undefined,
   }));
 
@@ -626,7 +627,7 @@ function _buildProductList(items, business, category = null) {
 }
 
 function _buildItemDetail(item, business) { // [FIX-RETAIL-BUSINESS-SCOPE] business now passed in to avoid ReferenceError
-  const price    = item.price    ? `💰 *Price:* ${item.currency || business?.payment?.currency || 'D'}${item.price}\n` : '';
+  const price    = item.price    ? `💰 *Price:* ${item.currency || business?.payment?.currency || 'D'}${formatMoney(item.price)}\n` : '';
   const desc     = item.description ? `\n_${item.description}_\n` : '';
   const variants = item.variants && item.variants.length > 0
     ? `\n📐 *Options:* ${item.variants.map(v => v.name || v).join(', ')}\n`
@@ -654,7 +655,7 @@ function _buildItemDetail(item, business) { // [FIX-RETAIL-BUSINESS-SCOPE] busin
       {
         type:    'image',
         url:     buildWhatsAppImageUrl(imageUrl),
-        caption: `*${item.name}*${item.price ? ` — ${item.currency || business?.payment?.currency || 'D'}${item.price}` : ''}`,
+        caption: `*${item.name}*${item.price ? ` — ${item.currency || business?.payment?.currency || 'D'}${formatMoney(item.price)}` : ''}`,
       },
       detailPrompt,
     ];

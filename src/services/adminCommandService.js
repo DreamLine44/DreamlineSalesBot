@@ -103,6 +103,7 @@ import { updateSession } from '../core/sessions/sessionService.js';
 import { dispatchText, dispatchMessage } from '../core/whatsapp/dispatcher.js';
 import { getModeConfig } from '../config/modes.js';
 import logger            from '../config/logger.js';
+import { formatMoney }   from '../utils/formatCurrency.js';
 
 const MAX_INPUT_LENGTH = 500; // guard against absurdly long button IDs / command strings
 
@@ -730,7 +731,7 @@ async function confirmBooking(shortId, tenantId, adminPhone, tenantDoc) {
 
           if (_upsellItems.length > 0) {
             const _productLines = _upsellItems.map(p => {
-              const _price = p.price ? ` — ${p.currency || _currency}${p.price}` : '';
+              const _price = p.price ? ` — ${p.currency || _currency}${formatMoney(p.price)}` : '';
               return `• *${p.name}*${_price}`;
             }).join('\n');
 

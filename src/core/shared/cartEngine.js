@@ -60,11 +60,29 @@
  *     wherever a flow adds lines to a cart, so a runaway "add another item"
  *     loop (or a garbled multi-item message that over-matches) can never
  *     build an unbounded cart before saveOrder()'s own 50-item hard cap.
+ *
+ * [CART-AI-2] Two further additions so the bot treats the cart as one
+ * editable set of items rather than an append-only list:
+ *
+ *   Trailing quantities — extractQuantityAndName() now also recognises
+ *   "Burger x2", "Fries (3)", "Coke *2" (quantity AFTER the name), not just
+ *   the original leading form ("2 burgers"). Compound number words
+ *   ("twenty five", "twenty-five") are handled by parseQuantity().
+ *
+ *   parseCartModification(cart, text) / applyCartModification(cart, mod)
+ *     Lets a customer already reviewing their cart say "remove the coke",
+ *     "no fries", or "make it 3 burgers" and have that resolve against the
+ *     items ALREADY in the cart (matched by name via findBestMatch, same
+ *     fuzzy engine as everything else), instead of only ever being able to
+ *     append more lines. Returns null for anything that doesn't read as a
+ *     removal/resize, so callers fall through to their existing "treat this
+ *     as more items to add" path unchanged.
  */
 
 import { findBestMatch } from '../../utils/matchEngine.js';
 import { parseQuantity } from '../../utils/parseQuantity.js';
 import { itemLabel } from '../../utils/itemLabel.js';
+import { formatMoney } from '../../utils/formatCurrency.js';
 
 const norm = (s = '') =>
   s.toLowerCase().replace(/[^\w\s]/g, ' ').replace(/\s+/g, ' ').trim();
@@ -75,19 +93,39 @@ const norm = (s = '') =>
 const SEGMENT_SPLIT_RE = /\s*(?:,|;|\n|\+|&|\band\b|\balso\b|\bplus\b)\s*/i;
 
 // Leading-quantity extraction: "2 burgers", "two burgers", "2x burgers",
-// "2× burgers", "a burger". Falls back to quantity 1 when no leading
-// quantity token is present ("burger" alone).
-const LEADING_QTY_RE = /^\s*(\d+|[a-z]+)\s*[x×]?\s+(.+)$/i;
+// "2× burgers", "a burger", "twenty five burgers". Falls back to quantity 1
+// when no leading quantity token is present ("burger" alone).
+const LEADING_QTY_RE = /^\s*(\d+|[a-z]+(?:[\s-][a-z]+)?)\s*[x×]?\s+(.+)$/i;
+
+// [CART-AI-TRAILING-QTY] Trailing-quantity extraction: "Burger x2",
+// "Burgers x 2", "Fries (3)", "Coke *2". Some customers put the quantity
+// AFTER the item name rather than before it — the leading-quantity check
+// above never matches these (there's no number at the start of the
+// segment), so without this the "x2"/"(3)" always defaulted to quantity 1,
+// silently losing the customer's actual count.
+const TRAILING_QTY_RE = /^(.+?)\s*(?:[x×]\s*(\d+)|\((\d+)\)|\*\s*(\d+))\s*$/i;
 
 function extractQuantityAndName(segment) {
   const trimmed = segment.trim();
-  const m = trimmed.match(LEADING_QTY_RE);
-  if (m) {
-    const qty = parseQuantity(m[1]);
+
+  const leadingMatch = trimmed.match(LEADING_QTY_RE);
+  if (leadingMatch) {
+    const qty = parseQuantity(leadingMatch[1]);
     if (qty && qty > 0) {
-      return { quantity: qty, name: m[2].trim() };
+      return { quantity: qty, name: leadingMatch[2].trim() };
     }
   }
+
+  // Only tried when leading didn't resolve — leading always wins if present.
+  const trailingMatch = trimmed.match(TRAILING_QTY_RE);
+  if (trailingMatch) {
+    const qtyStr = trailingMatch[2] || trailingMatch[3] || trailingMatch[4];
+    const qty = parseQuantity(qtyStr);
+    if (qty && qty > 0 && trailingMatch[1].trim().length >= 2) {
+      return { quantity: qty, name: trailingMatch[1].trim() };
+    }
+  }
+
   return { quantity: 1, name: trimmed };
 }
 
@@ -163,6 +201,86 @@ export function parseMultiItemMessage(menu = [], text = '') {
   return { lines, unmatchedSegments };
 }
 
+// [CART-AI-MODIFY] Phrasing customers use to remove or resize a line already
+// in the cart while reviewing it — "remove the coke", "no fries please",
+// "take out 1 burger", "make it 3 burgers", "change fries to 2". Captured as
+// two prefix families (remove vs. resize) plus, for resize, a leading target
+// quantity to apply to whichever cart line the remaining text best matches.
+const REMOVE_PREFIX_RE = /^(?:remove|delete|cancel|drop|take out|no more|actually no|no)\s+(?:the\s+|my\s+|a\s+|an\s+)?(.+)$/i;
+// "change fries to 2", "set the coke to 5", "update burgers to 3" — item name, THEN quantity.
+const RESIZE_PREFIX_RE = /^(?:change|update|set)\s+(?:the\s+|my\s+)?(.+?)\s+to\s+(\d+|[a-z]+)$/i;
+// "make it 3 fries", "make it three cokes" — quantity, THEN item name.
+const MAKE_IT_QTY_FIRST_RE = /^make it\s+(\d+|[a-z]+)\s+(.+)$/i;
+const RESIZE_LEADING_RE = /^(\d+|[a-z]+)\s+(?:not|instead of)\s+\d+\s+(.+)$/i; // "3 not 1 burgers"
+
+/**
+ * parseCartModification(cart, text)
+ * → { type: 'remove', lineIndex } | { type: 'setQuantity', lineIndex, quantity } | null
+ *
+ * Pure — matches free text against the item NAMES already sitting in the
+ * cart (not the full menu), since a modification only ever makes sense
+ * against something the customer already added. Returns null when the text
+ * doesn't read as a removal/resize request at all, so callers (CART_REVIEW
+ * steps) can fall through to their normal "treat this as more items to add"
+ * path unchanged — this is purely additive, same pattern as
+ * parseMultiItemMessage.
+ */
+export function parseCartModification(cart = [], text = '') {
+  const raw = String(text || '').trim();
+  if (!raw || !cart.length) return null;
+
+  const findLine = (fragment) => {
+    const names = cart.map(l => ({ name: itemLabel(l.item, l.variant) }));
+    const { item, confidenceLevel } = findBestMatch(names.map((n, i) => ({ _id: i, name: n.name })), fragment);
+    if (!item || confidenceLevel === 'NONE') return -1;
+    return item._id;
+  };
+
+  const removeMatch = raw.match(REMOVE_PREFIX_RE);
+  if (removeMatch) {
+    const idx = findLine(removeMatch[1].trim());
+    if (idx >= 0) return { type: 'remove', lineIndex: idx };
+  }
+
+  const resizeMatch = raw.match(RESIZE_PREFIX_RE);
+  if (resizeMatch) {
+    const idx = findLine(resizeMatch[1].trim());
+    const qty = parseQuantity(resizeMatch[2]);
+    if (idx >= 0 && qty && qty > 0) return { type: 'setQuantity', lineIndex: idx, quantity: qty };
+  }
+
+  const makeItMatch = raw.match(MAKE_IT_QTY_FIRST_RE);
+  if (makeItMatch) {
+    const idx = findLine(makeItMatch[2].trim());
+    const qty = parseQuantity(makeItMatch[1]);
+    if (idx >= 0 && qty && qty > 0) return { type: 'setQuantity', lineIndex: idx, quantity: qty };
+  }
+
+  const resizeLeading = raw.match(RESIZE_LEADING_RE);
+  if (resizeLeading) {
+    const idx = findLine(resizeLeading[2].trim());
+    const qty = parseQuantity(resizeLeading[1]);
+    if (idx >= 0 && qty && qty > 0) return { type: 'setQuantity', lineIndex: idx, quantity: qty };
+  }
+
+  return null;
+}
+
+/**
+ * applyCartModification(cart, mod)
+ * → new cart array (does not mutate input)
+ */
+export function applyCartModification(cart = [], mod) {
+  if (!mod) return cart;
+  if (mod.type === 'remove') {
+    return cart.filter((_, i) => i !== mod.lineIndex);
+  }
+  if (mod.type === 'setQuantity') {
+    return cart.map((l, i) => (i === mod.lineIndex ? { ...l, quantity: mod.quantity } : l));
+  }
+  return cart;
+}
+
 /**
  * enforceCartLimit(cart, business)
  * → { cart: [...capped], overflowCount }
@@ -205,7 +323,11 @@ export function mergeCartLines(cart = [], newLines = []) {
  * [MULTICART-v40-EDIT] Powers the "Remove Item" action in the cart Edit
  * Order menu — index refers to the line's position in the cart array as
  * shown to the customer (1-based numbering is converted to 0-based by the
- * caller before this is invoked).
+ * caller before this is invoked). Complements [CART-AI-MODIFY]'s
+ * parseCartModification/applyCartModification above: that path resolves
+ * free-text ("remove the coke"), this path resolves an explicit numbered
+ * pick from the structured Edit Order menu — both end up here or in
+ * incrementCartLine/decrementCartLine.
  */
 export function removeCartLine(cart = [], index) {
   return cart.filter((_, i) => i !== index);
@@ -292,7 +414,7 @@ export function formatCartSummary(cart = [], business) {
   return cart.map(line => {
     const name = itemLabel(line.item, line.variant);
     const lineTotal = typeof line.item?.price === 'number' ? line.item.price * line.quantity : null;
-    return `${line.quantity}× ${name}${lineTotal != null ? ` — ${currency}${lineTotal}` : ''}`;
+    return `${line.quantity}× ${name}${lineTotal != null ? ` — ${currency}${formatMoney(lineTotal)}` : ''}`;
   }).join('\n');
 }
 
@@ -308,7 +430,7 @@ export function formatNumberedCartSummary(cart = [], business) {
   return cart.map((line, i) => {
     const name = itemLabel(line.item, line.variant);
     const lineTotal = typeof line.item?.price === 'number' ? line.item.price * line.quantity : null;
-    return `${i + 1}. ${line.quantity}× ${name}${lineTotal != null ? ` — ${currency}${lineTotal}` : ''}`;
+    return `${i + 1}. ${line.quantity}× ${name}${lineTotal != null ? ` — ${currency}${formatMoney(lineTotal)}` : ''}`;
   }).join('\n');
 }
 

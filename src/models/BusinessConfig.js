@@ -57,6 +57,28 @@ const menuItemSchema = new mongoose.Schema({
     url:       { type: String, default: null, trim: true },
     public_id: { type: String, default: null, trim: true },
   },
+  // [FEAT-MULTI-IMAGE] Additional gallery photos beyond the single `image`
+  // above. `image` remains the one-and-only cover photo every existing
+  // reader in the codebase already uses (bot flows sending a product photo
+  // in chat, waCatalogService.buildItemData's `image_link`) — this is a
+  // deliberately additive field so none of those ~10 call sites need to
+  // change or risk breaking. `images` only ever feeds two things: the admin
+  // dashboard's photo gallery, and — for Meta catalog sync — the
+  // `additional_image_urls` array (Meta's own field name) on the synced
+  // product, so a listing can show more than one photo in Commerce
+  // Manager / the WhatsApp catalog view without touching the primary sync
+  // contract. Each subdocument gets its own _id so a specific gallery photo
+  // can be removed by id (a Cloudinary public_id often contains '/' from its
+  // folder path and doesn't survive round-tripping through a URL param).
+  // Capped at 10 — Meta's own limit for additional_image_urls per product.
+  images: {
+    type: [{
+      url:       { type: String, required: true, trim: true },
+      public_id: { type: String, default: null, trim: true },
+    }],
+    default: [],
+    validate: { validator: v => v.length <= 10, message: 'Max 10 additional images per item' },
+  },
   tags:              { type: [String], default: [] },  // e.g. ["popular", "new", "special"]
   showImageOnSelect: { type: Boolean,  default: true },
 
@@ -251,22 +273,28 @@ const businessConfigSchema = new mongoose.Schema({
       default: [],
     },
     lastSyncedAt: { type: Date, default: null },
-    // [FIX-CATALOG-DRIFT-RECONCILE] Timestamp of the last time items already
-    // marked CONFIRMED (syncedRetailerIds) were cross-checked against Meta's
-    // live catalog, independent of whether anything in the tenant's menu
-    // changed. Without this, an item whose hash still matches what's stored
-    // (nothing about the item itself changed) is never re-examined by the
-    // ordinary delta-hash diff — so a confirmed-but-actually-missing item
-    // (e.g. one wrongly confirmed by a version of this code that predates
-    // FIX-CATALOG-OPTIMISTIC-CONFIRM, or one Meta silently dropped after
-    // confirmation) would otherwise stay wrong forever.
-    lastReconciledAt: { type: Date, default: null },
     // [CATALOG-HEALTH-4] Cleared on the next successful sync.
     lastSyncError: {
       reason: { type: String, default: null },
       // [CATALOG-HEALTH-4] Meta's actual error.message/body text (truncated),
       // so a GRAPH_ERROR is diagnosable from the dashboard alone rather than
       // requiring a server-log lookup for the specifics.
+      detail: { type: String, default: null },
+      at:     { type: Date,   default: null },
+    },
+    // [FIX-CATALOG-SEND-HEALTH] Distinct from lastSyncError above: that field
+    // only ever tracks the PRODUCT SYNC (items_batch upload into Meta's
+    // catalog). It says nothing about whether the actual customer-facing
+    // 'catalog_message'/'product_list' interactive SEND (waCatalogService.js
+    // sendCatalogMessage() → dispatcher.js) is succeeding — a tenant's sync
+    // can be perfectly healthy (products live in Commerce Manager) while
+    // every send still 400/403s from Meta (e.g. catalog not connected to the
+    // WABA in WhatsApp Manager, or missing catalog permission on the system
+    // user), which previously was only visible in server logs. dispatcher.js
+    // now writes here on every failed catalog-type send so this is
+    // diagnosable from getWaCatalogHealth() alone.
+    lastSendError: {
+      reason: { type: String, default: null },
       detail: { type: String, default: null },
       at:     { type: Date,   default: null },
     },

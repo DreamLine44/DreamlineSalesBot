@@ -6,6 +6,8 @@
  * [FIX-BUG14] buildMenuUI returns a Contact Us button on empty menu (not plain text).
  */
 
+import { formatMoney } from '../../../utils/formatCurrency.js';
+
 export function buildMenuUI(business) {
   const items = (business?.menuItems || []).filter(i => i.available !== false);
   if (!items.length) {
@@ -26,7 +28,7 @@ export function buildMenuUI(business) {
   const rows = items.map((item, i) => ({
     id:          String(i + 1),
     title:       item.name.slice(0, 24),
-    description: [item.description, item.price ? `${business?.payment?.currency || 'D'}${item.price}` : ''].filter(Boolean).join(' — ').slice(0, 72),
+    description: [item.description, item.price ? `${business?.payment?.currency || 'D'}${formatMoney(item.price)}` : ''].filter(Boolean).join(' — ').slice(0, 72),
   }));
   return {
     type:        'list',
@@ -50,7 +52,7 @@ export function buildOrderSummary({ item, qty, total, addOns = [], business, all
   buttons.push({ id: 'CANCEL', title: '❌ Cancel' });
   return {
     type: 'buttons',
-    body: `🧾 *Order Summary*\n\n🍽 *${qty}× ${name}*${addOnStr}${total ? `\n💰 Total: *${currency}${total}*` : ''}\n\nConfirm your order?`,
+    body: `🧾 *Order Summary*\n\n🍽 *${qty}× ${name}*${addOnStr}${total ? `\n💰 Total: *${currency}${formatMoney(total)}*` : ''}\n\nConfirm your order?`,
     buttons,
   };
 }
@@ -68,7 +70,7 @@ export function buildCartSummaryUI({ summaryText, total, business, note = '' }) 
   const currency = business?.payment?.currency || 'D';
   return {
     type: 'buttons',
-    body: `🧾 *Your Order*\n\n${summaryText}${total != null ? `\n\n💰 Total: *${currency}${total}*` : ''}${note}\n\nReady to checkout, or add something else?`,
+    body: `🧾 *Your Order*\n\n${summaryText}${total != null ? `\n\n💰 Total: *${currency}${formatMoney(total)}*` : ''}${note}\n\nReady to checkout, or add something else?`,
     buttons: [
       { id: 'CONFIRM',          title: '✅ Checkout'       },
       { id: 'ADD_ANOTHER_ITEM', title: '➕ Add More'        },
@@ -124,16 +126,15 @@ export function buildItemsAddedUI({ addedSummary, business, cartCount, note = ''
  * screen (buildCartSummaryUI is kept for backward compatibility / tests but
  * is no longer used for the final review).
  */
-export function buildCartReviewUI({ summaryText, total, itemCount, business, note = '' }) {
+export function buildCartReviewUI({ summaryText, total, business, note = '' }) {
   const currency = business?.payment?.currency || 'D';
-  const countLine = itemCount != null ? `\nItems: *${itemCount}*` : '';
   return {
     type: 'buttons',
-    body: `🧾 *Order Summary*\n\n${summaryText}\n${'━'.repeat(10)}${countLine}${total != null ? `\nTotal: *${currency}${total}*` : ''}${note}\n\nWould you like to confirm this order?`,
+    body: `🧾 *Order Summary*\n\n${summaryText}\n${'━'.repeat(10)}${total != null ? `\nTotal: *${currency}${formatMoney(total)}*` : ''}${note}\n\nWould you like to confirm this order?`,
     buttons: [
-      { id: 'CONFIRM',    title: '✅ Confirm Order' },
-      { id: 'EDIT_CART',  title: '✏️ Edit Order'    },
-      { id: 'CANCEL',     title: '❌ Cancel Order'  },
+      { id: 'CONFIRM',          title: '✅ Confirm Order'    },
+      { id: 'ADD_MORE_ITEMS',   title: '➕ Add More Items'  },
+      { id: 'CANCEL',           title: '❌ Cancel Order'    },
     ],
   };
 }
@@ -200,7 +201,7 @@ export function buildAdminOrderAlertBody({ customerPhone, item, quantity, totalP
   const currency   = business?.payment?.currency || 'D';
   const payEnabled = business?.payment?.enabled;
   const addOnStr   = addOns?.length ? `\n➕ Add-ons: ${addOns.join(', ')}` : '';
-  const priceStr   = totalPrice ? `\n💰 Total: *${currency}${totalPrice}*` : '';
+  const priceStr   = totalPrice ? `\n💰 Total: *${currency}${formatMoney(totalPrice)}*` : '';
   const idStr      = shortId ? `\n🔖 Ref: \`${shortId}\`` : '';
   // [FIX-BUG11] Check actual payment configuration; channel-agnostic label
   const paymentMode = payEnabled && totalPrice

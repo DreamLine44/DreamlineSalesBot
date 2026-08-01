@@ -48,6 +48,7 @@
  */
 
 import logger from '../../../config/logger.js';
+import { formatMoney } from '../../../utils/formatCurrency.js';
 
 const GROQ_URL     = 'https://api.groq.com/openai/v1/chat/completions';
 // [GROQ-V3-1] Primary model upgraded — smarter, context-aware responses
@@ -81,7 +82,7 @@ export function buildSystemPrompt({ business, intent, faqContext, orderContext, 
     .filter(i => i.available !== false)
     .slice(0, 25)
     .map(i => {
-      const price = i.price ? ` — D${i.price}` : '';
+      const price = i.price ? ` — D${formatMoney(i.price)}` : '';
       const dur   = i.duration ? ` (${i.duration} min)` : '';
       const desc2 = i.description ? ` — ${sanitise(i.description, 80)}` : '';
       return `• ${i.name}${price}${dur}${desc2}`;

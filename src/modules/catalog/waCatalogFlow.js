@@ -44,6 +44,7 @@ import {
   buildCatalogCartItems,
 } from './waCatalogHelpers.js';
 import logger                        from '../../config/logger.js';
+import { formatMoney }               from '../../utils/formatCurrency.js';
 
 // [CATALOG-UX-BUTTON] Shared by offerCatalogOnStartOrder() (automatic offer)
 // and browseCatalogExplicit() (explicit "🛍 Browse Catalog" button tap) —
@@ -331,7 +332,7 @@ async function handleMultiItemCatalogOrder({ session, business, tenant, normaliz
         `🔔 *New Order — ${business.name || 'Business'}*\n\n` +
         `👤 Customer: *${session.customerPhone}*\n` +
         `🛒 Items:\n${cartSummary}\n` +
-        (totalPrice != null ? `💰 Total: *${currency}${totalPrice}*\n` : '') +
+        (totalPrice != null ? `💰 Total: *${currency}${formatMoney(totalPrice)}*\n` : '') +
         `🔖 Ref: \`#${savedOrder.shortId}\`\n\n` +
         `⏳ Status: *Pending*${usePayment ? ' — awaiting payment screenshot.' : ' — please confirm.'}`;
 
@@ -370,7 +371,7 @@ async function handleMultiItemCatalogOrder({ session, business, tenant, normaliz
       type: 'text',
       body:
         `✅ *Order received!*\n\n${cartSummary}\n\n` +
-        (totalPrice != null ? `💰 Total: *${currency}${totalPrice}*\n\n` : '') +
+        (totalPrice != null ? `💰 Total: *${currency}${formatMoney(totalPrice)}*\n\n` : '') +
         `⏳ Your order has been received. Please wait for our team to confirm it before placing a new one.`,
     };
   }

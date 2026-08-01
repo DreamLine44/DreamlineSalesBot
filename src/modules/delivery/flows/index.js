@@ -30,6 +30,7 @@ import { saveOrder }      from '../../../services/orderService.js';
 import { parseQuantity }  from '../../../utils/parseQuantity.js';
 import { trackOrderAnalytics } from '../../../core/analytics/analyticsService.js';
 import { itemLabel }      from '../../../utils/itemLabel.js';
+import { formatMoney }    from '../../../utils/formatCurrency.js';
 import logger             from '../../../config/logger.js';
 
 // ── Config ────────────────────────────────────────────────────────────────────
@@ -153,7 +154,7 @@ export async function handleDeliveryOrder({ session, message, business, tenant, 
         menuViewed: true,
       });
 
-      const price = item.price ? ` — ${item.currency || business?.payment?.currency || 'D'}${item.price}` : '';
+      const price = item.price ? ` — ${item.currency || business?.payment?.currency || 'D'}${formatMoney(item.price)}` : '';
       return {
         type: 'buttons',
         body: `🚚 *${item.name}*${price}\n\n${item.description ? `_${item.description}_\n\n` : ''}How many would you like?`,
@@ -349,7 +350,7 @@ export async function handleDeliveryOrder({ session, message, business, tenant, 
             `🚚 *Item:* ${itemLabel(item, data.variant)} × ${qty}\n` +
             `📍 *Deliver to:* ${address}\n` +
             `⏱ *When:* ${resolvedScheduled}` +
-            (subtotal ? `\n💰 *Total:* ${item.currency || business?.payment?.currency || 'D'}${subtotal.toFixed(2)}` : '') +
+            (subtotal ? `\n💰 *Total:* ${item.currency || business?.payment?.currency || 'D'}${subtotal.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : '') +
             `\n\nReady to confirm?`,
           buttons: [
             { id: 'CONFIRM', title: '✅ Confirm Order' },
@@ -440,7 +441,7 @@ export async function handleDeliveryOrder({ session, message, business, tenant, 
           `🚚 *Item:* ${itemLabel(item, data.variant)} × ${qty}\n` +
           `📍 *Deliver to:* ${address}\n` +
           `⏱ *When:* ${slot}` +
-          (subtotal ? `\n💰 *Total:* ${item.currency || business?.payment?.currency || 'D'}${subtotal.toFixed(2)}` : '') +
+          (subtotal ? `\n💰 *Total:* ${item.currency || business?.payment?.currency || 'D'}${subtotal.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : '') +
           `\n\nReady to confirm?`,
         buttons: [
           { id: 'CONFIRM', title: '✅ Confirm Order' },
@@ -547,7 +548,7 @@ export async function handleDeliveryOrder({ session, message, business, tenant, 
                 `📦 *${qty}× ${itemLabel(item, data.variant)}*\n` +
                 `📍 Address: *${address}*\n` +
                 `⏱ Slot: *${slot}*\n` +
-                `💰 Total: *${currency}${totalPrice}*\n` +
+                `💰 Total: *${currency}${formatMoney(totalPrice)}*\n` +
                 `📝 Ref: *${ref}*\n\n` +
                 `⏳ Status: *Pending* — awaiting payment screenshot.`,
             }, tenant).catch(() => {});
@@ -573,7 +574,7 @@ export async function handleDeliveryOrder({ session, message, business, tenant, 
               `📦 *${qty}× ${itemLabel(item, data.variant)}*\n` +
               `📍 Address: *${address}*\n` +
               `⏱ Slot: *${slot}*\n` +
-              (totalPrice ? `💰 Total: *${currency}${totalPrice}*\n` : '') +
+              (totalPrice ? `💰 Total: *${currency}${formatMoney(totalPrice)}*\n` : '') +
               `🔖 Ref: \`${savedOrder?.shortId || 'N/A'}\``,
             buttons: [
               { id: `APPROVE_${savedOrder.shortId}`, title: '✅ Confirm Order' },
@@ -638,7 +639,7 @@ function _buildMenuUI(menu, business) {
     title:       item.name.slice(0, 24),
     description: [
       item.description ? item.description.slice(0, 40) : null,
-      item.price ? `${item.currency || currency}${item.price}` : null,
+      item.price ? `${item.currency || currency}${formatMoney(item.price)}` : null,
     ].filter(Boolean).join(' — ').slice(0, 72) || undefined,
   }));
 

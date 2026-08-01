@@ -10,6 +10,7 @@ import { parseQuantity }  from '../../../utils/parseQuantity.js';
 import { trackOrderAnalytics } from '../../../core/analytics/analyticsService.js';
 import logger             from '../../../config/logger.js';
 import { buildWhatsAppImageUrl } from '../../../config/cloudinary.js';
+import { formatMoney } from '../../../utils/formatCurrency.js';
 
 export const FASHION_CONFIG = {
   businessMode: 'FASHION',
@@ -143,14 +144,14 @@ export async function handleFashionOrder({ session, message, business, tenant, i
         if (item.variants.length > 3) {
           nextPrompt = {
             type: 'list',
-            body: `✨ *${item.name}*${item.price ? ` — ${business?.payment?.currency || 'D'}${item.price}` : ''}\n\nWhat *size* would you like?`,
+            body: `✨ *${item.name}*${item.price ? ` — ${business?.payment?.currency || 'D'}${formatMoney(item.price)}` : ''}\n\nWhat *size* would you like?`,
             button: 'Choose size',
             sections: [{ title: 'Available Sizes', rows: item.variants.map(v => ({ id: `SIZE_${String(v).toUpperCase().replace(/\s+/g, '_')}`, title: String(v) })) }],
           };
         } else {
           nextPrompt = {
             type: 'buttons',
-            body: `✨ *${item.name}*${item.price ? ` — ${business?.payment?.currency || 'D'}${item.price}` : ''}\n\nWhat *size* would you like?`,
+            body: `✨ *${item.name}*${item.price ? ` — ${business?.payment?.currency || 'D'}${formatMoney(item.price)}` : ''}\n\nWhat *size* would you like?`,
             buttons: [...variantButtons, { id: 'CANCEL', title: '❌ Cancel' }].slice(0, 3),
           };
         }
@@ -177,7 +178,7 @@ export async function handleFashionOrder({ session, message, business, tenant, i
           {
             type:    'image',
             url:     buildWhatsAppImageUrl(imageUrl),
-            caption: `*${item.name}*${item.price ? ` — ${business?.payment?.currency || 'D'}${item.price}` : ''}`,
+            caption: `*${item.name}*${item.price ? ` — ${business?.payment?.currency || 'D'}${formatMoney(item.price)}` : ''}`,
           },
           nextPrompt,
         ];
@@ -310,7 +311,7 @@ export async function handleFashionOrder({ session, message, business, tenant, i
       const colorStr = data.color ? ` — ${data.color}` : '';
       return {
         type: 'buttons',
-        body: `🧾 *Order Summary*\n\n👗 *${qty}× ${data.item?.name}${sizeStr}${colorStr}*${total ? `\n💰 ${business?.payment?.currency || 'D'}${total}` : ''}\n\nConfirm?`,
+        body: `🧾 *Order Summary*\n\n👗 *${qty}× ${data.item?.name}${sizeStr}${colorStr}*${total ? `\n💰 ${business?.payment?.currency || 'D'}${formatMoney(total)}` : ''}\n\nConfirm?`,
         buttons: [{ id: 'CONFIRM', title: '✅ Confirm Order' }, { id: 'CANCEL', title: '❌ Cancel' }],
       };
     }
@@ -460,7 +461,7 @@ function buildCatalogUI(business, itemsOverride = null, category = null) {
   }
   const rows = items.map((item, i) => ({
     id: String(i + 1), title: item.name.slice(0, 24),
-    description: [item.description, item.price ? `${business?.payment?.currency || 'D'}${item.price}` : ''].filter(Boolean).join(' — ').slice(0, 72),
+    description: [item.description, item.price ? `${business?.payment?.currency || 'D'}${formatMoney(item.price)}` : ''].filter(Boolean).join(' — ').slice(0, 72),
   }));
   const header = category ? `✨ ${category}` : (business?.name || 'Collection');
   return { type: 'list', header, body: "Our latest collection — choose an item:", button: 'View Collection', rows };

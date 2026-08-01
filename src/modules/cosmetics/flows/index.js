@@ -15,7 +15,9 @@ export const COSMETICS_CONFIG = {
   flows: ['ORDER', 'BOOKING'],
   persona: 'knowledgeable beauty advisor who gives personalised skincare and makeup recommendations',
   steps: {
-    ORDER:   ['SELECT_ITEM', 'QUANTITY', 'CONFIRM'],
+    // [CART-AI] CART_REVIEW added — reached from SELECT_ITEM on a multi-item
+    // message (shade-less products only), mirroring restaurant/salon/bakery.
+    ORDER:   ['SELECT_ITEM', 'CART_REVIEW', 'SELECT_SHADE', 'QUANTITY', 'GIFT_NOTE', 'CONFIRM'],
     BOOKING: ['SELECT_SERVICE', 'DATE', 'DATE_CONFIRM', 'TIME', 'TIME_CONFIRM', 'CONFIRM'],
   },
   ui: {

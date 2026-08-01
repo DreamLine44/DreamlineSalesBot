@@ -44,6 +44,7 @@ import BusinessConfig from '../models/BusinessConfig.js';
 import { dispatchText, dispatchTemplate } from '../core/whatsapp/dispatcher.js';
 import { TEMPLATE_LANGUAGE } from '../config/env.js';
 import logger from '../config/logger.js';
+import { formatMoney } from '../utils/formatCurrency.js';
 
 const TEMPLATES_ENABLED = () => process.env.WHATSAPP_TEMPLATES_ENABLED === 'true';
 
@@ -372,7 +373,7 @@ async function runPaymentReminderJob() {
         fallbackText:
           `💳 *Payment Reminder*\n\n` +
           `Your order of *${order.item}* is awaiting payment.\n\n` +
-          `💰 Total: *${currency}${amount}*\n` +
+          `💰 Total: *${currency}${formatMoney(amount)}*\n` +
           (channels.length > 0
             ? `📲 Pay via ${channelSummary}\n`
             : `📲 Please contact us for payment details.\n`) +

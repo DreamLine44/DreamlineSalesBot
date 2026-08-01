@@ -24,6 +24,7 @@ import { saveBooking }             from '../../services/bookingService.js';
 import { trackBookingAnalytics }   from '../analytics/analyticsService.js';
 // [FIX-BC-2] dispatchText was imported but never called anywhere in this file — dead import removed.
 import logger                      from '../../config/logger.js';
+import { formatMoney }             from '../../utils/formatCurrency.js';
 
 // ── Timezone helper ───────────────────────────────────────────────────────────
 
@@ -331,7 +332,7 @@ export async function handleBookingFlow({ session, message, business, tenant, is
           sections: [{ title: 'Our Services', rows: services.map(s => ({
             id: `SVC_${s.name.toUpperCase().replace(/\s+/g, '_')}`,
             title: s.name.slice(0, 24),
-            description: [s.price ? `D${s.price}` : null, s.duration ? `${s.duration} min` : null].filter(Boolean).join(' · ') || undefined,
+            description: [s.price ? `D${formatMoney(s.price)}` : null, s.duration ? `${s.duration} min` : null].filter(Boolean).join(' · ') || undefined,
           }))}],
         };
       }
@@ -394,7 +395,7 @@ export async function handleBookingFlow({ session, message, business, tenant, is
             sections: [{ title: 'Our Services', rows: services.map(s => ({
               id: `SVC_${s.name.toUpperCase().replace(/\s+/g, '_')}`,
               title: s.name.slice(0, 24),
-              description: s.price ? `D${s.price}${s.duration ? ` · ${s.duration}min` : ''}` : undefined,
+              description: s.price ? `D${formatMoney(s.price)}${s.duration ? ` · ${s.duration}min` : ''}` : undefined,
             }))}],
           };
         }

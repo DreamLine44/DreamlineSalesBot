@@ -42,6 +42,7 @@ import { getModeConfig }         from '../../config/modes.js';
 import { withCatalogWelcomeOption, shouldShowCatalogButton, isCatalogEnabled, hasSellableProducts } from '../../modules/catalog/waCatalogConfig.js';
 import { buildOptionsReply } from '../shared/uiOptionsHelper.js';
 import logger from '../../config/logger.js';
+import { formatMoney } from '../../utils/formatCurrency.js';
 
 const ACTION_REGISTRY = new Map();
 
@@ -910,7 +911,7 @@ export async function route({ action, intent, session, message, business, tenant
             body:
               `📸 *Please send your payment screenshot*\n\n` +
               `Order *#${pendingPay.shortId}* — *${pendingPay.item}* × ${pendingPay.quantity}\n` +
-              `💰 Amount: *${currency}${pendingPay.totalPrice || '—'}*\n\n` +
+              `💰 Amount: *${currency}${pendingPay.totalPrice ? formatMoney(pendingPay.totalPrice) : '—'}*\n\n` +
               `Send a clear screenshot of your successful payment transfer here.`,
             buttons: [
               { id: 'SUPPORT', title: '❓ Need Help'    },
