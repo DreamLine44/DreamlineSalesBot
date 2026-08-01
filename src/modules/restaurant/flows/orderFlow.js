@@ -112,12 +112,23 @@ export async function handleOrderFlow({ session, message, business, tenant, isIn
   // ── INIT (message = null — start of flow) ─────────────────────────────────
   if (message === null) {
     const existingCart = Array.isArray(data.cart) ? data.cart : [];
+    const viaCatalog   = data.orderViaCatalog === true;
+    const freshData    = existingCart.length
+      ? { cart: existingCart, ...(viaCatalog ? { orderViaCatalog: true } : {}) }
+      : (viaCatalog ? { orderViaCatalog: true } : {});
     await updateSession(session.customerPhone, session.tenantId, {
       step: 'SELECT_ITEM',
-      data: existingCart.length ? { cart: existingCart } : {},
+      data: freshData,
       menuViewed: false,
       upsellSent: false,
     });
+    if (viaCatalog) {
+      const count = cartItemCount(existingCart);
+      const note  = existingCart.length
+        ? `🛒 You still have *${count} item${count > 1 ? 's' : ''}* in your cart.\n\n`
+        : '';
+      return await _browseForMoreItems(session, business, tenant, freshData, { note });
+    }
     const menuUI = buildMenuUI(business);
     if (existingCart.length) {
       const count = cartItemCount(existingCart);
@@ -155,12 +166,11 @@ export async function handleOrderFlow({ session, message, business, tenant, isIn
       if (isNum) {
         const trustedPick = isInteractive || session.menuViewed;
         if (!trustedPick) {
-          // Typed a number before seeing menu — show menu first
           await updateSession(session.customerPhone, session.tenantId, { menuViewed: true });
-          return buildMenuUI(business);
+          return await _browseForMoreItems(session, business, tenant, data);
         }
         const item = menu[numIndex];
-        if (!item) return buildMenuUI(business);
+        if (!item) return await _browseForMoreItems(session, business, tenant, data);
         return await _selectItem(item, session, business, data);
       }
 
@@ -171,7 +181,7 @@ export async function handleOrderFlow({ session, message, business, tenant, isIn
       // Menu/home — stay in ORDER flow, just re-show the browse menu.
       if (/^(back|menu|home)$/i.test(clean)) {
         await updateSession(session.customerPhone, session.tenantId, { step: 'SELECT_ITEM', menuViewed: true });
-        return buildMenuUI(business);
+        return await _browseForMoreItems(session, business, tenant, data);
       }
 
       // Too short — show a gentle nudge instead of just dumping the menu again
@@ -220,7 +230,7 @@ export async function handleOrderFlow({ session, message, business, tenant, isIn
 
         await updateSession(session.customerPhone, session.tenantId, {
           step: 'ITEM_ADDED',
-          data: { ...data, cart: cappedCart },
+          data: { ...data, cart: cappedCart, ...(data.orderViaCatalog ? { orderViaCatalog: true } : {}) },
           menuViewed: true,
         });
 
@@ -276,7 +286,7 @@ export async function handleOrderFlow({ session, message, business, tenant, isIn
         const item = menu.find(i => norm(i.name) === norm(suggestedName));
         if (item) return await _selectItem(item, session, business, data);
       }
-      return buildMenuUI(business);
+      return await _browseForMoreItems(session, business, tenant, data);
     }
 
     // ────────────────────────────────────────────────────────────────────────
@@ -286,7 +296,7 @@ export async function handleOrderFlow({ session, message, business, tenant, isIn
     // one final consolidated review (CONFIRM case below).
     case 'ITEM_ADDED': {
       const cart = Array.isArray(data.cart) ? data.cart : [];
-      if (!cart.length) return buildMenuUI(business);
+      if (!cart.length) return await _browseForMoreItems(session, business, tenant, data);
 
       const wantsReview = raw === 'REVIEW_CART' ||
         /^(review|checkout|view cart|finish order|done|finish|finished|no|nope|that's all|thats all|i'?m done)$/i.test(clean);
@@ -303,8 +313,7 @@ export async function handleOrderFlow({ session, message, business, tenant, isIn
       const wantsMore = raw === 'ADD_ANOTHER_ITEM' ||
         /^(yes|y|yeah|yep|add more|add another|add another item|another item|add item|more items?)$/i.test(clean);
       if (wantsMore) {
-        await updateSession(session.customerPhone, session.tenantId, { step: 'SELECT_ITEM' });
-        return buildMenuUI(business);
+        return await _browseForMoreItems(session, business, tenant, data);
       }
 
       // [CART-AI-MODIFY] "remove the coke" / "make it 3 fries" — resolved
@@ -313,7 +322,9 @@ export async function handleOrderFlow({ session, message, business, tenant, isIn
       // never be misread as an attempt to add a brand-new line.
       const modResult = await _resolveCartModification(session, business, data, cart, raw);
       if (modResult) {
-        if (!modResult.updatedCart.length) return buildMenuUI(business);
+        if (!modResult.updatedCart.length) {
+          return await _browseForMoreItems(session, business, tenant, { ...data, cart: [] });
+        }
         const newCount = cartItemCount(modResult.updatedCart);
         return {
           type: 'buttons',
@@ -339,7 +350,9 @@ export async function handleOrderFlow({ session, message, business, tenant, isIn
       if (newLines) {
         const merged = mergeCartLines(cart, newLines);
         const { cart: cappedCart, overflowCount } = enforceCartLimit(merged, business);
-        await updateSession(session.customerPhone, session.tenantId, { data: { ...data, cart: cappedCart } });
+        await updateSession(session.customerPhone, session.tenantId, {
+          data: { ...data, cart: cappedCart, ...(data.orderViaCatalog ? { orderViaCatalog: true } : {}) },
+        });
         let note = multiAdd ? buildUnmatchedNote(multiAdd.unmatchedSegments) : '';
         if (overflowCount > 0) {
           note += `\n\n_(Your cart can hold up to ${business?.multiItemCart?.maxItems || 10} items — ${overflowCount} extra item${overflowCount > 1 ? 's were' : ' was'} left out.)_`;
@@ -453,7 +466,7 @@ export async function handleOrderFlow({ session, message, business, tenant, isIn
     // once and offers exactly 3 actions: Confirm / Edit / Cancel.
     case 'CONFIRM': {
       const cart = Array.isArray(data.cart) ? data.cart : [];
-      if (!cart.length) return buildMenuUI(business);
+      if (!cart.length) return await _browseForMoreItems(session, business, tenant, data);
 
       // [FIX-CONFIRM-1] "yeah"/"yep" were missing here even though every other
       // confirm-style step in this file (SUGGESTION_CONFIRM, UPSELL) accepts them.
@@ -471,8 +484,7 @@ export async function handleOrderFlow({ session, message, business, tenant, isIn
       const wantsAddMore = raw === 'ADD_MORE_ITEMS' || raw === 'ADD_ANOTHER_ITEM' ||
         /^(add more items?|add more|add another item?|continue shopping|keep shopping|browse|menu)$/i.test(clean);
       if (wantsAddMore) {
-        await updateSession(session.customerPhone, session.tenantId, { step: 'SELECT_ITEM' });
-        return buildMenuUI(business);
+        return await _browseForMoreItems(session, business, tenant, data);
       }
 
       // Typed "edit" still opens the fuller Remove/Increase/Decrease/Clear
@@ -486,13 +498,7 @@ export async function handleOrderFlow({ session, message, business, tenant, isIn
 
       const wantsCancel = raw === 'CANCEL' || /^(cancel|cancel order|no|nope|stop)$/i.test(clean);
       if (wantsCancel) {
-        await updateSession(session.customerPhone, session.tenantId, {
-          currentFlow: null, step: null, data: {},
-        });
-        return {
-          type: 'text',
-          body: `❌ *Order cancelled.*\n\nYour cart has been cleared.\n\nBrowse the menu anytime to start a new order! 😊`,
-        };
+        return cancelFlow(session, business);
       }
 
       // [CART-AI-MODIFY] Let the customer type a fix directly at the review
@@ -501,7 +507,9 @@ export async function handleOrderFlow({ session, message, business, tenant, isIn
       // never overlaps isConfirm's exact yes/yeah/etc. match set above.
       const modResult = await _resolveCartModification(session, business, data, cart, raw);
       if (modResult) {
-        if (!modResult.updatedCart.length) return buildMenuUI(business);
+        if (!modResult.updatedCart.length) {
+          return await _browseForMoreItems(session, business, tenant, { ...data, cart: [] });
+        }
         return buildCartReviewUI({
           summaryText: formatCartSummary(modResult.updatedCart, business),
           total:       cartTotal(modResult.updatedCart),
@@ -529,7 +537,7 @@ export async function handleOrderFlow({ session, message, business, tenant, isIn
       const action = raw; // list-reply row id, e.g. 'EDIT_ADD'
       const isBack = action === 'EDIT_BACK' || /^(back|back to summary|summary)$/i.test(clean);
       if (isBack) {
-        if (!cart.length) return buildMenuUI(business);
+        if (!cart.length) return await _browseForMoreItems(session, business, tenant, data);
         await updateSession(session.customerPhone, session.tenantId, { step: 'CONFIRM' });
         return buildCartReviewUI({
           summaryText: formatCartSummary(cart, business),
@@ -540,23 +548,26 @@ export async function handleOrderFlow({ session, message, business, tenant, isIn
       }
 
       if (action === 'EDIT_ADD' || /^(add|add item)$/i.test(clean)) {
-        await updateSession(session.customerPhone, session.tenantId, { step: 'SELECT_ITEM' });
-        return buildMenuUI(business);
+        return await _browseForMoreItems(session, business, tenant, data);
       }
 
       if (action === 'EDIT_CLEAR' || /^(clear|clear cart|empty cart)$/i.test(clean)) {
+        const clearedData = {
+          ...data,
+          cart: clearCart(),
+          ...(data.orderViaCatalog ? { orderViaCatalog: true } : {}),
+        };
         await updateSession(session.customerPhone, session.tenantId, {
-          step: 'SELECT_ITEM', data: { ...data, cart: clearCart() },
+          step: 'SELECT_ITEM', data: clearedData,
         });
-        const menuUI = buildMenuUI(business);
-        if (menuUI.type === 'buttons') return menuUI; // empty-menu guard
-        return { ...menuUI, body: `🗑️ Your cart has been cleared.\n\n${menuUI.body}` };
+        return await _browseForMoreItems(session, business, tenant, clearedData, {
+          note: '🗑️ Your cart has been cleared.\n\n',
+        });
       }
 
       if (!cart.length) {
-        // Nothing to remove/adjust — send back to browsing.
         await updateSession(session.customerPhone, session.tenantId, { step: 'SELECT_ITEM' });
-        return buildMenuUI(business);
+        return await _browseForMoreItems(session, business, tenant, data);
       }
 
       const editAction = { EDIT_REMOVE: 'remove', EDIT_INCREASE: 'increase', EDIT_DECREASE: 'decrease' }[action]
@@ -609,14 +620,21 @@ export async function handleOrderFlow({ session, message, business, tenant, isIn
       const { cart: cappedCart } = enforceCartLimit(cart, business);
 
       await updateSession(session.customerPhone, session.tenantId, {
-        data: { ...data, cart: cappedCart, pendingEditAction: null },
+        data: {
+          ...data,
+          cart: cappedCart,
+          pendingEditAction: null,
+          ...(data.orderViaCatalog ? { orderViaCatalog: true } : {}),
+        },
       });
 
       if (!cappedCart.length) {
         await updateSession(session.customerPhone, session.tenantId, { step: 'SELECT_ITEM' });
-        const menuUI = buildMenuUI(business);
-        if (menuUI.type === 'buttons') return menuUI;
-        return { ...menuUI, body: `Your cart is now empty.\n\n${menuUI.body}` };
+        return await _browseForMoreItems(session, business, tenant, {
+          ...data,
+          cart: [],
+          ...(data.orderViaCatalog ? { orderViaCatalog: true } : {}),
+        }, { note: 'Your cart is now empty.\n\n' });
       }
 
       await updateSession(session.customerPhone, session.tenantId, { step: 'CONFIRM' });
@@ -649,9 +667,13 @@ export async function handleOrderFlow({ session, message, business, tenant, isIn
         step, tenantId: session.tenantId, phone: session.customerPhone,
       });
       const existingCart = Array.isArray(data.cart) ? data.cart : [];
+      const viaCatalog   = data.orderViaCatalog === true;
+      const recoveryData = existingCart.length
+        ? { cart: existingCart, ...(viaCatalog ? { orderViaCatalog: true } : {}) }
+        : (viaCatalog ? { orderViaCatalog: true } : {});
       await updateSession(session.customerPhone, session.tenantId, {
         step: 'SELECT_ITEM',
-        data: existingCart.length ? { cart: existingCart } : {},
+        data: recoveryData,
       });
       const count = cartItemCount(existingCart);
       return {
@@ -684,11 +706,41 @@ async function _resolveCartModification(session, business, data, cart, raw) {
   if (!mod) return null;
   const updatedCart = applyCartModification(cart, mod);
   if (!updatedCart.length) {
-    await updateSession(session.customerPhone, session.tenantId, { step: 'SELECT_ITEM', data: { ...data, cart: [] } });
+    await updateSession(session.customerPhone, session.tenantId, {
+      step: 'SELECT_ITEM',
+      data: { ...data, cart: [], ...(data.orderViaCatalog ? { orderViaCatalog: true } : {}) },
+    });
   } else {
     await updateSession(session.customerPhone, session.tenantId, { data: { ...data, cart: updatedCart } });
   }
   return { mod, updatedCart };
+}
+
+// ── Catalog-aware browse (add-more / empty-cart / recovery) ───────────────────
+/**
+ * _browseForMoreItems(session, business, tenant, data, { note })
+ * [FIX-CATALOG-ADD-MORE] Catalog-sourced orders re-open WA Catalog; typed-menu
+ * orders fall back to buildMenuUI(). Returns null when the catalog was sent
+ * directly (no further UIResponse needed).
+ */
+async function _browseForMoreItems(session, business, tenant, data, { note = '' } = {}) {
+  const cart = Array.isArray(data?.cart) ? data.cart : [];
+  if (data?.orderViaCatalog) {
+    const { tryResumeCatalogShopping } = await import('../../catalog/waCatalogFlow.js');
+    const catalogResult = await tryResumeCatalogShopping({ session, business, tenant });
+    if (catalogResult === null) return null;
+    if (catalogResult !== false) {
+      if (note && typeof catalogResult.body === 'string') catalogResult.body = note + catalogResult.body;
+      return catalogResult;
+    }
+  }
+  await updateSession(session.customerPhone, session.tenantId, {
+    step: 'SELECT_ITEM',
+    data: { ...data, cart },
+  });
+  const menuUI = buildMenuUI(business);
+  if (note && typeof menuUI.body === 'string') menuUI.body = note + menuUI.body;
+  return menuUI;
 }
 
 // ── Add-item-to-cart helper ───────────────────────────────────────────────────
@@ -708,7 +760,7 @@ async function _addItemAndPrompt(session, business, data, { item, quantity, vari
 
   await updateSession(session.customerPhone, session.tenantId, {
     step: 'ITEM_ADDED',
-    data: { cart: cappedCart }, // clear the single-item scratch fields — folded into the cart now
+    data: { cart: cappedCart, ...(data.orderViaCatalog ? { orderViaCatalog: true } : {}) },
     upsellSent: false,
   });
 

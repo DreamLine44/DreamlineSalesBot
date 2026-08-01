@@ -117,7 +117,7 @@ test('handleMultiItemCatalogOrder merges resolved catalog lines into session.dat
 
 test('handleMultiItemCatalogOrder sets step to CONFIRM and delegates to flowEngine.advance() rather than calling saveOrder itself', () => {
   assert.match(catalogFlowSrc, /step:\s*'CONFIRM'/);
-  assert.match(catalogFlowSrc, /data:\s*\{\s*cart:\s*cappedCart\s*\}/);
+  assert.match(catalogFlowSrc, /data:\s*\{\s*cart:\s*cappedCart,\s*orderViaCatalog:\s*true\s*\}/);
   assert.match(catalogFlowSrc, /const reply = await advance\(\{ session: freshSession, message: '', business, tenant, isInteractive: false \}\)/);
   // Must NOT re-implement saveOrder/admin-alert logic in this function anymore.
   assert.doesNotMatch(catalogFlowSrc, /step:\s*usePayment \? 'PAYMENT_PROOF' : 'AWAIT_ADMIN_CONFIRM'/);

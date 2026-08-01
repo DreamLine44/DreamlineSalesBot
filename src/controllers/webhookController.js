@@ -926,6 +926,12 @@ function _detectMidFlowQuestion(text, session) {
   // 3b. Order input steps — qty, item picks, cart edits must reach orderFlow
   if (MFQ_ORDER_INPUT_STEPS.has(step)) return false;
 
+  // 3c. Catalog-sourced ORDER flows — item picks and cart actions must not pause for MFQ
+  if (flow === 'ORDER' && session?.data?.orderViaCatalog &&
+      ['SELECT_ITEM', 'CONFIRM', 'ITEM_ADDED', 'EDIT_CART_MENU', 'EDIT_CART_PICK'].includes(step)) {
+    return false;
+  }
+
   // 4. Confirm steps accept "confirm"/"cancel" only — anything else is worth intercepting
   //    BUT very short inputs (1-2 words, < 15 chars) at confirm steps are noise, not questions
   if ((step === 'CONFIRM' || step === 'BOOKING_CONFIRM') && clean.length < 15 && !clean.includes('?')) {

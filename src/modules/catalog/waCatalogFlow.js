@@ -49,7 +49,7 @@ import logger                        from '../../config/logger.js';
 // both end with the exact same "send the catalog, then arm the session to
 // receive the eventual 'order' webhook message" sequence; only the caller
 // and the reason for reaching it differ.
-async function sendAndArmCatalog(session, business, tenant) {
+async function sendAndArmCatalog(session, business, tenant, { preserveCart = false } = {}) {
   const sent = await sendCatalogMessage(session.customerPhone, business, tenant);
   if (!sent) return false; // [Failure handling] silent fallback
 
@@ -63,10 +63,21 @@ async function sendAndArmCatalog(session, business, tenant) {
   // catalog-specific step name — if the customer abandons the WA Catalog UI
   // and types instead, they land exactly where a fresh "Shop Now" tap would
   // have put them, with no special-cased step for any module to handle.
+  //
+  // [FIX-CATALOG-ADD-MORE] data.orderViaCatalog marks catalog-sourced orders so
+  // "Add More Items" re-opens WA Catalog (not the text/list menu). When
+  // preserveCart is true the in-progress cart is kept across re-browse.
   const cfg = getModeConfig(business);
   const firstStep = cfg?.steps?.ORDER?.[0] || null;
+  const priorCart = preserveCart && Array.isArray(session?.data?.cart) ? session.data.cart : [];
+  const sessionData = priorCart.length
+    ? { cart: priorCart, orderViaCatalog: true }
+    : { orderViaCatalog: true };
   await updateSession(session.customerPhone, session.tenantId, {
-    currentFlow: 'ORDER', step: firstStep, data: {}, menuViewed: false,
+    currentFlow: 'ORDER',
+    step:        firstStep,
+    data:        sessionData,
+    menuViewed:  preserveCart ? true : false,
   });
   return true;
 }
@@ -133,6 +144,44 @@ export async function browseCatalogExplicit({ session, business, tenant }) {
     buttons: [
       { id: 'BROWSE_CATALOG', title: '🔄 Try Again' },
       { id: 'SUPPORT',        title: '💬 Get Help'  },
+    ],
+  };
+}
+
+/**
+ * tryResumeCatalogShopping({ session, business, tenant })
+ * → null | UIResponse | false
+ *
+ * [FIX-CATALOG-ADD-MORE] When the customer started ordering via WA Catalog
+ * (data.orderViaCatalog), "Add More Items" must re-send the catalog — not the
+ * internal text/list menu. Returns:
+ *   null  — catalog message already dispatched (caller sends nothing further)
+ *   UIResponse — catalog temporarily unavailable (cart preserved)
+ *   false — not a catalog order (caller should use the text menu path)
+ */
+export async function tryResumeCatalogShopping({ session, business, tenant }) {
+  const data = session?.data || {};
+  if (!data.orderViaCatalog) return false;
+
+  try {
+    const offered = await sendAndArmCatalog(session, business, tenant, { preserveCart: true });
+    if (offered) return null;
+  } catch (err) {
+    logger.warn('[WACatalog] tryResumeCatalogShopping failed', {
+      err: err.message, tenantId: business?.tenantId,
+    });
+  }
+
+  const cart = Array.isArray(data.cart) ? data.cart : [];
+  await updateSession(session.customerPhone, session.tenantId, {
+    data: { cart, orderViaCatalog: true },
+  }).catch(() => {});
+  return {
+    type:    'buttons',
+    body:    '🛍 Our product catalog is temporarily unavailable. Your cart is still saved — try again in a moment.',
+    buttons: [
+      { id: 'ADD_MORE_ITEMS', title: '🔄 Try Catalog Again' },
+      { id: 'REVIEW_CART',    title: '🧾 Review Cart'       },
     ],
   };
 }
@@ -281,7 +330,7 @@ async function handleMultiItemCatalogOrder({ session, business, tenant, normaliz
   await updateSession(session.customerPhone, session.tenantId, {
     currentFlow: 'ORDER',
     step:        'CONFIRM',
-    data:        { cart: cappedCart },
+    data:        { cart: cappedCart, orderViaCatalog: true },
     menuViewed:  true,
     pendingCatalogQueue: [], // consolidated cart -- no per-line queue to drain
   });
@@ -353,7 +402,7 @@ export async function drainCatalogQueue({ session, business, tenant }) {
   await updateSession(session.customerPhone, session.tenantId, {
     currentFlow:         'ORDER',
     step:                'CONFIRM',
-    data:                { cart: cappedCart },
+    data:                { cart: cappedCart, orderViaCatalog: true },
     menuViewed:          true,
     postFlowAck:         null,
     pendingCatalogQueue: [],

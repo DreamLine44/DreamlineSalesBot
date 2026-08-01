@@ -94,4 +94,26 @@ test('handleMultiItemCatalogOrder merges with any existing session cart', () => 
   );
   assert.match(block, /priorCart/);
   assert.match(block, /mergeCartLines\(priorCart/);
+  assert.match(block, /orderViaCatalog:\s*true/);
+});
+
+test('catalog-sourced orders re-open WA Catalog on Add More via tryResumeCatalogShopping', () => {
+  assert.match(catalogSrc, /export async function tryResumeCatalogShopping/);
+  assert.match(catalogSrc, /orderViaCatalog/);
+  assert.match(catalogSrc, /preserveCart:\s*true/);
+  assert.match(orderFlowSrc, /_browseForMoreItems/);
+  assert.match(orderFlowSrc, /tryResumeCatalogShopping/);
+});
+
+test('catalog-sourced cancel at CONFIRM uses cancelFlow', () => {
+  const confirmBlock = orderFlowSrc.slice(
+    orderFlowSrc.indexOf("case 'CONFIRM'"),
+    orderFlowSrc.indexOf("case 'EDIT_CART_MENU'"),
+  );
+  assert.match(confirmBlock, /return cancelFlow\(session, business\)/);
+});
+
+test('empty-cart fallbacks route through _browseForMoreItems', () => {
+  assert.match(orderFlowSrc, /if \(!cart\.length\) return await _browseForMoreItems/);
+  assert.match(orderFlowSrc, /Your cart is now empty/);
 });

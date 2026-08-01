@@ -76,6 +76,8 @@ export async function advance({ session, message, business, tenant, isInteractiv
 
   try {
     const response = await handler({ session, message, business, tenant, isInteractive });
+    // null = handler already dispatched outbound UI (e.g. WA Catalog re-open)
+    if (response === null) return null;
     return response || {
       type:    'buttons',
       body:    '⚠️ Something went wrong. Please try again.',
@@ -109,11 +111,14 @@ export async function startFlow({ flowName, session, business, tenant }) {
   const existingCart = flowUpper === 'ORDER' && Array.isArray(session?.data?.cart) && session.data.cart.length
     ? session.data.cart
     : null;
+  const orderViaCatalog = session?.data?.orderViaCatalog === true;
 
   const updated = await updateSession(session.customerPhone, session.tenantId, {
     currentFlow: flowUpper,
     step:        null,
-    data:        existingCart ? { cart: existingCart } : {},
+    data:        existingCart
+      ? { cart: existingCart, ...(orderViaCatalog ? { orderViaCatalog: true } : {}) }
+      : (orderViaCatalog ? { orderViaCatalog: true } : {}),
     upsellSent:  false,
     menuViewed:  false,
     lastAorInterceptAt: null,  // [FIX-AOR-5] Reset throttle so next order confirms show fresh card
