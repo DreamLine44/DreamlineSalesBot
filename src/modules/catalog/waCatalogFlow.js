@@ -160,12 +160,39 @@ export async function handleCatalogOrderMessage({ session, business, tenant, cat
     };
   }
 
-  // [CATALOG-CART-1] Consolidate into ONE Order for tenants who have opted
-  // into multi-item orders. See waCatalogHelpers.js buildCatalogCartItems and
-  // handleMultiItemCatalogOrder below for full rationale — gated on
-  // multiItemCart.enabled so opted-out tenants keep the existing sequential
-  // single-item-flow-per-line queue behavior below, unchanged.
-  if (business?.multiItemCart?.enabled && normalized.resolvedLines.length > 1) {
+  // [CATALOG-CART-1] [FIX-CATALOG-QUEUE-DEADEND] Consolidate into ONE Order
+  // for EVERY multi-line WA Catalog checkout, regardless of
+  // business.multiItemCart.enabled.
+  //
+  // Previously this was gated on multiItemCart.enabled, on the assumption
+  // that opted-out tenants would fall through to the "sequential
+  // single-item-flow-per-line queue" below and each queued line would be
+  // auto-drained one after another via drainCatalogQueue(). That assumption
+  // was wrong: drainCatalogQueue() is only ever invoked when
+  // session.postFlowAck === 'ORDER_CONFIRMED' (see webhookController.js and
+  // postFlowHandler.js call sites), and postFlowAck is only ever set to
+  // 'ORDER_CONFIRMED' by an ADMIN action — adminCommandService.js's
+  // confirmPayment()/approve flow or dashboardController.js's manual
+  // confirmation. Nothing sets it automatically when a customer simply adds
+  // an item to their cart mid-flow. So for any opted-out tenant, a WA cart
+  // with 2+ items processed ONLY the first line through the per-vertical
+  // module's own single-item ORDER flow (SELECT_ITEM/QUANTITY/UPSELL/...,
+  // which folds into that module's own in-chat data.cart) — every other
+  // line just sat in session.pendingCatalogQueue, forgotten, unless and
+  // until an admin happened to confirm some unrelated order for that same
+  // customer. Worse, because the primary item is handed off into the exact
+  // same in-chat data.cart the module's own typed-order flow uses, the
+  // customer could end up looking at a confirmation screen built from
+  // whatever was already sitting in data.cart from an earlier, unrelated
+  // conversation — never the catalog cart they actually just sent, and
+  // never matching its total.
+  //
+  // Consolidating unconditionally here means a native WhatsApp cart checkout
+  // always becomes exactly one Order, built directly from the exact lines
+  // and quantities the customer saw in "Your cart" and tapped "Send to
+  // business" for — with no queue, no drain dependency, and no risk of
+  // colliding with unrelated session state.
+  if (normalized.resolvedLines.length > 1) {
     return handleMultiItemCatalogOrder({ session, business, tenant, normalized });
   }
 
