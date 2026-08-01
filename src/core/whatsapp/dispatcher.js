@@ -290,6 +290,52 @@ function buildPayload(to, ui) {
   };
 }
 
+// [FIX-LIST-FALLBACK] When a list payload is malformed or Meta rejects it,
+// degrade to up to 3 reply buttons (first rows) plus a numbered text listing
+// so "View Menu" / Order Food never goes fully silent.
+function _collectListRows(ui) {
+  if (ui?.sections?.length) {
+    return ui.sections.flatMap(sec => sec.rows || []);
+  }
+  return ui?.rows || [];
+}
+
+function _buildListButtonsFallbackUI(ui) {
+  const rows = _collectListRows(ui);
+  if (!rows.length) return null;
+  const buttons = rows.slice(0, 3).map(r => ({
+    id:    String(r.id),
+    title: String(r.title).slice(0, 20),
+  }));
+  let body = String(ui.body || '').slice(0, 800);
+  if (rows.length > 3) {
+    const lines = rows.slice(0, 10).map((r, i) => `${i + 1}. ${r.title}`);
+    body = `${body}\n\n${lines.join('\n')}`;
+    if (rows.length > 10) body += '\n\n_(Type an item name to find more.)_';
+  }
+  return {
+    type:    'buttons',
+    body:    body.slice(0, 1024),
+    buttons,
+    footer:  ui.footer,
+  };
+}
+
+async function _postPayloadToMeta(url, payload, token) {
+  const ctrl  = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 10000);
+  try {
+    return await fetch(url, {
+      method:  'POST',
+      signal:  ctrl.signal,
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body:    JSON.stringify(payload),
+    });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 // ── Main dispatch ─────────────────────────────────────────────────────────────
 export async function dispatchMessage(to, ui, tenant) {
   if (!ui) return;
@@ -324,16 +370,22 @@ export async function dispatchMessage(to, ui, tenant) {
   // the original ui had any body/text, fall back to sending that as a plain
   // text message so the customer always gets *something* rather than silence.
   if (!payload) {
-    logger.warn('[Dispatch] ✗ buildPayload returned null — message payload was malformed, falling back to text', {
+    logger.warn('[Dispatch] ✗ buildPayload returned null — message payload was malformed, falling back', {
       to,
       type: ui.type,
       hadBody: !!(ui.body || ui.text),
       tenantId: tenant?._id,
     });
-    const fallbackText = ui.body || ui.text;
-    if (!fallbackText) return;
-    payload = buildPayload(to, { type: 'text', body: fallbackText });
-    if (!payload) return;
+    if (ui.type === 'list') {
+      const fbUi = _buildListButtonsFallbackUI(ui);
+      if (fbUi) payload = buildPayload(to, fbUi);
+    }
+    if (!payload) {
+      const fallbackText = ui.body || ui.text;
+      if (!fallbackText) return;
+      payload = buildPayload(to, { type: 'text', body: fallbackText });
+      if (!payload) return;
+    }
   }
 
   // [AUDIT-P2-A] Decrypt token before use — transparently handles both encrypted
@@ -365,14 +417,7 @@ export async function dispatchMessage(to, ui, tenant) {
 
   const url = `https://graph.facebook.com/${version}/${phoneId}/messages`;
   try {
-    const ctrl  = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), 10000);
-    const resp  = await fetch(url, {
-      method: 'POST', signal: ctrl.signal,
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-      body: JSON.stringify(payload),
-    });
-    clearTimeout(timer);
+    let resp = await _postPayloadToMeta(url, payload, token);
     if (!resp.ok) {
       const err = await resp.text().catch(() => '');
       logger.error('[Dispatch] ✗ Meta API returned error', {
@@ -382,6 +427,32 @@ export async function dispatchMessage(to, ui, tenant) {
         err: err.slice(0, 300),
         tenantId: tenant?._id,
       });
+
+      // [FIX-LIST-FALLBACK] List sends are the most common failure (row limits,
+      // header issues). Retry as buttons, then plain text, before giving up.
+      if (ui.type === 'list') {
+        const fbUi = _buildListButtonsFallbackUI(ui);
+        if (fbUi) {
+          const fbPayload = buildPayload(to, fbUi);
+          if (fbPayload) {
+            logger.warn('[Dispatch] Retrying failed list send as buttons fallback', { to, tenantId: tenant?._id });
+            resp = await _postPayloadToMeta(url, fbPayload, token);
+            if (resp.ok) {
+              logger.debug('[Dispatch] ✓ List fallback (buttons) sent via Meta API', { to, tenantId: tenant?._id });
+              return resp;
+            }
+          }
+        }
+        const textPayload = buildPayload(to, { type: 'text', body: ui.body || ui.text || 'Please type what you would like to order.' });
+        if (textPayload) {
+          logger.warn('[Dispatch] Retrying failed list send as text fallback', { to, tenantId: tenant?._id });
+          resp = await _postPayloadToMeta(url, textPayload, token);
+          if (resp.ok) {
+            logger.debug('[Dispatch] ✓ List fallback (text) sent via Meta API', { to, tenantId: tenant?._id });
+            return resp;
+          }
+        }
+      }
 
       // [FIX-CATALOG-SEND-HEALTH] Catalog-type sends previously failed
       // silently from the dashboard's point of view — the error above only

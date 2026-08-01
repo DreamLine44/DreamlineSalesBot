@@ -69,3 +69,36 @@ test('dispatchMessage still returns a truthy value when Meta responds with 2xx',
     global.fetch = realFetch;
   }
 });
+
+test('dispatchMessage retries a failed list send as buttons fallback before returning falsy', async () => {
+  const realFetch = global.fetch;
+  let callCount = 0;
+  global.fetch = async (_url, init) => {
+    callCount++;
+    const body = JSON.parse(init.body);
+    if (body?.interactive?.type === 'list') {
+      return { ok: false, status: 400, text: async () => '{"error":"list rejected"}' };
+    }
+    if (body?.interactive?.type === 'button') {
+      return { ok: true, status: 200, text: async () => '{}' };
+    }
+    return { ok: false, status: 400, text: async () => '{}' };
+  };
+
+  try {
+    const { dispatchMessage } = await import('../core/whatsapp/dispatcher.js');
+    const result = await dispatchMessage('1234567890', {
+      type: 'list',
+      body: "Here's our menu:",
+      buttonLabel: 'View Menu',
+      rows: [
+        { id: '1', title: 'Domoda', description: 'D175' },
+        { id: '2', title: 'Benachin', description: 'D175' },
+      ],
+    }, tenant);
+    assert.ok(result, 'list send must fall back to buttons and return truthy on success');
+    assert.ok(callCount >= 2, 'expected list attempt then buttons retry');
+  } finally {
+    global.fetch = realFetch;
+  }
+});

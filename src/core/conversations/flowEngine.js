@@ -105,10 +105,15 @@ export async function startFlow({ flowName, session, business, tenant }) {
   // to follow this was a second, entirely redundant DB round trip reading back exactly
   // what was just written. Removing it shaves a full Mongo round trip off every flow
   // start (Order Food, View Menu, Book a Table, etc.), directly on the tap-to-reply path.
+  const flowUpper = flowName.toUpperCase();
+  const existingCart = flowUpper === 'ORDER' && Array.isArray(session?.data?.cart) && session.data.cart.length
+    ? session.data.cart
+    : null;
+
   const updated = await updateSession(session.customerPhone, session.tenantId, {
-    currentFlow: flowName.toUpperCase(),
+    currentFlow: flowUpper,
     step:        null,
-    data:        {},
+    data:        existingCart ? { cart: existingCart } : {},
     upsellSent:  false,
     menuViewed:  false,
     lastAorInterceptAt: null,  // [FIX-AOR-5] Reset throttle so next order confirms show fresh card

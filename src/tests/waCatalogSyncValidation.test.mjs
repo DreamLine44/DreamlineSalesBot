@@ -111,7 +111,8 @@ const catalogFlowSrc = read('../modules/catalog/waCatalogFlow.js');
 
 test('handleMultiItemCatalogOrder merges resolved catalog lines into session.data.cart via mergeCartLines (dedupes repeated items) instead of building an Order directly', () => {
   assert.match(catalogFlowSrc, /mergeCartLines, enforceCartLimit \} = await import\('\.\.\/\.\.\/core\/shared\/cartEngine\.js'\)/);
-  assert.match(catalogFlowSrc, /const merged = mergeCartLines\(\[\], newLines\)/);
+  assert.match(catalogFlowSrc, /const merged = mergeCartLines\(priorCart, newLines\)/);
+  assert.match(catalogFlowSrc, /const priorCart = Array\.isArray\(session\?\.data\?\.cart\)/);
 });
 
 test('handleMultiItemCatalogOrder sets step to CONFIRM and delegates to flowEngine.advance() rather than calling saveOrder itself', () => {

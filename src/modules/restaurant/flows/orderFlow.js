@@ -27,7 +27,7 @@
  *         single-item order never touches either):
  *           (a) SELECT_ITEM now tries parseMultiItemMessage() FIRST. A
  *               message like "2 burgers and a coke" resolves to a cart with
- *               2 distinct lines and jumps straight to CART_REVIEW. A normal
+ *               2 distinct lines and jumps straight to ITEM_ADDED. A normal
  *               single-item message ("jollof rice") never resolves 2+ lines,
  *               so it falls through to the exact pre-existing single-item
  *               fuzzy-match path unchanged.
@@ -37,14 +37,14 @@
  *               so a customer who picks items one at a time (browsing the
  *               menu) can also build a multi-item order, not just one who
  *               types everything in a single message.
- *         Either path converges on CART_REVIEW/CONFIRM's items[] save via
+ *         Either path converges on ITEM_ADDED/CONFIRM's items[] save via
  *         saveOrder({ items: cartToOrderItems(cart) }) — orderService.js's
  *         resolveOrderFields() already normalizes that exactly like a WA
  *         Catalog multi-item cart order does.
  */
 
 import { updateSession }    from '../../../core/sessions/sessionService.js';
-import { completeFlow }     from '../../../core/conversations/flowEngine.js';
+import { completeFlow, cancelFlow } from '../../../core/conversations/flowEngine.js';
 import { getAIReply }       from '../../../core/ai/providers/aiRouter.js';
 import { findBestMatch }    from '../../../utils/matchEngine.js';
 import {
@@ -111,16 +111,37 @@ export async function handleOrderFlow({ session, message, business, tenant, isIn
 
   // ── INIT (message = null — start of flow) ─────────────────────────────────
   if (message === null) {
+    const existingCart = Array.isArray(data.cart) ? data.cart : [];
     await updateSession(session.customerPhone, session.tenantId, {
-      step: 'SELECT_ITEM', data: {}, menuViewed: false, upsellSent: false,
+      step: 'SELECT_ITEM',
+      data: existingCart.length ? { cart: existingCart } : {},
+      menuViewed: false,
+      upsellSent: false,
     });
-    return buildMenuUI(business);
+    const menuUI = buildMenuUI(business);
+    if (existingCart.length) {
+      const count = cartItemCount(existingCart);
+      const cartNote = `🛒 You still have *${count} item${count > 1 ? 's' : ''}* in your cart.\n\n`;
+      if (typeof menuUI.body === 'string') menuUI.body = cartNote + menuUI.body;
+    }
+    return menuUI;
   }
 
   switch (step) {
 
     // ────────────────────────────────────────────────────────────────────────
     case 'SELECT_ITEM': {
+      const cartAtSelect = Array.isArray(data.cart) ? data.cart : [];
+      if (raw === 'REVIEW_CART' && cartAtSelect.length) {
+        await updateSession(session.customerPhone, session.tenantId, { step: 'CONFIRM' });
+        return buildCartReviewUI({
+          summaryText: formatCartSummary(cartAtSelect, business),
+          total:       cartTotal(cartAtSelect),
+          itemCount:   cartItemCount(cartAtSelect),
+          business,
+        });
+      }
+
       // [FIX-2] 0-indexed WORD_NUMS: WORD_NUMS['one']=0 → menu[0] ✓
       // [AUDIT-FIX-PARSEINT-6] parseInt("2 red pizzas", 10) === 2, NOT NaN — so
       // any message merely STARTING with a digit silently hijacked the menu
@@ -143,8 +164,13 @@ export async function handleOrderFlow({ session, message, business, tenant, isIn
         return await _selectItem(item, session, business, data);
       }
 
-      // Cancel / escape keywords — let the flow engine handle them
-      if (/^(cancel|stop|exit|back|menu|home)$/i.test(clean)) {
+      // Cancel — exit the flow entirely (matches global CANCEL button behaviour).
+      if (/^(cancel|stop|exit)$/i.test(clean)) {
+        return cancelFlow(session, business);
+      }
+      // Menu/home — stay in ORDER flow, just re-show the browse menu.
+      if (/^(back|menu|home)$/i.test(clean)) {
+        await updateSession(session.customerPhone, session.tenantId, { step: 'SELECT_ITEM', menuViewed: true });
         return buildMenuUI(business);
       }
 
@@ -153,7 +179,7 @@ export async function handleOrderFlow({ session, message, business, tenant, isIn
         return {
           type:    'buttons',
           body:    `Please type the name of what you'd like to order, or tap *View Menu* to see all options:`,
-          buttons: [{ id: 'SHOW_MENU', title: '🔄 Start Over' }],
+          buttons: [{ id: 'VIEW_MENU', title: '📋 View Menu' }],
         };
       }
 
@@ -183,7 +209,7 @@ export async function handleOrderFlow({ session, message, business, tenant, isIn
 
       // [MULTICART-v39-PHASE2] Try multi-item parsing FIRST. A message like
       // "2 burgers and a coke" resolves to 2+ distinct menu lines here and
-      // jumps straight to CART_REVIEW. A normal single-item message never
+      // jumps straight to ITEM_ADDED. A normal single-item message never
       // resolves 2+ lines (parseMultiItemMessage returns null), so this is a
       // pure no-op for the overwhelming majority of messages — the exact
       // pre-existing single-item fuzzy match below still runs for those.
@@ -230,7 +256,7 @@ export async function handleOrderFlow({ session, message, business, tenant, isIn
           body:    `🤔 Did you mean *${item.name}*?`,
           buttons: [
             { id: 'CONFIRM', title: `✅ Yes, ${item.name.slice(0,15)}` },
-            { id: 'SHOW_MENU', title: '🔄 Start Over' },
+            { id: 'VIEW_MENU', title: '📋 View Menu' },
           ],
         };
       }
@@ -239,7 +265,7 @@ export async function handleOrderFlow({ session, message, business, tenant, isIn
       return {
         type:    'buttons',
         body:    `I couldn't find "*${raw.slice(0,30)}*" on our menu.\n\nTap below to browse all items:`,
-        buttons: [{ id: 'SHOW_MENU', title: '🔄 Start Over' }],
+        buttons: [{ id: 'VIEW_MENU', title: '📋 View Menu' }],
       };
     }
 
@@ -442,8 +468,8 @@ export async function handleOrderFlow({ session, message, business, tenant, isIn
       // [SIMPLE-CART-CONFIRM] Primary action on the final review screen —
       // matches the requested button set (Confirm / Add More Items / Cancel)
       // exactly. Goes straight back to the catalog; the cart is untouched.
-      const wantsAddMore = raw === 'ADD_MORE_ITEMS' ||
-        /^(add more items?|add more|continue shopping|keep shopping|browse|menu)$/i.test(clean);
+      const wantsAddMore = raw === 'ADD_MORE_ITEMS' || raw === 'ADD_ANOTHER_ITEM' ||
+        /^(add more items?|add more|add another item?|continue shopping|keep shopping|browse|menu)$/i.test(clean);
       if (wantsAddMore) {
         await updateSession(session.customerPhone, session.tenantId, { step: 'SELECT_ITEM' });
         return buildMenuUI(business);
@@ -603,8 +629,43 @@ export async function handleOrderFlow({ session, message, business, tenant, isIn
       });
     }
 
-    default:
-      return buildMenuUI(business);
+    // ── Payment / wait steps — normally handled in webhookController.js;
+    // these cases prevent a direct advance() call from silently dumping the menu.
+    case 'PAYMENT_PROOF':
+      return {
+        type: 'text',
+        body: 'Please send your *payment screenshot* here, or tap *Done* once you\'ve paid.',
+      };
+
+    case 'AWAIT_ADMIN_CONFIRM':
+      return {
+        type:    'buttons',
+        body:    'Your order is with our team — we\'ll confirm it shortly. 🙏',
+        buttons: [{ id: 'CANCEL', title: '❌ Cancel Order' }],
+      };
+
+    default: {
+      logger.warn('[RestaurantOrderFlow] Unhandled step — recovering to SELECT_ITEM', {
+        step, tenantId: session.tenantId, phone: session.customerPhone,
+      });
+      const existingCart = Array.isArray(data.cart) ? data.cart : [];
+      await updateSession(session.customerPhone, session.tenantId, {
+        step: 'SELECT_ITEM',
+        data: existingCart.length ? { cart: existingCart } : {},
+      });
+      const count = cartItemCount(existingCart);
+      return {
+        type:    'buttons',
+        body:    existingCart.length
+          ? `Something went wrong with your order step (*${step}*). Your cart is still saved (${count} item${count > 1 ? 's' : ''}). Tap below to continue or cancel.`
+          : `Something went wrong with your order step (*${step}*). Tap below to browse the menu or cancel.`,
+        buttons: [
+          { id: 'VIEW_MENU', title: '📋 View Menu' },
+          ...(existingCart.length ? [{ id: 'REVIEW_CART', title: '🧾 Review Cart' }] : []),
+          { id: 'CANCEL', title: '❌ Cancel' },
+        ],
+      };
+    }
   }
 }
 
@@ -669,8 +730,8 @@ async function _addItemAndPrompt(session, business, data, { item, quantity, vari
  * handleMultiItemCatalogOrder() — same saveOrder({items}) call, same
  * payment-vs-cash branching, same admin alert shape — so a text-typed
  * multi-item order and a WA-Catalog multi-item order behave identically
- * from here on. Reached from CART_REVIEW's checkout path and from CONFIRM
- * once items have been accumulated via "Add Another Item".
+ * from here on. Reached from CONFIRM once items have been accumulated via
+ * "Add Another Item" or a WA Catalog / typed multi-item handoff.
  */
 async function _checkoutCart(cart, session, business, tenant) {
   const data = session.data || {};

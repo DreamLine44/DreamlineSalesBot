@@ -43,17 +43,21 @@ const read = (rel) => fs.readFileSync(path.join(__dirname, rel), 'utf8');
 
 const catalogFlowSrc = read('../modules/catalog/waCatalogFlow.js');
 
-test('a multi-line WA Catalog checkout consolidates into one Order regardless of multiItemCart.enabled', () => {
+test('any WA Catalog checkout (1+ resolved lines) consolidates via handleMultiItemCatalogOrder', () => {
   // The gate must key off resolvedLines.length alone — must NOT require
-  // business?.multiItemCart?.enabled to be true.
+  // business?.multiItemCart?.enabled or length > 1 (single-item broke on > 1).
   assert.match(
     catalogFlowSrc,
-    /if \(normalized\.resolvedLines\.length > 1\)\s*\{\s*return handleMultiItemCatalogOrder/
+    /if \(normalized\.resolvedLines\.length >= 1\)\s*\{\s*return handleMultiItemCatalogOrder/
   );
-  // Guard against the old, buggy gate creeping back in.
+  // Guard against the old, buggy gates creeping back in.
   assert.doesNotMatch(
     catalogFlowSrc,
     /if \(business\?\.multiItemCart\?\.enabled && normalized\.resolvedLines\.length > 1\)/
+  );
+  assert.doesNotMatch(
+    catalogFlowSrc,
+    /if \(normalized\.resolvedLines\.length > 1\)\s*\{\s*return handleMultiItemCatalogOrder/
   );
 });
 
@@ -83,6 +87,42 @@ test('normalizeCatalogSelection + the new gate: 2 resolved lines route to consol
   // This is exactly the condition handleCatalogOrderMessage() now checks —
   // asserting it's true confirms a cart like this (from a tenant with no
   // multiItemCart config) is consolidated, not silently truncated to one item.
-  const shouldConsolidate = normalized.resolvedLines.length > 1;
+  const shouldConsolidate = normalized.resolvedLines.length >= 1;
   assert.equal(shouldConsolidate, true);
+});
+
+test('drainCatalogQueue consolidates queued lines into CONFIRM cart path', () => {
+  assert.match(
+    catalogFlowSrc,
+    /drainCatalogQueue[\s\S]*step:\s*'CONFIRM'/
+  );
+  assert.doesNotMatch(
+    catalogFlowSrc.slice(catalogFlowSrc.indexOf('export async function drainCatalogQueue')),
+    /resolveNextOrderStep/
+  );
+});
+
+test('single-item WA Catalog checkout also routes to consolidation (FIX-CATALOG-SINGLE)', async () => {
+  const { normalizeCatalogSelection } = await import('../modules/catalog/waCatalogHelpers.js');
+
+  const business = {
+    tenantId: 't1',
+    menuItems: [{ _id: 'itemA', name: 'Domoda', price: 175, available: true }],
+  };
+  const metaOrder = {
+    catalog_id: 'CAT_1',
+    product_items: [{ product_retailer_id: 'itemA', quantity: '2' }],
+  };
+
+  const normalized = normalizeCatalogSelection(business, metaOrder);
+  assert.equal(normalized.resolvedLines.length, 1);
+  assert.equal(normalized.resolvedLines[0].quantity, 2);
+
+  const shouldConsolidate = normalized.resolvedLines.length >= 1;
+  assert.equal(shouldConsolidate, true);
+
+  assert.match(
+    catalogFlowSrc,
+    /\[FIX-CATALOG-SINGLE\][\s\S]*handleMultiItemCatalogOrder/
+  );
 });

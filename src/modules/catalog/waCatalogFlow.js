@@ -39,8 +39,8 @@ import { shouldOfferCatalog }        from './waCatalogConfig.js';
 import { sendCatalogMessage }        from './waCatalogService.js';
 import {
   normalizeCatalogSelection,
-  resolveNextOrderStep, pickNextQueuedLine,
-  buildQueuedFollowUpNote, buildSkippedLinesNote,
+  resolveCatalogItem,
+  buildSkippedLinesNote,
 } from './waCatalogHelpers.js';
 import logger                        from '../../config/logger.js';
 
@@ -190,84 +190,37 @@ export async function handleCatalogOrderMessage({ session, business, tenant, cat
   // and quantities the customer saw in "Your cart" and tapped "Send to
   // business" for — with no queue, no drain dependency, and no risk of
   // colliding with unrelated session state.
-  if (normalized.resolvedLines.length > 1) {
+  //
+  // [FIX-CATALOG-SINGLE] Single-item carts used to fall through to the legacy
+  // per-step handoff (resolveNextOrderStep → CART_REVIEW/QUANTITY/etc.).
+  // After MULTICART-v39 added CART_REVIEW to steps.ORDER, that routed
+  // restaurant single-item checkouts to an unimplemented CART_REVIEW step
+  // (default → buildMenuUI — wrong menu) instead of the order summary.
+  // Multi-item already worked via handleMultiItemCatalogOrder → CONFIRM.
+  // Route ALL resolved catalog lines (1 or many) through the same path.
+  if (normalized.resolvedLines.length >= 1) {
     return handleMultiItemCatalogOrder({ session, business, tenant, normalized });
   }
 
-  const { item, variant, quantity, queuedLines, extraLinesSkipped } = normalized;
-
-  // [CATALOG-FLOW-2] Resume at the step immediately AFTER 'SELECT_ITEM' in
-  // this module's own steps.ORDER array — retail → SELECT_VARIANT,
-  // electronics → ITEM_DETAIL, fashion → SELECT_SIZE, bakery/cosmetics/
-  // delivery/salon/restaurant → QUANTITY directly.
-  const cfg      = getModeConfig(business);
-  const nextStep = resolveNextOrderStep(cfg);
-
-  await updateSession(session.customerPhone, session.tenantId, {
-    currentFlow: 'ORDER',
-    step:        nextStep,
-    data:        { item, variant: variant || null },
-    menuViewed:  true,
-    // [CATALOG-QUEUE-1] Persist any other resolvable lines from this same WA
-    // cart so drainCatalogQueue() can auto-advance the customer into each of
-    // them, one at a time, once this first item's own flow reaches
-    // ORDER_CONFIRMED — see webhookController.js and postFlowHandler.js call
-    // sites of drainCatalogQueue().
-    pendingCatalogQueue: queuedLines || [],
-  });
-
-  // [FIX-CATALOG-HANDOFF-1] Every module's flow handler treats `message === null`
-  // as "this is a brand-new flow start" and — BEFORE the switch(step) that would
-  // otherwise honour the step/data we just set above — unconditionally resets
-  // session to { step: 'SELECT_ITEM', data: {} } and re-renders the welcome/browse
-  // UI (confirmed in restaurant/bakery/cosmetics/delivery/retail/electronics/
-  // fashion/salon flow files, all using a strict `message === null` guard).
-  // Calling advance() with message: null therefore threw away the item/variant
-  // just resolved from the customer's WA Catalog checkout on EVERY vertical —
-  // the customer would always see "browse our menu" again instead of continuing
-  // their purchase. Passing '' (non-null) instead bypasses that guard everywhere
-  // (every module checks `=== null`, not general falsiness), while
-  // `raw = String(message || '').trim()` still evaluates to '' exactly as
-  // before — so each step handler's existing "nothing typed yet, show the
-  // prompt for this step" branch runs, now WITH data.item/variant intact.
-  //
-  // [FIX-CATALOG-HANDOFF-2] When the very next step is QUANTITY (bakery,
-  // cosmetics, delivery, salon, restaurant — no variant/size step in between),
-  // the quantity the customer already chose in their WA Catalog cart is known.
-  // Passing it as the simulated message feeds it through the exact same
-  // parseQuantity()/QTY-shortcut parsing every module's QUANTITY case already
-  // uses for typed input, so the customer isn't asked to re-enter a number
-  // they already picked. For retail/electronics/fashion, the next step is a
-  // variant/size/detail step (not QUANTITY) — those still get '' so their
-  // normal "please choose" prompt renders untouched; quantity is asked for
-  // later in those flows exactly as it always was.
-  const simulatedMessage = (nextStep === 'QUANTITY' && Number.isFinite(quantity) && quantity > 0)
-    ? String(quantity)
-    : '';
-
-  const freshSession = (await getSession(session.customerPhone, session.tenantId)) || session;
-  const reply = await advance({ session: freshSession, message: simulatedMessage, business, tenant, isInteractive: false });
-
-  // [CATALOG-FLOW-3] See waCatalogHelpers.js normalizeCatalogSelection() —
-  // the platform's flow model is single-item-at-a-time, so a multi-item WA
-  // cart is processed one line at a time. Resolvable extra lines are queued
-  // (see pendingCatalogQueue above / drainCatalogQueue below) and will be
-  // auto-prompted right after this one; only genuinely UNRESOLVABLE lines
-  // (deleted/unavailable product) are reported as lost here.
-  if (reply && typeof reply.body === 'string') {
-    reply.body += buildQueuedFollowUpNote(queuedLines);
-    reply.body += buildSkippedLinesNote(extraLinesSkipped);
-  }
-
-  return reply;
+  // Unreachable when normalizeCatalogSelection() returns non-null — kept as
+  // a defensive fallback only.
+  return {
+    type: 'buttons',
+    body: "We couldn't match that selection to a current product — sorry about that! Let's find it another way.",
+    buttons: [
+      { id: 'ORDER',   title: '🛍 Browse Products' },
+      { id: 'SUPPORT', title: '💬 Get Help'         },
+    ],
+  };
 }
 
 /**
  * handleMultiItemCatalogOrder({ session, business, tenant, normalized })
  * -> UIResponse
  *
- * [CATALOG-CART-1] The multi-item counterpart to the single-item handoff
- * above.
+ * [CATALOG-CART-1] Consolidates ALL native WA Catalog checkouts (single- or
+ * multi-line) into session.data.cart and delegates to each module's CONFIRM
+ * step for the order summary — the same path typed multi-item orders use.
  *
  * [FIX-CATALOG-CART-CONFIRM] Previously this function called saveOrder()
  * immediately and told the customer the order was already placed — no
@@ -321,7 +274,8 @@ async function handleMultiItemCatalogOrder({ session, business, tenant, normaliz
     variant:  line.variant || null,
     addOns:   [],
   }));
-  const merged = mergeCartLines([], newLines);
+  const priorCart = Array.isArray(session?.data?.cart) ? session.data.cart : [];
+  const merged = mergeCartLines(priorCart, newLines);
   const { cart: cappedCart, overflowCount } = enforceCartLimit(merged, business);
 
   await updateSession(session.customerPhone, session.tenantId, {
@@ -350,64 +304,79 @@ async function handleMultiItemCatalogOrder({ session, business, tenant, normaliz
 
 /**
  * drainCatalogQueue({ session, business, tenant })
- * [CATALOG-QUEUE-1] Pops the next queued line off session.pendingCatalogQueue
- * (set by handleCatalogOrderMessage() above) and starts its own single-item
- * ORDER flow, exactly the same handoff handleCatalogOrderMessage() itself
- * uses — so the customer experiences it as "add the next item," not as a
- * fresh, disorienting flow restart.
+ * [CATALOG-QUEUE-1] Legacy path for stranded pendingCatalogQueue entries from
+ * before catalog consolidation. Merges ALL resolvable queued lines into
+ * session.data.cart and hands off to CONFIRM — same as handleMultiItemCatalogOrder.
  *
- * Called right after the PREVIOUS queued (or primary) item's flow reaches
- * ORDER_CONFIRMED — see webhookController.js (immediately after the main
- * route() dispatch) and postFlowHandler.js (ORDER_CONFIRMED case, for
- * confirmations that land asynchronously, e.g. an admin confirming from the
- * dashboard) for the two call sites.
+ * Called when session.postFlowAck === 'ORDER_CONFIRMED' and a queue remains
+ * (webhookController.js / postFlowHandler.js).
  *
- * Re-resolves each queued line against the LIVE menu at drain time (not a
- * frozen snapshot) — if the admin removed/disabled the item in the meantime,
- * that line is skipped with a short note instead of being force-fed into a
- * flow with a stale/invalid item.
- *
- * → { drained: boolean } — drained:false means the queue was empty or
- * nothing in it could be resolved; caller does nothing further either way,
- * since this function sends its own message(s) directly.
+ * → { drained: boolean }
  */
 export async function drainCatalogQueue({ session, business, tenant }) {
   const queue = Array.isArray(session?.pendingCatalogQueue) ? [...session.pendingCatalogQueue] : [];
   if (!queue.length) return { drained: false };
 
   const { dispatchMessage } = await import('../../core/whatsapp/dispatcher.js');
+  const { mergeCartLines, enforceCartLimit } = await import('../../core/shared/cartEngine.js');
 
-  const { next, remainingQueue } = pickNextQueuedLine(business, queue);
+  const resolvedLines = [];
+  let skippedCount = 0;
+  for (const line of queue) {
+    const resolved = resolveCatalogItem(business, line?.retailerId);
+    if (resolved) {
+      resolvedLines.push({
+        item:     resolved.item,
+        variant:  resolved.variant,
+        quantity: line.quantity,
+      });
+    } else {
+      skippedCount++;
+    }
+  }
 
-  if (!next) {
-    // Nothing left in the queue resolved to a live item — just clear it silently;
-    // the customer already got their confirmed order, this is a best-effort extra.
+  if (!resolvedLines.length) {
     await updateSession(session.customerPhone, session.tenantId, { pendingCatalogQueue: [] }).catch(() => {});
     return { drained: false };
   }
 
-  const cfg      = getModeConfig(business);
-  const nextStep = resolveNextOrderStep(cfg);
+  const newLines = resolvedLines.map(line => ({
+    item:     line.item,
+    quantity: line.quantity,
+    variant:  line.variant || null,
+    addOns:   [],
+  }));
+  const priorCart = Array.isArray(session?.data?.cart) ? session.data.cart : [];
+  const merged = mergeCartLines(priorCart, newLines);
+  const { cart: cappedCart, overflowCount } = enforceCartLimit(merged, business);
 
   await updateSession(session.customerPhone, session.tenantId, {
-    currentFlow: 'ORDER',
-    step:        nextStep,
-    data:        { item: next.item, variant: next.variant || null },
-    menuViewed:  true,
-    postFlowAck: null, // a new flow is starting — clear the ack we just drained off of
-    pendingCatalogQueue: remainingQueue,
+    currentFlow:         'ORDER',
+    step:                'CONFIRM',
+    data:                { cart: cappedCart },
+    menuViewed:          true,
+    postFlowAck:         null,
+    pendingCatalogQueue: [],
   });
 
-  const simulatedMessage = (nextStep === 'QUANTITY' && Number.isFinite(next.quantity) && next.quantity > 0)
-    ? String(next.quantity)
-    : '';
-
   const freshSession = (await getSession(session.customerPhone, session.tenantId)) || session;
-  const reply = await advance({ session: freshSession, message: simulatedMessage, business, tenant, isInteractive: false });
+  const reply = await advance({ session: freshSession, message: '', business, tenant, isInteractive: false });
 
   if (reply) {
-    const intro = { type: 'text', body: `🛍 Next up from your catalog order — *${next.item.name}*:` };
+    const n = resolvedLines.length;
+    const intro = {
+      type: 'text',
+      body: `🛍 *${n} more item${n > 1 ? 's' : ''}* from your catalog order ${n > 1 ? 'have' : 'has'} been added to your cart:`,
+    };
     await dispatchMessage(session.customerPhone, intro, tenant).catch(() => {});
+    if (typeof reply.body === 'string') {
+      if (skippedCount > 0) reply.body += buildSkippedLinesNote(skippedCount);
+      if (overflowCount > 0) {
+        const maxItems = business?.multiItemCart?.maxItems || 10;
+        reply.body += `\n\n_(Heads up — your cart had more items than we can process at once ` +
+          `(max ${maxItems}), so ${overflowCount} ${overflowCount > 1 ? 'were' : 'was'} left out.)_`;
+      }
+    }
     await dispatchMessage(session.customerPhone, reply, tenant).catch(() => {});
   }
 

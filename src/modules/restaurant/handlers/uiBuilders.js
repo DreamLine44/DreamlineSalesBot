@@ -60,7 +60,7 @@ export function buildOrderSummary({ item, qty, total, addOns = [], business, all
 /**
  * buildCartSummaryUI
  * [MULTICART-v39-PHASE2] Multi-item counterpart to buildOrderSummary() — used
- * by CART_REVIEW (orderFlow.js) once 2+ distinct items have been added to
+ * by ITEM_ADDED / CONFIRM (orderFlow.js) once 2+ distinct items have been added to
  * data.cart, whether from a single "2 burgers and a coke" message or from
  * repeated "Add Another Item" taps. `summaryText` is pre-built by
  * core/shared/cartEngine.js's formatCartSummary() so pricing/formatting stays

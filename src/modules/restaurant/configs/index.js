@@ -9,9 +9,10 @@ export const RESTAURANT_CONFIG = {
   persona:      'friendly restaurant host who knows every dish and loves recommending the best pairings',
 
   steps: {
-    // [MULTICART-v39-PHASE2] CART_REVIEW added — reached from SELECT_ITEM on a
-    // multi-item message, or from CONFIRM via "Add Another Item".
-    ORDER:   ['SELECT_ITEM', 'CART_REVIEW', 'QUANTITY', 'CONFIRM'],
+    // [MULTICART-v40] Restaurant uses ITEM_ADDED (post-add prompt) → CONFIRM
+    // (final cart review). Bakery/cosmetics use CART_REVIEW instead — do not
+    // add CART_REVIEW here unless orderFlow.js implements that case.
+    ORDER:   ['SELECT_ITEM', 'QUANTITY', 'ITEM_ADDED', 'CONFIRM'],
     BOOKING: ['SELECT_SERVICE', 'DATE', 'DATE_CONFIRM', 'TIME', 'TIME_CONFIRM', 'CONFIRM'],
   },
 

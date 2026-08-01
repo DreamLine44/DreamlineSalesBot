@@ -187,10 +187,11 @@ export function buildCatalogCartItems(resolvedLines) {
  * SELECT_ITEM in this module's own steps.ORDER array" lookup that both
  * handleCatalogOrderMessage() and drainCatalogQueue() (waCatalogFlow.js) need
  * — retail → SELECT_VARIANT, electronics → ITEM_DETAIL, fashion →
- * SELECT_SIZE, bakery/cosmetics/delivery/salon/restaurant → QUANTITY
- * directly. Falls back to 'QUANTITY' when the module's ORDER steps don't
- * declare SELECT_ITEM at all, or declare it as the last step — same
- * fallback both call sites already relied on before this was extracted.
+ * SELECT_SIZE, bakery/cosmetics/salon → CART_REVIEW, restaurant → QUANTITY
+ * (v40 uses ITEM_ADDED, not CART_REVIEW). Falls back to 'QUANTITY' when the
+ * module's ORDER steps don't declare SELECT_ITEM at all, or declare it as the
+ * last step — same fallback both call sites already relied on before this was
+ * extracted.
  *
  * `cfg` is whatever config/modes.js getModeConfig(business) returns — a
  * plain object, no mongoose/network involved, so this stays a pure,

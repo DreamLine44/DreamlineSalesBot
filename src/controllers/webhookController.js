@@ -533,6 +533,20 @@ const FLOW_PASSTHROUGH_IDS = new Set([
   // the FSI handler block, not GREET or FALLBACK.
   'FSI_SWITCH_YES',
   'FSI_SWITCH_NO',
+  // ── [MULTICART-v40] Restaurant cart navigation buttons ─────────────────
+  // Must bypass intent detection so mid-flow taps reach orderFlow.js directly.
+  // CONFIRM was already registered above; these cover ITEM_ADDED, cart review,
+  // and the Edit Order sub-flow.
+  'ADD_ANOTHER_ITEM',
+  'REVIEW_CART',
+  'ADD_MORE_ITEMS',
+  'EDIT_CART',
+  'EDIT_ADD',
+  'EDIT_REMOVE',
+  'EDIT_INCREASE',
+  'EDIT_DECREASE',
+  'EDIT_CLEAR',
+  'EDIT_BACK',
 ]);
 
 // ── [FIX-BUG3] Hours enforcement ─────────────────────────────────────────────
@@ -708,6 +722,13 @@ function extractMessage(msgObj) {
 //
 // DELIBERATELY STRICT — false negatives (missing a question) are acceptable.
 // False positives (blocking a valid flow answer) are NOT acceptable and cause loops.
+
+// Steps that accept order-flow input (qty, item names, cart edits) — must
+// NEVER be intercepted by MFQ, which would block valid answers.
+const MFQ_ORDER_INPUT_STEPS = new Set([
+  'QUANTITY', 'ITEM_ADDED', 'SUGGESTION_CONFIRM', 'UPSELL',
+  'EDIT_CART_MENU', 'EDIT_CART_PICK',
+]);
 
 // Steps that accept ANY free text as a valid answer — must NEVER be intercepted.
 const MFQ_FREE_TEXT_STEPS = new Set([
@@ -901,6 +922,9 @@ function _detectMidFlowQuestion(text, session) {
 
   // 3. PAYMENT_PROOF step — handled by its own guard; never intercept here
   if (step === 'PAYMENT_PROOF') return false;
+
+  // 3b. Order input steps — qty, item picks, cart edits must reach orderFlow
+  if (MFQ_ORDER_INPUT_STEPS.has(step)) return false;
 
   // 4. Confirm steps accept "confirm"/"cancel" only — anything else is worth intercepting
   //    BUT very short inputs (1-2 words, < 15 chars) at confirm steps are noise, not questions
@@ -2145,6 +2169,17 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
               body:    `How many *${itemName || 'units'}* would you like?\n\nJust type a number — for example: *1*, *2*, *three*.`,
               buttons: [{ id: 'CANCEL', title: '❌ Cancel Order' }],
             },
+            ITEM_ADDED: {
+              body:    `Would you like to add another item, or review your cart and checkout?`,
+              buttons: [
+                { id: 'ADD_ANOTHER_ITEM', title: '➕ Add Another Item' },
+                { id: 'REVIEW_CART',      title: '🧾 Review & Checkout' },
+              ],
+            },
+            EDIT_CART_MENU: {
+              body:    `Tap an option to edit your cart, or type *back* to return to the summary.`,
+              buttons: [{ id: 'EDIT_BACK', title: '⬅️ Back to Summary' }],
+            },
             CONFIRM: {
               body:    `Please tap a button to confirm or cancel your order:`,
               buttons: [{ id: 'CONFIRM', title: '✅ Confirm Order' }, { id: 'CANCEL', title: '❌ Cancel' }],
@@ -2212,7 +2247,7 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
       // cart; EDIT_CART_MENU/EDIT_CART_PICK — the Edit Order sub-flow. CONFIRM
       // now also offers Edit Order (EDIT_CART) alongside Confirm/Cancel.
       ITEM_ADDED:           new Set(['ADD_ANOTHER_ITEM', 'REVIEW_CART']),
-      CONFIRM:              new Set(['CONFIRM', 'CANCEL', 'ADD_MORE_ITEMS', 'EDIT_CART']),
+      CONFIRM:              new Set(['CONFIRM', 'CANCEL', 'ADD_MORE_ITEMS', 'ADD_ANOTHER_ITEM', 'EDIT_CART']),
       EDIT_CART_MENU:       new Set(['EDIT_ADD', 'EDIT_REMOVE', 'EDIT_INCREASE', 'EDIT_DECREASE', 'EDIT_CLEAR', 'EDIT_BACK']),
       EDIT_CART_PICK:       new Set([]), // expects free text (line number) or "back"
       PAYMENT_PROOF:        new Set(['DONE', 'SUPPORT', 'CANCEL', 'CANCEL_ORDER']),
