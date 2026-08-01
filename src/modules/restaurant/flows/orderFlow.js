@@ -59,6 +59,7 @@ import { buildPaymentInstructionsUI } from '../../../services/paymentService.js'
 import { buildWhatsAppImageUrl }       from '../../../config/cloudinary.js';
 import { itemLabel }        from '../../../utils/itemLabel.js';
 import { formatMoney }      from '../../../utils/formatCurrency.js';
+import { formatPhoneDisplay } from '../../../utils/formatPhone.js';
 import {
   parseMultiItemMessage, mergeCartLines, enforceCartLimit,
   cartTotal, cartToOrderItems, formatCartSummary, buildUnmatchedNote,
@@ -268,6 +269,7 @@ export async function handleOrderFlow({ session, message, business, tenant, isIn
         return buildCartReviewUI({
           summaryText: formatCartSummary(cart, business),
           total:       cartTotal(cart),
+          itemCount:   cartItemCount(cart),
           business,
         });
       }
@@ -463,7 +465,7 @@ export async function handleOrderFlow({ session, message, business, tenant, isIn
         });
         return {
           type: 'text',
-          body: `❌ *Order cancelled.* Your cart has been emptied.\n\nSay hi anytime to start a new order! 😊`,
+          body: `❌ *Order cancelled.*\n\nYour cart has been cleared.\n\nBrowse the menu anytime to start a new order! 😊`,
         };
       }
 
@@ -477,6 +479,7 @@ export async function handleOrderFlow({ session, message, business, tenant, isIn
         return buildCartReviewUI({
           summaryText: formatCartSummary(modResult.updatedCart, business),
           total:       cartTotal(modResult.updatedCart),
+          itemCount:   cartItemCount(modResult.updatedCart),
           business,
           note: modResult.mod.type === 'remove' ? '\n\n_(Removed from your cart.)_' : '\n\n_(Updated the quantity.)_',
         });
@@ -486,6 +489,7 @@ export async function handleOrderFlow({ session, message, business, tenant, isIn
       return buildCartReviewUI({
         summaryText: formatCartSummary(cart, business),
         total:       cartTotal(cart),
+        itemCount:   cartItemCount(cart),
         business,
       });
     }
@@ -504,6 +508,7 @@ export async function handleOrderFlow({ session, message, business, tenant, isIn
         return buildCartReviewUI({
           summaryText: formatCartSummary(cart, business),
           total:       cartTotal(cart),
+          itemCount:   cartItemCount(cart),
           business,
         });
       }
@@ -592,6 +597,7 @@ export async function handleOrderFlow({ session, message, business, tenant, isIn
       return buildCartReviewUI({
         summaryText: formatCartSummary(cappedCart, business),
         total:       cartTotal(cappedCart),
+        itemCount:   cartItemCount(cappedCart),
         business,
         note: `\n\n_(Cart updated.)_`,
       });
@@ -705,7 +711,19 @@ async function _checkoutCart(cart, session, business, tenant) {
   const payment     = business?.payment;
   const currency    = payment?.currency || 'D';
   const cartSummary = formatCartSummary(cart, business);
+  const itemCount   = cartItemCount(cart);
   const usePayment  = payment?.enabled && totalPrice != null;
+
+  // [AUDIT-FIX-ORDER-POLISH-9] "Order Time" — the one item from the review's
+  // suggested admin-alert additions that's always available with no new data
+  // capture required. "Delivery/Pickup" and "Customer Note" are intentionally
+  // NOT added here: this flow doesn't currently ask the customer for either,
+  // so fabricating a line for data that doesn't exist would be worse than
+  // omitting it. Capturing them is a real feature addition (a new flow step),
+  // not a formatting fix — flagged separately rather than guessed at here.
+  const orderTimeStr = new Date().toLocaleString('en-GB', {
+    day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit',
+  });
 
   if (usePayment) {
     const shortId = savedOrder?.shortId || '';
@@ -730,8 +748,9 @@ async function _checkoutCart(cart, session, business, tenant) {
           type: 'text',
           body:
             `🔔 *New Order — ${business.name || 'Restaurant'}*\n\n` +
-            `👤 Customer: *${session.customerPhone}*\n` +
-            `🛒 Items:\n${cartSummary}\n` +
+            `${formatPhoneDisplay(session.customerPhone)}\n` +
+            `🕐 Order Time: ${orderTimeStr}\n\n` +
+            `🛒 Items (${itemCount}):\n${cartSummary}\n` +
             `💰 Total: *${currency}${formatMoney(totalPrice)}*\n` +
             `📝 Ref: *${ref}*\n\n` +
             `⏳ Status: *Pending* — awaiting payment screenshot.`,
@@ -755,8 +774,9 @@ async function _checkoutCart(cart, session, business, tenant) {
         type:    'buttons',
         body:
           `🔔 *New Order — ${business.name || 'Restaurant'}*\n\n` +
-          `👤 Customer: *${session.customerPhone}*\n` +
-          `🛒 Items:\n${cartSummary}\n` +
+          `${formatPhoneDisplay(session.customerPhone)}\n` +
+          `🕐 Order Time: ${orderTimeStr}\n\n` +
+          `🛒 Items (${itemCount}):\n${cartSummary}\n` +
           (totalPrice != null ? `💰 Total: *${currency}${formatMoney(totalPrice)}*\n` : '') +
           `🔖 Ref: \`#${savedOrder.shortId}\`\n\n` +
           `⏳ Status: *Pending* — please confirm.`,
@@ -772,12 +792,20 @@ async function _checkoutCart(cart, session, business, tenant) {
     step: 'AWAIT_ADMIN_CONFIRM', currentFlow: 'ORDER', data: {},
   });
 
+  // [AUDIT-FIX-ORDER-POLISH-8] Previously this confirmation never showed the
+  // customer their own reference number (only the admin alert got one) and
+  // never stated a "Status" — just a soft "please wait" line. A customer
+  // with no order number has nothing to quote if they follow up.
   return {
     type: 'text',
     body:
-      `✅ *Order received!*\n\n${cartSummary}\n\n` +
-      (totalPrice != null ? `💰 Total: *${currency}${formatMoney(totalPrice)}*\n\n` : '') +
-      `⏳ Your order has been received. Please wait for our team to confirm it before placing a new one.`,
+      `✅ *Order Confirmed*\n\n` +
+      `Your order has been received successfully.\n\n` +
+      `🧾 Items (${itemCount}):\n${cartSummary}\n` +
+      (totalPrice != null ? `💰 Total: *${currency}${formatMoney(totalPrice)}*\n\n` : '\n') +
+      `🔖 Reference: *#${savedOrder.shortId}*\n` +
+      `⏳ Status: *Pending*\n\n` +
+      `We'll notify you once the restaurant confirms your order.`,
   };
 }
 

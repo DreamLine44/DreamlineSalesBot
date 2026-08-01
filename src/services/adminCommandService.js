@@ -104,6 +104,7 @@ import { dispatchText, dispatchMessage } from '../core/whatsapp/dispatcher.js';
 import { getModeConfig } from '../config/modes.js';
 import logger            from '../config/logger.js';
 import { formatMoney }   from '../utils/formatCurrency.js';
+import { buildOptionsReply } from '../core/shared/uiOptionsHelper.js';
 
 const MAX_INPUT_LENGTH = 500; // guard against absurdly long button IDs / command strings
 
@@ -559,18 +560,30 @@ async function rejectPayment(shortId, tenantId, adminPhone, tenantDoc, business,
         postFlowData: { item: order.item, shortId: order.shortId || shortId, rejectReason },
       });
       const modeCfg = getModeConfig(business);
-      const custBtns = (modeCfg.ui?.welcomeButtons || [
-        { id: 'ORDER',    title: '🛒 Place New Order' },
-        { id: 'QUESTION', title: '❓ Ask a Question'  },
-      ]).slice(0, 3);
-      await dispatchMessage(order.customerPhone, {
-        type:    'buttons',
-        body:
-          `❌ *Order Cancelled*\n\n` +
+      // [FIX-EXPOSED-BUTTONS-2] This was still building its own raw
+      // { type: 'buttons', buttons: modeCfg.ui?.welcomeButtons } reply — the
+      // exact bug class core/shared/uiOptionsHelper.js's [FIX-EXPOSED-BUTTONS-1]
+      // fixed everywhere else (buildWelcomeSequence's "Choose an option ▼"
+      // dropdown getting bypassed by the raw "Order Food / Book a Table / ⋯ More"
+      // 3-button layout on secondary prompts). This admin-initiated cash-order
+      // cancellation notice was missed by that earlier audit — the customer-
+      // initiated cancel path (postFlowHandler.js handleOrderConfirmed's
+      // SWITCH_YES branch) already calls buildOptionsReply() for the same
+      // "order cancelled, what next?" moment; this one didn't, so it still
+      // leaked the full main-navigation button set into a cancellation notice.
+      // Routed through buildOptionsReply() now so a tenant with cfg.ui.welcomeList
+      // configured (e.g. restaurant) shows the "Choose an option" dropdown here
+      // too, instead of the raw main-nav buttons.
+      await dispatchMessage(order.customerPhone, buildOptionsReply(
+        modeCfg,
+        `❌ *Order Cancelled*\n\n` +
           `Unfortunately your order *#${order.shortId || shortId}* has been cancelled by our team.\n\n` +
           `If you have any questions, please contact us directly. We're sorry for the inconvenience.`,
-        buttons: custBtns,
-      }, tenantDoc).catch(err => logger.warn('[AdminCmd] rejectPayment(cash): customer dispatch failed', {
+        [
+          { id: 'ORDER',    title: '🛒 Place New Order' },
+          { id: 'QUESTION', title: '❓ Ask a Question'  },
+        ],
+      ), tenantDoc).catch(err => logger.warn('[AdminCmd] rejectPayment(cash): customer dispatch failed', {
         customerPhone: order.customerPhone, err: err.message,
       }));
       logger.info('[AdminCmd] Cash order rejected/cancelled', { shortId, adminPhone });

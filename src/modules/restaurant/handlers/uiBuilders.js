@@ -126,11 +126,15 @@ export function buildItemsAddedUI({ addedSummary, business, cartCount, note = ''
  * screen (buildCartSummaryUI is kept for backward compatibility / tests but
  * is no longer used for the final review).
  */
-export function buildCartReviewUI({ summaryText, total, business, note = '' }) {
+export function buildCartReviewUI({ summaryText, total, business, itemCount = null, note = '' }) {
   const currency = business?.payment?.currency || 'D';
+  // [AUDIT-FIX-ORDER-POLISH-7] cartItemCount() already existed in
+  // core/shared/cartEngine.js but was never actually wired into this screen —
+  // customers saw a Total with no indication of how many items it covered.
+  const countLine = itemCount != null ? `\nItems: *${itemCount}*` : '';
   return {
     type: 'buttons',
-    body: `🧾 *Order Summary*\n\n${summaryText}\n${'━'.repeat(10)}${total != null ? `\nTotal: *${currency}${formatMoney(total)}*` : ''}${note}\n\nWould you like to confirm this order?`,
+    body: `🧾 *Order Summary*\n\n${summaryText}\n${'━'.repeat(10)}${countLine}${total != null ? `\nTotal: *${currency}${formatMoney(total)}*` : ''}${note}\n\nWould you like to confirm this order?`,
     buttons: [
       { id: 'CONFIRM',          title: '✅ Confirm Order'    },
       { id: 'ADD_MORE_ITEMS',   title: '➕ Add More Items'  },
