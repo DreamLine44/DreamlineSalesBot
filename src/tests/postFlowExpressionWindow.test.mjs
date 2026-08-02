@@ -4,11 +4,12 @@
 //
 // Bug: after a customer completes an activity (places an order, requests a
 // booking, asks "about us", follows up on a quote), services/postFlowHandler.js
-// opens a one-turn "expression window" (session.postFlowAck) so their very next
-// message gets a contextual reply instead of being shoved back into a generic
-// menu. Most ackCtx cases in that file correctly branch on the customer's
-// sentiment (isAck / isCompliment / isComplaint / isQuestion) — but the legacy
-// 'ORDER' and 'BOOKING' cases (still used by the bakery order flow and the
+// opens a bounded "expression window" (session.postFlowAck) so their next
+// message(s) get a contextual reply instead of being shoved back into a generic
+// menu. [PFH-9] Up to EXPRESSION_TURN_BUDGET (2) expression replies before
+// normal routing resumes; active ORDER/BOOKING flows are never touched.
+// Most ackCtx cases branch on sentiment (isAck / isCompliment / isComplaint /
+// isQuestion) — but the legacy 'ORDER' and 'BOOKING' cases (still used by the
 // shared booking flow used across multiple verticals) ignored the message
 // entirely and always replied with the same canned status line, even for a
 // heartfelt "thank you so much!" or an angry "this is taking forever, I'm

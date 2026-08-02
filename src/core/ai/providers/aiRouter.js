@@ -38,23 +38,24 @@ function getProvider() {
 // ── Public API ─────────────────────────────────────────────────────────────────
 
 /**
- * getAIReply({ customerMessage, business, session, intent, history, orderContext, sessionContext })
+ * getAIReply({ customerMessage, business, session, intent, history, orderContext, sessionContext, replyMode })
  * Returns string | null
  *
  * [AI-OPT-1] orderContext: optional active order details for ORDER_CONFIRMED post-flow context.
  * [GROQ-V3-8] sessionContext: optional string for active-flow grounding (walk-in queue, etc.).
+ * [PFH-10] replyMode: 'expression' — one short WhatsApp sentence for post-flow reactions.
  */
-export async function getAIReply({ customerMessage, business, session, intent = 'FALLBACK', history = [], orderContext = null, sessionContext = null }) {
+export async function getAIReply({ customerMessage, business, session, intent = 'FALLBACK', history = [], orderContext = null, sessionContext = null, replyMode = null }) {
   try {
     const provider = getProvider();
-    const result   = await provider.getReply({ customerMessage, business, intent, history, orderContext, sessionContext });
+    const result   = await provider.getReply({ customerMessage, business, intent, history, orderContext, sessionContext, replyMode });
     if (!result?.text) return null;
     logger.debug('[AI] Reply', { source: result.source, intent });
     return result.text;
   } catch (err) {
     logger.error('[AI] getAIReply failed', { err: err.message });
     // Always fall back to mock — never throw to callers
-    const mock = await mockProvider.getReply({ customerMessage, business, intent });
+    const mock = await mockProvider.getReply({ customerMessage, business, intent, replyMode });
     return mock.text;
   }
 }

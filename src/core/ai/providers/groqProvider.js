@@ -71,7 +71,7 @@ function sanitise(str = '', maxLen = 600) {
 // ── Build the system prompt ────────────────────────────────────────────────────
 // Exported (additive only — no behavior change) so it can be covered by a
 // direct regression test instead of only indirectly through a live Groq call.
-export function buildSystemPrompt({ business, intent, faqContext, orderContext, sessionContext = null }) {
+export function buildSystemPrompt({ business, intent, faqContext, orderContext, sessionContext = null, replyMode = null }) {
   const mode    = (business?.businessMode || 'RETAIL').toUpperCase();
   const name    = sanitise(business?.name || 'our business');
   const desc    = sanitise(business?.description || '');
@@ -205,7 +205,7 @@ export function buildSystemPrompt({ business, intent, faqContext, orderContext, 
     : '';
 
   // [GROQ-FIX-2] Intent-specific instruction — covers EVERY intent used in the codebase
-  const intentInstruction = getIntentInstruction(intent, mode, name);
+  const intentInstruction = getIntentInstruction(intent, mode, name, replyMode);
 
   return [
     `You are ${persona} for *${name}*.`,
@@ -236,12 +236,15 @@ export function buildSystemPrompt({ business, intent, faqContext, orderContext, 
     `- NEVER ask more than ONE question in a response.`,
     `- NEVER suggest the customer contact another business, competitor, or third-party service.`,
     `- Use WhatsApp formatting: *bold* for emphasis. No markdown headers or bullet lists.`,
+    replyMode === 'expression'
+      ? `\nPOST-FLOW REACTION MODE: One short sentence, max 8 words. No lists, upsells, or extra questions. Casual WhatsApp tone.`
+      : '',
     intentInstruction,
   ].filter(Boolean).join('\n');
 }
 
 // [GROQ-FIX-2] Full intent-to-instruction map covering every intent in the codebase
-function getIntentInstruction(intent, mode, bizName) {
+function getIntentInstruction(intent, mode, bizName, replyMode = null) {
   const instructions = {
     // ── Generic / cross-mode ─────────────────────────────────────────────────
     'FALLBACK':
@@ -249,13 +252,19 @@ function getIntentInstruction(intent, mode, bizName) {
     'FAQ':
       `Answer the customer's question accurately using the information above. If the answer isn't in the provided info, say you'll check and suggest they contact us directly.`,
     'QUESTION':
-      `Answer the customer's question accurately using the business information above. Be direct and specific. If unsure, say "let me check that for you".`,
+      replyMode === 'expression'
+        ? `Answer in one short sentence only. If unsure, say you'll check.`
+        : `Answer the customer's question accurately using the business information above. Be direct and specific. If unsure, say "let me check that for you".`,
     'SUPPORT':
       `The customer needs human assistance. Acknowledge their concern warmly, apologise for any inconvenience, and reassure them a team member will help shortly.`,
     'COMPLAINT':
-      `The customer is unhappy. Be sincerely apologetic and empathetic — never defensive. Focus on solving the problem. Offer to escalate to a real person if needed. Keep it short and genuine.`,
+      replyMode === 'expression'
+        ? `The customer is unhappy after their order/booking. One short apology sentence. No defensiveness.`
+        : `The customer is unhappy. Be sincerely apologetic and empathetic — never defensive. Focus on solving the problem. Offer to escalate to a real person if needed. Keep it short and genuine.`,
     'COMPLIMENT':
-      `The customer is happy and giving a compliment. Respond warmly and personally, express genuine gratitude, and invite them to come back or try something new.`,
+      replyMode === 'expression'
+        ? `The customer gave a quick compliment. One warm thank-you sentence. No sales pitch.`
+        : `The customer is happy and giving a compliment. Respond warmly and personally, express genuine gratitude, and invite them to come back or try something new.`,
     'ACKNOWLEDGEMENT':
       `The customer sent a short acknowledgement (e.g. "thanks", "ok", "great"). Respond briefly and warmly, and offer to help with anything else.`,
     'POST_ORDER':
@@ -397,7 +406,7 @@ async function callGroq(messages, { model = GROQ_MODEL_PRIMARY, maxTokens = 350,
  * [GROQ-V3-8] sessionContext: optional string injected into system prompt for active-flow context
  *             (e.g. "Customer is in the walk-in queue for Haircut with Maria.").
  */
-export async function getReply({ customerMessage, business, intent = 'FALLBACK', history = [], orderContext = null, sessionContext = null }) {
+export async function getReply({ customerMessage, business, intent = 'FALLBACK', history = [], orderContext = null, sessionContext = null, replyMode = null }) {
   // [GROQ-OPT-3] FAQ short-circuit — whole-word regex, not substring includes()
   const faqs = business?.faq || [];
   if (faqs.length && customerMessage) {
@@ -415,7 +424,7 @@ export async function getReply({ customerMessage, business, intent = 'FALLBACK',
   }
 
   const faqContext   = buildFaqContext(business);
-  const systemPrompt = buildSystemPrompt({ business, intent, faqContext, orderContext, sessionContext });
+  const systemPrompt = buildSystemPrompt({ business, intent, faqContext, orderContext, sessionContext, replyMode });
 
   const messages = [
     { role: 'system', content: systemPrompt },
@@ -433,9 +442,11 @@ export async function getReply({ customerMessage, business, intent = 'FALLBACK',
     'BARBERSHOP_QUESTION', 'BAKERY_QUESTION', 'FASHION_QUESTION', 'SALON_QUESTION',
   ]);
   const temperature = FACTUAL_INTENTS.has((intent || '').toUpperCase()) ? 0.45 : 0.65;
+  const isExpression = replyMode === 'expression';
+  const maxTokens    = isExpression ? 35 : 350;
+  const temp         = isExpression ? 0.55 : temperature;
 
-  // [GROQ-V3-1] Use primary 70b model for customer-facing replies
-  const text = await callGroq(messages, { model: GROQ_MODEL_PRIMARY, maxTokens: 350, temperature });
+  const text = await callGroq(messages, { model: GROQ_MODEL_PRIMARY, maxTokens, temperature: temp });
   return { text: text || null, source: 'groq' };
 }
 

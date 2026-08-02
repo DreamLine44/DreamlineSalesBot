@@ -110,6 +110,96 @@ async function classifyPostFlowSentiment(msg, business) {
   }
 }
 
+// ── Post-flow expression turn budget ─────────────────────────────────────────
+// [PFH-9] After order/booking completes, customers get a bounded number of
+// expression replies (thanks, compliments, complaints, questions) before normal
+// routing resumes. Active flows (ORDER/BOOKING mid-checkout) are never touched.
+//
+// Budget of 2 = two human replies, then the third message falls through to
+// intent detection / order-status cards / welcome menu — not an open-ended loop.
+export const EXPRESSION_TURN_BUDGET = 2;
+
+/** Max chars for a single post-flow expression reply (WhatsApp-friendly, not an essay). */
+export const EXPRESSION_MAX_CHARS = 80;
+
+const EXPRESSION_CLOSING = `\n\n_Message us anytime._`;
+
+export function trimExpressionReply(text) {
+  if (!text) return text;
+  let s = String(text).replace(/\s+/g, ' ').trim();
+  s = s.replace(/^[-*•]\s+/gm, '').replace(/\n{2,}/g, ' ').trim();
+  if (s.length <= EXPRESSION_MAX_CHARS) return s;
+  const cut = s.slice(0, EXPRESSION_MAX_CHARS);
+  const lastStop = Math.max(cut.lastIndexOf('.'), cut.lastIndexOf('!'), cut.lastIndexOf('?'));
+  if (lastStop > 30) return cut.slice(0, lastStop + 1).trim();
+  return `${cut.trim()}…`;
+}
+
+/** Append a soft close line on the last budgeted expression turn. */
+export function maybeAppendExpressionClosing(body, flowData) {
+  if (getExpressionTurnsLeft(flowData) <= 1) {
+    return `${body}${EXPRESSION_CLOSING}`;
+  }
+  return body;
+}
+
+/** Trim long text and append soft close on the last budgeted turn. */
+export function formatExpressionReply(body, flowData) {
+  return maybeAppendExpressionClosing(trimExpressionReply(body), flowData);
+}
+
+export function getExpressionTurnsLeft(flowData) {
+  const n = flowData?._exprTurnsLeft;
+  if (typeof n === 'number' && n >= 0) return n;
+  return EXPRESSION_TURN_BUDGET;
+}
+
+export function isExpressionSentiment(sentiment) {
+  return sentiment === 'ACK' || sentiment === 'COMPLIMENT' ||
+    sentiment === 'COMPLAINT' || sentiment === 'QUESTION';
+}
+
+export function preserveExpressionTurns(flowData = {}) {
+  return { ...flowData, _exprTurnsLeft: getExpressionTurnsLeft(flowData) };
+}
+
+/**
+ * Decrement the expression budget and re-arm postFlowAck if turns remain.
+ * @returns {{ turnsLeftAfter: number, rearmed: boolean }}
+ */
+export async function consumeExpressionTurn({ from, tenantId, ackCtx, flowData }) {
+  const left     = getExpressionTurnsLeft(flowData);
+  const nextLeft = Math.max(0, left - 1);
+  const nextData = { ...flowData, _exprTurnsLeft: nextLeft };
+  if (nextLeft > 0) {
+    await updateSession(from, tenantId, { postFlowAck: ackCtx, postFlowData: nextData });
+    return { turnsLeftAfter: nextLeft, rearmed: true };
+  }
+  return { turnsLeftAfter: 0, rearmed: false };
+}
+
+/** Re-arm postFlowAck without consuming an expression turn (ETA, cancel confirm, etc.). */
+export async function rearmPostFlowAck({ from, tenantId, ackCtx, flowData }) {
+  await updateSession(from, tenantId, {
+    postFlowAck:  ackCtx,
+    postFlowData: preserveExpressionTurns(flowData),
+  });
+}
+
+async function finishExpressionTurn({ from, tenantId, ackCtx, flowData }) {
+  await consumeExpressionTurn({ from, tenantId, ackCtx, flowData });
+}
+
+/** AI reply for post-flow expressions — one short sentence, hard cap on length. */
+async function getPostFlowAIReply({ customerMessage, business, session, intent, orderContext, sessionContext }) {
+  const { getAIReply } = await import('../core/ai/providers/aiRouter.js');
+  const raw = await getAIReply({
+    customerMessage, business, session, intent, orderContext, sessionContext,
+    replyMode: 'expression',
+  });
+  return raw ? trimExpressionReply(raw) : null;
+}
+
 /**
  * handlePostFlowMessage — main entry point called from webhookController.
  *
@@ -165,13 +255,15 @@ export async function handlePostFlowMessage({
         msg, upper, isAck, isCompliment, isComplaint, isQuestion,
         flowData, session, business, tenantDoc, from, tenantId,
         cfg, bizName, mode, welcomeBtns, custName, isVIP,
+        ackCtx: 'ORDER_CONFIRMED',
       });
 
     case 'ORDER_REJECTED':
       return handleOrderRejected({
         msg, isAck, isCompliment, isComplaint,
         flowData, business, tenantDoc, from, tenantId,
-        custName, welcomeBtns,
+        custName, welcomeBtns, cfg,
+        ackCtx: 'ORDER_REJECTED',
       });
 
     case 'ORDER_READY':
@@ -188,35 +280,30 @@ export async function handlePostFlowMessage({
     // after an AI answer (a "thanks", another question, or a booking tap) was handled
     // with zero context, occasionally routing to AI classify as an unrelated message.
     case 'QUESTION': {
-      const { getAIReply: _qaAI } = await import('../core/ai/providers/aiRouter.js');
-      const _qaBtns = [
-        { id: 'QUESTION',  title: '❓ Another Question' },
-        ...welcomeBtns.slice(0, 2),
-      ].slice(0, 3);
       if (isAck || isCompliment) {
         await dispatchMessage(from, {
-          type:    'buttons',
-          body:    `You're welcome${custName}! 😊 Let us know if you have any other questions.`,
-          buttons: _qaBtns,
+          type: 'text',
+          body: formatExpressionReply(`You're welcome${custName}! 😊`, flowData),
         }, tenantDoc);
+        await finishExpressionTurn({ from, tenantId, ackCtx, flowData });
         return true;
       }
       if (isComplaint) {
-        const _r = await _qaAI({ customerMessage: msg, business, intent: 'COMPLAINT' });
+        const _r = await getPostFlowAIReply({ customerMessage: msg, business, intent: 'COMPLAINT' });
         await dispatchMessage(from, {
           type:    'buttons',
-          body:    _r || `We're sorry to hear that${custName}. 😔 Please speak to our team directly.`,
+          body:    formatExpressionReply(_r || `Sorry to hear that${custName}. 😔`, flowData),
           buttons: [{ id: 'SUPPORT', title: '💬 Speak to Team' }],
         }, tenantDoc);
+        await finishExpressionTurn({ from, tenantId, ackCtx, flowData });
         return true;
       }
-      // Follow-up question or general message — answer with AI
-      const _followUp = await _qaAI({ customerMessage: msg, business, intent: 'QUESTION' });
+      const _followUp = await getPostFlowAIReply({ customerMessage: msg, business, intent: 'QUESTION' });
       await dispatchMessage(from, {
-        type:    'buttons',
-        body:    _followUp || `Happy to help${custName}! 😊`,
-        buttons: _qaBtns,
+        type: 'text',
+        body: formatExpressionReply(_followUp || `Happy to help${custName}! 😊`, flowData),
       }, tenantDoc);
+      await finishExpressionTurn({ from, tenantId, ackCtx, flowData });
       return true;
     }
 
@@ -294,9 +381,10 @@ export async function handlePostFlowMessage({
 
     case 'BOOKING_CONFIRMED':
       return handleBookingConfirmed({
-        msg, upper, isAck, isCompliment, isComplaint,
+        msg, upper, isAck, isCompliment, isComplaint, isQuestion,
         flowData, business, tenantDoc, from, tenantId,
         custName,
+        ackCtx: 'BOOKING_CONFIRMED',
       });
 
     case 'BOOKING_DECLINED':
@@ -470,20 +558,23 @@ export async function handlePostFlowMessage({
     case 'ORDER_COLLECTED': {
       const itemStr = flowData.item ? ` *${flowData.item}*` : '';
       if (isCompliment || isAck) {
-        await dispatchMessage(from, buildOptionsReply(cfg, `You're so welcome${custName}! 😊 Glad you enjoyed your${itemStr}. Hope to see you again soon! 🙏`), tenantDoc);
+        await dispatchMessage(from, {
+          type: 'text',
+          body: formatExpressionReply(`You're so welcome${custName}! 😊 Glad you enjoyed it.`, flowData),
+        }, tenantDoc);
+        await finishExpressionTurn({ from, tenantId, ackCtx, flowData });
         return true;
       }
       if (isComplaint) {
-        const { getAIReply } = await import('../core/ai/providers/aiRouter.js');
-        const aiReply = await getAIReply({ customerMessage: msg, business, session, intent: 'COMPLAINT' });
+        const aiReply = await getPostFlowAIReply({ customerMessage: msg, business, session, intent: 'COMPLAINT' });
         await dispatchMessage(from, {
           type:    'buttons',
-          body:    aiReply || `We're really sorry to hear that${custName}. 😔 Please let us know how we can make it right.`,
+          body:    formatExpressionReply(aiReply || `Sorry to hear that${custName}. 😔`, flowData),
           buttons: [{ id: 'SUPPORT', title: '💬 Speak to Team' }],
         }, tenantDoc);
+        await finishExpressionTurn({ from, tenantId, ackCtx, flowData });
         return true;
       }
-      // Any other message — show welcome menu
       await dispatchMessage(from, buildOptionsReply(cfg, `😊 What would you like to do next${custName}?`), tenantDoc);
       return true;
     }
@@ -492,23 +583,30 @@ export async function handlePostFlowMessage({
     // Previously fell to 'default' (generic "How can I help?") after any enquiry submission.
     // A customer who just submitted a detailed enquiry and replies "thanks" now gets warmth.
     case 'ENQUIRY': {
-      const { getAIReply: _enqAI } = await import('../core/ai/providers/aiRouter.js');
       if (isAck || isCompliment) {
-        await dispatchMessage(from, buildOptionsReply(cfg, `You're welcome${custName}! 😊 We've received your enquiry and will get back to you shortly.`), tenantDoc);
+        await dispatchMessage(from, {
+          type: 'text',
+          body: formatExpressionReply(`You're welcome${custName}! 😊 Enquiry received.`, flowData),
+        }, tenantDoc);
+        await finishExpressionTurn({ from, tenantId, ackCtx, flowData });
         return true;
       }
       if (isComplaint) {
-        const _r = await _enqAI({ customerMessage: msg, business, intent: 'COMPLAINT' });
+        const _r = await getPostFlowAIReply({ customerMessage: msg, business, intent: 'COMPLAINT' });
         await dispatchMessage(from, {
           type:    'buttons',
-          body:    _r || `We're sorry to hear that${custName}. 😔 Let us know how we can help.`,
+          body:    formatExpressionReply(_r || `Sorry to hear that${custName}. 😔`, flowData),
           buttons: [{ id: 'SUPPORT', title: '💬 Speak to Team' }],
         }, tenantDoc);
+        await finishExpressionTurn({ from, tenantId, ackCtx, flowData });
         return true;
       }
-      // Follow-up question — AI handles it
-      const _enqFollowUp = await _enqAI({ customerMessage: msg, business, intent: 'QUESTION' });
-      await dispatchMessage(from, buildOptionsReply(cfg, _enqFollowUp || `Happy to help${custName}! 😊 We'll follow up on your enquiry shortly.`), tenantDoc);
+      const _enqFollowUp = await getPostFlowAIReply({ customerMessage: msg, business, intent: 'QUESTION' });
+      await dispatchMessage(from, {
+        type: 'text',
+        body: formatExpressionReply(_enqFollowUp || `Happy to help${custName}! 😊`, flowData),
+      }, tenantDoc);
+      await finishExpressionTurn({ from, tenantId, ackCtx, flowData });
       return true;
     }
 
@@ -563,95 +661,84 @@ export async function handlePostFlowMessage({
       return true;
     }
 
-    // Legacy/generic postFlowAck (ORDER, BOOKING) — kept for backwards compat.
-    // [AUDIT-FIX-EXPRESSION-WINDOW-1] Previously these two cases ignored the
-    // customer's message entirely — isAck/isCompliment/isComplaint/isQuestion
-    // are computed once above for every OTHER ackCtx case in this file
-    // (ORDER_CONFIRMED, BOOKING_CONFIRMED, WALKIN, QUESTION...) but these two
-    // never checked them, so a customer replying "thank you so much!!" or
-    // "this took forever, I'm annoyed" or "can I add a drink?" right after
-    // placing an order/booking got the exact same canned "we're preparing
-    // your order" line regardless. That's the bakery ORDER path
-    // (modules/bakery/flows/index.js) and every mode that completes a
-    // booking through core/conversations/bookingFlow.js.
-    //
-    // Now mirrors the pattern used everywhere else in this file: a genuine
-    // compliment/thanks gets a warm plain-text reply with NO buttons — the
-    // customer volunteered a reaction, not a request, so meeting it with a
-    // button menu reads as transactional. A complaint escalates to SUPPORT
-    // (human handoff option) with an empathetic AI-drafted reply. A real
-    // question gets answered. Anything else falls back to the original
-    // status line. In every branch postFlowAck stays cleared (set to null at
-    // [PFH-2] above and never re-armed here) — the customer gets exactly one
-    // turn of open, button-free conversation before normal routing resumes,
-    // so this is a bounded courtesy, not an open-ended detour.
+    // [PFH-9] Bounded expression window — up to EXPRESSION_TURN_BUDGET replies
+    // (thanks, compliments, complaints, questions) before normal routing resumes.
+    // Active ORDER/BOOKING flows are never touched; this only runs post-completion.
     case 'ORDER': {
       if (isComplaint) {
-        const { getAIReply } = await import('../core/ai/providers/aiRouter.js');
-        const aiReply = await getAIReply({ customerMessage: msg, business, intent: 'COMPLAINT' });
+        const aiReply = await getPostFlowAIReply({ customerMessage: msg, business, session, intent: 'COMPLAINT' });
         await dispatchMessage(from, {
           type:    'buttons',
-          body:    aiReply || `We're sorry to hear that${custName}. 😔 A member of our team will look into this right away.`,
+          body:    formatExpressionReply(
+            aiReply || `Sorry to hear that${custName}. 😔 We'll look into it.`,
+            flowData,
+          ),
           buttons: [{ id: 'SUPPORT', title: '💬 Speak to Team' }],
         }, tenantDoc);
+        await finishExpressionTurn({ from, tenantId, ackCtx, flowData });
         return true;
       }
       if (isCompliment) {
         await dispatchMessage(from, {
           type: 'text',
-          body: `That means a lot to us${custName}! 😊 We're preparing your order — we'll let you know when it's ready!`,
+          body: formatExpressionReply(`That means a lot${custName}! 😊 Order's being prepared.`, flowData),
         }, tenantDoc);
+        await finishExpressionTurn({ from, tenantId, ackCtx, flowData });
         return true;
       }
       if (isQuestion) {
-        const { getAIReply } = await import('../core/ai/providers/aiRouter.js');
-        const aiReply = await getAIReply({ customerMessage: msg, business, intent: 'QUESTION' });
+        const aiReply = await getPostFlowAIReply({ customerMessage: msg, business, session, intent: 'QUESTION' });
         await dispatchMessage(from, {
           type: 'text',
-          body: (aiReply || `Happy to help${custName}! 😊`) + `\n\n_Your order is still being prepared — we'll notify you when it's ready._`,
+          body: formatExpressionReply(aiReply || `Happy to help${custName}! 😊`, flowData),
         }, tenantDoc);
+        await finishExpressionTurn({ from, tenantId, ackCtx, flowData });
         return true;
       }
       await dispatchMessage(from, {
         type: 'text',
-        body: `You're welcome${custName}! 😊 We're preparing your order — we'll let you know when it's ready!`,
+        body: formatExpressionReply(`You're welcome${custName}! 😊`, flowData),
       }, tenantDoc);
+      await finishExpressionTurn({ from, tenantId, ackCtx, flowData });
       return true;
     }
 
     case 'BOOKING': {
-      // [FIX-BOOKING-ACK] Previously said "Your booking is confirmed" — but at this point
-      // the admin has NOT yet confirmed; the booking is PENDING admin review. Saying
-      // "confirmed" is factually wrong and confuses customers who then ask why the admin
-      // later sends a separate confirmation message. Changed to "booking request received".
       if (isComplaint) {
-        const { getAIReply } = await import('../core/ai/providers/aiRouter.js');
-        const aiReply = await getAIReply({ customerMessage: msg, business, intent: 'COMPLAINT' });
+        const aiReply = await getPostFlowAIReply({ customerMessage: msg, business, session, intent: 'COMPLAINT' });
         await dispatchMessage(from, {
           type:    'buttons',
-          body:    aiReply || `We're sorry to hear that${custName}. 😔 A member of our team will look into this right away.`,
+          body:    formatExpressionReply(
+            aiReply || `Sorry to hear that${custName}. 😔 We'll look into it.`,
+            flowData,
+          ),
           buttons: [{ id: 'SUPPORT', title: '💬 Speak to Team' }],
         }, tenantDoc);
+        await finishExpressionTurn({ from, tenantId, ackCtx, flowData });
         return true;
       }
       if (isCompliment) {
         await dispatchMessage(from, {
           type: 'text',
-          body: `That's very kind${custName}! 😊 Your booking request has been received and is awaiting confirmation. We'll let you know as soon as it's confirmed!`,
+          body: formatExpressionReply(`That's very kind${custName}! 😊 We'll confirm your booking soon.`, flowData),
         }, tenantDoc);
+        await finishExpressionTurn({ from, tenantId, ackCtx, flowData });
         return true;
       }
       if (isQuestion) {
-        const { getAIReply } = await import('../core/ai/providers/aiRouter.js');
-        const aiReply = await getAIReply({ customerMessage: msg, business, intent: 'QUESTION' });
+        const aiReply = await getPostFlowAIReply({ customerMessage: msg, business, session, intent: 'QUESTION' });
         await dispatchMessage(from, {
           type: 'text',
-          body: (aiReply || `Happy to help${custName}! 😊`) + `\n\n_Your booking request is awaiting confirmation — we'll let you know as soon as it's confirmed!_`,
+          body: formatExpressionReply(aiReply || `Happy to help${custName}! 😊`, flowData),
         }, tenantDoc);
+        await finishExpressionTurn({ from, tenantId, ackCtx, flowData });
         return true;
       }
-      const body = `You're welcome${custName}! 😊 Your booking request has been received and is awaiting confirmation. We'll let you know as soon as it's confirmed!`;
-      await dispatchMessage(from, { type: 'text', body }, tenantDoc);
+      await dispatchMessage(from, {
+        type: 'text',
+        body: formatExpressionReply(`You're welcome${custName}! 😊 Booking request received.`, flowData),
+      }, tenantDoc);
+      await finishExpressionTurn({ from, tenantId, ackCtx, flowData });
       return true;
     }
 
@@ -816,9 +903,9 @@ async function handleOrderConfirmed({
   msg, upper, isAck, isCompliment, isComplaint, isQuestion,
   flowData, session, business, tenantDoc, from, tenantId,
   cfg, bizName, mode, welcomeBtns, custName, isVIP,
+  ackCtx = 'ORDER_CONFIRMED',
 }) {
   const { default: Order } = await import('../models/Order.js');
-  const { getAIReply }     = await import('../core/ai/providers/aiRouter.js');
 
   // [SPEC-4H] Cancel intent — show confirmation prompt before doing anything
   const CANCEL_RE = /^(cancel|cancel\s*(my\s*)?order|stop|nevermind|never\s*mind|abort)$/i;
@@ -832,8 +919,8 @@ async function handleOrderConfirmed({
     const itemLine  = activeOrd ? `\n\n📦  *${activeOrd.item}* × ${activeOrd.quantity} — _paid_` : '';
     const shortRef  = activeOrd?.shortId || flowData.shortId || '';
     await updateSession(from, tenantId, {
-      postFlowAck:  'ORDER_CONFIRMED',
-      postFlowData: flowData,
+      postFlowAck:  ackCtx,
+      postFlowData: preserveExpressionTurns(flowData),
       data: { ...(session.data || {}), cancelShortId: shortRef },
     }).catch(() => {});
     await dispatchMessage(from, {
@@ -853,17 +940,8 @@ async function handleOrderConfirmed({
   if (upper === 'SWITCH_YES') {
     const cancelShortId = session.data?.cancelShortId || flowData.shortId;
     if (cancelShortId) {
-      // [AUDIT-FIX-TRACE-5] Was missing `customerPhone: from` — the [AUDIT-FIX-7] comment
-      // above already notes that "other inline cancel paths in this file" include the
-      // audit fields; those other paths (and webhookController.js's equivalents) also
-      // scope by customerPhone, which this one didn't. cancelShortId is always this
-      // customer's own order in normal flow, but the query itself shouldn't be the only
-      // thing standing between one customer's session and another customer's order.
       await Order.findOneAndUpdate(
         { shortId: cancelShortId, tenantId, customerPhone: from, status: { $nin: ['cancelled', 'completed'] } },
-        // [AUDIT-FIX-7] Add cancelledBy/cancelledAt — this SWITCH_YES post-flow cancel
-        // path was also dropping the audit trail (same gap as the inline cancel paths
-        // in webhookController.js).
         { $set: { status: 'cancelled', paymentStatus: 'cancelled', cancelledBy: 'customer', cancelledAt: new Date() } }
       ).catch(() => {});
     }
@@ -878,7 +956,7 @@ async function handleOrderConfirmed({
 
   if (upper === 'SWITCH_NO') {
     const itemRef = flowData.item ? `*${flowData.item}*` : 'your order';
-    await updateSession(from, tenantId, { postFlowAck: 'ORDER_CONFIRMED', postFlowData: flowData });
+    await rearmPostFlowAck({ from, tenantId, ackCtx, flowData });
     await dispatchMessage(from, {
       type: 'text',
       body: `👍 No problem — ${itemRef} is still being prepared. We'll let you know when it's ready!`,
@@ -901,110 +979,102 @@ async function handleOrderConfirmed({
     const ordRef    = ord?.shortId   || flowData.shortId || '—';
     const ordStatus = (ord?.status === 'confirmed') ? 'Being Prepared 🍳' : '⏳ Pending';
 
-    await updateSession(from, tenantId, { postFlowAck: 'ORDER_CONFIRMED', postFlowData: flowData });
+    await rearmPostFlowAck({ from, tenantId, ackCtx, flowData });
     await dispatchMessage(from, {
       type: 'text',
       body:
-        `Here's your current order:\n\n` +
-        `📦  *${ordItem}* × ${ordQty}\n` +
-        `💰  Total paid: *${ordTotal}*\n` +
-        `🔖  Reference: *#${ordRef}*\n` +
-        `📊  Status: ${ordStatus}`,
+        `📦 *${ordItem}* × ${ordQty} · *${ordTotal}*\n` +
+        `🔖 #${ordRef} · ${ordStatus}`,
     }, tenantDoc);
     return true;
   }
 
   // [SPEC-4F] "When will it be ready?" — ETA
-  // [PFH-3] Uses business.settings.estimatedDeliveryMinutes if configured.
   const ETA_RE = /\b(when\s*(will\s*(it|my\s*order)\s*be\s*ready|is\s*(it|my\s*order)\s*ready)?|how\s*long|any\s*update|update(\s*please)?|status\s*(please)?|how\s*soon|is\s*(it|my\s*order)\s*ready|still\s*waiting|ready\s*yet)\b/i;
   if (ETA_RE.test(msg)) {
-    await updateSession(from, tenantId, { postFlowAck: 'ORDER_CONFIRMED', postFlowData: flowData });
+    await rearmPostFlowAck({ from, tenantId, ackCtx, flowData });
     const etaMins = business?.settings?.estimatedDeliveryMinutes;
-    const etaLine = etaMins
-      ? `Estimated time: *${etaMins} minutes* from when your order was confirmed.`
-      : `Our team will send you an update as soon as it's ready — we appreciate your patience!`;
     await dispatchMessage(from, {
       type: 'text',
-      body:
-        `⏳ Your order is still being prepared.\n\n` +
-        `${etaLine}\n\n` +
-        `We'll message you directly the moment it's ready!`,
+      body: etaMins
+        ? `⏳ Still preparing — about *${etaMins} mins*. We'll ping you when it's ready!`
+        : `⏳ Still preparing — we'll ping you when it's ready!`,
     }, tenantDoc);
     return true;
   }
 
   if (isComplaint) {
     const orderContext = flowData.item ? { item: flowData.item, shortId: flowData.shortId } : null;
-    const aiReply = await getAIReply({ customerMessage: msg, business, session, intent: 'COMPLAINT', orderContext });
+    const aiReply = await getPostFlowAIReply({ customerMessage: msg, business, session, intent: 'COMPLAINT', orderContext });
     await dispatchMessage(from, {
       type:    'buttons',
-      body:    aiReply || `We're really sorry to hear that${custName}. 😔 Your experience matters to us and we want to make it right.\n\nA member of our team will look into this immediately.`,
-      buttons: [
-        { id: 'SUPPORT',  title: '💬 Speak to Team'  },
-        { id: 'QUESTION', title: '❓ Ask a Question' },
-      ],
+      body:    formatExpressionReply(
+        aiReply || `Really sorry about that${custName}. 😔`,
+        flowData,
+      ),
+      buttons: [{ id: 'SUPPORT', title: '💬 Speak to Team' }],
     }, tenantDoc);
+    await finishExpressionTurn({ from, tenantId, ackCtx, flowData });
     return true;
   }
 
   if (isCompliment) {
     const orderContext = flowData.item ? { item: flowData.item, shortId: flowData.shortId } : null;
-    const aiReply = await getAIReply({ customerMessage: msg, business, session, intent: 'COMPLIMENT', orderContext });
+    const aiReply = await getPostFlowAIReply({ customerMessage: msg, business, session, intent: 'COMPLIMENT', orderContext });
     const fallback = isVIP
-      ? `That truly means a lot to us${custName}! 🙏 Your order is still being prepared — we'll have it ready shortly. ❤️`
-      : `Thank you${custName}! 😊 We're working on your order — we'll let you know the moment it's ready!`;
+      ? `Thank you${custName}! 🙏 Your order's on the way.`
+      : `Thank you${custName}! 😊`;
     await dispatchMessage(from, {
       type: 'text',
-      body: aiReply || fallback,
+      body: formatExpressionReply(aiReply || fallback, flowData),
     }, tenantDoc);
+    await finishExpressionTurn({ from, tenantId, ackCtx, flowData });
     return true;
   }
 
   if (isQuestion) {
     const orderContext = flowData.item ? { item: flowData.item, shortId: flowData.shortId } : null;
-    const aiReply = await getAIReply({ customerMessage: msg, business, session, intent: 'QUESTION', orderContext });
+    const aiReply = await getPostFlowAIReply({ customerMessage: msg, business, session, intent: 'QUESTION', orderContext });
     await dispatchMessage(from, {
-      type:    'buttons',
-      body:    (aiReply || `Happy to help${custName}! 😊`) + `\n\n_Your order is still being prepared — we'll notify you when it's ready._`,
-      buttons: [
-        { id: 'QUESTION',     title: '❓ Ask a Question' },
-        { id: 'CANCEL_ORDER', title: '❌ Cancel Order'   },
-      ],
+      type: 'text',
+      body: formatExpressionReply(aiReply || `Happy to help${custName}! 😊`, flowData),
     }, tenantDoc);
+    await finishExpressionTurn({ from, tenantId, ackCtx, flowData });
     return true;
   }
 
   // [SPEC-4I] Completely unrelated message
-  // [PFH-4] Mode-aware: food modes stay focused; retail/delivery allow browsing
   const isUnrelated = !isAck && !isCompliment && !isComplaint && !isQuestion;
   if (isUnrelated) {
-    await updateSession(from, tenantId, { postFlowAck: 'ORDER_CONFIRMED', postFlowData: flowData });
+    await rearmPostFlowAck({ from, tenantId, ackCtx, flowData });
     const itemRef2 = flowData.item ? `*${flowData.item}*` : 'your order';
     const isFoodMode = ['RESTAURANT', 'BAKERY', 'FOOD'].includes(mode);
     if (isFoodMode) {
       await dispatchMessage(from, {
         type:    'buttons',
-        body:    `😊 I can only help with your ${bizName} order right now.\n\n${itemRef2} is still being prepared. We'll notify you when it's ready!`,
+        body:    `Your ${itemRef2} is still being prepared — we'll notify you! 😊`,
         buttons: [
           { id: 'QUESTION',     title: '❓ Ask a Question' },
           { id: 'CANCEL_ORDER', title: '❌ Cancel Order'   },
         ],
       }, tenantDoc);
     } else {
-      // Retail/delivery — customer can still browse while waiting
       await dispatchMessage(from, {
         type:    'buttons',
-        body:    `😊 Your order *#${flowData.shortId || ''}* is being processed.\n\nWhile you wait, can I help you with anything else?`,
+        body:    `Order *#${flowData.shortId || ''}* is processing. Need anything else? 😊`,
         buttons: (cfg.ui?.welcomeButtons || []).slice(0, 2).concat([{ id: 'QUESTION', title: '❓ Ask a Question' }]),
       }, tenantDoc);
     }
     return true;
   }
 
-  // [SPEC-4A] Simple ack while order is PREPARING — no buttons, no upsell
   const itemRef = flowData.item ? `*${flowData.item}*` : 'your order';
-  const ackBody = `You're welcome${custName}! 😊 ${itemRef} is on its way to the kitchen. We'll let you know when it's ready!`;
+  const ackBody = formatExpressionReply(
+    `You're welcome${custName}! 😊 ${itemRef} is being prepared.`,
+    flowData,
+  );
   await dispatchMessage(from, { type: 'text', body: ackBody }, tenantDoc);
+  await finishExpressionTurn({ from, tenantId, ackCtx, flowData });
   return true;
 }
 
@@ -1012,38 +1082,46 @@ async function handleOrderConfirmed({
 async function handleOrderRejected({
   msg, isAck, isCompliment, isComplaint,
   flowData, business, tenantDoc, from, tenantId,
-  custName, welcomeBtns,
+  custName, welcomeBtns, cfg,
+  ackCtx = 'ORDER_REJECTED',
 }) {
-  const { getModeConfig } = await import('../config/modes.js');
-  const cfg = getModeConfig(business);
-  const { getAIReply } = await import('../core/ai/providers/aiRouter.js');
   const itemStr = flowData.item ? ` for *${flowData.item}*` : '';
+  const reasonLine = flowData.rejectReason
+    ? `\nReason: ${flowData.rejectReason}`
+    : '';
 
   if (isComplaint) {
-    const aiReply = await getAIReply({ customerMessage: msg, business, intent: 'COMPLAINT' });
+    const aiReply = await getPostFlowAIReply({ customerMessage: msg, business, intent: 'COMPLAINT' });
     await dispatchMessage(from, {
       type:    'buttons',
-      body:    aiReply || `We sincerely apologise for the inconvenience${custName}. 😔 We understand how frustrating this must be.\n\nPlease contact our team and we'll resolve this for you as a priority.`,
-      buttons: [
-        { id: 'SUPPORT', title: '💬 Speak to Team' },
-        { id: 'ORDER',   title: '🛒 Try Again'     },
-      ],
+      body:    formatExpressionReply(
+        aiReply || `Sorry about that${custName}. 😔`,
+        flowData,
+      ),
+      buttons: [{ id: 'SUPPORT', title: '💬 Speak to Team' }],
     }, tenantDoc);
+    await finishExpressionTurn({ from, tenantId, ackCtx, flowData });
     return true;
   }
 
-  if (isAck) {
-    // [PFH-5] Show reject reason if the admin provided one
-    const reasonLine = flowData.rejectReason
-      ? `\n\n💬 *Reason:* ${flowData.rejectReason}`
-      : '';
-    await dispatchMessage(from, buildOptionsReply(cfg, `We're sorry your order${itemStr} didn't go through${custName}. 🙏${reasonLine}\n\nWe'd love to make it up to you — tap below to try again or ask us anything.`), tenantDoc);
+  if (isAck || isCompliment) {
+    await dispatchMessage(from, {
+      type: 'text',
+      body: formatExpressionReply(
+        `Sorry your order${itemStr} didn't go through${custName}. 🙏${reasonLine}`,
+        flowData,
+      ),
+    }, tenantDoc);
+    await finishExpressionTurn({ from, tenantId, ackCtx, flowData });
     return true;
   }
 
-  // Any other message — treat as question/follow-up
-  const aiReply = await getAIReply({ customerMessage: msg, business, intent: 'SUPPORT' });
-  await dispatchMessage(from, buildOptionsReply(cfg, aiReply || `We're here to help${custName}. 😊 What can we do for you?`), tenantDoc);
+  const aiReply = await getPostFlowAIReply({ customerMessage: msg, business, intent: 'SUPPORT' });
+  await dispatchMessage(from, {
+    type: 'text',
+    body: formatExpressionReply(aiReply || `We're here to help${custName}. 😊`, flowData),
+  }, tenantDoc);
+  await finishExpressionTurn({ from, tenantId, ackCtx, flowData });
   return true;
 }
 
@@ -1053,7 +1131,6 @@ async function handleOrderReady({
   flowData, business, tenantDoc, from, tenantId,
   cfg, bizName, custName,
 }) {
-  const { getAIReply } = await import('../core/ai/providers/aiRouter.js');
   const itemRef = flowData.item ? `*${flowData.item}*` : 'your order';
 
   const COLLECTED_RE = /\b(collect|collected|got\s*it|picked\s*up|received|have\s*it|got\s*my|picked\s*it|taken|taking|here\s*now|coming\s*now|on\s*my\s*way|coming\s*to|heading)\b/i;
@@ -1072,14 +1149,14 @@ async function handleOrderReady({
     }
     await dispatchMessage(from, {
       type: 'text',
-      body: `🎉 Enjoy! 😊\n\nHope to see you again soon.\n— *${bizName}*`,
+      body: `🎉 Enjoy! See you again soon. — *${bizName}*`,
     }, tenantDoc);
     // [FIX-ACK-COLLECT] Set postFlowAck so that any immediate follow-up from the customer
     // ("thank you", "was delicious", emoji) is handled with warm contextual reply instead
     // of falling through to AI classify → SUPPORT and triggering an unintended escalation.
     await updateSession(from, tenantId, {
       postFlowAck:  'ORDER_COLLECTED',
-      postFlowData: { item: flowData.item, shortId: shortIdRef },
+      postFlowData: { item: flowData.item, shortId: shortIdRef, _exprTurnsLeft: EXPRESSION_TURN_BUDGET },
     }).catch(() => {});
     return true;
   }
@@ -1088,7 +1165,7 @@ async function handleOrderReady({
     const collectedBtnId = flowData.shortId ? `COLLECTED_${flowData.shortId}` : null;
     await dispatchMessage(from, {
       type:    'buttons',
-      body:    `You're welcome${custName}! 😊 ${itemRef} is ready and waiting for you at the counter.`,
+      body:    `You're welcome${custName}! ${itemRef} is ready at the counter. 😊`,
       buttons: collectedBtnId
         ? [{ id: collectedBtnId, title: '✅ Collected — Thanks!' }]
         : [{ id: 'SUPPORT',      title: '✅ Collected — Thanks!' }],
@@ -1097,19 +1174,18 @@ async function handleOrderReady({
   }
 
   if (isQuestion) {
-    const aiReply = await getAIReply({ customerMessage: msg, business, intent: 'QUESTION' });
+    const aiReply = await getPostFlowAIReply({ customerMessage: msg, business, intent: 'QUESTION' });
     await dispatchMessage(from, {
       type:    'buttons',
-      body:    (aiReply || `Happy to help${custName}! 😊`) + `\n\n_Your order is ready for collection at the counter._`,
+      body:    aiReply || `Happy to help${custName}! Ready at the counter. 😊`,
       buttons: [{ id: 'SUPPORT', title: '❓ Need Help' }],
     }, tenantDoc);
     return true;
   }
 
-  // Generic fallback
   await dispatchMessage(from, {
     type:    'buttons',
-    body:    `😊 ${itemRef} is ready for collection at the counter! ${bizName} is waiting for you.`,
+    body:    `${itemRef} is ready at the counter! 😊`,
     buttons: [{ id: 'SUPPORT', title: '❓ Need Help' }],
   }, tenantDoc);
   return true;
@@ -1127,7 +1203,6 @@ async function handleWalkInQueueAck({
   flowData, business, tenantDoc, from, tenantId,
   custName, ackCtx,
 }) {
-  const { getAIReply } = await import('../core/ai/providers/aiRouter.js');
   const mode       = (business?.businessMode || '').toUpperCase();
   const isBarbershop = mode === 'BARBERSHOP';
   const emoji      = isBarbershop ? '✂️' : '💇';
@@ -1150,70 +1225,60 @@ async function handleWalkInQueueAck({
   }
 
   if (isCompliment || isAck) {
-    // If they're already confirmed (WALKIN_CONFIRMED ackCtx), tailor the message.
     const isConfirmed = ackCtx === 'WALKIN_CONFIRMED';
     const body = isConfirmed
       ? `You're welcome${custName}! ${emoji} We're ready for you — head on over${serviceStr}${staffStr}. See you soon! 🙏`
       : `You're welcome${custName}! ${emoji} You're in the queue${serviceStr}${staffStr}. Please head to the salon — we'll message you to confirm your spot! 🙏`;
     await dispatchMessage(from, {
-      type:    'buttons',
-      body,
-      buttons: queueBtns,
+      type: 'text',
+      body: formatExpressionReply(body, flowData),
     }, tenantDoc);
+    await finishExpressionTurn({ from, tenantId, ackCtx, flowData });
     return true;
   }
 
   if (isComplaint) {
-    const aiReply = await getAIReply({ customerMessage: msg, business, intent: 'COMPLAINT' });
+    const aiReply = await getPostFlowAIReply({ customerMessage: msg, business, intent: 'COMPLAINT' });
     await dispatchMessage(from, {
       type:    'buttons',
-      body:    aiReply || `We're sorry to hear that${custName}. 😔 Please speak to our team directly and we'll make it right.`,
+      body:    formatExpressionReply(aiReply || `Sorry to hear that${custName}. 😔`, flowData),
       buttons: [{ id: 'SUPPORT', title: '💬 Speak to Team' }],
     }, tenantDoc);
+    await finishExpressionTurn({ from, tenantId, ackCtx, flowData });
     return true;
   }
 
-  // Question or general message — AI handles it with queue context
-  const aiReply = await getAIReply({
+  const aiReply = await getPostFlowAIReply({
     customerMessage: msg, business,
-    intent: /\b(aftercare|after care|maintain|how long|prep|what to bring|what to wear)\b/i.test(msg) ? 'AFTERCARE' : 'SALON_QUESTION', // [FIX-AFTERCARE]
+    intent: /\b(aftercare|after care|maintain|how long|prep|what to bring|what to wear)\b/i.test(msg) ? 'AFTERCARE' : 'SALON_QUESTION',
     sessionContext: `Customer is in the walk-in queue${serviceStr}${staffStr}.`,
   });
   await dispatchMessage(from, {
-    type:    'buttons',
-    body:    aiReply || `Happy to help${custName}! ${emoji} You're in the queue — we'll see you soon.`,
-    buttons: queueBtns,
+    type: 'text',
+    body: formatExpressionReply(aiReply || `Happy to help${custName}! ${emoji}`, flowData),
   }, tenantDoc);
+  await finishExpressionTurn({ from, tenantId, ackCtx, flowData });
   return true;
 }
 
 // ── BOOKING_CONFIRMED ────────────────────────────────────────────────────────
 async function handleBookingConfirmed({
-  msg, upper, isAck, isCompliment, isComplaint,
+  msg, upper, isAck, isCompliment, isComplaint, isQuestion,
   flowData, business, tenantDoc, from, tenantId,
   custName,
+  ackCtx = 'BOOKING_CONFIRMED',
 }) {
-  const { getAIReply } = await import('../core/ai/providers/aiRouter.js');
   const mode          = (business?.businessMode || '').toUpperCase();
   const isSalon       = mode === 'SALON' || mode === 'BARBERSHOP';
   const isWalkIn      = flowData.bookingType === 'walkin';
-  // [FIX-SALON-11] Show stylist in ack messages for salon bookings.
   const staffStr      = flowData.staff ? ` with *${flowData.staff}*` : '';
 
-  // [FIX-SALON-11] Build context string appropriate to booking type:
-  // - Walk-in: no "on <date> at <time>" — they're already in the queue.
-  // - Appointment: show date + time as before.
   const whenStr = isWalkIn
     ? ''
     : (flowData.date
         ? ` on *${flowData.date}${flowData.time ? ` at ${flowData.time}` : ''}*`
         : '');
 
-  // [FIX-SALON-11] Mode-aware button set for salon/barbershop:
-  // - RESCHEDULE lets them change the appointment.
-  // - QUESTION allows aftercare/prep questions.
-  // - CANCEL_BOOKING always included as escape.
-  // For non-salon modes: original CANCEL_BOOKING only.
   const _salonConfirmBtns = isSalon
     ? [
         { id: 'RESCHEDULE',     title: '📅 Reschedule'      },
@@ -1229,22 +1294,14 @@ async function handleBookingConfirmed({
     return true;
   }
 
-  // [v15-RESCHEDULE] RESCHEDULE button: cancel old appointment and start a fresh booking.
   if (upper === 'RESCHEDULE') {
     if (flowData?.shortId) {
       const { default: _ReschBooking } = await import('../models/Booking.js');
-      // [AUDIT-FIX-TRACE-5] Was missing `customerPhone: from` — same gap as the order
-      // shortId writes above; this cancels the OLD booking before starting a fresh one,
-      // so it should only ever be able to touch the requesting customer's own booking.
       await _ReschBooking.findOneAndUpdate(
         { shortId: flowData.shortId, tenantId, customerPhone: from, status: { $nin: ['cancelled', 'completed'] } },
         { $set: { status: 'cancelled', cancelledBy: 'customer', cancelledAt: new Date() } }
       ).catch(() => {});
     }
-    // [AUDIT-FIX-15b] Same step/prompt mismatch as the APPOINTMENT_REMINDER RESCHEDULE
-    // handler above: step: 'SELECT_SERVICE' with data: {} while the message asks for a
-    // date directly. Land on 'DATE' with the previous service/stylist carried over —
-    // see the APPOINTMENT_REMINDER RESCHEDULE case for the full explanation.
     await updateSession(from, tenantId, {
       currentFlow: 'BOOKING', step: 'DATE', postFlowAck: null,
       data: {
@@ -1264,43 +1321,35 @@ What date works best for you?`,
     return true;
   }
 
+  if (isComplaint) {
+    const aiReply = await getPostFlowAIReply({ customerMessage: msg, business, intent: 'COMPLAINT' });
+    await dispatchMessage(from, {
+      type:    'buttons',
+      body:    formatExpressionReply(aiReply || `Sorry to hear that${custName}. 😔`, flowData),
+      buttons: [{ id: 'SUPPORT', title: '💬 Speak to Team' }],
+    }, tenantDoc);
+    await finishExpressionTurn({ from, tenantId, ackCtx, flowData });
+    return true;
+  }
+
   if (isCompliment || isAck) {
     const seeYouStr = isWalkIn
       ? `See you soon${staffStr}!`
-      : `We're looking forward to seeing you${whenStr}${staffStr}.`;
+      : `See you${whenStr}${staffStr}.`;
     await dispatchMessage(from, {
-      type:    'buttons',
-      body:    `You're welcome${custName}! 😊 ${seeYouStr} If anything changes, just let us know!`,
-      buttons: _salonConfirmBtns,
+      type: 'text',
+      body: formatExpressionReply(`You're welcome${custName}! 😊 ${seeYouStr}`, flowData),
     }, tenantDoc);
+    await finishExpressionTurn({ from, tenantId, ackCtx, flowData });
     return true;
   }
 
-  if (isComplaint) {
-    const aiReply = await getAIReply({ customerMessage: msg, business, intent: 'COMPLAINT' });
-    await dispatchMessage(from, {
-      type:    'buttons',
-      body:    aiReply || `We're very sorry to hear that${custName}. 😔 Please let us know how we can make things right.`,
-      buttons: [{ id: 'SUPPORT', title: '💬 Speak to Team' }],
-    }, tenantDoc);
-    return true;
-  }
-
-  const aiReply = await getAIReply({ customerMessage: msg, business, intent: 'QUESTION' });
+  const aiReply = await getPostFlowAIReply({ customerMessage: msg, business, intent: 'QUESTION' });
   await dispatchMessage(from, {
-    type:    'buttons',
-    body:    aiReply || `Happy to help${custName}! 😊`,
-    buttons: isSalon
-      ? [
-          { id: 'QUESTION',       title: '❓ Another Question' },
-          { id: 'RESCHEDULE',     title: '📅 Reschedule'       },
-          { id: 'CANCEL_BOOKING', title: '❌ Cancel Booking'    },
-        ]
-      : [
-          { id: 'QUESTION',       title: '❓ Ask a Question' },
-          { id: 'CANCEL_BOOKING', title: '❌ Cancel Booking'  },
-        ], // [FIX-SALON-BTNS]
+    type: 'text',
+    body: formatExpressionReply(aiReply || `Happy to help${custName}! 😊`, flowData),
   }, tenantDoc);
+  await finishExpressionTurn({ from, tenantId, ackCtx, flowData });
   return true;
 }
 
@@ -1310,7 +1359,6 @@ async function handleBookingDeclined({
   flowData, business, tenantDoc, from, tenantId,
   custName,
 }) {
-  const { getAIReply } = await import('../core/ai/providers/aiRouter.js');
   const mode      = (business?.businessMode || '').toUpperCase();
   const isSalon   = mode === 'SALON' || mode === 'BARBERSHOP';
   const isWalkIn  = flowData.bookingType === 'walkin';
@@ -1330,10 +1378,10 @@ async function handleBookingDeclined({
       ];
 
   if (isComplaint) {
-    const aiReply = await getAIReply({ customerMessage: msg, business, intent: 'COMPLAINT' });
+    const aiReply = await getPostFlowAIReply({ customerMessage: msg, business, intent: 'COMPLAINT' });
     await dispatchMessage(from, {
       type:    'buttons',
-      body:    aiReply || `We're truly sorry${custName}. 😔 We understand how disappointing this is and we want to find a solution that works for you.`,
+      body:    trimExpressionReply(aiReply || `Sorry about that${custName}. 😔`),
       buttons: _declinedBtns,
     }, tenantDoc);
     return true;
@@ -1341,8 +1389,8 @@ async function handleBookingDeclined({
 
   if (isAck) {
     const retryMsg = isWalkIn
-      ? `We're sorry the queue isn't available right now${custName}. 🙏 You can book an appointment or try the walk-in queue later!`
-      : `We're sorry we couldn't accommodate you this time${custName}. 🙏 We'd love to find another time that works — tap below to try again!`;
+      ? `Sorry the queue's full${custName}. 🙏 Try again later or book below.`
+      : `Sorry we couldn't fit you in${custName}. 🙏 Tap below to try another time.`;
     await dispatchMessage(from, {
       type:    'buttons',
       body:    retryMsg,
@@ -1351,10 +1399,10 @@ async function handleBookingDeclined({
     return true;
   }
 
-  const aiReply = await getAIReply({ customerMessage: msg, business, intent: 'SUPPORT' });
+  const aiReply = await getPostFlowAIReply({ customerMessage: msg, business, intent: 'SUPPORT' });
   await dispatchMessage(from, {
     type:    'buttons',
-    body:    aiReply || `We're here to help${custName}. 😊`,
+    body:    trimExpressionReply(aiReply || `We're here to help${custName}. 😊`),
     buttons: _declinedBtns,
   }, tenantDoc);
   return true;

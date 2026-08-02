@@ -17,6 +17,7 @@
 
 import { updateSession, getSession } from '../sessions/sessionService.js';
 import logger from '../../config/logger.js';
+import { EXPRESSION_TURN_BUDGET } from '../../services/postFlowHandler.js';
 
 // ── Registered flow handlers ──────────────────────────────────────────────────
 // Key: `${businessMode}:${flowName}` e.g. 'RESTAURANT:ORDER'
@@ -209,10 +210,11 @@ export async function cancelFlow(session, business) {
  */
 export async function completeFlow(session, completedFlow, business = null, tenant = null) {
   await updateSession(session.customerPhone, session.tenantId, {
-    currentFlow: null,
-    step:        null,
-    data:        {},
-    postFlowAck: completedFlow.toUpperCase(),
+    currentFlow:  null,
+    step:         null,
+    data:         {},
+    postFlowAck:  completedFlow.toUpperCase(),
+    postFlowData: { _exprTurnsLeft: EXPRESSION_TURN_BUDGET },
   });
 
   // Lead capture trigger — fire after ORDER or BOOKING if configured.

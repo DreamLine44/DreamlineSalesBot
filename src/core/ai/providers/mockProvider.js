@@ -27,13 +27,31 @@ const FALLBACK_BY_INDUSTRY = {
   RETAIL:     'Happy to help! Would you like to shop or ask a question?',
 };
 
+/** [PFH-10] One-liners for post-flow thanks / complaints / compliments — never essays. */
+const EXPRESSION_BY_INTENT = {
+  COMPLAINT:    'Sorry about that — we\'ll make it right. 😔',
+  COMPLIMENT:   'Thank you so much! 😊',
+  QUESTION:     'Happy to help! 😊',
+  SUPPORT:      'We\'re on it — team will help shortly. 🙏',
+  ACKNOWLEDGEMENT:'You\'re welcome! 😊',
+  FALLBACK:     'Got it! 😊',
+};
+
 /**
- * getReply({ customerMessage, business, intent, industry })
+ * getReply({ customerMessage, business, intent, industry, replyMode })
  * Returns { text, source: 'mock' }
  */
-export async function getReply({ customerMessage, business, intent = 'FALLBACK', industry = 'RETAIL' }) {
+export async function getReply({ customerMessage, business, intent = 'FALLBACK', industry = 'RETAIL', replyMode = null }) {
   const businessName = business?.name || 'us';
   const industryKey  = (industry || business?.businessMode || 'RETAIL').toUpperCase();
+
+  if (replyMode === 'expression') {
+    const key = (intent || 'FALLBACK').toUpperCase();
+    return {
+      text: EXPRESSION_BY_INTENT[key] || EXPRESSION_BY_INTENT.FALLBACK,
+      source: 'mock',
+    };
+  }
 
   // [MOCK-FIX-1] FAQ short-circuit — whole-word regex, not substring includes().
   // groqProvider was fixed (GROQ-OPT-3) but mockProvider still used lower.includes(t)
