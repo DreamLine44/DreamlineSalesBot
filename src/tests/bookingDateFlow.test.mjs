@@ -4,6 +4,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   resolveBookingDateFlowId,
+  shouldUseBookingDateFlow,
   getBookingDateFlowBounds,
   buildBookingDateFlowMessage,
   parseBookingDateFlowReply,
@@ -12,6 +13,18 @@ import {
 } from '../services/bookingDateFlow.js';
 
 const TZ = 'Africa/Banjul';
+
+test('shouldUseBookingDateFlow: opt-in only when BOOKING_DATE_FLOW_ENABLED=true', () => {
+  const prevId = process.env.BOOKING_DATE_FLOW_ID;
+  const prevEn = process.env.BOOKING_DATE_FLOW_ENABLED;
+  process.env.BOOKING_DATE_FLOW_ID = '123';
+  process.env.BOOKING_DATE_FLOW_ENABLED = 'false';
+  assert.equal(shouldUseBookingDateFlow({}, {}), false);
+  process.env.BOOKING_DATE_FLOW_ENABLED = 'true';
+  assert.equal(shouldUseBookingDateFlow({}, {}), true);
+  process.env.BOOKING_DATE_FLOW_ID = prevId;
+  process.env.BOOKING_DATE_FLOW_ENABLED = prevEn;
+});
 
 test('resolveBookingDateFlowId: business config beats env', () => {
   const prev = process.env.BOOKING_DATE_FLOW_ID;

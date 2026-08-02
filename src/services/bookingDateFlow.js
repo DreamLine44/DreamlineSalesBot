@@ -25,8 +25,14 @@ export function resolveBookingDateFlowId(business, tenant) {
   );
 }
 
-export function isBookingDateFlowConfigured(business, tenant) {
+/** Flow calendar is opt-in — default is the standard list + typed-date picker. */
+export function shouldUseBookingDateFlow(business, tenant) {
+  if (process.env.BOOKING_DATE_FLOW_ENABLED !== 'true') return false;
   return Boolean(resolveBookingDateFlowId(business, tenant));
+}
+
+export function isBookingDateFlowConfigured(business, tenant) {
+  return shouldUseBookingDateFlow(business, tenant);
 }
 
 /** YYYY-MM-DD bounds for Flow DatePicker (v5.0+). */

@@ -213,13 +213,15 @@ export async function markConnected(tenantId) {
 
     logger.info('[OnboardingService] Tenant marked CONNECTED', { tenantId });
 
-    // Auto-publish booking calendar Flow (fire-and-forget; dynamic import keeps isolation)
-    (async () => {
-      try {
-        const { ensureBookingDateFlow } = await import('./bookingDateFlowProvisioner.js');
-        await ensureBookingDateFlow({ tenant: tenant.toObject() });
-      } catch { /* non-fatal */ }
-    })();
+    // Auto-publish booking calendar Flow only when explicitly enabled
+    if (process.env.BOOKING_DATE_FLOW_ENABLED === 'true') {
+      (async () => {
+        try {
+          const { ensureBookingDateFlow } = await import('./bookingDateFlowProvisioner.js');
+          await ensureBookingDateFlow({ tenant: tenant.toObject() });
+        } catch { /* non-fatal */ }
+      })();
+    }
 
     return { ok: true, tenant: tenant.toObject() };
 

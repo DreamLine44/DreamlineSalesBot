@@ -133,8 +133,9 @@ export async function ensureBookingDateFlow({ business, tenant, force = false } 
   return work;
 }
 
-/** Boot-time: provision flows for all connected tenants missing a Flow ID. */
+/** Boot-time: provision flows only when calendar Flow is explicitly enabled. */
 export async function provisionBookingDateFlowsOnStartup() {
+  if (process.env.BOOKING_DATE_FLOW_ENABLED !== 'true') return;
   if (process.env.BOOKING_DATE_FLOW_AUTO_PROVISION === 'false') return;
 
   try {

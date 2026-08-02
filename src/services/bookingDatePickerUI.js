@@ -84,13 +84,13 @@ export function buildSimpleDayList(tz, headingOrError = null) {
   }
 
   const body = headingOrError
-    ? `${headingOrError}\n\n👆 *Tap your date below*`
-    : `What date would you like to book? 📅\n\n👆 *Tap your date below*`;
+    ? `${headingOrError}\n\n👆 *Tap a date below* — no typing needed.`
+    : `What date would you like to book? 📅\n\n👆 *Tap a date below* — no typing needed.`;
 
   return {
     type:     'list',
     body,
-    button:   '📅 Pick a date',
+    button:   'Choose a date',
     sections: [{ title: '📅 Upcoming dates', rows }],
     footer:   'Or type e.g. Friday, 25 June',
   };

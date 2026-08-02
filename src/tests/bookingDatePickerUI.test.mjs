@@ -18,7 +18,8 @@ const TZ = 'Africa/Banjul';
 test('buildSimpleDayList: single-step day picker with up to 10 rows', () => {
   const ui = buildSimpleDayList(TZ);
   assert.equal(ui.type, 'list');
-  assert.equal(ui.button, '📅 Pick a date');
+  assert.equal(ui.button, 'Choose a date');
+  assert.ok(ui.body.includes('Tap a date below'));
   assert.ok(ui.sections[0].rows.length >= 1);
   assert.match(ui.sections[0].rows[0].id, /^DATE_D_/);
 });
