@@ -60,7 +60,8 @@ function isValidName(n) {
 
 // ── Sentiment classifiers (shared across all ackCtx paths) ───────────────────
 const ACK_RE        = /^(ok|okay|k|kk|thanks?|thank\s*you|thank\s*u|thx|ty|tq|great|perfect|got\s*it|noted|alright|cool|nice|sounds\s*good|good|👍|🙏|😊|yep|yh|yah|understood|cheers|appreciate\s*it|brilliant|wonderful|awesome|lovely|received|noted|sure|fine|no\s*problem|np)$/i;
-const COMPLIMENT_RE = /\b(amazing|excellent|fantastic|love|best|delicious|enjoyed|happy|pleased|satisfied|impressed|recommend|5\s*star|five\s*star|well\s*done|great\s*job|keep\s*it\s*up|good\s*job|wonderful|superb|outstanding|top\s*notch|quality)\b/i;
+const COMPLIMENT_RE = /\b(amazing|excellent|fantastic|love|best|delicious|enjoyed|happy|pleased|satisfied|impressed|recommend|5\s*star|five\s*star|well\s*done|great\s*job|keep\s*it\s*up|good\s*job|wonderful|superb|outstanding|top\s*notch|quality|wow|incredible|perfect|so\s*good|lovely|awesome|brilliant)\b/i;
+const LOYALTY_RE    = /\b(will\s*always|always\s*come|come\s*back|coming\s*back|see\s*you\s*again|be\s*back|return\s*again|my\s*favourite|my\s*favorite|only\s*place|tell\s*(my\s*)?friends|spread\s*the\s*word|every\s*time|again\s*and\s*again|loyal\s*customer|your\s*service\s*again)\b/i;
 const COMPLAINT_RE  = /\b(bad|terrible|awful|horrible|disappoint|not\s*good|wrong|cold|late|missing|never|complain|refund|cheat|fraud|angry|upset|poor|issue|problem|unsatisfied|unhappy|rubbish|disgusting|unacceptable|worst)\b/i;
 const QUESTION_RE   = /[?]|^(how|when|where|what|why|can\s*you|do\s*you|is\s*there|will\s*you|could\s*you)\b/i;
 
@@ -159,6 +160,87 @@ export function isExpressionSentiment(sentiment) {
     sentiment === 'COMPLAINT' || sentiment === 'QUESTION';
 }
 
+/** Finer-grained tone for post-flow replies — loyalty vs praise vs thanks, etc. */
+export function detectExpressionSubType(msg, sentiment) {
+  const lower = String(msg || '').toLowerCase();
+  if (sentiment === 'COMPLAINT' || COMPLAINT_RE.test(lower)) return 'COMPLAINT';
+  if (sentiment === 'QUESTION' || QUESTION_RE.test(lower)) return 'QUESTION';
+  if (LOYALTY_RE.test(lower)) return 'LOYALTY';
+  if (sentiment === 'COMPLIMENT' || COMPLIMENT_RE.test(lower)) return 'COMPLIMENT';
+  if (sentiment === 'ACK' || ACK_RE.test(lower)) return 'ACK';
+  return 'GENERAL';
+}
+
+export function shouldHandleAsPostFlowExpression(msg, sentiment) {
+  if (isExpressionSentiment(sentiment)) return true;
+  const sub = detectExpressionSubType(msg, sentiment);
+  return sub === 'LOYALTY' || (sub === 'COMPLIMENT' && sentiment === 'UNRELATED');
+}
+
+export function buildExpressionSessionContext({ ackCtx, flowData, business, subType, lastBotReply, lastCustomerMsg }) {
+  const bizName = business?.name || 'us';
+  const parts = [
+    `Post-flow customer reaction after ${ackCtx || 'completed activity'} at ${bizName}.`,
+    `Detected tone: ${subType}.`,
+    flowData?.item ? `Recent order/item: ${flowData.item}.` : null,
+    flowData?.service ? `Recent booking/service: ${flowData.service}.` : null,
+    lastCustomerMsg ? `Customer's previous message: "${lastCustomerMsg}".` : null,
+    lastBotReply ? `Your previous reply was: "${lastBotReply}". You MUST NOT repeat or paraphrase it — respond specifically to their NEW message and what they mean.` : null,
+    'Reply in one warm, professional WhatsApp sentence. Mirror their intent (praise, thanks, loyalty, frustration). No menu dump, no upsell.',
+  ];
+  return parts.filter(Boolean).join(' ');
+}
+
+const EXPRESSION_FALLBACK_BY_SUBTYPE = {
+  LOYALTY:    (custName) => `We'd love to see you again${custName}! 🙏`,
+  COMPLIMENT: (custName) => `So glad you enjoyed it${custName}! 😊`,
+  ACK:        (custName) => `You're welcome${custName}! 🙏`,
+  GENERAL:    (custName) => `Thank you${custName}! 😊`,
+};
+
+export async function buildPostFlowExpressionReply({
+  msg, sentiment, flowData, business, session, custName, bizName, ackCtx, intentOverride,
+  sessionContextSuffix,
+}) {
+  const subType = detectExpressionSubType(msg, sentiment);
+  const intent = intentOverride || (
+    subType === 'COMPLAINT' ? 'COMPLAINT'
+      : subType === 'QUESTION' ? 'QUESTION'
+        : subType === 'LOYALTY' || subType === 'COMPLIMENT' ? 'COMPLIMENT'
+          : 'ACKNOWLEDGEMENT'
+  );
+  const orderContext = flowData?.item
+    ? { item: flowData.item, shortId: flowData.shortId }
+    : null;
+  const sessionContext = [
+    buildExpressionSessionContext({
+      ackCtx,
+      flowData,
+      business,
+      subType,
+      lastBotReply: flowData?._lastExpressionReply,
+      lastCustomerMsg: flowData?._lastCustomerExpression,
+    }),
+    sessionContextSuffix,
+  ].filter(Boolean).join(' ');
+
+  const aiReply = await getPostFlowAIReply({
+    customerMessage: msg,
+    business,
+    session,
+    intent,
+    orderContext,
+    sessionContext,
+  });
+
+  const fallbackFn = EXPRESSION_FALLBACK_BY_SUBTYPE[subType] || EXPRESSION_FALLBACK_BY_SUBTYPE.GENERAL;
+  const fallback = subType === 'LOYALTY'
+    ? `We can't wait to welcome you back${custName}! 🙏 — *${bizName || business?.name || 'us'}*`
+    : fallbackFn(custName);
+
+  return formatExpressionReply(aiReply || fallback, flowData);
+}
+
 export function preserveExpressionTurns(flowData = {}) {
   return { ...flowData, _exprTurnsLeft: getExpressionTurnsLeft(flowData) };
 }
@@ -167,10 +249,16 @@ export function preserveExpressionTurns(flowData = {}) {
  * Decrement the expression budget and re-arm postFlowAck if turns remain.
  * @returns {{ turnsLeftAfter: number, rearmed: boolean }}
  */
-export async function consumeExpressionTurn({ from, tenantId, ackCtx, flowData }) {
+export async function consumeExpressionTurn({ from, tenantId, ackCtx, flowData, lastReply, lastCustomerMsg }) {
   const left     = getExpressionTurnsLeft(flowData);
   const nextLeft = Math.max(0, left - 1);
-  const nextData = { ...flowData, _exprTurnsLeft: nextLeft };
+  const stripClosing = (s) => String(s || '').replace(/\n\n_Message us anytime\._$/, '').trim();
+  const nextData = {
+    ...flowData,
+    _exprTurnsLeft: nextLeft,
+    ...(lastReply ? { _lastExpressionReply: stripClosing(lastReply) } : {}),
+    ...(lastCustomerMsg ? { _lastCustomerExpression: lastCustomerMsg } : {}),
+  };
   if (nextLeft > 0) {
     await updateSession(from, tenantId, { postFlowAck: ackCtx, postFlowData: nextData });
     return { turnsLeftAfter: nextLeft, rearmed: true };
@@ -186,8 +274,23 @@ export async function rearmPostFlowAck({ from, tenantId, ackCtx, flowData }) {
   });
 }
 
-async function finishExpressionTurn({ from, tenantId, ackCtx, flowData }) {
-  await consumeExpressionTurn({ from, tenantId, ackCtx, flowData });
+async function finishExpressionTurn({ from, tenantId, ackCtx, flowData, lastReply, lastCustomerMsg }) {
+  await consumeExpressionTurn({ from, tenantId, ackCtx, flowData, lastReply, lastCustomerMsg });
+}
+
+async function sendPostFlowExpression({
+  from, tenantId, ackCtx, flowData, msg, sentiment, business, session,
+  custName, bizName, tenantDoc, intentOverride, buttons, sessionContextSuffix,
+}) {
+  const body = await buildPostFlowExpressionReply({
+    msg, sentiment, flowData, business, session, custName, bizName, ackCtx, intentOverride,
+    sessionContextSuffix,
+  });
+  await dispatchMessage(from, buttons
+    ? { type: 'buttons', body, buttons }
+    : { type: 'text', body },
+  tenantDoc);
+  await finishExpressionTurn({ from, tenantId, ackCtx, flowData, lastReply: body, lastCustomerMsg: msg });
 }
 
 /** AI reply for post-flow expressions — one short sentence, hard cap on length. */
@@ -252,7 +355,7 @@ export async function handlePostFlowMessage({
   switch (ackCtx) {
     case 'ORDER_CONFIRMED':
       return handleOrderConfirmed({
-        msg, upper, isAck, isCompliment, isComplaint, isQuestion,
+        msg, upper, isAck, isCompliment, isComplaint, isQuestion, sentiment,
         flowData, session, business, tenantDoc, from, tenantId,
         cfg, bizName, mode, welcomeBtns, custName, isVIP,
         ackCtx: 'ORDER_CONFIRMED',
@@ -280,12 +383,11 @@ export async function handlePostFlowMessage({
     // after an AI answer (a "thanks", another question, or a booking tap) was handled
     // with zero context, occasionally routing to AI classify as an unrelated message.
     case 'QUESTION': {
-      if (isAck || isCompliment) {
-        await dispatchMessage(from, {
-          type: 'text',
-          body: formatExpressionReply(`You're welcome${custName}! 😊`, flowData),
-        }, tenantDoc);
-        await finishExpressionTurn({ from, tenantId, ackCtx, flowData });
+      if (shouldHandleAsPostFlowExpression(msg, sentiment)) {
+        await sendPostFlowExpression({
+          from, tenantId, ackCtx, flowData, msg, sentiment, business, session,
+          custName, bizName, tenantDoc,
+        });
         return true;
       }
       if (isComplaint) {
@@ -381,9 +483,9 @@ export async function handlePostFlowMessage({
 
     case 'BOOKING_CONFIRMED':
       return handleBookingConfirmed({
-        msg, upper, isAck, isCompliment, isComplaint, isQuestion,
-        flowData, business, tenantDoc, from, tenantId,
-        custName,
+        msg, upper, isAck, isCompliment, isComplaint, isQuestion, sentiment,
+        flowData, business, tenantDoc, from, tenantId, session,
+        custName, bizName,
         ackCtx: 'BOOKING_CONFIRMED',
       });
 
@@ -527,9 +629,9 @@ export async function handlePostFlowMessage({
     case 'WALKIN':
     case 'WALKIN_CONFIRMED':
       return handleWalkInQueueAck({
-        msg, upper, isAck, isCompliment, isComplaint,
-        flowData, business, tenantDoc, from, tenantId,
-        custName, ackCtx,
+        msg, upper, isAck, isCompliment, isComplaint, sentiment,
+        flowData, business, tenantDoc, from, tenantId, session,
+        custName, bizName, ackCtx,
       });
 
     // [FIX-PFH-SKIN] SKINCARE_ADVICE postFlowAck — set by cosmetics/flows/index.js
@@ -556,15 +658,6 @@ export async function handlePostFlowMessage({
     // in the ORDER_READY flow. Any follow-up (thank you, emoji, compliment) gets a warm
     // farewell reply instead of going to AI → SUPPORT escalation.
     case 'ORDER_COLLECTED': {
-      const itemStr = flowData.item ? ` *${flowData.item}*` : '';
-      if (isCompliment || isAck) {
-        await dispatchMessage(from, {
-          type: 'text',
-          body: formatExpressionReply(`You're so welcome${custName}! 😊 Glad you enjoyed it.`, flowData),
-        }, tenantDoc);
-        await finishExpressionTurn({ from, tenantId, ackCtx, flowData });
-        return true;
-      }
       if (isComplaint) {
         const aiReply = await getPostFlowAIReply({ customerMessage: msg, business, session, intent: 'COMPLAINT' });
         await dispatchMessage(from, {
@@ -572,7 +665,14 @@ export async function handlePostFlowMessage({
           body:    formatExpressionReply(aiReply || `Sorry to hear that${custName}. 😔`, flowData),
           buttons: [{ id: 'SUPPORT', title: '💬 Speak to Team' }],
         }, tenantDoc);
-        await finishExpressionTurn({ from, tenantId, ackCtx, flowData });
+        await finishExpressionTurn({ from, tenantId, ackCtx, flowData, lastReply: aiReply, lastCustomerMsg: msg });
+        return true;
+      }
+      if (shouldHandleAsPostFlowExpression(msg, sentiment)) {
+        await sendPostFlowExpression({
+          from, tenantId, ackCtx, flowData, msg, sentiment, business, session,
+          custName, bizName, tenantDoc,
+        });
         return true;
       }
       await dispatchMessage(from, buildOptionsReply(cfg, `😊 What would you like to do next${custName}?`), tenantDoc);
@@ -583,12 +683,11 @@ export async function handlePostFlowMessage({
     // Previously fell to 'default' (generic "How can I help?") after any enquiry submission.
     // A customer who just submitted a detailed enquiry and replies "thanks" now gets warmth.
     case 'ENQUIRY': {
-      if (isAck || isCompliment) {
-        await dispatchMessage(from, {
-          type: 'text',
-          body: formatExpressionReply(`You're welcome${custName}! 😊 Enquiry received.`, flowData),
-        }, tenantDoc);
-        await finishExpressionTurn({ from, tenantId, ackCtx, flowData });
+      if (shouldHandleAsPostFlowExpression(msg, sentiment)) {
+        await sendPostFlowExpression({
+          from, tenantId, ackCtx, flowData, msg, sentiment, business, session,
+          custName, bizName, tenantDoc,
+        });
         return true;
       }
       if (isComplaint) {
@@ -678,12 +777,11 @@ export async function handlePostFlowMessage({
         await finishExpressionTurn({ from, tenantId, ackCtx, flowData });
         return true;
       }
-      if (isCompliment) {
-        await dispatchMessage(from, {
-          type: 'text',
-          body: formatExpressionReply(`That means a lot${custName}! 😊 Order's being prepared.`, flowData),
-        }, tenantDoc);
-        await finishExpressionTurn({ from, tenantId, ackCtx, flowData });
+      if (isCompliment || shouldHandleAsPostFlowExpression(msg, sentiment)) {
+        await sendPostFlowExpression({
+          from, tenantId, ackCtx, flowData, msg, sentiment, business, session,
+          custName, bizName, tenantDoc,
+        });
         return true;
       }
       if (isQuestion) {
@@ -695,11 +793,10 @@ export async function handlePostFlowMessage({
         await finishExpressionTurn({ from, tenantId, ackCtx, flowData });
         return true;
       }
-      await dispatchMessage(from, {
-        type: 'text',
-        body: formatExpressionReply(`You're welcome${custName}! 😊`, flowData),
-      }, tenantDoc);
-      await finishExpressionTurn({ from, tenantId, ackCtx, flowData });
+      await sendPostFlowExpression({
+        from, tenantId, ackCtx, flowData, msg, sentiment, business, session,
+        custName, bizName, tenantDoc,
+      });
       return true;
     }
 
@@ -717,12 +814,11 @@ export async function handlePostFlowMessage({
         await finishExpressionTurn({ from, tenantId, ackCtx, flowData });
         return true;
       }
-      if (isCompliment) {
-        await dispatchMessage(from, {
-          type: 'text',
-          body: formatExpressionReply(`That's very kind${custName}! 😊 We'll confirm your booking soon.`, flowData),
-        }, tenantDoc);
-        await finishExpressionTurn({ from, tenantId, ackCtx, flowData });
+      if (isCompliment || shouldHandleAsPostFlowExpression(msg, sentiment)) {
+        await sendPostFlowExpression({
+          from, tenantId, ackCtx, flowData, msg, sentiment, business, session,
+          custName, bizName, tenantDoc,
+        });
         return true;
       }
       if (isQuestion) {
@@ -734,11 +830,10 @@ export async function handlePostFlowMessage({
         await finishExpressionTurn({ from, tenantId, ackCtx, flowData });
         return true;
       }
-      await dispatchMessage(from, {
-        type: 'text',
-        body: formatExpressionReply(`You're welcome${custName}! 😊 Booking request received.`, flowData),
-      }, tenantDoc);
-      await finishExpressionTurn({ from, tenantId, ackCtx, flowData });
+      await sendPostFlowExpression({
+        from, tenantId, ackCtx, flowData, msg, sentiment, business, session,
+        custName, bizName, tenantDoc,
+      });
       return true;
     }
 
@@ -900,7 +995,7 @@ export async function handlePostFlowMessage({
 
 // ── ORDER_CONFIRMED ──────────────────────────────────────────────────────────
 async function handleOrderConfirmed({
-  msg, upper, isAck, isCompliment, isComplaint, isQuestion,
+  msg, upper, isAck, isCompliment, isComplaint, isQuestion, sentiment,
   flowData, session, business, tenantDoc, from, tenantId,
   cfg, bizName, mode, welcomeBtns, custName, isVIP,
   ackCtx = 'ORDER_CONFIRMED',
@@ -1006,45 +1101,36 @@ async function handleOrderConfirmed({
   if (isComplaint) {
     const orderContext = flowData.item ? { item: flowData.item, shortId: flowData.shortId } : null;
     const aiReply = await getPostFlowAIReply({ customerMessage: msg, business, session, intent: 'COMPLAINT', orderContext });
+    const body = formatExpressionReply(aiReply || `Really sorry about that${custName}. 😔`, flowData);
     await dispatchMessage(from, {
       type:    'buttons',
-      body:    formatExpressionReply(
-        aiReply || `Really sorry about that${custName}. 😔`,
-        flowData,
-      ),
+      body,
       buttons: [{ id: 'SUPPORT', title: '💬 Speak to Team' }],
     }, tenantDoc);
-    await finishExpressionTurn({ from, tenantId, ackCtx, flowData });
+    await finishExpressionTurn({ from, tenantId, ackCtx, flowData, lastReply: body, lastCustomerMsg: msg });
     return true;
   }
 
-  if (isCompliment) {
-    const orderContext = flowData.item ? { item: flowData.item, shortId: flowData.shortId } : null;
-    const aiReply = await getPostFlowAIReply({ customerMessage: msg, business, session, intent: 'COMPLIMENT', orderContext });
-    const fallback = isVIP
-      ? `Thank you${custName}! 🙏 Your order's on the way.`
-      : `Thank you${custName}! 😊`;
-    await dispatchMessage(from, {
-      type: 'text',
-      body: formatExpressionReply(aiReply || fallback, flowData),
-    }, tenantDoc);
-    await finishExpressionTurn({ from, tenantId, ackCtx, flowData });
+  if (isCompliment || shouldHandleAsPostFlowExpression(msg, sentiment)) {
+    await sendPostFlowExpression({
+      from, tenantId, ackCtx, flowData, msg, sentiment, business, session,
+      custName, bizName, tenantDoc,
+    });
     return true;
   }
 
   if (isQuestion) {
     const orderContext = flowData.item ? { item: flowData.item, shortId: flowData.shortId } : null;
     const aiReply = await getPostFlowAIReply({ customerMessage: msg, business, session, intent: 'QUESTION', orderContext });
-    await dispatchMessage(from, {
-      type: 'text',
-      body: formatExpressionReply(aiReply || `Happy to help${custName}! 😊`, flowData),
-    }, tenantDoc);
-    await finishExpressionTurn({ from, tenantId, ackCtx, flowData });
+    const body = formatExpressionReply(aiReply || `Happy to help${custName}! 😊`, flowData);
+    await dispatchMessage(from, { type: 'text', body }, tenantDoc);
+    await finishExpressionTurn({ from, tenantId, ackCtx, flowData, lastReply: body, lastCustomerMsg: msg });
     return true;
   }
 
   // [SPEC-4I] Completely unrelated message
-  const isUnrelated = !isAck && !isCompliment && !isComplaint && !isQuestion;
+  const isUnrelated = !isAck && !isCompliment && !isComplaint && !isQuestion &&
+    !shouldHandleAsPostFlowExpression(msg, sentiment);
   if (isUnrelated) {
     await rearmPostFlowAck({ from, tenantId, ackCtx, flowData });
     const itemRef2 = flowData.item ? `*${flowData.item}*` : 'your order';
@@ -1068,14 +1154,15 @@ async function handleOrderConfirmed({
     return true;
   }
 
-  const itemRef = flowData.item ? `*${flowData.item}*` : 'your order';
-  const ackBody = formatExpressionReply(
-    `You're welcome${custName}! 😊 ${itemRef} is being prepared.`,
-    flowData,
-  );
-  await dispatchMessage(from, { type: 'text', body: ackBody }, tenantDoc);
-  await finishExpressionTurn({ from, tenantId, ackCtx, flowData });
-  return true;
+  if (isAck || shouldHandleAsPostFlowExpression(msg, sentiment)) {
+    await sendPostFlowExpression({
+      from, tenantId, ackCtx, flowData, msg, sentiment, business, session,
+      custName, bizName, tenantDoc,
+    });
+    return true;
+  }
+
+  return false;
 }
 
 // ── ORDER_REJECTED ───────────────────────────────────────────────────────────
@@ -1199,9 +1286,9 @@ async function handleOrderReady({
 // branch, showing a generic "How can I help?" menu. Customers who just joined
 // the queue and sent a thank-you or question got no contextual response.
 async function handleWalkInQueueAck({
-  msg, upper, isAck, isCompliment, isComplaint,
-  flowData, business, tenantDoc, from, tenantId,
-  custName, ackCtx,
+  msg, upper, isAck, isCompliment, isComplaint, sentiment,
+  flowData, business, tenantDoc, from, tenantId, session,
+  custName, bizName, ackCtx,
 }) {
   const mode       = (business?.businessMode || '').toUpperCase();
   const isBarbershop = mode === 'BARBERSHOP';
@@ -1224,16 +1311,15 @@ async function handleWalkInQueueAck({
     return true;
   }
 
-  if (isCompliment || isAck) {
+  if (isCompliment || isAck || shouldHandleAsPostFlowExpression(msg, sentiment)) {
     const isConfirmed = ackCtx === 'WALKIN_CONFIRMED';
-    const body = isConfirmed
-      ? `You're welcome${custName}! ${emoji} We're ready for you — head on over${serviceStr}${staffStr}. See you soon! 🙏`
-      : `You're welcome${custName}! ${emoji} You're in the queue${serviceStr}${staffStr}. Please head to the salon — we'll message you to confirm your spot! 🙏`;
-    await dispatchMessage(from, {
-      type: 'text',
-      body: formatExpressionReply(body, flowData),
-    }, tenantDoc);
-    await finishExpressionTurn({ from, tenantId, ackCtx, flowData });
+    const suffix = isConfirmed
+      ? `Customer confirmed in walk-in queue${serviceStr}${staffStr}. Acknowledge warmly — they should head over soon.`
+      : `Customer is waiting in the walk-in queue${serviceStr}${staffStr}.`;
+    await sendPostFlowExpression({
+      from, tenantId, ackCtx, flowData, msg, sentiment, business, session,
+      custName, bizName, tenantDoc, sessionContextSuffix: suffix,
+    });
     return true;
   }
 
@@ -1263,9 +1349,9 @@ async function handleWalkInQueueAck({
 
 // ── BOOKING_CONFIRMED ────────────────────────────────────────────────────────
 async function handleBookingConfirmed({
-  msg, upper, isAck, isCompliment, isComplaint, isQuestion,
-  flowData, business, tenantDoc, from, tenantId,
-  custName,
+  msg, upper, isAck, isCompliment, isComplaint, isQuestion, sentiment,
+  flowData, business, tenantDoc, from, tenantId, session,
+  custName, bizName,
   ackCtx = 'BOOKING_CONFIRMED',
 }) {
   const mode          = (business?.businessMode || '').toUpperCase();
@@ -1332,15 +1418,14 @@ What date works best for you?`,
     return true;
   }
 
-  if (isCompliment || isAck) {
-    const seeYouStr = isWalkIn
-      ? `See you soon${staffStr}!`
-      : `See you${whenStr}${staffStr}.`;
-    await dispatchMessage(from, {
-      type: 'text',
-      body: formatExpressionReply(`You're welcome${custName}! 😊 ${seeYouStr}`, flowData),
-    }, tenantDoc);
-    await finishExpressionTurn({ from, tenantId, ackCtx, flowData });
+  if (isCompliment || isAck || shouldHandleAsPostFlowExpression(msg, sentiment)) {
+    const suffix = isWalkIn
+      ? 'Booking is a confirmed walk-in.'
+      : `Booking confirmed${whenStr}${staffStr}.`;
+    await sendPostFlowExpression({
+      from, tenantId, ackCtx, flowData, msg, sentiment, business, session,
+      custName, bizName, tenantDoc, sessionContextSuffix: suffix,
+    });
     return true;
   }
 

@@ -14,6 +14,9 @@ import {
   EXPRESSION_MAX_CHARS,
   getExpressionTurnsLeft,
   isExpressionSentiment,
+  detectExpressionSubType,
+  shouldHandleAsPostFlowExpression,
+  buildExpressionSessionContext,
   maybeAppendExpressionClosing,
   trimExpressionReply,
   formatExpressionReply,
@@ -96,8 +99,41 @@ test('flowEngine.completeFlow seeds postFlowData._exprTurnsLeft', () => {
   assert.match(flowSrc, /postFlowData:\s*\{\s*_exprTurnsLeft:\s*EXPRESSION_TURN_BUDGET\s*\}/);
 });
 
+test('detectExpressionSubType: loyalty vs praise vs thanks', () => {
+  assert.equal(detectExpressionSubType('Wow this is amazing', 'COMPLIMENT'), 'COMPLIMENT');
+  assert.equal(detectExpressionSubType('I will always come to your service again', 'UNRELATED'), 'LOYALTY');
+  assert.equal(detectExpressionSubType('thank you', 'ACK'), 'ACK');
+});
+
+test('shouldHandleAsPostFlowExpression: loyalty counts even when sentiment is UNRELATED', () => {
+  assert.equal(
+    shouldHandleAsPostFlowExpression('I will always come to your service again', 'UNRELATED'),
+    true,
+  );
+});
+
+test('buildExpressionSessionContext: tells AI not to repeat the previous reply', () => {
+  const ctx = buildExpressionSessionContext({
+    ackCtx: 'ORDER_COLLECTED',
+    flowData: { item: 'Chura Gerteh', _lastExpressionReply: 'So glad you loved it!' },
+    business: { name: 'YM Store' },
+    subType: 'LOYALTY',
+    lastBotReply: 'So glad you loved it!',
+    lastCustomerMsg: 'Wow this is amazing',
+  });
+  assert.match(ctx, /MUST NOT repeat/i);
+  assert.match(ctx, /LOYALTY/i);
+});
+
+test('postFlowHandler.js: ORDER_COLLECTED uses smart expression replies, not hardcoded loop text', () => {
+  assert.doesNotMatch(pfhSrc, /You're so welcome\$\{custName\}! 😊 Glad you enjoyed it\./);
+  assert.match(pfhSrc, /sendPostFlowExpression/);
+  assert.match(pfhSrc, /buildPostFlowExpressionReply/);
+});
+
 test('groqProvider.js: expression replyMode limits tokens and adds short-reply prompt', () => {
   const groqSrc = readFileSync(join(__dirname, '../core/ai/providers/groqProvider.js'), 'utf8');
   assert.match(groqSrc, /replyMode === 'expression'/);
-  assert.match(groqSrc, /maxTokens\s*=\s*isExpression \? 35 : 350/);
+  assert.match(groqSrc, /maxTokens\s*=\s*isExpression \? 45 : 350/);
+  assert.match(groqSrc, /NEVER repeat your previous reply/);
 });

@@ -237,7 +237,7 @@ export function buildSystemPrompt({ business, intent, faqContext, orderContext, 
     `- NEVER suggest the customer contact another business, competitor, or third-party service.`,
     `- Use WhatsApp formatting: *bold* for emphasis. No markdown headers or bullet lists.`,
     replyMode === 'expression'
-      ? `\nPOST-FLOW REACTION MODE: One short sentence, max 8 words. No lists, upsells, or extra questions. Casual WhatsApp tone.`
+      ? `\nPOST-FLOW REACTION MODE: The customer just finished an order/booking and is sharing a feeling (thanks, praise, loyalty, frustration). Reply in ONE short, warm, professional WhatsApp sentence (max 12 words). Respond to THEIR exact words and intent — if they say they'll come back, welcome that; if they praise the food, acknowledge that specifically. NEVER repeat your previous reply. No lists, upsells, menus, or extra questions.`
       : '',
     intentInstruction,
   ].filter(Boolean).join('\n');
@@ -263,10 +263,12 @@ function getIntentInstruction(intent, mode, bizName, replyMode = null) {
         : `The customer is unhappy. Be sincerely apologetic and empathetic — never defensive. Focus on solving the problem. Offer to escalate to a real person if needed. Keep it short and genuine.`,
     'COMPLIMENT':
       replyMode === 'expression'
-        ? `The customer gave a quick compliment. One warm thank-you sentence. No sales pitch.`
+        ? `The customer gave praise or loyalty after their order/booking. One warm sentence that mirrors what they said — never generic "you're welcome" unless they only said thanks.`
         : `The customer is happy and giving a compliment. Respond warmly and personally, express genuine gratitude, and invite them to come back or try something new.`,
     'ACKNOWLEDGEMENT':
-      `The customer sent a short acknowledgement (e.g. "thanks", "ok", "great"). Respond briefly and warmly, and offer to help with anything else.`,
+      replyMode === 'expression'
+        ? `The customer sent a brief thanks or acknowledgement after their order/booking. One natural sentence — vary wording; do not repeat prior replies.`
+        : `The customer sent a short acknowledgement (e.g. "thanks", "ok", "great"). Respond briefly and warmly, and offer to help with anything else.`,
     'POST_ORDER':
       `The customer just had their order confirmed. Be warm and reassuring. Briefly confirm the order is being prepared and give an honest sense of timing if you know it.`,
     'RECOMMENDATION':
@@ -443,7 +445,7 @@ export async function getReply({ customerMessage, business, intent = 'FALLBACK',
   ]);
   const temperature = FACTUAL_INTENTS.has((intent || '').toUpperCase()) ? 0.45 : 0.65;
   const isExpression = replyMode === 'expression';
-  const maxTokens    = isExpression ? 35 : 350;
+  const maxTokens    = isExpression ? 45 : 350;
   const temp         = isExpression ? 0.55 : temperature;
 
   const text = await callGroq(messages, { model: GROQ_MODEL_PRIMARY, maxTokens, temperature: temp });

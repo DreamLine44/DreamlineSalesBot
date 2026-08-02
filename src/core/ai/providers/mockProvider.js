@@ -27,28 +27,40 @@ const FALLBACK_BY_INDUSTRY = {
   RETAIL:     'Happy to help! Would you like to shop or ask a question?',
 };
 
-/** [PFH-10] One-liners for post-flow thanks / complaints / compliments — never essays. */
+/** [PFH-10] One-liners for post-flow thanks / complaints / compliments — varied by tone. */
 const EXPRESSION_BY_INTENT = {
-  COMPLAINT:    'Sorry about that — we\'ll make it right. 😔',
-  COMPLIMENT:   'Thank you so much! 😊',
-  QUESTION:     'Happy to help! 😊',
-  SUPPORT:      'We\'re on it — team will help shortly. 🙏',
-  ACKNOWLEDGEMENT:'You\'re welcome! 😊',
-  FALLBACK:     'Got it! 😊',
+  COMPLAINT:       'Sorry about that — we\'ll make it right. 😔',
+  COMPLIMENT:      'Thank you so much! 😊',
+  QUESTION:        'Happy to help! 😊',
+  SUPPORT:         'We\'re on it — team will help shortly. 🙏',
+  ACKNOWLEDGEMENT: 'You\'re welcome! 😊',
+  FALLBACK:        'Got it! 😊',
 };
+
+function mockExpressionReply({ customerMessage, intent, sessionContext }) {
+  const lower = String(customerMessage || '').toLowerCase();
+  const ctx   = String(sessionContext || '').toLowerCase();
+  if (/\b(always|come back|again|loyal|favourite|favorite)\b/.test(lower) || ctx.includes('tone: loyalty')) {
+    return 'We can\'t wait to see you again! 🙏';
+  }
+  if (/\b(wow|amazing|incredible|delicious|love|best)\b/.test(lower)) {
+    return 'So glad you loved it! 😊';
+  }
+  const key = (intent || 'FALLBACK').toUpperCase();
+  return EXPRESSION_BY_INTENT[key] || EXPRESSION_BY_INTENT.FALLBACK;
+}
 
 /**
  * getReply({ customerMessage, business, intent, industry, replyMode })
  * Returns { text, source: 'mock' }
  */
-export async function getReply({ customerMessage, business, intent = 'FALLBACK', industry = 'RETAIL', replyMode = null }) {
+export async function getReply({ customerMessage, business, intent = 'FALLBACK', industry = 'RETAIL', replyMode = null, sessionContext = null }) {
   const businessName = business?.name || 'us';
   const industryKey  = (industry || business?.businessMode || 'RETAIL').toUpperCase();
 
   if (replyMode === 'expression') {
-    const key = (intent || 'FALLBACK').toUpperCase();
     return {
-      text: EXPRESSION_BY_INTENT[key] || EXPRESSION_BY_INTENT.FALLBACK,
+      text: mockExpressionReply({ customerMessage, intent, sessionContext }),
       source: 'mock',
     };
   }

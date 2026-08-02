@@ -12,14 +12,14 @@ import { formatOrderItemSummary } from './orderService.js';
 import { getModeConfig } from '../config/modes.js';
 
 const ORDER_STATUS_LABELS = {
-  pending:                      '⏳ Pending',
+  pending:                      '⏳ Waiting for our team to confirm',
   payment_pending_verification: '⏳ Awaiting payment verification',
-  confirmed:                    '✅ Confirmed',
-  preparing:                    '👨‍🍳 Preparing',
-  ready:                        '📦 Ready for collection',
+  confirmed:                    '🍳 Being prepared',
+  preparing:                    '👨‍🍳 Being prepared',
+  ready:                        '✅ Ready for collection!',
   out_for_delivery:             '🚚 Out for delivery',
   delivered:                    '✅ Delivered',
-  completed:                    '✅ Completed',
+  completed:                    '✅ Completed — thank you!',
 };
 
 const PAYMENT_STATUS_LABELS = {
@@ -33,7 +33,7 @@ const PAYMENT_STATUS_LABELS = {
 
 const BOOKING_STATUS_LABELS = {
   pending:   '⏳ Awaiting confirmation',
-  confirmed: '✅ Confirmed',
+  confirmed: '✅ Confirmed — see you soon!',
 };
 
 /**
@@ -63,35 +63,40 @@ export function formatOrderStatusCard(order, business) {
   if (!order) return '';
   const ref = order.shortId || '???';
   const items = formatOrderItemSummary(order);
+  const multiItem = Array.isArray(order?.items) && order.items.length > 1;
   const status = ORDER_STATUS_LABELS[order.status] || order.status;
   const payment = PAYMENT_STATUS_LABELS[order.paymentStatus] || order.paymentStatus || '—';
   const updated = order.updatedAt || order.createdAt;
-  const updatedStr = updated ? new Date(updated).toLocaleString() : '—';
+  const updatedStr = updated
+    ? new Date(updated).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })
+    : null;
+  const showUpdated = updatedStr && !['completed', 'delivered', 'cancelled'].includes(order.status);
 
   return (
-    `📦 *Order #${ref}*\n` +
-    `• Items: ${items}\n` +
+    `📦 *Order Update*\n\n` +
+    `• ${multiItem ? 'Items' : 'Item'}: ${items}\n` +
+    `• Ref: *#${ref}*\n` +
     `• Status: ${status}\n` +
-    `• Payment: ${payment}\n` +
-    `• Last updated: ${updatedStr}`
+    `• Payment: ${payment}` +
+    (showUpdated ? `\n• Updated: ${updatedStr}` : '')
   );
 }
 
 export function formatBookingStatusCard(booking) {
   if (!booking) return '';
   const ref = booking.shortId || '???';
-  const when = [booking.date, booking.time].filter(Boolean).join(' at ') || '—';
   const guests = booking.partySize ? `${booking.partySize}` : '—';
   const status = BOOKING_STATUS_LABELS[booking.status] || booking.status;
 
-  return (
-    `📅 *Booking #${ref}*\n` +
-    `• Date: ${booking.date || '—'}\n` +
-    `• Time: ${booking.time || '—'}\n` +
-    `• Guests: ${guests}\n` +
-    `• Status: ${status}` +
-    (when !== '—' && !booking.date ? `\n• When: ${when}` : '')
-  );
+  const lines = ['📅 *Booking Update*\n'];
+  if (booking.service) lines.push(`• Service: *${booking.service}*`);
+  lines.push(`• Ref: *#${ref}*`);
+  if (booking.date) lines.push(`• Date: *${booking.date}*`);
+  if (booking.time) lines.push(`• Time: *${booking.time}*`);
+  lines.push(`• Guests: ${guests}`);
+  lines.push(`• Status: ${status}`);
+
+  return lines.join('\n');
 }
 
 function _defaultButtons(business) {
@@ -158,40 +163,42 @@ export async function buildStatusReply({ session, business, message }) {
       const summary = orderResolution.orders.slice(0, 3).map(o =>
         `• #${o.shortId || '???'} — ${formatOrderItemSummary(o)} (${ORDER_STATUS_LABELS[o.status] || o.status})`
       ).join('\n');
-      sections.push(`📦 *Active orders (${orderResolution.orders.length})*\n${summary}\n\n_Reply with a reference or tap below to pick one._`);
+      sections.push(`📦 *Active Orders (${orderResolution.orders.length})*\n\n${summary}\n\n_Tap below to pick one._`);
     } else if (activeOrder) {
       sections.push(formatOrderStatusCard(activeOrder, business));
     } else if (scope === 'ORDER') {
-      sections.push(`📦 No matching order was found for your number.`);
+      sections.push(`📦 *Order Update*\n\nNo matching order was found for your number.`);
     }
   }
 
   if (scope === 'BOOKING' || scope === 'BOTH') {
     if (bookings.length > 1 && scope === 'BOTH') {
       const summary = bookings.slice(0, 3).map(b =>
-        `• #${b.shortId || '???'} — ${b.date || '—'} ${b.time || ''} (${BOOKING_STATUS_LABELS[b.status] || b.status})`
+        `• *#${b.shortId || '???'}* — ${b.date || '—'} ${b.time || ''} (${BOOKING_STATUS_LABELS[b.status] || b.status})`
       ).join('\n');
-      sections.push(`📅 *Active bookings (${bookings.length})*\n${summary}`);
+      sections.push(`📅 *Active Bookings (${bookings.length})*\n\n${summary}`);
     } else if (bookings.length === 1) {
       sections.push(formatBookingStatusCard(bookings[0]));
     } else if (scope === 'BOOKING') {
-      sections.push(`📅 No matching booking was found for your number.`);
+      sections.push(`📅 *Booking Update*\n\nNo matching booking was found for your number.`);
     }
   }
 
   if (scope === 'BOTH' && !sections.length) {
-    sections.push(`You don't have any active orders or bookings right now.`);
+    sections.push(`📋 *Status Update*\n\nYou don't have any active orders or bookings right now.`);
   }
 
   let body;
   if (sections.length) {
-    const heading = scope === 'ORDER' ? '📦 *Order status*'
-      : scope === 'BOOKING' ? '📅 *Booking status*'
-      : '📋 *Your active records*';
-    body = `${heading}\n\n${sections.join('\n\n')}`;
-    if (adminPhone) body += `\n\nFor live updates: 📞 *${adminPhone}*`;
+    const singleCard = sections.length === 1 &&
+      (activeOrder || bookings.length === 1) &&
+      !multipleOrders;
+    body = singleCard
+      ? sections[0]
+      : sections.join('\n\n');
+    if (adminPhone) body += `\n\n_For live updates:_ 📞 *${adminPhone}*`;
   } else {
-    body = `No active records were found.\n\n${adminPhone ? `Contact us: 📞 *${adminPhone}*` : 'Contact us directly for help.'}`;
+    body = `📋 *Status Update*\n\nNo active records were found.${adminPhone ? `\n\nContact us: 📞 *${adminPhone}*` : '\n\nContact us directly for help.'}`;
   }
 
   if (multipleOrders && (scope === 'ORDER' || scope === 'BOTH') && orderResolution?.uiResponse) {
