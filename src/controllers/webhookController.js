@@ -148,6 +148,7 @@ import { handlePostFlowMessage }                     from '../services/postFlowH
 // context) instead of the correct context-aware order-state card. This also caused the
 // "Ok/Hello after payment confirmation gets no order-aware response" bug seen in production.
 import { resolveActiveOrder }                        from '../services/activeOrderResolver.js';
+import { isStatusCommand }                           from '../services/activityStatusService.js';
 import Tenant           from '../models/Tenant.js';
 import BusinessConfig   from '../models/BusinessConfig.js';
 import ProcessedMessage from '../models/ProcessedMessage.js';
@@ -795,7 +796,7 @@ const MFQ_DATE_TIME_STEPS = new Set([
 // STATUS escape (_detectMidFlowStatusRequest above). Hoisted to module scope
 // so both call sites always agree on exactly which phrases count as a status
 // request — see [AUDIT-FIX-TRACE-1] / [AUDIT-FIX-TRACE-6] for the history.
-const STATUS_CMD_RE = /^(status|order status|my order|my orders|where is my order|check order|track my order|track|check my order|my booking|my bookings|booking status|where is my booking|check booking|check my booking|track my booking|my appointment|check my appointment|appointment status|my reservation|check my reservation|reservation status|my activities|my activity|active orders?|active bookings?|do i have any active orders?|do i have any active bookings?|do i have an active order|do i have an active booking|any active orders?|any active bookings?|any active order or booking|do i have any orders?|do i have any bookings?)$/i;
+// (isStatusCommand lives in services/activityStatusService.js)
 
 // Explicit question-intent keywords/phrases (lowercase, normalised)
 // IMPORTANT: these must be SPECIFIC enough that they never match valid flow answers.
@@ -881,7 +882,7 @@ function _detectMidFlowStatusRequest(text, session) {
   if (MFQ_FREE_TEXT_STEPS.has(step) || MFQ_DATE_TIME_STEPS.has(step)) return false;
   if (step === 'PAYMENT_PROOF') return false;
   if (!text) return false;
-  return STATUS_CMD_RE.test(text.trim());
+  return isStatusCommand(text);
 }
 
 // ── [FSI] Mid-Flow Order/Booking-Switch intercept detector ───────────────────
@@ -2099,7 +2100,7 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
   // Order and Booking, reporting on whichever actually exist.
   // (STATUS_CMD_RE is now declared once at module scope — see above — so this
   // no-flow fast path and the mid-flow STATUS escape share one definition.)
-  if (messageText && STATUS_CMD_RE.test(messageText.trim()) && !session.currentFlow) {
+  if (messageText && isStatusCommand(messageText) && !session.currentFlow) {
     try {
       const { buildStatusReply } = await import('../services/activityStatusService.js');
       const statusReply = await buildStatusReply({

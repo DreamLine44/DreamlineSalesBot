@@ -142,6 +142,10 @@ test('postFlowHandler.js: greetings during post-flow fall through to GREET (menu
   assert.match(pfhSrc, /return false/);
 });
 
+test('postFlowHandler.js: status commands during post-flow fall through to TRACK_ORDER', () => {
+  assert.match(pfhSrc, /isStatusCommand\(msg\)/);
+});
+
 test('postFlowHandler.js: ORDER_COLLECTED uses smart expression replies, not hardcoded loop text', () => {
   assert.doesNotMatch(pfhSrc, /You're so welcome\$\{custName\}! 😊 Glad you enjoyed it\./);
   assert.match(pfhSrc, /sendPostFlowExpression/);

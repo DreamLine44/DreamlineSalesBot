@@ -114,7 +114,7 @@ export async function startFlow({ flowName, session, business, tenant }) {
     : null;
   const orderViaCatalog = session?.data?.orderViaCatalog === true;
 
-  const updated = await updateSession(session.customerPhone, session.tenantId, {
+  const sessionPatch = {
     currentFlow: flowUpper,
     step:        null,
     data:        existingCart
@@ -123,7 +123,14 @@ export async function startFlow({ flowName, session, business, tenant }) {
     upsellSent:  false,
     menuViewed:  false,
     lastAorInterceptAt: null,  // [FIX-AOR-5] Reset throttle so next order confirms show fresh card
-  });
+  };
+  if (flowUpper === 'ORDER') {
+    sessionPatch.orderChannel = session?.orderChannel === 'catalog' || orderViaCatalog
+      ? 'catalog'
+      : 'menu';
+  }
+
+  const updated = await updateSession(session.customerPhone, session.tenantId, sessionPatch);
 
   const handler = FLOW_REGISTRY.get(key) || GENERIC_REGISTRY.get(flowName.toUpperCase());
   if (!handler) {

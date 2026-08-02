@@ -30,6 +30,7 @@ import { updateSession }  from '../core/sessions/sessionService.js';
 import { getModeConfig }  from '../config/modes.js';
 import { dispatchMessage } from '../core/whatsapp/dispatcher.js';
 import { buildOptionsReply } from '../core/shared/uiOptionsHelper.js';
+import { isStatusCommand } from './activityStatusService.js';
 import logger from '../config/logger.js';
 import { formatMoney } from '../utils/formatCurrency.js';
 
@@ -348,6 +349,13 @@ export async function handlePostFlowMessage({
   // booking-status card), not a plain AI welcome with no buttons. Fall through
   // to intent detection → GREET, which already gates on active bookings/orders.
   if (!isInteractive && isPostFlowGreeting(msg)) {
+    await updateSession(from, tenantId, { postFlowAck: null, postFlowData: null });
+    return false;
+  }
+
+  // [PFH-STATUS] "Track my order/booking" during post-flow must reach the real
+  // status lookup — not the generic "What would you like to do next?" menu.
+  if (!isInteractive && isStatusCommand(msg)) {
     await updateSession(from, tenantId, { postFlowAck: null, postFlowData: null });
     return false;
   }

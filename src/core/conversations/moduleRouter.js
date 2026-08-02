@@ -399,7 +399,7 @@ export async function route({ action, intent, session, message, business, tenant
 
       await updateSession(session.customerPhone, session.tenantId, {
         currentFlow:  null, step: null, data: {},
-        postFlowAck:  null, menuViewed: false, upsellSent: false,
+        postFlowAck:  null, menuViewed: false, upsellSent: false, orderChannel: null,
       });
 
       // [NAV-META3] Two-step welcome: greeting text first, interactive menu
@@ -440,7 +440,7 @@ export async function route({ action, intent, session, message, business, tenant
     case 'SHOW_MENU': {
       const cfg = getModeConfig(business);
       await updateSession(session.customerPhone, session.tenantId, {
-        currentFlow: null, step: null, data: {}, postFlowAck: null, postFlowData: null,
+        currentFlow: null, step: null, data: {}, postFlowAck: null, postFlowData: null, orderChannel: null,
       });
       // [FIX] SHOW_MENU ≠ GREET. When a customer taps "Start Over" mid-session
       // they should NOT see the full welcome greeting (business description, etc.)
@@ -484,7 +484,7 @@ export async function route({ action, intent, session, message, business, tenant
     case 'MAIN_MENU': {
       const cfg = getModeConfig(business);
       await updateSession(session.customerPhone, session.tenantId, {
-        currentFlow: null, step: null, data: {}, postFlowAck: null, postFlowData: null,
+        currentFlow: null, step: null, data: {}, postFlowAck: null, postFlowData: null, orderChannel: null,
       });
       return buildWelcomeSequence(business, cfg);
     }

@@ -115,6 +115,11 @@ const sessionSchema = new mongoose.Schema({
   // The SELECT_ITEM step checks this flag before accepting numeric input.
   menuViewed:   { type: Boolean, default: false },
 
+  // [ORDER-CHANNEL] Persists how the customer chose to shop: 'catalog' (WA Catalog)
+  // vs 'menu' (text/list menu). Set when they tap Browse Catalog or Order Food,
+  // survives flow completion so follow-up taps like "New Order" stay on-path.
+  orderChannel: { type: String, default: null }, // 'catalog' | 'menu' | null
+
   // [FIX-A] Set to the completed flow name ('ORDER'|'BOOKING') when a flow
   // finishes successfully. Survives the session reset so the next message
   // ("Ok", "Thanks", etc.) can be intercepted for a warm acknowledgement

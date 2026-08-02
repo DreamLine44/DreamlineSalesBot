@@ -24,6 +24,13 @@ test('detectStatusScope: generic status checks both', () => {
   assert.equal(detectStatusScope('my activities'), 'BOTH');
 });
 
+test('isStatusCommand: exact status phrases match', async () => {
+  const { isStatusCommand } = await import('../services/activityStatusService.js');
+  assert.equal(isStatusCommand('track my order'), true);
+  assert.equal(isStatusCommand('track my booking'), true);
+  assert.equal(isStatusCommand('order food'), false);
+});
+
 test('formatOrderStatusCard matches the clean Order Update layout', () => {
   const card = formatOrderStatusCard({
     shortId: '86294A',

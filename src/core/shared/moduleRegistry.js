@@ -161,14 +161,21 @@ export async function registerAllModules() {
 
     // PATH A — no WA Catalog for this tenant. Old-version behavior, verbatim.
     if (!isCatalogEnabled(business) || !hasSellableProducts(business)) {
-      return startFlow({ flowName: 'ORDER', session, business, tenant });
+      return startFlow({ flowName: 'ORDER', session: { ...session, orderChannel: 'menu' }, business, tenant });
+    }
+
+    // [ORDER-CHANNEL] Customer chose Browse Catalog earlier — keep them on catalog
+    // for every subsequent "New Order" / ORDER tap (including MANUAL_ONLY tenants).
+    if (session?.orderChannel === 'catalog') {
+      const { browseCatalogExplicit } = await import('../../modules/catalog/waCatalogFlow.js');
+      return browseCatalogExplicit({ session, business, tenant });
     }
 
     // PATH B — WA Catalog is actually configured for this tenant.
     const { offerCatalogOnStartOrder } = await import('../../modules/catalog/waCatalogFlow.js');
     const { offered } = await offerCatalogOnStartOrder({ session, business, tenant, intent }).catch(() => ({ offered: false }));
     if (offered) return null; // WA Catalog message already dispatched directly — nothing further to send
-    return startFlow({ flowName: 'ORDER', session, business, tenant });
+    return startFlow({ flowName: 'ORDER', session: { ...session, orderChannel: 'menu' }, business, tenant });
   });
 
   registerAction('START_BOOKING', async ({ session, message, business, tenant }) => {

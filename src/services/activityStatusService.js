@@ -36,6 +36,13 @@ const BOOKING_STATUS_LABELS = {
   confirmed: '✅ Confirmed — see you soon!',
 };
 
+/** Exact phrases for quick status lookups — shared with webhook post-flow fallthrough. */
+export const STATUS_CMD_RE = /^(status|order status|my order|my orders|where is my order|check order|track my order|track|check my order|my booking|my bookings|booking status|where is my booking|check booking|check my booking|track my booking|my appointment|check my appointment|appointment status|my reservation|check my reservation|reservation status|my activities|my activity|active orders?|active bookings?|do i have any active orders?|do i have any active bookings?|do i have an active order|do i have an active booking|any active orders?|any active bookings?|any active order or booking|do i have any orders?|do i have any bookings?)$/i;
+
+export function isStatusCommand(message) {
+  return STATUS_CMD_RE.test(String(message || '').trim());
+}
+
 /**
  * Detect whether the customer asked about orders, bookings, or both.
  * Explicit mentions win over generic phrasing like bare "status".

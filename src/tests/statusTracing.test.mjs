@@ -18,6 +18,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { detectIntent } from '../core/intents/intentEngine.js';
 import { INTENT_PATTERNS } from '../core/intents/patterns.js';
+import { STATUS_CMD_RE } from '../services/activityStatusService.js';
 
 // ── TRACK_ORDER keyword coverage ──────────────────────────────────────────
 
@@ -59,54 +60,37 @@ test('detectIntent: casual ordering phrases resolve to START_ORDER', async () =>
   }
 });
 
-// ── Quick STATUS command fast path (webhookController.js) ────────────────
-//
-// webhookController.js is a large, DB/dispatch-coupled controller not designed
-// for unit import. Consistent with how patterns.test.mjs guards BUTTON_ID_MAP
-// duplicates by re-parsing source text, this re-parses the STATUS_CMD_RE
-// regex literal itself and exercises it directly — this is the exact object
-// the live code path tests every incoming message against, so it's a faithful,
-// non-fragile regression guard without requiring a Mongo connection.
-
-function extractStatusCmdRegex() {
-  const url = new URL('../controllers/webhookController.js', import.meta.url);
-  const src = fs.readFileSync(url, 'utf8');
-  const m = src.match(/const STATUS_CMD_RE = (\/\^\(.*\)\$\/i);/);
-  assert.ok(m, 'Could not find STATUS_CMD_RE definition in webhookController.js — has it moved or been renamed?');
-  // eslint-disable-next-line no-eval
-  return eval(m[1]);
-}
+// ── Quick STATUS command fast path (activityStatusService + webhookController) ─
 
 test('STATUS_CMD_RE matches booking-status phrasing as well as order-status phrasing', () => {
-  const re = extractStatusCmdRegex();
   const shouldMatch = [
     'status', 'my order', 'track my order', 'check order',
     'my booking', 'booking status', 'where is my booking', 'check my booking',
     'my appointment', 'check my appointment', 'my reservation', 'my activities',
   ];
   for (const phrase of shouldMatch) {
-    assert.ok(re.test(phrase), `STATUS_CMD_RE should match '${phrase}'`);
+    assert.ok(STATUS_CMD_RE.test(phrase), `STATUS_CMD_RE should match '${phrase}'`);
   }
 });
 
 test('STATUS_CMD_RE does not match unrelated free text (stays a narrow, exact quick-command match)', () => {
-  const re = extractStatusCmdRegex();
   const shouldNotMatch = [
     'hi there', 'i want to order a pizza', 'what is your address',
     'my booking was great thanks', // extra words — must not loosely match
   ];
   for (const phrase of shouldNotMatch) {
-    assert.ok(!re.test(phrase), `STATUS_CMD_RE should NOT match '${phrase}'`);
+    assert.ok(!STATUS_CMD_RE.test(phrase), `STATUS_CMD_RE should NOT match '${phrase}'`);
   }
 });
 
 test('webhookController.js quick-STATUS handler uses activityStatusService', () => {
   const url = new URL('../controllers/webhookController.js', import.meta.url);
   const src = fs.readFileSync(url, 'utf8');
-  const startIdx = src.indexOf('const STATUS_CMD_RE');
+  assert.ok(src.includes('isStatusCommand'), 'webhook should use isStatusCommand from activityStatusService');
+  assert.ok(src.includes('activityStatusService'), 'webhook should import activityStatusService');
+  const startIdx = src.indexOf('14.6. Quick STATUS command');
   const endIdx = src.indexOf('// ── 15. Active flow', startIdx);
   assert.ok(startIdx !== -1 && endIdx !== -1, 'Could not locate the quick-STATUS command block');
   const block = src.slice(startIdx, endIdx);
   assert.ok(block.includes('buildStatusReply'), 'Quick-STATUS handler should call buildStatusReply()');
-  assert.ok(block.includes('activityStatusService'), 'Quick-STATUS handler should use activityStatusService');
 });

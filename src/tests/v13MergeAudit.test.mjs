@@ -41,30 +41,19 @@ function read(relPath) {
   return fs.readFileSync(new URL(relPath, import.meta.url), 'utf8');
 }
 
-// ── STATUS_CMD_RE hoisted to module scope, single definition ──────────────
+// ── STATUS_CMD_RE single source of truth in activityStatusService ─────────
 
-test('webhookController.js: STATUS_CMD_RE is declared exactly once, at module scope', () => {
-  const src = read('../controllers/webhookController.js');
-  const matches = src.match(/const STATUS_CMD_RE = /g) || [];
-  assert.equal(
-    matches.length, 1,
-    'STATUS_CMD_RE should be declared exactly once (hoisted to module scope) so the ' +
-    'no-flow fast path and the mid-flow escape can never drift out of sync.'
-  );
-  // Module-scope means it appears before the exported handler function starts.
-  const declIndex   = src.indexOf('const STATUS_CMD_RE = ');
-  const handlerIndex = src.indexOf('export async function handleIncomingMessage(');
-  assert.ok(declIndex > -1 && handlerIndex > -1 && declIndex < handlerIndex,
-    'STATUS_CMD_RE must be declared before handleIncomingMessage so mid-flow helper ' +
-    'functions defined earlier in the module can reference it.');
+test('activityStatusService.js: STATUS_CMD_RE is declared exactly once', () => {
+  const svcSrc = read('../services/activityStatusService.js');
+  const matches = svcSrc.match(/export const STATUS_CMD_RE = /g) || [];
+  assert.equal(matches.length, 1, 'STATUS_CMD_RE should live in activityStatusService as the single source of truth');
+  const whSrc = read('../controllers/webhookController.js');
+  assert.ok(whSrc.includes('isStatusCommand'), 'webhook should delegate to isStatusCommand()');
+  assert.ok(!whSrc.includes('const STATUS_CMD_RE = '), 'webhook should not duplicate STATUS_CMD_RE');
 });
 
-test('webhookController.js: STATUS_CMD_RE recognises active order/booking phrasing', () => {
-  const src = read('../controllers/webhookController.js');
-  const m = src.match(/const STATUS_CMD_RE = (\/.*\/i);/);
-  assert.ok(m, 'STATUS_CMD_RE definition not found');
-  // eslint-disable-next-line no-eval
-  const re = new RegExp(m[1].slice(1, -2), 'i');
+test('activityStatusService.js: STATUS_CMD_RE recognises active order/booking phrasing', async () => {
+  const { STATUS_CMD_RE } = await import('../services/activityStatusService.js');
   const mustMatch = [
     'active order', 'active orders', 'active booking', 'active bookings',
     'do i have any active orders', 'do i have any active bookings',
@@ -72,7 +61,7 @@ test('webhookController.js: STATUS_CMD_RE recognises active order/booking phrasi
     'my booking', 'my order', 'status',
   ];
   for (const phrase of mustMatch) {
-    assert.ok(re.test(phrase), `STATUS_CMD_RE should match "${phrase}"`);
+    assert.ok(STATUS_CMD_RE.test(phrase), `STATUS_CMD_RE should match "${phrase}"`);
   }
 });
 

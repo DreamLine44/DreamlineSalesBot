@@ -74,10 +74,11 @@ async function sendAndArmCatalog(session, business, tenant, { preserveCart = fal
     ? { cart: priorCart, orderViaCatalog: true }
     : { orderViaCatalog: true };
   await updateSession(session.customerPhone, session.tenantId, {
-    currentFlow: 'ORDER',
-    step:        firstStep,
-    data:        sessionData,
-    menuViewed:  preserveCart ? true : false,
+    currentFlow:  'ORDER',
+    step:         firstStep,
+    data:         sessionData,
+    menuViewed:   preserveCart ? true : false,
+    orderChannel: 'catalog',
   });
   return true;
 }
