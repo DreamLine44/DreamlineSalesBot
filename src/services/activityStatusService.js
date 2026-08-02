@@ -31,6 +31,26 @@ const PAYMENT_STATUS_LABELS = {
   rejected:       '❌ Payment rejected — please resubmit',
 };
 
+const SALON_ORDER_STATUS_LABELS = {
+  pending:                      '⏳ Waiting for confirmation',
+  payment_pending_verification: '⏳ Awaiting payment verification',
+  confirmed:                    '✅ Being prepared',
+  preparing:                    '✅ Being prepared',
+  ready:                        '✅ Ready for collection!',
+  out_for_delivery:             '🚚 Out for delivery',
+  delivered:                    '✅ Delivered',
+  completed:                    '✅ Completed — thank you!',
+};
+
+function _isSalonMode(business) {
+  const mode = (business?.businessMode || '').toUpperCase();
+  return mode === 'SALON' || mode === 'BARBERSHOP';
+}
+
+function _orderStatusLabels(business) {
+  return _isSalonMode(business) ? SALON_ORDER_STATUS_LABELS : ORDER_STATUS_LABELS;
+}
+
 const BOOKING_STATUS_LABELS = {
   pending:   '⏳ Awaiting confirmation',
   confirmed: '✅ Confirmed — see you soon!',
@@ -71,7 +91,8 @@ export function formatOrderStatusCard(order, business) {
   const ref = order.shortId || '???';
   const items = formatOrderItemSummary(order);
   const multiItem = Array.isArray(order?.items) && order.items.length > 1;
-  const status = ORDER_STATUS_LABELS[order.status] || order.status;
+  const labels = _orderStatusLabels(business);
+  const status = labels[order.status] || order.status;
   const payment = PAYMENT_STATUS_LABELS[order.paymentStatus] || order.paymentStatus || '—';
   const updated = order.updatedAt || order.createdAt;
   const updatedStr = updated
@@ -89,18 +110,21 @@ export function formatOrderStatusCard(order, business) {
   );
 }
 
-export function formatBookingStatusCard(booking) {
+export function formatBookingStatusCard(booking, business = null) {
   if (!booking) return '';
   const ref = booking.shortId || '???';
-  const guests = booking.partySize ? `${booking.partySize}` : '—';
   const status = BOOKING_STATUS_LABELS[booking.status] || booking.status;
+  const isSalon = _isSalonMode(business);
+  const isWalkIn = booking.bookingType === 'walkin';
+  const staffLabel = (business?.businessMode || '').toUpperCase() === 'BARBERSHOP' ? 'Barber' : 'Stylist';
 
-  const lines = ['📅 *Booking Update*\n'];
+  const lines = [isWalkIn ? '🚶 *Walk-In Update*\n' : '📅 *Booking Update*\n'];
   if (booking.service) lines.push(`• Service: *${booking.service}*`);
+  if (isSalon && booking.staff) lines.push(`• ${staffLabel}: *${booking.staff}*`);
   lines.push(`• Ref: *#${ref}*`);
-  if (booking.date) lines.push(`• Date: *${booking.date}*`);
-  if (booking.time) lines.push(`• Time: *${booking.time}*`);
-  lines.push(`• Guests: ${guests}`);
+  if (!isWalkIn && booking.date) lines.push(`• Date: *${booking.date}*`);
+  if (!isWalkIn && booking.time) lines.push(`• Time: *${booking.time}*`);
+  if (!isSalon && booking.partySize) lines.push(`• Guests: ${booking.partySize}`);
   lines.push(`• Status: ${status}`);
 
   return lines.join('\n');
@@ -109,8 +133,9 @@ export function formatBookingStatusCard(booking) {
 function _defaultButtons(business) {
   const cfg = getModeConfig(business);
   const canOrder = cfg.flows?.includes('ORDER');
+  const orderLabel = _isSalonMode(business) ? '🛍 Shop Products' : '🛍 New Order';
   return [
-    canOrder ? { id: 'ORDER', title: '🛍 New Order' } : null,
+    canOrder ? { id: 'ORDER', title: orderLabel } : null,
     { id: 'SUPPORT', title: '💬 Contact Support' },
     { id: 'SHOW_MENU', title: '🔄 Start Over' },
   ].filter(Boolean).slice(0, 3);
@@ -185,7 +210,7 @@ export async function buildStatusReply({ session, business, message }) {
       ).join('\n');
       sections.push(`📅 *Active Bookings (${bookings.length})*\n\n${summary}`);
     } else if (bookings.length === 1) {
-      sections.push(formatBookingStatusCard(bookings[0]));
+      sections.push(formatBookingStatusCard(bookings[0], business));
     } else if (scope === 'BOOKING') {
       sections.push(`📅 *Booking Update*\n\nNo matching booking was found for your number.`);
     }

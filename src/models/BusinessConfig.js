@@ -104,6 +104,8 @@ const serviceSchema = new mongoose.Schema({
   price:       { type: Number, default: 0, min: 0, max: 999999 },
   description: { type: String, default: '', trim: true, maxlength: 300 },
   available:   { type: Boolean, default: true },
+  // [v14-PREP] Per-service prep tip (shown on booking confirm + reminders)
+  prep:        { type: String, default: null, trim: true, maxlength: 300 },
 }, { _id: true });
 
 const faqSchema = new mongoose.Schema({
@@ -388,6 +390,12 @@ const businessConfigSchema = new mongoose.Schema({
     vipThreshold:          { type: Number,  default: 5,  min: 1, max: 1000 },  // orders needed for VIP status
     // [v1-SALON] Salon/barbershop specific settings
     requireNamedStylist:   { type: Boolean, default: false }, // true = no "Any available" option shown
+    walkInWaitMinutesPerPerson: { type: Number, default: 15, min: 5, max: 120 },
+    servicePrep: {
+      type: Map,
+      of: String,
+      default: {},
+    },
     closedMessage: {
       type: String,
       default: "We're currently closed. Please contact us during business hours.",

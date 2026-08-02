@@ -556,32 +556,14 @@ export async function handlePostFlowMessage({
       }
 
       if (upper === 'RESCHEDULE') {
-        // [AUDIT-FIX-15b] Was setting step: 'SELECT_SERVICE' with data: {} while the
-        // message below asks "What date works best for you?" — a genuine step/prompt
-        // mismatch. handleSalonBooking's SELECT_SERVICE case expects the customer's
-        // NEXT message to be a service name; a typed date ("tomorrow", "25 June")
-        // never matches one, so it silently re-showed the service picker instead of
-        // accepting the date, and the original service (flowData.service) was lost
-        // entirely since data was reset to {}. Fixed to land on 'DATE' (which
-        // handleBookingFlow's shared DATE step genuinely does accept free-text dates
-        // for — see core/conversations/bookingFlow.js) with the customer's existing
-        // service/stylist carried over from flowData, matching the "for your *X*"
-        // wording already in the message body below and the same
-        // step:'DATE' + pre-populated data pattern already used elsewhere in
-        // handleSalonBooking (SELECT_SERVICE / SELECT_STYLIST cases) when skipping
-        // straight to date selection.
-        await updateSession(from, tenantId, {
-          currentFlow: 'BOOKING', step: 'DATE', postFlowAck: null,
-          data: {
-            service:         flowData?.service || null,
-            selectedService: flowData?.service || null,
-            stylist:         flowData?.staff    || null,
-          },
+        const { buildRescheduleDatePicker } = await import('../core/conversations/bookingFlow.js');
+        const picker = await buildRescheduleDatePicker({
+          session: { ...session, customerPhone: from, tenantId },
+          business,
+          tenant: tenantDoc,
+          resumeData: flowData,
         });
-        await dispatchMessage(from, {
-          type: 'text',
-          body: `📅 *Reschedule Appointment*\n\nNo problem${custName}! Let's find a new time${serviceStr}.\n\nWhat date works best for you?`,
-        }, tenantDoc);
+        if (picker) await dispatchMessage(from, picker, tenantDoc);
         return true;
       }
 
@@ -1358,8 +1340,9 @@ async function handleWalkInQueueAck({
     sessionContext: `Customer is in the walk-in queue${serviceStr}${staffStr}.`,
   });
   await dispatchMessage(from, {
-    type: 'text',
-    body: formatExpressionReply(aiReply || `Happy to help${custName}! ${emoji}`, flowData),
+    type:    'buttons',
+    body:    formatExpressionReply(aiReply || `Happy to help${custName}! ${emoji}`, flowData),
+    buttons: queueBtns,
   }, tenantDoc);
   await finishExpressionTurn({ from, tenantId, ackCtx, flowData });
   return true;
@@ -1406,22 +1389,14 @@ async function handleBookingConfirmed({
         { $set: { status: 'cancelled', cancelledBy: 'customer', cancelledAt: new Date() } }
       ).catch(() => {});
     }
-    await updateSession(from, tenantId, {
-      currentFlow: 'BOOKING', step: 'DATE', postFlowAck: null,
-      data: {
-        service:         flowData?.service || null,
-        selectedService: flowData?.service || null,
-        stylist:         flowData?.staff    || null,
-      },
+    const { buildRescheduleDatePicker } = await import('../core/conversations/bookingFlow.js');
+    const picker = await buildRescheduleDatePicker({
+      session: { ...session, customerPhone: from, tenantId },
+      business,
+      tenant: tenantDoc,
+      resumeData: flowData,
     });
-    await dispatchMessage(from, {
-      type: 'text',
-      body: `📅 *Reschedule Appointment*
-
-No problem${custName}! Let's find a new time${flowData?.service ? ` for your *${flowData.service}*` : ''}.
-
-What date works best for you?`,
-    }, tenantDoc);
+    if (picker) await dispatchMessage(from, picker, tenantDoc);
     return true;
   }
 
@@ -1449,8 +1424,9 @@ What date works best for you?`,
 
   const aiReply = await getPostFlowAIReply({ customerMessage: msg, business, intent: 'QUESTION' });
   await dispatchMessage(from, {
-    type: 'text',
-    body: formatExpressionReply(aiReply || `Happy to help${custName}! 😊`, flowData),
+    type:    'buttons',
+    body:    formatExpressionReply(aiReply || `Happy to help${custName}! 😊`, flowData),
+    buttons: _salonConfirmBtns,
   }, tenantDoc);
   await finishExpressionTurn({ from, tenantId, ackCtx, flowData });
   return true;

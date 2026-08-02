@@ -711,8 +711,9 @@ async function confirmBooking(shortId, tenantId, adminPhone, tenantDoc) {
             { id: 'CANCEL_BOOKING', title: '❌ Leave Queue'     },
           ]
         : [
+            { id: 'RESCHEDULE',     title: '📅 Reschedule'     },
             { id: 'QUESTION',       title: '❓ Ask a Question' },
-            { id: 'CANCEL_BOOKING', title: '❌ Cancel Booking'  },
+            { id: 'CANCEL_BOOKING', title: '❌ Cancel Booking' },
           ],
     },
     // [FIX-CMD-2] Log dispatch failures — customer won't know their booking is confirmed.

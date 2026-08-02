@@ -2034,7 +2034,7 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
       if (pickedBooking) {
         await dispatchMessage(from, {
           type: 'buttons',
-          body: formatBookingStatusCard(pickedBooking),
+          body: formatBookingStatusCard(pickedBooking, business),
           buttons: [
             { id: 'SUPPORT',   title: '💬 Contact Support' },
             { id: 'SHOW_MENU', title: '🔄 Main Menu'       },

@@ -74,14 +74,11 @@ test('postFlowHandler.js: RESCHEDULE never sets step to SELECT_SERVICE while ask
   for (const block of blocks) {
     assert.ok(
       !/step:\s*'SELECT_SERVICE'/.test(block),
-      "RESCHEDULE handler must not set step: 'SELECT_SERVICE' — the message it sends " +
-      "asks for a date, not a service name, and the SELECT_SERVICE step handler only " +
-      "accepts service names, not dates."
+      "RESCHEDULE handler must not set step: 'SELECT_SERVICE'"
     );
     assert.ok(
-      /step:\s*'DATE'/.test(block),
-      "RESCHEDULE handler should set step: 'DATE' so the customer's next message " +
-      "(a typed date) is actually accepted by the shared DATE step handler."
+      /buildRescheduleDatePicker/.test(block) || /step:\s*'DATE'/.test(block),
+      "RESCHEDULE handler should open the shared DATE picker via buildRescheduleDatePicker"
     );
   }
 });
@@ -92,18 +89,19 @@ test('postFlowHandler.js: RESCHEDULE preserves the existing service/stylist inst
   for (const block of blocks) {
     assert.ok(
       !/data:\s*\{\s*\}/.test(block),
-      'RESCHEDULE handler must not reset data to {} — this discards the service/stylist ' +
-      'the customer is rescheduling, even though the message body references it ' +
-      '(e.g. "Let\'s find a new time for your *{service}*").'
+      'RESCHEDULE handler must not reset data to {}'
     );
     assert.ok(
-      block.includes('flowData?.service') || block.includes('flowData.service'),
+      block.includes('resumeData: flowData') ||
+      block.includes('flowData?.service') ||
+      block.includes('flowData.service'),
       'RESCHEDULE handler should carry the previous service through from flowData'
     );
     assert.ok(
-      block.includes('flowData?.staff') || block.includes('flowData.staff'),
-      'RESCHEDULE handler should carry the previous stylist/staff through from flowData ' +
-      '(the field is named `staff` on Booking / postFlowData, not `stylist`)'
+      block.includes('resumeData:') ||
+      block.includes('flowData?.staff') ||
+      block.includes('flowData.staff'),
+      'RESCHEDULE handler should carry the previous stylist/staff through from flowData'
     );
   }
 });

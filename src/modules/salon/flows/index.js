@@ -136,6 +136,11 @@ import {
   parseCartModification, applyCartModification,
 } from '../../../core/shared/cartEngine.js';
 import logger                from '../../../config/logger.js';
+import {
+  isBarbershopMode as _isBarbershop,
+  getSalonServices as _getServices,
+  getSalonPrepTip as _getPrepTip,
+} from '../salonHelpers.js';
 
 // ── Salon Config ───────────────────────────────────────────────────────────────
 
@@ -148,10 +153,19 @@ export const SALON_CONFIG = {
     WALKIN:  ['SELECT_SERVICE', 'SELECT_STYLIST', 'CONFIRM'],
     // [MULTICART-v39-PHASE2] CART_REVIEW added — reached from SELECT_ITEM on a
     // multi-item message, or from CONFIRM via "Add Another Item".
-    ORDER:   ['SELECT_ITEM', 'CART_REVIEW', 'QUANTITY', 'CONFIRM'],
+    ORDER:   ['SELECT_ITEM', 'SELECT_VARIANT', 'CART_REVIEW', 'QUANTITY', 'CONFIRM'],
   },
   ui: {
-    // Meta caps button messages at 3 buttons. ORDER is accessible via QUESTION or by typing.
+    welcomeList: {
+      button: 'Choose an option ▼',
+      rows: [
+        { id: 'BOOK',           title: '📅 Book Appointment',   description: 'Schedule a service with us'        },
+        { id: 'WALKIN',         title: '🚶 Join Walk-In Queue', description: 'Walk in — no appointment needed' },
+        { id: 'ORDER',          title: '🛍 Shop Products',      description: 'Browse hair & beauty products'   },
+        { id: 'BROWSE_CATALOG', title: '🛍 Browse Catalog',     description: 'Shop our product catalog'        },
+        { id: 'QUESTION',       title: '❓ Ask a Question',     description: 'Get help from our team'          },
+      ],
+    },
     welcomeButtons: [
       { id: 'BOOK',     title: '📅 Book Appointment'   },
       { id: 'WALKIN',   title: '🚶 Join Walk-In Queue'  },
@@ -165,7 +179,7 @@ export const SALON_CONFIG = {
     confirmButtons: [{ id: 'CONFIRM', title: '✅ Confirm' }, { id: 'CANCEL', title: '❌ Cancel' }],
   },
   messages: {
-    welcome:        '💇 Welcome! How can we help you today?\n\nBook an appointment, join our walk-in queue, or ask us anything.',
+    welcome:        '💇 Welcome! How can we help you today?\n\nBook an appointment, join our walk-in queue, shop products, or ask us anything.',
     cancelMsg:      "✅ No problem! Tap below whenever you're ready. 💇",
     fallback:       'Would you like to *book an appointment*, join the *walk-in queue*, or ask a *question*?',
     orderPrompt:    '🛍 Our hair & beauty products — tap to select:',
@@ -185,9 +199,19 @@ export const BARBERSHOP_CONFIG = {
     WALKIN:  ['SELECT_SERVICE', 'SELECT_STYLIST', 'CONFIRM'],
     // [MULTICART-v39-PHASE2] CART_REVIEW added — reached from SELECT_ITEM on a
     // multi-item message, or from CONFIRM via "Add Another Item".
-    ORDER:   ['SELECT_ITEM', 'CART_REVIEW', 'QUANTITY', 'CONFIRM'],
+    ORDER:   ['SELECT_ITEM', 'SELECT_VARIANT', 'CART_REVIEW', 'QUANTITY', 'CONFIRM'],
   },
   ui: {
+    welcomeList: {
+      button: 'Choose an option ▼',
+      rows: [
+        { id: 'BOOK',           title: '💈 Book Appointment',   description: 'Schedule a cut or treatment'     },
+        { id: 'WALKIN',         title: '🚶 Join Walk-In Queue', description: 'Walk in — no appointment needed' },
+        { id: 'ORDER',          title: '🛍 Shop Products',      description: 'Browse grooming products'        },
+        { id: 'BROWSE_CATALOG', title: '🛍 Browse Catalog',     description: 'Shop our product catalog'        },
+        { id: 'QUESTION',       title: '❓ Ask a Question',     description: 'Get help from our team'          },
+      ],
+    },
     welcomeButtons: [
       { id: 'BOOK',     title: '💈 Book Appointment'   },
       { id: 'WALKIN',   title: '🚶 Join Walk-In Queue'  },
@@ -201,7 +225,7 @@ export const BARBERSHOP_CONFIG = {
     confirmButtons: [{ id: 'CONFIRM', title: '✅ Confirm' }, { id: 'CANCEL', title: '❌ Cancel' }],
   },
   messages: {
-    welcome:        '✂️ Welcome! Ready for a fresh cut?\n\nBook an appointment, join our walk-in queue, or browse our grooming products.',
+    welcome:        '✂️ Welcome! Ready for a fresh cut?\n\nBook an appointment, join our walk-in queue, shop products, or ask us anything.',
     cancelMsg:      "✅ No problem — come back whenever you're ready. ✂️",
     fallback:       'Would you like to *book an appointment*, join the *walk-in queue*, or ask a *question*?',
     orderPrompt:    '🛍 Our grooming products — tap to select:',
@@ -211,41 +235,6 @@ export const BARBERSHOP_CONFIG = {
 };
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
-
-function _isBarbershop(business) {
-  return (business?.businessMode || '').toUpperCase() === 'BARBERSHOP';
-}
-
-/** Returns available services from menuItems or sensible defaults. */
-function _getServices(business) {
-  const items = (business?.menuItems || []).filter(i => i.available !== false);
-  const serviceItems = items.filter(i =>
-    !i.category || i.category.toLowerCase() === 'services' || i.category.toLowerCase() === 'service'
-  );
-
-  // Use service-tagged items if available, else all items
-  const source = serviceItems.length > 0 ? serviceItems : items;
-  if (source.length > 0) return source;
-
-  // Sensible defaults
-  return _isBarbershop(business)
-    ? [
-        { name: 'Haircut',                  price: null, duration: 30 },
-        { name: 'Beard Trim',               price: null, duration: 20 },
-        { name: 'Shape-Up / Edge',          price: null, duration: 20 },
-        { name: 'Full Service (Cut+Beard)', price: null, duration: 45 },
-        { name: "Kids Cut",                 price: null, duration: 25 },
-      ]
-    : [
-        { name: 'Haircut & Style', price: null, duration: 45 },
-        { name: 'Blow Dry',        price: null, duration: 30 },
-        { name: 'Hair Colour',     price: null, duration: 90 },
-        { name: 'Highlights',      price: null, duration: 120 },
-        { name: 'Deep Conditioning', price: null, duration: 45 },
-        { name: 'Braids / Weave',  price: null, duration: 120 },
-        { name: 'Trim',            price: null, duration: 20 },
-      ];
-}
 
 /** Returns available staff names, respecting the available flag.
  * [v14-BUG-2] Returns full staff objects (not just names) so we can validate
@@ -280,49 +269,6 @@ function _buildStaffIdMap(staffList) {
   map['STYLIST_ANY'] = 'Any available';
   return map;
 }
-
-/**
- * [v14-PREP] Get preparation tips for a service.
- * Checks menuItem.prep field first, then falls back to generic tips by service name.
- */
-function _getPrepTip(serviceName, business) {
-  if (!serviceName) return null;
-
-  // Check if business has a specific prep note on the service item
-  const item = (business?.menuItems || []).find(
-    i => i.name?.toLowerCase() === serviceName.toLowerCase()
-  );
-  if (item?.prep) return item.prep;
-
-  // Generic tips based on service name keywords
-  const lower = serviceName.toLowerCase();
-  if (lower.includes('colour') || lower.includes('color') || lower.includes('highlight') || lower.includes('dye')) {
-    return 'Please arrive with unwashed hair and avoid heat styling the day before. 💇';
-  }
-  if (lower.includes('keratin') || lower.includes('relaxer') || lower.includes('perm')) {
-    return 'Please arrive with clean, dry hair. Avoid washing for 3 days after the treatment. 💇';
-  }
-  if (lower.includes('braids') || lower.includes('weave') || lower.includes('extensions')) {
-    return 'Arrive with freshly washed and blow-dried hair for best results. 💇';
-  }
-  if (lower.includes('facial') || lower.includes('skin')) {
-    return 'Please arrive with a clean face and avoid retinol products 24h before. 💆';
-  }
-  if (lower.includes('massage') || lower.includes('spa')) {
-    return 'Please arrive 5 minutes early and wear comfortable clothing. 🧖';
-  }
-  return null;
-}
-
-/**
- * [v14-DUPLICATE] NOTE: an earlier version of this double-booking guard lived here as
- * _hasConflictingBooking(), but it was never actually called from anywhere in this file —
- * handleSalonBooking() delegates the DATE/TIME/CONFIRM steps to the shared handleBookingFlow()
- * in core/conversations/bookingFlow.js, and *that* file has its own inline duplicate-booking
- * check (see the [v14-DUPLICATE] comment there) that performs the same query. This dead,
- * unreachable copy was removed during audit to avoid the two implementations silently
- * drifting apart — bookingFlow.js's inline check is the one actually enforced.
- */
 
 /**
  * [v14-BUG-7] Should 'Any available' option be shown?
@@ -527,6 +473,25 @@ export async function handleSalonWalkIn({ session, message, business, tenant, is
       const lc = await completeFlow(session, 'WALKIN', business, tenant);
       if (lc) return lc;
 
+      // [v14-QUEUE] Show queue position and estimated wait for walk-ins ahead
+      let queueLine = '';
+      try {
+        const { default: BookingModel } = await import('../../../models/Booking.js');
+        const today = new Date().toISOString().split('T')[0];
+        const queueCount = await BookingModel.countDocuments({
+          tenantId:      session.tenantId,
+          bookingType:   'walkin',
+          status:        { $in: ['pending', 'confirmed'] },
+          date:          today,
+        }).catch(() => 0);
+        const position = queueCount || 1;
+        const waitMins = business?.settings?.walkInWaitMinutesPerPerson ?? 15;
+        const estWait  = Math.max(0, (position - 1) * waitMins);
+        queueLine =
+          `\n🎫 *Queue position:* #${position}` +
+          (estWait > 0 ? `\n⏱ *Estimated wait:* ~${estWait} min` : '\n⏱ *Estimated wait:* You\'re next!');
+      } catch { /* non-fatal */ }
+
       const nameStr = session.customerName ? `, *${session.customerName}*` : '';
       const shortRef = savedBooking?.shortId ? `\n🔖 *Ref:* #${savedBooking.shortId}` : '';
       const bizName  = business?.businessName || business?.name || (isBarbershop ? 'the barbershop' : 'the salon');
@@ -540,6 +505,7 @@ export async function handleSalonWalkIn({ session, message, business, tenant, is
             ? `👤 *${isBarbershop ? 'Barber' : 'Stylist'}:* ${data.stylist}\n`
             : '') +
           shortRef +
+          queueLine +
           `\n\nPlease head to *${bizName}*${nameStr} — our team will message you to confirm your spot.\n\nSee you soon! 🙏`,
         buttons: [
           { id: 'BOOK',      title: '📅 Book Next Time'  },
@@ -776,9 +742,13 @@ export async function handleSalonProductOrder({ session, message, business, tena
 
       if (!item) return _buildProductMenu(menu, business, isBarbershop);
 
+      const hasVariants = Array.isArray(item.variants) && item.variants.length > 0;
+      const nextStep    = hasVariants ? 'SELECT_VARIANT' : 'QUANTITY';
       await updateSession(session.customerPhone, session.tenantId, {
-        step: 'QUANTITY', data: { ...data, item }, menuViewed: true,
+        step: nextStep, data: { ...data, item, variant: null }, menuViewed: true,
       });
+
+      if (hasVariants) return _buildProductVariantPicker(item, business, isBarbershop);
 
       const currency = item.currency || business?.payment?.currency || 'D';
       const price = item.price ? ` — ${currency}${formatMoney(item.price)}` : '';
@@ -791,8 +761,56 @@ export async function handleSalonProductOrder({ session, message, business, tena
           { id: 'QTY_2', title: '2️⃣  2' },
           { id: 'QTY_3', title: '3️⃣  3' },
         ],
-        footer: 'Or type any number',
       };
+    }
+
+    // ── SELECT_VARIANT ────────────────────────────────────────────────────
+    case 'SELECT_VARIANT': {
+      const item = data.item;
+      if (!item) {
+        await updateSession(session.customerPhone, session.tenantId, { step: 'SELECT_ITEM' });
+        return _buildProductMenu(menu, business, isBarbershop);
+      }
+
+      const variantKeys = (item.variants || []).map(v => (typeof v === 'string' ? v : v.name || String(v)));
+      if (!variantKeys.length) {
+        await updateSession(session.customerPhone, session.tenantId, { step: 'QUANTITY', data: { ...data, variant: null } });
+        const currency = item.currency || business?.payment?.currency || 'D';
+        const price = item.price ? ` — ${currency}${formatMoney(item.price)}` : '';
+        return {
+          type: 'buttons',
+          body: `🛍 *${item.name}*${price}\n\nHow many would you like?`,
+          buttons: [
+            { id: 'QTY_1', title: '1️⃣  1' },
+            { id: 'QTY_2', title: '2️⃣  2' },
+            { id: 'QTY_3', title: '3️⃣  3' },
+          ],
+        };
+      }
+
+      const matchedVariant = variantKeys.find(v =>
+        v.toLowerCase() === clean ||
+        raw === `VAR_${v.toUpperCase().replace(/\s+/g, '_')}`
+      );
+
+      if (matchedVariant) {
+        await updateSession(session.customerPhone, session.tenantId, {
+          step: 'QUANTITY', data: { ...data, variant: matchedVariant },
+        });
+        const currency = item.currency || business?.payment?.currency || 'D';
+        const price = item.price ? ` — ${currency}${formatMoney(item.price)}` : '';
+        return {
+          type: 'buttons',
+          body: `🛍 *${item.name}* — *${matchedVariant}*${price}\n\nHow many would you like?`,
+          buttons: [
+            { id: 'QTY_1', title: '1️⃣  1' },
+            { id: 'QTY_2', title: '2️⃣  2' },
+            { id: 'QTY_3', title: '3️⃣  3' },
+          ],
+        };
+      }
+
+      return _buildProductVariantPicker(item, business, isBarbershop);
     }
 
     // ────────────────────────────────────────────────────────────────────────
@@ -872,7 +890,6 @@ export async function handleSalonProductOrder({ session, message, business, tena
             { id: 'QTY_2', title: '2️⃣  2' },
             { id: 'QTY_3', title: '3️⃣  3' },
           ],
-          footer: 'Or type a number',
         };
       }
       if (qty > MAX) {
@@ -1238,7 +1255,11 @@ export async function handleSalonQuestion({ session, message, business, tenant }
   // [v14-CONSULT] Detect consultation-style questions and add proactive follow-up
   const isConsultation = /\b(which|what|recommend|best|suit|good for|help me choose|advice|should i|i have|my hair|my skin|i want to)\b/i.test(raw);
   const isAftercare    = /\b(aftercare|after care|maintain|maintenance|how long before|when can i wash|what to avoid|care tips|keep colour|keep color|post.treatment|after my (appointment|treatment|service))\b/i.test(raw);
-  const intent = isAftercare ? 'AFTERCARE' : isConsultation ? 'SALON_CONSULTATION' : 'SALON_QUESTION'; // [FIX-AFTERCARE]
+  const intent = isAftercare
+    ? 'AFTERCARE'
+    : isConsultation
+      ? (isBarbershop ? 'BARBERSHOP_QUESTION' : 'SALON_CONSULTATION')
+      : (isBarbershop ? 'BARBERSHOP_QUESTION' : 'SALON_QUESTION');
 
   const aiReply = await getAIReply({
     customerMessage: raw,
@@ -1327,7 +1348,6 @@ function _buildServiceMenu(business, mode = 'booking') {
         };
       }),
     }],
-    footer: 'Tap a service or type its name',
   };
 }
 
@@ -1370,7 +1390,6 @@ function _buildStylistMenu(staffList, business, isBarbershop, errorMsg = null) {
         description: (o.specialty || (o.name === 'Any available' ? `Next available ${role}` : undefined))?.slice(0, 72),
       })),
     }],
-    footer: `Tap a name or type it`,
   };
 }
 
@@ -1392,6 +1411,34 @@ function _buildProductCartSummaryUI(cart, business, isBarbershop, note = '') {
       { id: 'ADD_ANOTHER_ITEM', title: '➕ Add More'   },
       { id: 'CANCEL_BOOKING',   title: '❌ Cancel'     },
     ],
+  };
+}
+
+function _buildProductVariantPicker(item, business, isBarbershop) {
+  const variantKeys = (item.variants || []).map(v => (typeof v === 'string' ? v : v.name || String(v)));
+  const currency = item.currency || business?.payment?.currency || 'D';
+  const price = item.price ? ` — ${currency}${formatMoney(item.price)}` : '';
+
+  if (variantKeys.length <= 3) {
+    return {
+      type: 'buttons',
+      body: `🛍 *${item.name}*${price}\n\nWhich option would you like?`,
+      buttons: variantKeys.slice(0, 3).map(v => ({
+        id:    `VAR_${v.toUpperCase().replace(/\s+/g, '_')}`,
+        title: v.slice(0, 20),
+      })),
+    };
+  }
+
+  return {
+    type: 'list',
+    body:   `🛍 *${item.name}*${price}\n\nWhich option would you like?`,
+    button: 'Choose option',
+    rows: variantKeys.map(v => ({
+      id:          `VAR_${v.toUpperCase().replace(/\s+/g, '_')}`,
+      title:       v.slice(0, 24),
+      description: item.name.slice(0, 72),
+    })),
   };
 }
 
@@ -1439,5 +1486,5 @@ function _buildProductMenu(items, business, isBarbershop) {
   };
 }
 
-// ── Named exports for prep tip (used by bookingFlow / postFlowHandler) ─────────
-export { _getPrepTip as getSalonPrepTip };
+// Re-export helpers from salonHelpers.js (avoids circular import via postFlowHandler → modes)
+export { getSalonPrepTip, getSalonServices } from '../salonHelpers.js';

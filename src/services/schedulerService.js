@@ -248,7 +248,7 @@ async function runBookingReminderJob() {
       let prepLine = '';
       if (isSalon) {
         try {
-          const { getSalonPrepTip } = await import('../modules/salon/flows/index.js');
+          const { getSalonPrepTip } = await import('../modules/salon/salonHelpers.js');
           const tip = getSalonPrepTip(booking.service, business);
           if (tip) prepLine = `\n\n💡 *Tip:* ${tip}`;
         } catch {}

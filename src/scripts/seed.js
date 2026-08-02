@@ -183,6 +183,8 @@ async function seed() {
         description: biz.description,
         menuItems:   biz.menuItems,
         services:    biz.services,
+        staff:       biz.staff || [],
+        hours:       biz.hours || {},
         payment:     biz.payment,
         addOns:      biz.addOns || [],
         faq:         biz.faq || [],

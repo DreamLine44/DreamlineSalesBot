@@ -46,6 +46,10 @@ import { trackBookingAnalytics }   from '../analytics/analyticsService.js';
 // [FIX-BC-2] dispatchText was imported but never called anywhere in this file — dead import removed.
 import logger                      from '../../config/logger.js';
 import { formatMoney }             from '../../utils/formatCurrency.js';
+import {
+  isBookingDateClosed,
+  formatClosedDayMessage,
+} from '../../utils/businessHoursUtils.js';
 
 // Re-export for backward compatibility (bakery/delivery flows import from here).
 export { tryParseDate } from '../../services/bookingDateParser.js';
@@ -91,7 +95,14 @@ function parseTimeToMinutes(timeStr) {
   return null;
 }
 
-async function _confirmBookingDate(session, data, resolved) {
+async function _confirmBookingDate(session, data, resolved, { business, tenant, tz } = {}) {
+  if (business?.hours?.enabled && resolved?.parsed) {
+    if (isBookingDateClosed(resolved.parsed, business.hours, tz)) {
+      const msg = formatClosedDayMessage(resolved.label, business.hours, tz, resolved.parsed);
+      return _buildDatePickerUI(msg, tz, { business, tenant, customerPhone: session.customerPhone });
+    }
+  }
+
   await updateSession(session.customerPhone, session.tenantId, {
     step: 'DATE_CONFIRM',
     data: {
@@ -374,7 +385,7 @@ export async function handleBookingFlow({ session, message, business, tenant, is
 
       const dayPick = await resolveDayPick(raw, tz);
       if (dayPick) {
-        return _confirmBookingDate(session, data, dayPick);
+        return _confirmBookingDate(session, data, dayPick, { business, tenant, tz });
       }
 
       const page = data.pickDayPage || 0;
@@ -393,7 +404,7 @@ export async function handleBookingFlow({ session, message, business, tenant, is
         const isoDate = parseBookingDateFlowReply(flowReply);
         if (isoDate) {
           const resolved = await resolveFlowBookingDate(isoDate, tz);
-          if (resolved.ok) return _confirmBookingDate(session, data, resolved);
+          if (resolved.ok) return _confirmBookingDate(session, data, resolved, { business, tenant, tz });
           return _buildDatePickerUI(resolved.message || `Invalid date from calendar.`, tz, { business, tenant, customerPhone: session.customerPhone });
         }
       }
@@ -406,7 +417,7 @@ export async function handleBookingFlow({ session, message, business, tenant, is
       }
 
       const dayPick = await resolveDayPick(raw, tz);
-      if (dayPick) return _confirmBookingDate(session, data, dayPick);
+      if (dayPick) return _confirmBookingDate(session, data, dayPick, { business, tenant, tz });
 
       const _localNowForShortcut = getLocalNow(tz);
       const _addLocalDays = (n) => new Date(Date.UTC(
@@ -426,7 +437,7 @@ export async function handleBookingFlow({ session, message, business, tenant, is
             raw,
             parsed,
             label: formatBookingDateLabel(parsed, tz),
-          });
+          }, { business, tenant, tz });
         }
       }
 
@@ -450,7 +461,7 @@ export async function handleBookingFlow({ session, message, business, tenant, is
         return _buildDatePickerUI(hint, tz, { business, tenant, customerPhone: session.customerPhone });
       }
 
-      return _confirmBookingDate(session, data, resolved);
+      return _confirmBookingDate(session, data, resolved, { business, tenant, tz });
     }
 
     case 'DATE_CONFIRM': {
@@ -467,7 +478,7 @@ export async function handleBookingFlow({ session, message, business, tenant, is
       }
       const resolvedInline = await resolveBookingDateInput(raw, tz);
       if (resolvedInline.ok) {
-        return _confirmBookingDate(session, data, resolvedInline);
+        return _confirmBookingDate(session, data, resolvedInline, { business, tenant, tz });
       }
       if (resolvedInline.error === 'invalid' && resolvedInline.message) {
         return _buildDatePickerUI(resolvedInline.message, tz, { business, tenant, customerPhone: session.customerPhone });
@@ -605,28 +616,37 @@ export async function handleBookingFlow({ session, message, business, tenant, is
       const isSalonMode = ['SALON','BARBERSHOP'].includes((business?.businessMode || '').toUpperCase());
       const bookingTypeToSave = isSalonMode ? 'appointment' : null;
 
-      // [v14-DUPLICATE] Double-booking guard: check for an existing pending/confirmed
-      // booking on the same date BEFORE saving. Prevents duplicate appointments for
-      // the same customer at the same salon on the same day.
-      // [AUDIT-NOTE] This query is inline here, not delegated to a helper. An earlier
-      // comment claimed it called a helper in salon/flows/index.js — that helper
-      // (_hasConflictingBooking) existed but was dead code (never invoked); it has been
-      // removed. This inline check is the actual, only enforced duplicate-booking guard.
+      // [v14-DUPLICATE] Double-booking guard: same customer, same date, within ±30 min.
       if (isSalonMode && date) {
         try {
           const { default: _BookingModel } = await import('../../models/Booking.js');
-          const conflict = await _BookingModel.findOne({
+          const sameDayBookings = await _BookingModel.find({
             customerPhone: session.customerPhone,
             tenantId:      session.tenantId,
             date,
             status:        { $in: ['pending', 'confirmed'] },
             bookingType:   { $ne: 'walkin' },
-          }).lean().catch(() => null);
+          }).lean().catch(() => []);
+
+          const newMinutes = parseTimeToMinutes(time);
+          let conflict = null;
+
+          if (newMinutes !== null && sameDayBookings.length > 0) {
+            conflict = sameDayBookings.find(b => {
+              const existing = parseTimeToMinutes(b.time);
+              return existing !== null && Math.abs(existing - newMinutes) <= 30;
+            }) || null;
+          } else if (sameDayBookings.length > 0) {
+            conflict = sameDayBookings[0];
+          }
+
           if (conflict) {
             return {
               type: 'buttons',
               body:
-                `⚠️ *You already have a booking on ${date}*\n\n` +
+                `⚠️ *You already have a booking on ${date}*` +
+                (conflict.time && newMinutes !== null ? ' around this time' : '') +
+                `\n\n` +
                 (conflict.service ? `💇 *${conflict.service}*\n` : '') +
                 (conflict.time    ? `⏰ *${conflict.time}*\n`    : '') +
                 `\nWould you like to reschedule that booking, or book a different date?`,
@@ -745,6 +765,16 @@ export async function handleBookingFlow({ session, message, business, tenant, is
         ? `🔖 Ref: \`#${savedBooking.shortId}\`\n`
         : '';
 
+      // [v14-PREP] Service-specific preparation tip on booking receipt (salon/barbershop)
+      let prepLine = '';
+      if (isSalonMode && service) {
+        try {
+          const { getSalonPrepTip } = await import('../../modules/salon/salonHelpers.js');
+          const tip = getSalonPrepTip(service, business);
+          if (tip) prepLine = `\n💡 *Prep tip:* ${tip}\n`;
+        } catch { /* non-fatal */ }
+      }
+
       const confirmBody =
         `📅 *Booking Request Received!* ✨\n\n` +
         (service     ? `${isBarbershopConfirm ? '✂️' : '💇'}  Service: *${service}*\n`   : '') +
@@ -753,6 +783,7 @@ export async function handleBookingFlow({ session, message, business, tenant, is
         (time        ? `⏰  Time: *${time}*\n`          : '') +
         (partySize   ? `👥  Party size: *${partySize} guest${partySize > 1 ? 's' : ''}*\n` : '') +
         shortIdLine +
+        prepLine +
         `\n⏳ We're reviewing your booking and will confirm shortly. We'll send you a message as soon as it's confirmed! 🙏`;
 
       // [SPEC-6C] No welcome/sales buttons on booking receipt — customer is waiting
@@ -867,4 +898,32 @@ function _buildTimePickerUI(headingOrError = null, { tz = 'UTC', bookingDate = n
     button: 'Choose a time',
     sections,
   };
+}
+
+/**
+ * Resume booking at the shared DATE step after a reschedule — shows the
+ * professional date picker immediately instead of a plain-text prompt.
+ */
+export async function buildRescheduleDatePicker({ session, business, tenant, resumeData = {} }) {
+  const data = {
+    service:         resumeData.service ?? resumeData.selectedService ?? null,
+    selectedService: resumeData.selectedService ?? resumeData.service ?? null,
+    stylist:         resumeData.stylist ?? resumeData.staff ?? null,
+  };
+
+  await updateSession(session.customerPhone, session.tenantId, {
+    currentFlow: 'BOOKING',
+    step:        'DATE',
+    postFlowAck: null,
+    postFlowData: null,
+    data,
+  });
+
+  return handleBookingFlow({
+    session: { ...session, currentFlow: 'BOOKING', step: 'DATE', postFlowAck: null, data },
+    message: null,
+    business,
+    tenant,
+    isInteractive: false,
+  });
 }

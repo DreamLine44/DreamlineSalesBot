@@ -278,16 +278,24 @@ export async function route({ action, intent, session, message, business, tenant
         }).select('item quantity shortId paymentStatus status').sort({ createdAt: -1 }).lean().catch(() => null);
 
         if (activeOrder) {
-          const statusLine = {
-            confirmed:      `🍳 Being prepared`,
-            pending:        `⏳ Awaiting confirmation`,
-          }[activeOrder.status] || `⏳ Being processed`;
+          const greetMode = (business?.businessMode || '').toUpperCase();
+          const isSalonOrder = greetMode === 'SALON' || greetMode === 'BARBERSHOP';
+          const statusLine = isSalonOrder
+            ? ({
+                confirmed: `✅ Being prepared`,
+                pending:   `⏳ Awaiting confirmation`,
+              }[activeOrder.status] || `⏳ Being processed`)
+            : ({
+                confirmed: `🍳 Being prepared`,
+                pending:   `⏳ Awaiting confirmation`,
+              }[activeOrder.status] || `⏳ Being processed`);
+          const readyHint = isSalonOrder ? `We'll message you when it's ready!` : `We'll message you the moment it's ready!`;
           return {
             type:    'buttons',
             body:
               `Hi there 😊\n\n` +
               `Your order *#${activeOrder.shortId}* — *${activeOrder.item}* × ${activeOrder.quantity} — is still being processed.\n\n` +
-              `${statusLine}. We'll message you the moment it's ready!`,
+              `${statusLine}. ${readyHint}`,
             buttons: [
               { id: 'QUESTION', title: '❓ Ask a Question' },
               { id: 'CANCEL',   title: '❌ Cancel Order'   },
@@ -533,19 +541,16 @@ export async function route({ action, intent, session, message, business, tenant
         ).catch(() => null);
       } catch (_) { /* non-fatal */ }
 
-      await updateSession(session.customerPhone, session.tenantId, {
-        currentFlow: 'BOOKING', step: 'DATE', postFlowAck: null,
-        data: {
-          service:         _previousBooking?.service || null,
-          selectedService: _previousBooking?.service || null,
-          stylist:         _previousBooking?.staff    || null,
+      const { buildRescheduleDatePicker } = await import('./bookingFlow.js');
+      return buildRescheduleDatePicker({
+        session,
+        business,
+        tenant,
+        resumeData: {
+          service: _previousBooking?.service,
+          staff:   _previousBooking?.staff,
         },
       });
-
-      return {
-        type: 'text',
-        body: `📅 *Reschedule Appointment*\n\nNo problem! Let's find a new time${_previousBooking?.service ? ` for your *${_previousBooking.service}*` : ''}.\n\nWhat date works best for you?`,
-      };
     }
 
     case 'CANCEL': {

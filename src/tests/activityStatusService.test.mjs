@@ -62,6 +62,31 @@ test('formatOrderStatusCard shows Updated for in-progress orders', () => {
   assert.match(card, /• Updated:/);
 });
 
+test('formatBookingStatusCard: salon appointments show stylist instead of guests', () => {
+  const card = formatBookingStatusCard({
+    shortId: 'ABC123',
+    service: 'Haircut',
+    staff: 'Aminata',
+    date: 'Friday, 8 August 2026',
+    time: '2:00 PM',
+    status: 'confirmed',
+  }, { businessMode: 'SALON' });
+  assert.match(card, /Stylist: \*Aminata\*/);
+  assert.ok(!card.includes('Guests:'));
+});
+
+test('formatOrderStatusCard: salon product orders use neutral status labels', () => {
+  const card = formatOrderStatusCard({
+    shortId: 'XYZ99',
+    item: 'Shampoo',
+    quantity: 1,
+    status: 'confirmed',
+    paymentStatus: 'paid',
+  }, { businessMode: 'SALON' });
+  assert.match(card, /Being prepared/);
+  assert.ok(!card.includes('🍳'));
+});
+
 test('formatBookingStatusCard matches the clean Booking Update layout', () => {
   const card = formatBookingStatusCard({
     shortId: 'BK9999',
@@ -69,7 +94,7 @@ test('formatBookingStatusCard matches the clean Booking Update layout', () => {
     time: '7:00 PM',
     partySize: 4,
     status: 'confirmed',
-  });
+  }, { businessMode: 'RESTAURANT' });
 
   assert.match(card, /📅 \*Booking Update\*/);
   assert.match(card, /• Ref: \*#BK9999\*/);
