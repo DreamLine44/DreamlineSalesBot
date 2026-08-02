@@ -389,7 +389,7 @@ function isFlowPassthroughId(id) {
 const FLOW_PASSTHROUGH_IDS = new Set([
   // ── Time slots (booking + delivery scheduled) ─────────────────────────────
   'TIME_9AM','TIME_10AM','TIME_11AM','TIME_12PM',
-  'TIME_1PM','TIME_2PM','TIME_3PM','TIME_4PM','TIME_5PM','TIME_6PM',
+  'TIME_1PM','TIME_2PM','TIME_3PM','TIME_4PM','TIME_5PM','TIME_6PM','TIME_7PM',
   // ── Quantity quick-picks ──────────────────────────────────────────────────
   'QTY_1','QTY_2','QTY_3','QTY_4','QTY_5',
   // ── Service selection — SVC_0..SVC_99; isFlowPassthroughId() regex covers ≥100 ──
@@ -408,6 +408,7 @@ const FLOW_PASSTHROUGH_IDS = new Set([
       'ORANGE','PURPLE','GOLD','SILVER','BEIGE'].map(c => `COLOR_${c}`),
   // ── Date quick-picks & nav ────────────────────────────────────────────────
   'DATE_TODAY','DATE_TOMORROW','DATE_NEXT_SAT','DATE_NEXT_SUN',
+  ...Array.from({ length: 10 }, (_, i) => `DATE_PICK_${i}`),
   'DATE_BACK','TIME_BACK',
   // ── Booking: party size ───────────────────────────────────────────────────
   'PARTY_2','PARTY_4','PARTY_6',

@@ -23,6 +23,7 @@ import {
   getLocalNow,
   tryParseDate,
   resolveBookingDateInput,
+  formatBookingDateLabel,
 } from '../../services/bookingDateParser.js';
 // buildAdminBookingAlertBody is imported dynamically inside BOOKING_CONFIRM to stay consistent
 // with the dynamic import already there. The static buildAdminBookingAlert alias was dead code.
@@ -315,14 +316,28 @@ export async function handleBookingFlow({ session, message, business, tenant, is
     }
 
     case 'DATE': {
-      // Handle quick-pick date buttons (DATE_TODAY, DATE_TOMORROW, DATE_NEXT_SAT, DATE_NEXT_SUN)
-      // [FIX-TZ-1] Resolve quick-pick button IDs to date strings using the local clock
       const _localNowForShortcut = getLocalNow(tz);
       const _addLocalDays = (n) => new Date(Date.UTC(
         _localNowForShortcut.getUTCFullYear(), _localNowForShortcut.getUTCMonth(),
         _localNowForShortcut.getUTCDate() + n
       ));
       const _fmtLocal = (d) => `${d.getUTCDate()} ${d.toLocaleDateString('en-GB', { month: 'long', timeZone: 'UTC' })}`;
+
+      // Tap-only quick picks — next 10 days (DATE_PICK_0 = today)
+      const pickMatch = raw.toUpperCase().match(/^DATE_PICK_(\d+)$/);
+      if (pickMatch) {
+        const offset = parseInt(pickMatch[1], 10);
+        if (offset >= 0 && offset < 10) {
+          const parsed = _addLocalDays(offset);
+          return _confirmBookingDate(session, data, {
+            ok: true,
+            raw,
+            parsed,
+            label: formatBookingDateLabel(parsed, tz),
+          });
+        }
+      }
+
       const DATE_SHORTCUTS = {
         'DATE_TODAY':    'today',
         'DATE_TOMORROW': 'tomorrow',
@@ -349,7 +364,10 @@ export async function handleBookingFlow({ session, message, business, tenant, is
     case 'DATE_CONFIRM': {
       if (clean === 'confirm' || /^(yes|y|yep|yeah)$/i.test(clean)) {
         await updateSession(session.customerPhone, session.tenantId, { step: 'TIME' });
-        return _buildTimePickerUI();
+        const bookingParsedDate = data.parsedDate
+          ? (data.parsedDate instanceof Date ? data.parsedDate : new Date(data.parsedDate))
+          : tryParseDate(data.date, tz);
+        return _buildTimePickerUI(null, { tz, bookingDate: bookingParsedDate });
       }
       if (clean === 'date_back' || /^(no|n|re-enter|change|back)$/i.test(clean)) {
         await updateSession(session.customerPhone, session.tenantId, { step: 'DATE' });
@@ -366,7 +384,6 @@ export async function handleBookingFlow({ session, message, business, tenant, is
     }
 
     case 'TIME': {
-      // Handle time slot quick-pick buttons
       const TIME_SHORTCUTS = {
         'TIME_9AM':  '9:00 AM',
         'TIME_10AM': '10:00 AM',
@@ -378,21 +395,21 @@ export async function handleBookingFlow({ session, message, business, tenant, is
         'TIME_4PM':  '4:00 PM',
         'TIME_5PM':  '5:00 PM',
         'TIME_6PM':  '6:00 PM',
+        'TIME_7PM':  '7:00 PM',
       };
       const resolvedTime = TIME_SHORTCUTS[raw.toUpperCase()] || raw;
 
-      if (!looksLikeTime(resolvedTime)) {
-        return _buildTimePickerUI(`Please enter a valid time ⏰\n\n(e.g. *10:00*, *2pm*, *14:30*)`);
-      }
-
-      // [FIX-TIME-1] Reject past times when booking is for today.
-      // parsedDate is stored in session.data from the DATE step.
       const bookingParsedDate = data.parsedDate
         ? (data.parsedDate instanceof Date ? data.parsedDate : new Date(data.parsedDate))
         : tryParseDate(data.date, tz);
+
+      if (!looksLikeTime(resolvedTime)) {
+        return _buildTimePickerUI(`Please enter a valid time ⏰\n\n(e.g. *10:00*, *2pm*, *14:30*)`, { tz, bookingDate: bookingParsedDate });
+      }
+
       const timeValidation = validateTime(resolvedTime, bookingParsedDate, tz);
       if (timeValidation?.error) {
-        return _buildTimePickerUI(timeValidation.error);
+        return _buildTimePickerUI(timeValidation.error, { tz, bookingDate: bookingParsedDate });
       }
 
       await updateSession(session.customerPhone, session.tenantId, {
@@ -427,15 +444,17 @@ export async function handleBookingFlow({ session, message, business, tenant, is
       }
       if (clean === 'time_back' || /^(no|n|back|change)$/i.test(clean)) {
         await updateSession(session.customerPhone, session.tenantId, { step: 'TIME' });
-        return _buildTimePickerUI();
+        const bpdBack = data.parsedDate
+          ? (data.parsedDate instanceof Date ? data.parsedDate : new Date(data.parsedDate))
+          : tryParseDate(data.date, tz);
+        return _buildTimePickerUI(null, { tz, bookingDate: bpdBack });
       }
       if (looksLikeTime(raw)) {
-        // [FIX-TIME-1] Validate past-time on inline re-entry too
         const bpd = data.parsedDate
           ? (data.parsedDate instanceof Date ? data.parsedDate : new Date(data.parsedDate))
           : tryParseDate(data.date, tz);
         const tv2 = validateTime(raw, bpd, tz);
-        if (tv2?.error) return _buildTimePickerUI(tv2.error);
+        if (tv2?.error) return _buildTimePickerUI(tv2.error, { tz, bookingDate: bpd });
         await updateSession(session.customerPhone, session.tenantId, {
           step: 'TIME_CONFIRM', data: { ...data, time: raw },
         });
@@ -665,89 +684,106 @@ export async function handleBookingFlow({ session, message, business, tenant, is
 // ── UI Builder Helpers ─────────────────────────────────────────────────────────
 
 /**
- * _buildDatePickerUI — shows quick-pick date buttons so customers tap instead of type.
- * [FIX-TZ-1] Button labels resolved against business local clock.
- * [UX-6] "Today" button is suppressed after 20:00 local time (last common booking slot
- *         is 6pm; showing "Today" at 10pm only to reject every time choice is confusing).
- *         "Tomorrow" is always shown. Next Sat/Sun shown for weekend convenience.
+ * _buildDatePickerUI — tap-only list of the next 10 bookable days (no typing required).
  */
 function _buildDatePickerUI(headingOrError = null, tz = 'UTC') {
   const now = getLocalNow(tz);
   const addDays = (n) => new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + n));
-  const fmt = (d) => `${d.getUTCDate()} ${d.toLocaleDateString('en-GB', { month: 'long', timeZone: 'UTC' })}`;
+  const shortDay = (d) => d.toLocaleDateString('en-GB', { weekday: 'short', timeZone: 'UTC' });
+  const shortDate = (d) => d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', timeZone: 'UTC' });
+  const longDate = (d) => formatBookingDateLabel(d, tz);
 
-  const satDiff = (6 - now.getUTCDay() + 7) % 7 || 7;
-  const sunDiff = (0 - now.getUTCDay() + 7) % 7 || 7;
-  const nextSat = addDays(satDiff);
-  const nextSun = addDays(sunDiff);
-
-  // [UX-6] Suppress "Today" if it's past 20:00 local — no reasonable slots remain.
   const localHour = now.getUTCHours();
-  const showToday = localHour < 20;
+  const startOffset = localHour >= 20 ? 1 : 0;
+
+  const rows = [];
+  for (let i = startOffset; i < startOffset + 10; i++) {
+    const d = addDays(i);
+    const title = i === 0
+      ? '📅 Today'
+      : i === 1
+        ? '📅 Tomorrow'
+        : `📅 ${shortDay(d)} ${shortDate(d)}`;
+    rows.push({
+      id: `DATE_PICK_${i}`,
+      title: title.slice(0, 24),
+      description: longDate(d).slice(0, 72),
+    });
+  }
 
   const body = headingOrError
-    ? `${headingOrError}\n\n_Tap a date or type your own (e.g. *${fmt(addDays(7))}*, *next Monday*)_`
-    : `What date would you like to book? 📅\n\n_Tap a date below or type any date_`;
-
-  // Build candidate buttons — WhatsApp max 3 per message
-  const candidates = [
-    showToday ? { id: 'DATE_TODAY',    title: `📅 Today`              } : null,
-                { id: 'DATE_TOMORROW', title: `📅 Tomorrow`           },
-                { id: 'DATE_NEXT_SAT', title: `📅 Sat ${fmt(nextSat)}` },
-                { id: 'DATE_NEXT_SUN', title: `📅 Sun ${fmt(nextSun)}` },
-  ].filter(Boolean).slice(0, 3);
+    ? `${headingOrError}\n\n👆 *Tap a date below* — no typing needed.`
+    : `What date would you like to book? 📅\n\n👆 *Tap a date below* — no typing needed.`;
 
   return {
-    type:    'buttons',
+    type:     'list',
     body,
-    buttons: candidates,
-    footer:  'Or type any date e.g. 25 June',
+    button:   'Choose a date',
+    sections: [{ title: '📅 Upcoming dates', rows }],
+    footer:   'Or type e.g. Friday, 25 June',
   };
 }
 
+const ALL_TIME_SLOTS = [
+  { id: 'TIME_9AM',  title: '9:00 AM',  minutes: 9 * 60,  period: '🌅 Morning'   },
+  { id: 'TIME_10AM', title: '10:00 AM', minutes: 10 * 60, period: '🌅 Morning'   },
+  { id: 'TIME_11AM', title: '11:00 AM', minutes: 11 * 60, period: '🌅 Morning'   },
+  { id: 'TIME_12PM', title: '12:00 PM', minutes: 12 * 60, period: '☀️ Afternoon' },
+  { id: 'TIME_1PM',  title: '1:00 PM',  minutes: 13 * 60, period: '☀️ Afternoon' },
+  { id: 'TIME_2PM',  title: '2:00 PM',  minutes: 14 * 60, period: '☀️ Afternoon' },
+  { id: 'TIME_3PM',  title: '3:00 PM',  minutes: 15 * 60, period: '☀️ Afternoon' },
+  { id: 'TIME_4PM',  title: '4:00 PM',  minutes: 16 * 60, period: '☀️ Afternoon' },
+  { id: 'TIME_5PM',  title: '5:00 PM',  minutes: 17 * 60, period: '🌆 Evening'   },
+  { id: 'TIME_6PM',  title: '6:00 PM',  minutes: 18 * 60, period: '🌆 Evening'   },
+  { id: 'TIME_7PM',  title: '7:00 PM',  minutes: 19 * 60, period: '🌆 Evening'   },
+];
+
+function _filterAvailableTimeSlots({ tz = 'UTC', bookingDate = null } = {}) {
+  const localNow = getLocalNow(tz);
+  const localToday = new Date(Date.UTC(localNow.getUTCFullYear(), localNow.getUTCMonth(), localNow.getUTCDate()));
+  const bookingIsToday = bookingDate && bookingDate.getTime() === localToday.getTime();
+  const nowMinutes = localNow.getUTCHours() * 60 + localNow.getUTCMinutes();
+  const GRACE = 5;
+
+  return ALL_TIME_SLOTS.filter((slot) => {
+    if (!bookingIsToday) return true;
+    return slot.minutes >= nowMinutes - GRACE;
+  });
+}
+
 /**
- * _buildTimePickerUI — shows AM/PM slot buttons so customers tap instead of type.
- * Renders a WhatsApp list for morning/afternoon/evening. Meta's real limit is
- * 10 rows TOTAL across all sections combined (not per section) — this static
- * list is hand-kept at exactly 3 + 5 + 2 = 10 rows for that reason; adding any
- * more slots here requires removing one elsewhere to stay under the cap.
+ * _buildTimePickerUI — tap-only time list; hides past slots when booking is today.
  */
-function _buildTimePickerUI(headingOrError = null) {
+function _buildTimePickerUI(headingOrError = null, { tz = 'UTC', bookingDate = null } = {}) {
+  const available = _filterAvailableTimeSlots({ tz, bookingDate });
+
+  const sections = [];
+  for (const slot of available.slice(0, 10)) {
+    let sec = sections.find(s => s.title === slot.period);
+    if (!sec) {
+      sec = { title: slot.period, rows: [] };
+      sections.push(sec);
+    }
+    sec.rows.push({ id: slot.id, title: slot.title });
+  }
+
   const body = headingOrError
-    ? `${headingOrError}\n\n_Tap a slot or type a time (e.g. *2pm*, *14:30*)_`
-    : `What time works for you? ⏰\n\n_Tap a time slot or type your preferred time_`;
+    ? `${headingOrError}\n\n👆 *Tap a time below* — no typing needed.`
+    : `What time works for you? ⏰\n\n👆 *Tap a time below* — no typing needed.`;
+
+  if (!sections.length) {
+    return {
+      type:    'buttons',
+      body:    `${body}\n\n⚠️ No slots left today. Please pick a later date or type a time.`,
+      buttons: [{ id: 'DATE_BACK', title: '📅 Change date' }, { id: 'CANCEL', title: '❌ Cancel' }],
+    };
+  }
 
   return {
     type: 'list',
     body,
     button: 'Choose a time',
-    sections: [
-      {
-        title: '🌅 Morning',
-        rows: [
-          { id: 'TIME_9AM',  title: '9:00 AM'  },
-          { id: 'TIME_10AM', title: '10:00 AM' },
-          { id: 'TIME_11AM', title: '11:00 AM' },
-        ],
-      },
-      {
-        title: '☀️ Afternoon',
-        rows: [
-          { id: 'TIME_12PM', title: '12:00 PM' },
-          { id: 'TIME_1PM',  title: '1:00 PM'  },
-          { id: 'TIME_2PM',  title: '2:00 PM'  },
-          { id: 'TIME_3PM',  title: '3:00 PM'  },
-          { id: 'TIME_4PM',  title: '4:00 PM'  },
-        ],
-      },
-      {
-        title: '🌆 Evening',
-        rows: [
-          { id: 'TIME_5PM', title: '5:00 PM' },
-          { id: 'TIME_6PM', title: '6:00 PM' },
-        ],
-      },
-    ],
-    footer: 'Or type any time e.g. 2:30pm',
+    sections,
+    footer: 'Or type e.g. 2:30pm',
   };
 }

@@ -32,6 +32,24 @@ test('tryParseDate: bare weekday "friday" resolves to upcoming Friday', () => {
   assert.ok(parsed.getTime() >= toUtcMidnight(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()).getTime());
 });
 
+test('tryParseDate: "On Friday" and "on friday" resolve to Friday (not garbage native parse)', () => {
+  for (const input of ['On Friday', 'on friday', 'on Friday']) {
+    const parsed = tryParseDate(input, TZ);
+    assert.ok(parsed, `expected parse for "${input}"`);
+    assert.equal(parsed.getUTCDay(), 5, `"${input}" should be a Friday`);
+    assert.notEqual(parsed.getUTCMonth(), 0, `"${input}" must not collapse to January`);
+    assert.notEqual(parsed.getUTCDate(), 1, `"${input}" must not collapse to the 1st`);
+  }
+});
+
+test('tryParseDate: "on next friday" resolves to a future Friday', () => {
+  const parsed = tryParseDate('on next friday', TZ);
+  assert.ok(parsed);
+  assert.equal(parsed.getUTCDay(), 5);
+  const now = getLocalNow(TZ);
+  assert.ok(parsed.getTime() >= toUtcMidnight(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()).getTime());
+});
+
 test('tryParseDate: "on the 6th" resolves to day 6 this or next month', () => {
   const parsed = tryParseDate('on the 6th', TZ);
   assert.ok(parsed);

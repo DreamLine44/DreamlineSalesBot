@@ -86,15 +86,28 @@ function parseDayOfMonthInMonth(day, month, year, now) {
 }
 
 function parseWeekday(lower, now) {
-  const bare = lower.match(/^(?:this\s+)?(monday|tuesday|wednesday|thursday|friday|saturday|sunday)$/);
+  const normalized = lower
+    .replace(/^on\s+(?:the\s+)?/, '')
+    .replace(/^this\s+/, '')
+    .trim();
+  const bare = normalized.match(/^(monday|tuesday|wednesday|thursday|friday|saturday|sunday)$/);
   if (!bare) return null;
 
   const target = WEEKDAYS.indexOf(bare[1]);
   if (target === -1) return null;
 
   const todayDow = now.getUTCDay();
-  let diff = (target - todayDow + 7) % 7;
+  const diff = (target - todayDow + 7) % 7;
   return addLocalDays(now, diff);
+}
+
+function containsWeekdayName(s) {
+  return /\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/i.test(String(s || ''));
+}
+
+function looksLikeNativeDateFragment(s) {
+  return /\d/.test(s)
+    || /\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)/i.test(s);
 }
 
 function parseOrdinalDayPhrase(lower, now) {
@@ -142,7 +155,8 @@ export function tryParseDate(dateStr, tz) {
   try {
     const now = getLocalNow(tz);
     const raw = String(dateStr).trim();
-    const lower = raw.toLowerCase().trim();
+    let lower = raw.toLowerCase().trim();
+    if (lower.startsWith('on next ')) lower = lower.replace(/^on\s+/, '');
 
     if (lower === 'today') return toUtcMidnight(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
     if (lower === 'yesterday') return addLocalDays(now, -1);
@@ -169,9 +183,12 @@ export function tryParseDate(dateStr, tz) {
     const dayMonth = parseDayMonthPhrase(lower, now);
     if (dayMonth) return dayMonth;
 
+    // Never let native Date mangle weekday phrases like "On Friday" → Jan 1.
+    if (containsWeekdayName(lower)) return null;
+
     const stripped = raw.replace(/(\d+)(st|nd|rd|th)\b/gi, '$1');
     const parsed = new Date(stripped);
-    if (!isNaN(parsed.getTime())) {
+    if (!isNaN(parsed.getTime()) && looksLikeNativeDateFragment(stripped)) {
       const yr = parsed.getFullYear();
       if (yr < now.getUTCFullYear()) {
         const withYear = `${stripped} ${now.getUTCFullYear()}`;
@@ -186,9 +203,11 @@ export function tryParseDate(dateStr, tz) {
       return toUtcMidnight(parsed.getFullYear(), parsed.getMonth(), parsed.getDate());
     }
 
-    const withYear = `${stripped} ${now.getUTCFullYear()}`;
-    const parsed2 = new Date(withYear);
-    if (!isNaN(parsed2.getTime())) return toUtcMidnight(parsed2.getFullYear(), parsed2.getMonth(), parsed2.getDate());
+    if (looksLikeNativeDateFragment(stripped)) {
+      const withYear = `${stripped} ${now.getUTCFullYear()}`;
+      const parsed2 = new Date(withYear);
+      if (!isNaN(parsed2.getTime())) return toUtcMidnight(parsed2.getFullYear(), parsed2.getMonth(), parsed2.getDate());
+    }
 
     return null;
   } catch {
@@ -201,6 +220,8 @@ export function looksLikeDate(input) {
   const s = input.toLowerCase().trim();
   if (['today', 'tomorrow', 'yesterday'].includes(s)) return true;
   if (/^(this\s+)?(monday|tuesday|wednesday|thursday|friday|saturday|sunday)$/i.test(s)) return true;
+  if (/^on\s+(?:the\s+)?(monday|tuesday|wednesday|thursday|friday|saturday|sunday)$/i.test(s)) return true;
+  if (/^on\s+next\s+(monday|tuesday|wednesday|thursday|friday|saturday|sunday)$/i.test(s)) return true;
   if (/^next\s+(monday|tuesday|wednesday|thursday|friday|saturday|sunday)$/i.test(s)) return true;
   if (/\d{1,2}[\/\-\.]\d{1,2}([\/\-\.]\d{2,4})?/.test(s)) return true;
   if (/\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)/i.test(s)) return true;
