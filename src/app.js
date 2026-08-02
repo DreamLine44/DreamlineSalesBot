@@ -40,6 +40,7 @@ import { errorHandler }          from './middleware/errorHandler.js';
 import { createRateLimiter, webhookLimiter, adminLimiter } from './middleware/rateLimiter.js';
 import { requireApiKey, requireSuperAdminKey } from './middleware/authMiddleware.js';
 import { startScheduler, stopScheduler } from './services/schedulerService.js';
+import { provisionBookingDateFlowsOnStartup } from './services/bookingDateFlowProvisioner.js';
 import { aiHealthCheck }         from './core/ai/providers/aiRouter.js';
 import { registerAllModules }    from './core/shared/moduleRegistry.js';
 import { getSupportedModes }     from './config/modes.js';
@@ -239,6 +240,7 @@ async function start() {
   }
 
   startScheduler();
+  provisionBookingDateFlowsOnStartup().catch(() => {});
 
   const PORT = process.env.PORT || 5000;
   httpServer = app.listen(PORT, () => {

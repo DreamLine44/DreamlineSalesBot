@@ -58,7 +58,45 @@ function shortMonthDay(d) {
   return d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', timeZone: 'UTC' });
 }
 
-/** Hub: This week / Next week / Choose month (3 buttons — no typing). */
+/** Simple one-step picker: next 10 bookable days in a single list. */
+export function buildSimpleDayList(tz, headingOrError = null) {
+  const now = getLocalNow(tz);
+  const today = localMidnight(now);
+  const maxDate = maxBookableDate(now);
+  let cursor = today;
+  if (now.getUTCHours() >= 20) cursor = addDays(today, 1);
+
+  const rows = [];
+  for (let i = 0; rows.length < 10; i++) {
+    const d = addDays(cursor, i);
+    if (d > maxDate) break;
+    const offsetFromToday = Math.round((d - today) / 86400000);
+    const title = offsetFromToday === 0
+      ? '📅 Today'
+      : offsetFromToday === 1
+        ? '📅 Tomorrow'
+        : `📅 ${shortWeekday(d)} ${shortMonthDay(d)}`;
+    rows.push({
+      id: toDayId(d),
+      title: title.slice(0, 24),
+      description: formatBookingDateLabel(d, tz).slice(0, 72),
+    });
+  }
+
+  const body = headingOrError
+    ? `${headingOrError}\n\n👆 *Tap your date below*`
+    : `What date would you like to book? 📅\n\n👆 *Tap your date below*`;
+
+  return {
+    type:     'list',
+    body,
+    button:   '📅 Pick a date',
+    sections: [{ title: '📅 Upcoming dates', rows }],
+    footer:   'Or type e.g. Friday, 25 June',
+  };
+}
+
+/** Hub: This week / Next week / Choose month (3 buttons — legacy fallback). */
 export function buildDatePickerHub(headingOrError = null) {
   const body = headingOrError
     ? `${headingOrError}\n\n👆 *Pick how to choose your date* — all tap, no typing.`

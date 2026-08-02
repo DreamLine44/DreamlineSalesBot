@@ -4,6 +4,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   buildDatePickerHub,
+  buildSimpleDayList,
   buildWeekDayList,
   buildMonthPickerList,
   buildMonthDayList,
@@ -13,6 +14,14 @@ import {
 } from '../services/bookingDatePickerUI.js';
 
 const TZ = 'Africa/Banjul';
+
+test('buildSimpleDayList: single-step day picker with up to 10 rows', () => {
+  const ui = buildSimpleDayList(TZ);
+  assert.equal(ui.type, 'list');
+  assert.equal(ui.button, '📅 Pick a date');
+  assert.ok(ui.sections[0].rows.length >= 1);
+  assert.match(ui.sections[0].rows[0].id, /^DATE_D_/);
+});
 
 test('buildDatePickerHub: offers week and month dropdown paths', () => {
   const ui = buildDatePickerHub();

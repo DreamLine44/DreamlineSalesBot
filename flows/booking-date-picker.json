@@ -27,9 +27,10 @@
             "name": "booking_date_form",
             "children": [
               {
-                "type": "DatePicker",
+                "type": "CalendarPicker",
                 "name": "booking_date",
                 "label": "Select your booking date",
+                "mode": "single",
                 "min-date": "${data.min_date}",
                 "max-date": "${data.max_date}",
                 "required": true

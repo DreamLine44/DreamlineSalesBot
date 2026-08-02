@@ -6,7 +6,7 @@
  * Usage:
  *   META_ACCESS_TOKEN=... WABA_ID=... node src/scripts/publishBookingDateFlow.mjs
  *
- * After publishing, set BOOKING_DATE_FLOW_ID (or business.whatsappFlows.bookingDateFlowId).
+ * After publishing, set BOOKING_DATE_FLOW_ID (or restart — auto-provision saves it).
  */
 
 import fs from 'fs';
@@ -44,27 +44,29 @@ async function api(method, urlPath, body) {
   return data;
 }
 
+async function findExisting() {
+  const data = await api('GET', `${wabaId}/flows?fields=id,name,status`);
+  return (data.data || []).find((f) => f.name === flowName && f.status !== 'DEPRECATED');
+}
+
 async function main() {
-  console.log('Creating Flow asset...');
+  const existing = await findExisting();
+  if (existing?.id) {
+    console.log('Flow already exists:', existing.id, `(${existing.status || 'unknown'})`);
+    console.log(`Set in .env: BOOKING_DATE_FLOW_ID=${existing.id}`);
+    return;
+  }
+
+  console.log('Creating and publishing Flow…');
   const created = await api('POST', `${wabaId}/flows`, {
-    name:     flowName,
+    name:       flowName,
     categories: ['APPOINTMENT_BOOKING'],
+    flow_json:  flowJson,
+    publish:    true,
   });
-  const flowId = created.id;
-  console.log('Flow ID:', flowId);
-
-  console.log('Uploading Flow JSON...');
-  await api('POST', `${flowId}/assets`, {
-    name:       'flow.json',
-    asset_type: 'FLOW_JSON',
-    file:       flowJson,
-  });
-
-  console.log('Publishing Flow...');
-  await api('POST', `${flowId}/publish`);
 
   console.log('\n✅ Published successfully.');
-  console.log(`Set in .env: BOOKING_DATE_FLOW_ID=${flowId}`);
+  console.log(`Set in .env: BOOKING_DATE_FLOW_ID=${created.id}`);
 }
 
 main().catch((err) => {
