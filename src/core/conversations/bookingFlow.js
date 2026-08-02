@@ -445,8 +445,8 @@ export async function handleBookingFlow({ session, message, business, tenant, is
           return _buildDatePickerUI(resolved.message, tz, { business, tenant, customerPhone: session.customerPhone });
         }
         const hint = isBareOrdinal
-          ? `I need the *month* too 📅\n\nFor example:\n• *${raw} June*\n• *${raw} July*\n• *${raw} August*`
-          : `I couldn't recognise *${raw}* as a date.\n\nExamples: *25 June*, *tomorrow*, *next Friday*, *friday*, *on the 6th*`;
+          ? `Please include the month as well.\n\nFor example: *${raw} June*, *${raw} July*`
+          : `I couldn't find a date in *${raw}*.\n\nTry a format like *25 June*, *tomorrow*, or *next Friday*.`;
         return _buildDatePickerUI(hint, tz, { business, tenant, customerPhone: session.customerPhone });
       }
 
@@ -850,8 +850,8 @@ function _buildTimePickerUI(headingOrError = null, { tz = 'UTC', bookingDate = n
   }
 
   const body = headingOrError
-    ? `${headingOrError}\n\n👆 *Tap a time below* — no typing needed.`
-    : `What time works for you? ⏰\n\n👆 *Tap a time below* — no typing needed.`;
+    ? `${headingOrError}\n\nPlease select your preferred time.`
+    : `What time works for you? ⏰\n\nPlease select your preferred time.`;
 
   if (!sections.length) {
     return {
@@ -866,6 +866,5 @@ function _buildTimePickerUI(headingOrError = null, { tz = 'UTC', bookingDate = n
     body,
     button: 'Choose a time',
     sections,
-    footer: 'Or type e.g. 2:30pm',
   };
 }

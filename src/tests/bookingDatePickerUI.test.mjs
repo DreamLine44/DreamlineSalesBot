@@ -15,11 +15,13 @@ import {
 
 const TZ = 'Africa/Banjul';
 
-test('buildSimpleDayList: single-step day picker with up to 10 rows', () => {
+test('buildSimpleDayList: professional date prompt with choose button', () => {
   const ui = buildSimpleDayList(TZ);
   assert.equal(ui.type, 'list');
   assert.equal(ui.button, 'Choose a date');
-  assert.ok(ui.body.includes('Tap a date below'));
+  assert.ok(ui.body.includes('Please select your preferred date'));
+  assert.ok(!ui.body.includes('no typing'));
+  assert.equal(ui.footer, undefined);
   assert.ok(ui.sections[0].rows.length >= 1);
   assert.match(ui.sections[0].rows[0].id, /^DATE_D_/);
 });

@@ -147,6 +147,21 @@ function parseDayMonthPhrase(lower, now) {
   return null;
 }
 
+function parseRelativeMonthDay(lower, now) {
+  const s = lower.replace(/['']/g, '').replace(/\s+/g, ' ').trim();
+
+  if (/^next\s+months?\s+(?:first|1st)(?:\s+day)?$/.test(s)) {
+    return toUtcMidnight(now.getUTCFullYear(), now.getUTCMonth() + 1, 1);
+  }
+  if (/^(?:the\s+)?(?:first|1st)\s+day\s+of\s+next\s+month$/.test(s)) {
+    return toUtcMidnight(now.getUTCFullYear(), now.getUTCMonth() + 1, 1);
+  }
+  if (/^next\s+month(?:'?s)?\s+(?:first|1st)(?:\s+day)?$/.test(s)) {
+    return toUtcMidnight(now.getUTCFullYear(), now.getUTCMonth() + 1, 1);
+  }
+  return null;
+}
+
 /**
  * tryParseDate — deterministic parse only (no AI).
  */
@@ -161,6 +176,9 @@ export function tryParseDate(dateStr, tz) {
     if (lower === 'today') return toUtcMidnight(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
     if (lower === 'yesterday') return addLocalDays(now, -1);
     if (lower === 'tomorrow') return addLocalDays(now, 1);
+
+    const relativeMonth = parseRelativeMonthDay(lower, now);
+    if (relativeMonth) return relativeMonth;
 
     const weekday = parseWeekday(lower, now);
     if (weekday) return weekday;
@@ -227,6 +245,8 @@ export function looksLikeDate(input) {
   if (/\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)/i.test(s)) return true;
   if (/(?:on\s+the\s+|the\s+)?\d{1,2}(?:st|nd|rd|th)?(?:\s+of\s+(?:this\s+)?month)?$/i.test(s)) return true;
   if (/^\d{1,2}(?:st|nd|rd|th)?(\s+\w+)?$/i.test(s)) return true;
+  if (/\bnext\s+month/i.test(s) && /\b(first|1st|day)\b/i.test(s)) return true;
+  if (/\bfirst\s+day\s+of\s+next\s+month\b/i.test(s)) return true;
   if (/\d/.test(s) && /\b(date|month|day)\b/i.test(s)) return true;
   return false;
 }

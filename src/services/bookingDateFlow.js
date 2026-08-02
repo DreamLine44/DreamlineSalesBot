@@ -72,8 +72,8 @@ export function buildBookingDateFlowMessage({
 
   const bounds = getBookingDateFlowBounds(tz);
   const body = heading
-    ? `${heading}\n\nTap *Pick date* to open the calendar.`
-    : `What date would you like to book? 📅\n\nTap *Pick date* to open the calendar.`;
+    ? `${heading}\n\nPlease select your preferred date.`
+    : `What date would you like? 📅\n\nPlease select your preferred date.`;
 
   const draftMode = process.env.BOOKING_DATE_FLOW_DRAFT === 'true';
 
@@ -81,7 +81,6 @@ export function buildBookingDateFlowMessage({
     type:       'flow',
     body,
     header:     '📅 Choose date',
-    footer:     'Or type a date e.g. Friday, 25 June',
     flowId:     String(flowId),
     flowToken:  flowToken || buildBookingDateFlowToken(customerPhone),
     flowCta:    '📅 Pick date',

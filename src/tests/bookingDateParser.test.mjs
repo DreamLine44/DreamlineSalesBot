@@ -7,6 +7,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   tryParseDate,
+  looksLikeDate,
   validateBookingDate,
   formatBookingDateLabel,
   resolveBookingDateInput,
@@ -117,6 +118,28 @@ test('resolveBookingDateInput: returns label for "friday"', async () => {
   assert.equal(result.ok, true);
   assert.ok(result.label);
   assert.ok(result.parsed);
+});
+
+test('tryParseDate: "next months first day" resolves to first day of next month', () => {
+  const parsed = tryParseDate('next months first day', TZ);
+  assert.ok(parsed);
+  const now = getLocalNow(TZ);
+  const expected = toUtcMidnight(now.getUTCFullYear(), now.getUTCMonth() + 1, 1);
+  assert.equal(parsed.getTime(), expected.getTime());
+});
+
+test('tryParseDate: "next month first" resolves to first day of next month', () => {
+  const parsed = tryParseDate('next month first', TZ);
+  assert.ok(parsed);
+  const now = getLocalNow(TZ);
+  const expected = toUtcMidnight(now.getUTCFullYear(), now.getUTCMonth() + 1, 1);
+  assert.equal(parsed.getTime(), expected.getTime());
+});
+
+test('looksLikeDate: recognises next-month-first-day phrases', () => {
+  assert.equal(looksLikeDate('next months first day'), true);
+  assert.equal(looksLikeDate('first day of next month'), true);
+  assert.equal(looksLikeDate('next month first'), true);
 });
 
 test('tryParseDate: typed date and "today" keyword agree regardless of process TZ', () => {

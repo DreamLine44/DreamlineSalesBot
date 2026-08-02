@@ -84,23 +84,22 @@ export function buildSimpleDayList(tz, headingOrError = null) {
   }
 
   const body = headingOrError
-    ? `${headingOrError}\n\n👆 *Tap a date below* — no typing needed.`
-    : `What date would you like to book? 📅\n\n👆 *Tap a date below* — no typing needed.`;
+    ? `${headingOrError}\n\nPlease select your preferred date.`
+    : `What date would you like? 📅\n\nPlease select your preferred date.`;
 
   return {
     type:     'list',
     body,
     button:   'Choose a date',
     sections: [{ title: '📅 Upcoming dates', rows }],
-    footer:   'Or type e.g. Friday, 25 June',
   };
 }
 
 /** Hub: This week / Next week / Choose month (3 buttons — legacy fallback). */
 export function buildDatePickerHub(headingOrError = null) {
   const body = headingOrError
-    ? `${headingOrError}\n\n👆 *Pick how to choose your date* — all tap, no typing.`
-    : `What date would you like to book? 📅\n\n👆 *Pick below* — week, or choose a month & day.`;
+    ? `${headingOrError}\n\nPlease select how you'd like to choose your date.`
+    : `What date would you like? 📅\n\nPlease select how you'd like to choose your date.`;
 
   return {
     type:    'buttons',
@@ -110,7 +109,6 @@ export function buildDatePickerHub(headingOrError = null) {
       { id: 'DATE_HUB_WEEK_1', title: '📅 Next week'    },
       { id: 'DATE_HUB_MONTH',  title: '📆 Choose month' },
     ],
-    footer: 'Or type e.g. Friday, 25 June',
   };
 }
 
@@ -141,15 +139,14 @@ export function buildWeekDayList(weekOffset, tz, heading = null) {
 
   const label = weekOffset === 0 ? 'This week' : 'Next week';
   const body = heading
-    ? `${heading}\n\n👆 *Tap a day* from ${label.toLowerCase()}.`
-    : `📅 *${label}* — tap your day:`;
+    ? `${heading}\n\nPlease select a day from ${label.toLowerCase()}.`
+    : `${label} — please select your preferred day.`;
 
   return {
     type:     'list',
     body,
     button:   'Pick a day',
     sections: [{ title: `📅 ${label}`, rows }],
-    footer:   'Or type a date',
   };
 }
 
@@ -178,15 +175,14 @@ export function buildMonthPickerList(tz, heading = null) {
   }
 
   const body = heading
-    ? `${heading}\n\n👆 *Choose a month* — like a dropdown.`
-    : `📆 *Choose a month*\n\n👆 Tap a month, then pick the day.`;
+    ? `${heading}\n\nPlease select a month.`
+    : `Please select a month, then choose your preferred day.`;
 
   return {
     type:     'list',
     body,
     button:   'Choose month',
     sections: [{ title: '📆 Months', rows }],
-    footer:   'Or type e.g. 25 August',
   };
 }
 
@@ -244,15 +240,14 @@ export function buildMonthDayList({ year, month, tz, page = 0, heading = null })
 
   const monthLabel = `${MONTH_NAMES[month]} ${year}`;
   const body = heading
-    ? `${heading}\n\n👆 *Pick a day* in *${monthLabel}*.`
-    : `📅 *${monthLabel}* — tap your day:`;
+    ? `${heading}\n\nPlease select a day in ${monthLabel}.`
+    : `${monthLabel} — please select your preferred day.`;
 
   return {
     type:     'list',
     body,
     button:   'Pick a day',
     sections: [{ title: `📅 ${monthLabel}`, rows: rows.slice(0, 10) }],
-    footer:   'Or type a date',
   };
 }
 
