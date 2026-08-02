@@ -114,7 +114,7 @@ test('core/conversations/bookingFlow.js: DATE step genuinely accepts free-text d
   assert.ok(dateStepIdx > -1, 'DATE case not found in bookingFlow.js');
   const slice = src.slice(dateStepIdx, dateStepIdx + 1800);
   assert.ok(
-    slice.includes('looksLikeDate') && slice.includes('validateDate'),
+    slice.includes('resolveBookingDateInput'),
     'DATE step should parse and validate free-text date input — confirms landing a ' +
     'customer directly on this step after RESCHEDULE is the correct fix.'
   );

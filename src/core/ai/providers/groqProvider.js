@@ -597,6 +597,35 @@ export async function classifyIntent({ message, validIntents, mode = 'RETAIL' })
   }
 }
 
+/**
+ * parseBookingDate({ message, todayIso, maxIso, tz })
+ * Lean date extractor for booking flow — returns YYYY-MM-DD or null.
+ */
+export async function parseBookingDate({ message, todayIso, maxIso, tz = 'UTC' }) {
+  if (!process.env.GROQ_API_KEY || !message) return null;
+  try {
+    const result = await callGroq([
+      {
+        role: 'system',
+        content:
+          `You extract a single booking date from a customer message for a business in timezone ${sanitise(tz, 40)}.\n` +
+          `Today is ${todayIso}. Valid range: ${todayIso} through ${maxIso} (inclusive).\n` +
+          `Understand numbers and words: "friday", "on the 6th", "8 of december", "19/8/2026", "9.8.2026", etc.\n` +
+          `Use DD/MM/YYYY for ambiguous numeric dates (day before month).\n` +
+          `Reply with ONLY "YYYY-MM-DD" or "UNPARSEABLE" — nothing else.`,
+      },
+      { role: 'user', content: String(message || '').slice(0, 120) },
+    ], { model: GROQ_MODEL_FAST, maxTokens: 15, temperature: 0.1 });
+
+    const token = String(result || '').trim().split(/[\s.,;:!?]/)[0];
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(token) || token === 'UNPARSEABLE') return null;
+    return token;
+  } catch (err) {
+    logger.debug('[Groq] parseBookingDate fallback', { err: err.message });
+    return null;
+  }
+}
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 function buildFaqContext(business) {
   const faqs = (business?.faq || []).filter(f => f.trigger && f.reply).slice(0, 12);

@@ -19,6 +19,11 @@
 import { updateSession }           from '../sessions/sessionService.js';
 import { completeFlow, cancelFlow } from './flowEngine.js';
 import { saveBooking }             from '../../services/bookingService.js';
+import {
+  getLocalNow,
+  tryParseDate,
+  resolveBookingDateInput,
+} from '../../services/bookingDateParser.js';
 // buildAdminBookingAlertBody is imported dynamically inside BOOKING_CONFIRM to stay consistent
 // with the dynamic import already there. The static buildAdminBookingAlert alias was dead code.
 import { trackBookingAnalytics }   from '../analytics/analyticsService.js';
@@ -26,148 +31,8 @@ import { trackBookingAnalytics }   from '../analytics/analyticsService.js';
 import logger                      from '../../config/logger.js';
 import { formatMoney }             from '../../utils/formatCurrency.js';
 
-// ── Timezone helper ───────────────────────────────────────────────────────────
-
-/**
- * getLocalNow — returns the current wall-clock moment in the business's
- * configured timezone (business.hours.timezone, e.g. "Africa/Banjul").
- *
- * [FIX-TZ-1] All previous date/time comparisons used `new Date()` (UTC server
- * time). A server running in UTC at 23:30 is still 23:30 the same day in GMT
- * but already 00:30 the next day in UTC+1. "Today" and "tomorrow" must resolve
- * relative to the *business* clock, not the server clock.
- *
- * Falls back to UTC when the tz string is absent or unrecognised by Intl.
- */
-function getLocalNow(tz) {
-  const safeZone = (() => {
-    if (!tz) return 'UTC';
-    try { Intl.DateTimeFormat(undefined, { timeZone: tz }); return tz; }
-    catch { return 'UTC'; }
-  })();
-
-  // Parse current UTC moment into local calendar fields
-  const parts = new Intl.DateTimeFormat('en-CA', {
-    timeZone:    safeZone,
-    year:        'numeric',
-    month:       '2-digit',
-    day:         '2-digit',
-    hour:        '2-digit',
-    minute:      '2-digit',
-    second:      '2-digit',
-    hour12:      false,
-  }).formatToParts(new Date());
-
-  const get = (type) => parseInt(parts.find(p => p.type === type)?.value || '0', 10);
-  // Construct a Date whose *UTC* fields hold the local wall-clock values.
-  // This "fake-UTC" date is only used for date arithmetic (midnight comparisons,
-  // day-of-week calculations) — never serialised to the DB as-is.
-  return new Date(Date.UTC(get('year'), get('month') - 1, get('day'), get('hour'), get('minute'), get('second')));
-}
-
-// ── Date helpers ──────────────────────────────────────────────────────────────
-
-/**
- * tryParseDate — converts free-text date to JS Date (midnight local).
- * Strips ordinal suffixes (st/nd/rd/th) before native parse.
- * [FIX-B]    "15th March" was returning Invalid Date — now stripped to "15 March"
- * [FIX-TZ-1] Relative keywords (today/tomorrow/yesterday/next X) now resolve
- *             against the business's local clock, not the UTC server clock.
- *
- * @param {string}  dateStr
- * @param {string=} tz  IANA timezone string, e.g. "Africa/Banjul"
- */
-export function tryParseDate(dateStr, tz) {
-  if (!dateStr) return null;
-  try {
-    // Use local "now" for all relative keyword resolution
-    const now   = getLocalNow(tz);
-    const lower = String(dateStr).toLowerCase().trim();
-
-    if (lower === 'today') return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
-    // [FIX-12] Handle "yesterday" so it resolves to a real Date — validateDate
-    // then correctly rejects it as a past date instead of silently storing the string.
-    if (lower === 'yesterday') {
-      return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - 1));
-    }
-    if (lower === 'tomorrow') {
-      return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1));
-    }
-    if (lower.startsWith('next ')) {
-      const days = ['sunday','monday','tuesday','wednesday','thursday','friday','saturday'];
-      const target = days.indexOf(lower.replace('next ', ''));
-      if (target !== -1) {
-        // [FIX-TZ-1] Use local day-of-week so "next Monday" is Monday in the
-        // business's timezone, not whatever day UTC happens to be.
-        const todayDow = now.getUTCDay(); // 0–6
-        const diff = (target - todayDow + 7) % 7 || 7;
-        return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + diff));
-      }
-    }
-
-    // Strip ordinal suffixes: "15th" → "15", "1st" → "1"
-    const stripped = dateStr.replace(/(\d+)(st|nd|rd|th)\b/gi, '$1');
-
-    // [FIX-TZ-3] Native Date parsing of a non-ISO string like "30 June" is
-    // interpreted in the SERVER PROCESS's local timezone (not UTC, not the
-    // business's timezone). Every other branch in this function (today/
-    // tomorrow/next X) explicitly builds a UTC-midnight Date via Date.UTC().
-    // On a server not running with TZ=UTC, a typed date like "30 June" would
-    // come back as a Date that does NOT equal the UTC-midnight Date returned
-    // for the literal word "today" — even when they're the same calendar day.
-    // That silently broke the same-day comparison in validateTime() (used to
-    // reject booking a past time slot today), since bookingIsToday would
-    // incorrectly evaluate to false for any typed-out date. This helper
-    // re-anchors a native-parsed Date to UTC-midnight using its own calendar
-    // fields (year/month/date as interpreted by the parser), so the returned
-    // value is always directly comparable to the rest of this file regardless
-    // of what timezone the Node process itself happens to be running in.
-    const toUtcMidnight = (d) => new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()));
-
-    // Native parse on stripped string
-    const parsed = new Date(stripped);
-    if (!isNaN(parsed.getTime())) {
-      const yr = parsed.getFullYear();
-      // Correct implausible past year — e.g. "15 March" parsed as "15 March 1901"
-      if (yr < now.getUTCFullYear()) {
-        const withYear = `${stripped} ${now.getUTCFullYear()}`;
-        const p2 = new Date(withYear);
-        if (!isNaN(p2.getTime())) {
-          // [FIX-BOOK-1] Return the year-corrected date even if it is also in the past
-          // (e.g. "15 March" typed in June → March 2026). validateDate will reject it
-          // with a proper formatted "March 15, 2026 has already passed" message rather
-          // than the opaque "invalid date" message caused by returning the 1901 original.
-          return toUtcMidnight(p2);
-        }
-      }
-      // [FIX-6] Correct implausible far-future year (engine quirk on ambiguous formats)
-      if (yr > now.getUTCFullYear() + 2) {
-        const withYear = `${stripped} ${now.getUTCFullYear()}`;
-        const p2 = new Date(withYear);
-        if (!isNaN(p2.getTime())) return toUtcMidnight(p2);
-      }
-      return toUtcMidnight(parsed);
-    }
-
-    // Last resort: add current year
-    const withYear = `${stripped} ${now.getUTCFullYear()}`;
-    const parsed2  = new Date(withYear);
-    if (!isNaN(parsed2.getTime())) return toUtcMidnight(parsed2);
-
-    return null;
-  } catch { return null; }
-}
-
-function looksLikeDate(input) {
-  if (!input || input.length < 2) return false;
-  const s = input.toLowerCase().trim();
-  if (['today', 'tomorrow', 'yesterday'].includes(s)) return true;
-  if (/^next\s+(monday|tuesday|wednesday|thursday|friday|saturday|sunday)$/i.test(s)) return true;
-  if (/\d{1,2}[\/\-\.]\d{1,2}([\/\-\.]\d{2,4})?/.test(s)) return true;
-  if (/\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)/i.test(s)) return true;
-  if (/^\d{1,2}(st|nd|rd|th)?(\s+\w+)?$/.test(s)) return true;
-  return false;
-}
+// Re-export for backward compatibility (bakery/delivery flows import from here).
+export { tryParseDate } from '../../services/bookingDateParser.js';
 
 function looksLikeTime(input) {
   if (!input) return false;
@@ -210,39 +75,21 @@ function parseTimeToMinutes(timeStr) {
   return null;
 }
 
-/**
- * validateDate — checks a date string against business local "today".
- *
- * [FIX-TZ-1] Uses business timezone for midnight boundary so "today" is
- *             resolved in the business's local clock.
- *
- * @param {string}  dateInput
- * @param {string=} tz  IANA timezone string
- */
-function validateDate(dateInput, tz) {
-  const parsed = tryParseDate(dateInput, tz);
-  if (!parsed) return null; // unparseable — don't block
-
-  // "Today midnight" in the business's local timezone
-  const localNow = getLocalNow(tz);
-  const localMidnight = new Date(Date.UTC(localNow.getUTCFullYear(), localNow.getUTCMonth(), localNow.getUTCDate()));
-
-  if (parsed < localMidnight) {
-    const fmt = parsed.toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' });
-    return {
-      error: `⚠️ *${fmt}* has already passed.\n\nPlease choose an *upcoming date*.\n\n(e.g. *tomorrow*, *next Friday*, *25 June*)`,
-    };
-  }
-
-  const maxFuture = new Date(localMidnight);
-  maxFuture.setUTCMonth(maxFuture.getUTCMonth() + 18);
-  if (parsed > maxFuture) {
-    return {
-      error: `⚠️ That date is too far in the future. We accept bookings up to *18 months* ahead.\n\n(e.g. *next week*, *25 June*)`,
-    };
-  }
-
-  return { parsed };
+async function _confirmBookingDate(session, data, resolved) {
+  await updateSession(session.customerPhone, session.tenantId, {
+    step: 'DATE_CONFIRM',
+    data: {
+      ...data,
+      date: resolved.label,
+      dateRaw: resolved.raw,
+      parsedDate: resolved.parsed,
+    },
+  });
+  return {
+    type:    'buttons',
+    body:    `Just to confirm — did you mean *${resolved.label}*? 📅`,
+    buttons: [{ id: 'CONFIRM', title: '✅ Yes, that date' }, { id: 'DATE_BACK', title: '❌ No, re-enter' }],
+  };
 }
 
 /**
@@ -484,28 +331,19 @@ export async function handleBookingFlow({ session, message, business, tenant, is
       };
       const resolvedRaw = DATE_SHORTCUTS[raw.toUpperCase()] || raw;
 
-      if (!looksLikeDate(resolvedRaw)) {
+      const resolved = await resolveBookingDateInput(resolvedRaw, tz);
+      if (!resolved.ok) {
         const isBareOrdinal = /^\d{1,2}(st|nd|rd|th)$/i.test(raw.trim());
+        if (resolved.error === 'invalid' && resolved.message) {
+          return _buildDatePickerUI(resolved.message, tz);
+        }
         const hint = isBareOrdinal
           ? `I need the *month* too 📅\n\nFor example:\n• *${raw} June*\n• *${raw} July*\n• *${raw} August*`
-          : `I couldn't recognise *${raw}* as a date.\n\nExamples: *25 June*, *tomorrow*, *next Friday*`;
+          : `I couldn't recognise *${raw}* as a date.\n\nExamples: *25 June*, *tomorrow*, *next Friday*, *friday*, *on the 6th*`;
         return _buildDatePickerUI(hint, tz);
       }
 
-      // [FIX-B] Past/future validation
-      const validation = validateDate(resolvedRaw, tz);
-      if (validation?.error) {
-        return _buildDatePickerUI(validation.error, tz);
-      }
-
-      await updateSession(session.customerPhone, session.tenantId, {
-        step: 'DATE_CONFIRM', data: { ...data, date: resolvedRaw, parsedDate: validation?.parsed || null },
-      });
-      return {
-        type:    'buttons',
-        body:    `Just to confirm — did you mean *${resolvedRaw}*? 📅`,
-        buttons: [{ id: 'CONFIRM', title: '✅ Yes, that date' }, { id: 'DATE_BACK', title: '❌ No, re-enter' }],
-      };
+      return _confirmBookingDate(session, data, resolved);
     }
 
     case 'DATE_CONFIRM': {
@@ -517,18 +355,12 @@ export async function handleBookingFlow({ session, message, business, tenant, is
         await updateSession(session.customerPhone, session.tenantId, { step: 'DATE' });
         return _buildDatePickerUI(null, tz);
       }
-      // Inline new date
-      if (looksLikeDate(raw)) {
-        const v2 = validateDate(raw, tz);
-        if (v2?.error) return _buildDatePickerUI(v2.error, tz);
-        await updateSession(session.customerPhone, session.tenantId, {
-          step: 'DATE_CONFIRM', data: { ...data, date: raw, parsedDate: v2?.parsed || null },
-        });
-        return {
-          type:    'buttons',
-          body:    `Just to confirm — did you mean *${raw}*? 📅`,
-          buttons: [{ id: 'CONFIRM', title: '✅ Yes, that date' }, { id: 'DATE_BACK', title: '❌ No, re-enter' }],
-        };
+      const resolvedInline = await resolveBookingDateInput(raw, tz);
+      if (resolvedInline.ok) {
+        return _confirmBookingDate(session, data, resolvedInline);
+      }
+      if (resolvedInline.error === 'invalid' && resolvedInline.message) {
+        return _buildDatePickerUI(resolvedInline.message, tz);
       }
       return _buildDatePickerUI(`Please choose a date:`, tz);
     }
