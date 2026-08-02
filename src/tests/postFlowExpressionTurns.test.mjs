@@ -17,6 +17,7 @@ import {
   detectExpressionSubType,
   shouldHandleAsPostFlowExpression,
   buildExpressionSessionContext,
+  isPostFlowGreeting,
   maybeAppendExpressionClosing,
   trimExpressionReply,
   formatExpressionReply,
@@ -126,6 +127,19 @@ test('buildExpressionSessionContext: no order item names — feeling-first only'
   assert.match(ctx, /do NOT repeat/i);
   assert.ok(!ctx.includes('Superkanja'));
   assert.ok(!ctx.includes('Recent order'));
+});
+
+test('isPostFlowGreeting: hello/hi/hey route to full greet menu, not bare AI text', () => {
+  assert.equal(isPostFlowGreeting('Hello'), true);
+  assert.equal(isPostFlowGreeting('hello'), true);
+  assert.equal(isPostFlowGreeting('hey'), true);
+  assert.equal(isPostFlowGreeting('good morning'), true);
+  assert.equal(isPostFlowGreeting('thank you'), false);
+});
+
+test('postFlowHandler.js: greetings during post-flow fall through to GREET (menu buttons)', () => {
+  assert.match(pfhSrc, /isPostFlowGreeting\(msg\)/);
+  assert.match(pfhSrc, /return false/);
 });
 
 test('postFlowHandler.js: ORDER_COLLECTED uses smart expression replies, not hardcoded loop text', () => {

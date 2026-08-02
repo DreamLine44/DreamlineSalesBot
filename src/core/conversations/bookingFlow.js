@@ -25,6 +25,14 @@ import {
   resolveBookingDateInput,
   formatBookingDateLabel,
 } from '../../services/bookingDateParser.js';
+import {
+  buildDatePickerHub,
+  buildWeekDayList,
+  buildMonthPickerList,
+  buildMonthDayList,
+  parseMonthId,
+  resolveDayPick,
+} from '../../services/bookingDatePickerUI.js';
 // buildAdminBookingAlertBody is imported dynamically inside BOOKING_CONFIRM to stay consistent
 // with the dynamic import already there. The static buildAdminBookingAlert alias was dead code.
 import { trackBookingAnalytics }   from '../analytics/analyticsService.js';
@@ -315,7 +323,70 @@ export async function handleBookingFlow({ session, message, business, tenant, is
       return _buildDatePickerUI(`Perfect — *${partySize} guest${partySize > 1 ? 's' : ''}* 👥\n\nWhat date would you like? 📅`, tz);
     }
 
+    case 'DATE_MONTH': {
+      const upper = raw.toUpperCase();
+      if (upper === 'DATE_HUB_BACK' || upper === 'DATE_MONTH_BACK') {
+        await updateSession(session.customerPhone, session.tenantId, { step: 'DATE' });
+        return _buildDatePickerUI(null, tz);
+      }
+      const monthInfo = parseMonthId(raw);
+      if (monthInfo) {
+        await updateSession(session.customerPhone, session.tenantId, {
+          step: 'DATE_DAY',
+          data: { ...data, pickYear: monthInfo.year, pickMonth: monthInfo.month, pickDayPage: 0 },
+        });
+        return buildMonthDayList({
+          year: monthInfo.year, month: monthInfo.month, tz, page: 0,
+        });
+      }
+      return buildMonthPickerList(tz);
+    }
+
+    case 'DATE_DAY': {
+      const upper = raw.toUpperCase();
+      const pickYear = data.pickYear;
+      const pickMonth = data.pickMonth;
+
+      if (upper === 'DATE_MONTH_BACK') {
+        await updateSession(session.customerPhone, session.tenantId, { step: 'DATE_MONTH' });
+        return buildMonthPickerList(tz);
+      }
+
+      const moreMatch = upper.match(/^DATE_DAY_MORE_(\d{6})_(\d+)$/);
+      if (moreMatch && pickYear != null && pickMonth != null) {
+        const page = parseInt(moreMatch[2], 10);
+        await updateSession(session.customerPhone, session.tenantId, {
+          data: { ...data, pickDayPage: page },
+        });
+        return buildMonthDayList({ year: pickYear, month: pickMonth, tz, page });
+      }
+
+      const dayPick = await resolveDayPick(raw, tz);
+      if (dayPick) {
+        return _confirmBookingDate(session, data, dayPick);
+      }
+
+      const page = data.pickDayPage || 0;
+      if (pickYear != null && pickMonth != null) {
+        return buildMonthDayList({ year: pickYear, month: pickMonth, tz, page });
+      }
+      await updateSession(session.customerPhone, session.tenantId, { step: 'DATE_MONTH' });
+      return buildMonthPickerList(tz);
+    }
+
     case 'DATE': {
+      const upper = raw.toUpperCase();
+
+      if (upper === 'DATE_HUB_WEEK_0') return buildWeekDayList(0, tz);
+      if (upper === 'DATE_HUB_WEEK_1') return buildWeekDayList(1, tz);
+      if (upper === 'DATE_HUB_MONTH') {
+        await updateSession(session.customerPhone, session.tenantId, { step: 'DATE_MONTH' });
+        return buildMonthPickerList(tz);
+      }
+
+      const dayPick = await resolveDayPick(raw, tz);
+      if (dayPick) return _confirmBookingDate(session, data, dayPick);
+
       const _localNowForShortcut = getLocalNow(tz);
       const _addLocalDays = (n) => new Date(Date.UTC(
         _localNowForShortcut.getUTCFullYear(), _localNowForShortcut.getUTCMonth(),
@@ -323,7 +394,7 @@ export async function handleBookingFlow({ session, message, business, tenant, is
       ));
       const _fmtLocal = (d) => `${d.getUTCDate()} ${d.toLocaleDateString('en-GB', { month: 'long', timeZone: 'UTC' })}`;
 
-      // Tap-only quick picks — next 10 days (DATE_PICK_0 = today)
+      // Legacy quick-pick offsets (DATE_PICK_0…9)
       const pickMatch = raw.toUpperCase().match(/^DATE_PICK_(\d+)$/);
       if (pickMatch) {
         const offset = parseInt(pickMatch[1], 10);
@@ -684,44 +755,10 @@ export async function handleBookingFlow({ session, message, business, tenant, is
 // ── UI Builder Helpers ─────────────────────────────────────────────────────────
 
 /**
- * _buildDatePickerUI — tap-only list of the next 10 bookable days (no typing required).
+ * _buildDatePickerUI — hub menu: this week / next week / choose month (dropdown-style).
  */
-function _buildDatePickerUI(headingOrError = null, tz = 'UTC') {
-  const now = getLocalNow(tz);
-  const addDays = (n) => new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + n));
-  const shortDay = (d) => d.toLocaleDateString('en-GB', { weekday: 'short', timeZone: 'UTC' });
-  const shortDate = (d) => d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', timeZone: 'UTC' });
-  const longDate = (d) => formatBookingDateLabel(d, tz);
-
-  const localHour = now.getUTCHours();
-  const startOffset = localHour >= 20 ? 1 : 0;
-
-  const rows = [];
-  for (let i = startOffset; i < startOffset + 10; i++) {
-    const d = addDays(i);
-    const title = i === 0
-      ? '📅 Today'
-      : i === 1
-        ? '📅 Tomorrow'
-        : `📅 ${shortDay(d)} ${shortDate(d)}`;
-    rows.push({
-      id: `DATE_PICK_${i}`,
-      title: title.slice(0, 24),
-      description: longDate(d).slice(0, 72),
-    });
-  }
-
-  const body = headingOrError
-    ? `${headingOrError}\n\n👆 *Tap a date below* — no typing needed.`
-    : `What date would you like to book? 📅\n\n👆 *Tap a date below* — no typing needed.`;
-
-  return {
-    type:     'list',
-    body,
-    button:   'Choose a date',
-    sections: [{ title: '📅 Upcoming dates', rows }],
-    footer:   'Or type e.g. Friday, 25 June',
-  };
+function _buildDatePickerUI(headingOrError = null, _tz = 'UTC') {
+  return buildDatePickerHub(headingOrError);
 }
 
 const ALL_TIME_SLOTS = [

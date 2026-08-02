@@ -378,6 +378,9 @@ function isFlowPassthroughId(id) {
     // of the order details the customer tapped to see.
     /^ORDER_STATUS_[A-Z0-9]+$/.test(upper) || // multiple-order picker (ORDER_STATUS_<shortId>)
     /^BOOKING_STATUS_[A-Z0-9]+$/.test(upper) || // multiple-booking picker (BOOKING_STATUS_<shortId>)
+    /^DATE_D_\d{8}$/.test(upper) ||              // booking month/day picker (DATE_D_YYYYMMDD)
+    /^DATE_M_\d{6}$/.test(upper) ||              // booking month picker (DATE_M_YYYYMM)
+    /^DATE_DAY_MORE_\d{6}_\d+$/.test(upper) ||  // booking day list pagination
     // [FIX-RESUME-BTN-PT] RESUME_BOT_<phone> is an admin-facing button but must also be in
     // the passthrough set so that if the admin has an active flow when they tap it, the button
     // ID isn't forwarded to the flow handler as plain text. The admin button guard at step 6
@@ -408,6 +411,7 @@ const FLOW_PASSTHROUGH_IDS = new Set([
       'ORANGE','PURPLE','GOLD','SILVER','BEIGE'].map(c => `COLOR_${c}`),
   // ── Date quick-picks & nav ────────────────────────────────────────────────
   'DATE_TODAY','DATE_TOMORROW','DATE_NEXT_SAT','DATE_NEXT_SUN',
+  'DATE_HUB_WEEK_0','DATE_HUB_WEEK_1','DATE_HUB_MONTH','DATE_HUB_BACK','DATE_MONTH_BACK',
   ...Array.from({ length: 10 }, (_, i) => `DATE_PICK_${i}`),
   'DATE_BACK','TIME_BACK',
   // ── Booking: party size ───────────────────────────────────────────────────
@@ -755,6 +759,7 @@ const MFQ_FREE_TEXT_STEPS = new Set([
 const MFQ_DATE_TIME_STEPS = new Set([
   'SELECT_DATE', 'ENTER_DATE', 'SELECT_TIME', 'ENTER_TIME',
   'BOOKING_DATE', 'BOOKING_TIME', 'PICKUP_TIME', 'CUSTOM_TIME',
+  'DATE', 'DATE_MONTH', 'DATE_DAY', 'DATE_CONFIRM', 'TIME', 'TIME_CONFIRM',
 ]);
 
 // ── Quick STATUS command — single source of truth ─────────────────────────

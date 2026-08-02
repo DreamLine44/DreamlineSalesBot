@@ -572,7 +572,7 @@ export async function handleSalonBooking({ session, message, business, tenant, i
   }
 
   // ── Shared bookingFlow handles date/time/confirm steps ─────────────────────
-  const BOOKING_SHARED_STEPS = new Set(['DATE', 'DATE_CONFIRM', 'TIME', 'TIME_CONFIRM', 'BOOKING_CONFIRM']);
+  const BOOKING_SHARED_STEPS = new Set(['DATE', 'DATE_MONTH', 'DATE_DAY', 'DATE_CONFIRM', 'TIME', 'TIME_CONFIRM', 'BOOKING_CONFIRM']);
   if (BOOKING_SHARED_STEPS.has(step)) {
     return handleBookingFlow({ session, message, business, tenant, isInteractive });
   }

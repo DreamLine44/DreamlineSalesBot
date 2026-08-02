@@ -110,11 +110,10 @@ test('postFlowHandler.js: RESCHEDULE preserves the existing service/stylist inst
 
 test('core/conversations/bookingFlow.js: DATE step genuinely accepts free-text dates (sanity check for the fix\'s premise)', () => {
   const src = read('../core/conversations/bookingFlow.js');
-  const dateStepIdx = src.indexOf("case 'DATE': {");
-  assert.ok(dateStepIdx > -1, 'DATE case not found in bookingFlow.js');
-  const slice = src.slice(dateStepIdx, dateStepIdx + 1800);
+  const dateStepMatch = src.match(/case 'DATE': \{[\s\S]{0,4000}/);
+  assert.ok(dateStepMatch, 'DATE case not found in bookingFlow.js');
   assert.ok(
-    slice.includes('resolveBookingDateInput'),
+    dateStepMatch[0].includes('resolveBookingDateInput'),
     'DATE step should parse and validate free-text date input — confirms landing a ' +
     'customer directly on this step after RESCHEDULE is the correct fix.'
   );

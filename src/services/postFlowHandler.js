@@ -64,6 +64,12 @@ const COMPLIMENT_RE = /\b(amazing|excellent|fantastic|love|best|delicious|enjoye
 const LOYALTY_RE    = /\b(will\s*always|always\s*come|come\s*back|coming\s*back|see\s*you\s*again|be\s*back|return\s*again|my\s*favourite|my\s*favorite|only\s*place|tell\s*(my\s*)?friends|spread\s*the\s*word|every\s*time|again\s*and\s*again|loyal\s*customer|your\s*service\s*again)\b/i;
 const COMPLAINT_RE  = /\b(bad|terrible|awful|horrible|disappoint|not\s*good|wrong|cold|late|missing|never|complain|refund|cheat|fraud|angry|upset|poor|issue|problem|unsatisfied|unhappy|rubbish|disgusting|unacceptable|worst)\b/i;
 const QUESTION_RE   = /[?]|^(how|when|where|what|why|can\s*you|do\s*you|is\s*there|will\s*you|could\s*you)\b/i;
+/** Greetings during post-flow should show the main/booking menu — not a bare AI one-liner. */
+const GREETING_RE   = /^(hi|hello|hey|hiya|howdy|yo|good\s*(morning|afternoon|evening|night)|greetings|salaam|salam)\b/i;
+
+export function isPostFlowGreeting(msg) {
+  return GREETING_RE.test(String(msg || '').trim());
+}
 
 // [PFH-8] A lone ACK/COMPLIMENT regex match sitting next to a negation ("not amazing"),
 // a hedge ("hardly", "barely"), or a sarcasm marker (quoted word, clapping emoji, "lol")
@@ -337,6 +343,14 @@ export async function handlePostFlowMessage({
 
   const msg   = messageText.trim();
   const upper = msg.toUpperCase();
+
+  // [PFH-GREET] "Hello" after booking/order completion must show the menu (or
+  // booking-status card), not a plain AI welcome with no buttons. Fall through
+  // to intent detection → GREET, which already gates on active bookings/orders.
+  if (!isInteractive && isPostFlowGreeting(msg)) {
+    await updateSession(from, tenantId, { postFlowAck: null, postFlowData: null });
+    return false;
+  }
 
   const sentiment = await classifyPostFlowSentiment(msg, business);
   const isAck        = sentiment === 'ACK';
