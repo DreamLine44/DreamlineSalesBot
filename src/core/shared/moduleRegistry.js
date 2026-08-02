@@ -158,6 +158,9 @@ export async function registerAllModules() {
   //   dead end for a customer, even for tenants who opted into it.
   registerAction('START_ORDER', async ({ session, message, business, tenant, intent }) => {
     const { startFlow } = await import('../conversations/flowEngine.js');
+    const normalizedIntent = intent === 'START_ORDER' ? 'ORDER' : (intent || 'ORDER');
+    const msgUpper = String(message || '').trim().toUpperCase();
+    const explicitOrderTap = msgUpper === 'ORDER' || msgUpper === 'NEW_ORDER';
 
     // PATH A — no WA Catalog for this tenant. Old-version behavior, verbatim.
     if (!isCatalogEnabled(business) || !hasSellableProducts(business)) {
@@ -166,14 +169,14 @@ export async function registerAllModules() {
 
     // [ORDER-CHANNEL] Customer chose Browse Catalog earlier — keep them on catalog
     // for every subsequent "New Order" / ORDER tap (including MANUAL_ONLY tenants).
-    if (session?.orderChannel === 'catalog') {
+    if (session?.orderChannel === 'catalog' || explicitOrderTap) {
       const { browseCatalogExplicit } = await import('../../modules/catalog/waCatalogFlow.js');
       return browseCatalogExplicit({ session, business, tenant });
     }
 
     // PATH B — WA Catalog is actually configured for this tenant.
     const { offerCatalogOnStartOrder } = await import('../../modules/catalog/waCatalogFlow.js');
-    const { offered } = await offerCatalogOnStartOrder({ session, business, tenant, intent }).catch(() => ({ offered: false }));
+    const { offered } = await offerCatalogOnStartOrder({ session, business, tenant, intent: normalizedIntent }).catch(() => ({ offered: false }));
     if (offered) return null; // WA Catalog message already dispatched directly — nothing further to send
     return startFlow({ flowName: 'ORDER', session: { ...session, orderChannel: 'menu' }, business, tenant });
   });

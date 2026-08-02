@@ -46,3 +46,26 @@ test('activityStatusService: isStatusCommand recognises track phrases', async ()
   assert.equal(isStatusCommand('track my booking'), true);
   assert.equal(isStatusCommand('hello'), false);
 });
+
+test('detectIntent: ORDER button tap returns semantic intent ORDER (not START_ORDER)', async () => {
+  const { detectIntent } = await import('../core/intents/intentEngine.js');
+  const result = await detectIntent({
+    message: 'ORDER',
+    isInteractive: true,
+    session: { currentFlow: null },
+    business: { businessMode: 'RESTAURANT' },
+  });
+  assert.equal(result.action, 'START_ORDER');
+  assert.equal(result.intent, 'ORDER');
+  assert.equal(result.source, 'button');
+});
+
+test('START_ORDER: explicit ORDER/NEW_ORDER tap opens browseCatalogExplicit for catalog tenants', () => {
+  const src = readSource('../core/shared/moduleRegistry.js');
+  const start = src.indexOf("registerAction('START_ORDER'");
+  const end = src.indexOf("registerAction('START_BOOKING'");
+  const body = src.slice(start, end);
+  assert.match(body, /explicitOrderTap/);
+  assert.match(body, /browseCatalogExplicit/);
+  assert.ok(body.indexOf('explicitOrderTap') < body.indexOf('offerCatalogOnStartOrder'), 'explicit ORDER tap must route to catalog before automatic offer logic');
+});

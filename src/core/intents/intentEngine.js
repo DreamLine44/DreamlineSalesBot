@@ -183,7 +183,12 @@ export async function detectIntent({ message, isInteractive = false, session, bu
   if (isInteractive && raw) {
     const mapped = BUTTON_ID_MAP[upper] || BUTTON_ID_MAP[raw];
     if (mapped) {
-      return { action: mapped, intent: mapped, confidence: 'HIGH', source: 'button' };
+      // [FIX-CATALOG-BTN-INTENT] BUTTON_ID_MAP values are *actions* (START_ORDER),
+      // but downstream catalog logic (shouldOfferCatalog) expects semantic *intents*
+      // (ORDER). Returning action as intent made every ORDER-button tap skip WA
+      // Catalog under AI_DECIDES and fall through to the text menu instead.
+      const intent = actionToIntent(mapped);
+      return { action: mapped, intent, confidence: 'HIGH', source: 'button' };
     }
     // Interactive but unmapped ID — treat as CONTINUE_FLOW
     return { action: 'CONTINUE_FLOW', intent: 'CONTINUE_FLOW', confidence: 'HIGH', source: 'button' };
@@ -407,6 +412,15 @@ function getValidIntents(mode) {
     ELECTRONICS: ['SPEC_REQUEST', 'WARRANTY_INFO', 'COMPATIBILITY_CHECK'],
   };
   return [...base, ...(extra[mode] || [])];
+}
+
+/** Map action strings from BUTTON_ID_MAP back to semantic intents for catalog/routing. */
+function actionToIntent(action) {
+  const map = {
+    START_ORDER:   'ORDER',
+    START_BOOKING: 'BOOKING',
+  };
+  return map[action] || action;
 }
 
 // ── Map intent → action ───────────────────────────────────────────────────────
