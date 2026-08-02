@@ -101,8 +101,9 @@ test('flowEngine.completeFlow seeds postFlowData._exprTurnsLeft', () => {
 
 test('detectExpressionSubType: loyalty vs praise vs thanks', () => {
   assert.equal(detectExpressionSubType('Wow this is amazing', 'COMPLIMENT'), 'COMPLIMENT');
+  assert.equal(detectExpressionSubType('wow this is cool', 'UNRELATED'), 'COMPLIMENT');
   assert.equal(detectExpressionSubType('I will always come to your service again', 'UNRELATED'), 'LOYALTY');
-  assert.equal(detectExpressionSubType('thank you', 'ACK'), 'ACK');
+  assert.equal(detectExpressionSubType('sure', 'ACK'), 'ACK');
 });
 
 test('shouldHandleAsPostFlowExpression: loyalty counts even when sentiment is UNRELATED', () => {
@@ -110,30 +111,32 @@ test('shouldHandleAsPostFlowExpression: loyalty counts even when sentiment is UN
     shouldHandleAsPostFlowExpression('I will always come to your service again', 'UNRELATED'),
     true,
   );
+  assert.equal(shouldHandleAsPostFlowExpression('wow this is cool', 'UNRELATED'), true);
 });
 
-test('buildExpressionSessionContext: tells AI not to repeat the previous reply', () => {
+test('buildExpressionSessionContext: no order item names — feeling-first only', () => {
   const ctx = buildExpressionSessionContext({
-    ackCtx: 'ORDER_COLLECTED',
-    flowData: { item: 'Chura Gerteh', _lastExpressionReply: 'So glad you loved it!' },
     business: { name: 'YM Store' },
-    subType: 'LOYALTY',
-    lastBotReply: 'So glad you loved it!',
-    lastCustomerMsg: 'Wow this is amazing',
+    subType: 'COMPLIMENT',
+    customerMessage: 'wow this is cool',
+    lastBotReply: 'That means a lot! 😊',
+    lastCustomerMsg: 'wow this is cool',
   });
-  assert.match(ctx, /MUST NOT repeat/i);
-  assert.match(ctx, /LOYALTY/i);
+  assert.match(ctx, /wow this is cool/i);
+  assert.match(ctx, /do NOT repeat/i);
+  assert.ok(!ctx.includes('Superkanja'));
+  assert.ok(!ctx.includes('Recent order'));
 });
 
 test('postFlowHandler.js: ORDER_COLLECTED uses smart expression replies, not hardcoded loop text', () => {
   assert.doesNotMatch(pfhSrc, /You're so welcome\$\{custName\}! 😊 Glad you enjoyed it\./);
   assert.match(pfhSrc, /sendPostFlowExpression/);
-  assert.match(pfhSrc, /buildPostFlowExpressionReply/);
+  assert.match(pfhSrc, /orderContext: null/);
 });
 
-test('groqProvider.js: expression replyMode limits tokens and adds short-reply prompt', () => {
+test('groqProvider.js: expression mode uses minimal feeling-first prompt', () => {
   const groqSrc = readFileSync(join(__dirname, '../core/ai/providers/groqProvider.js'), 'utf8');
   assert.match(groqSrc, /replyMode === 'expression'/);
+  assert.match(groqSrc, /NEVER mention food names, dish names, menu items/);
   assert.match(groqSrc, /maxTokens\s*=\s*isExpression \? 45 : 350/);
-  assert.match(groqSrc, /NEVER repeat your previous reply/);
 });

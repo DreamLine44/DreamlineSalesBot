@@ -38,13 +38,19 @@ const EXPRESSION_BY_INTENT = {
 };
 
 function mockExpressionReply({ customerMessage, intent, sessionContext }) {
-  const lower = String(customerMessage || '').toLowerCase();
+  const lower = String(customerMessage || '').trim().toLowerCase();
   const ctx   = String(sessionContext || '').toLowerCase();
-  if (/\b(always|come back|again|loyal|favourite|favorite)\b/.test(lower) || ctx.includes('tone: loyalty')) {
+  if (/^(sure|ok|okay|cool|nice|great|yeah|yep|alright|thanks|thank you|thx|ty)$/i.test(lower)) {
+    return lower.includes('thank') ? 'You\'re welcome! 🙏' : 'Glad to hear! 😊';
+  }
+  if (/\b(always|come back|again|loyal|favourite|favorite|your service)\b/.test(lower) || ctx.includes('loyalty')) {
     return 'We can\'t wait to see you again! 🙏';
   }
-  if (/\b(wow|amazing|incredible|delicious|love|best)\b/.test(lower)) {
-    return 'So glad you loved it! 😊';
+  if (/\b(wow|cool|amazing|incredible|nice|great|love|best)\b/.test(lower)) {
+    return 'That means a lot! 😊';
+  }
+  if (intent?.toUpperCase() === 'EXPRESSION') {
+    return 'Thank you! 😊';
   }
   const key = (intent || 'FALLBACK').toUpperCase();
   return EXPRESSION_BY_INTENT[key] || EXPRESSION_BY_INTENT.FALLBACK;

@@ -60,7 +60,7 @@ function isValidName(n) {
 
 // ── Sentiment classifiers (shared across all ackCtx paths) ───────────────────
 const ACK_RE        = /^(ok|okay|k|kk|thanks?|thank\s*you|thank\s*u|thx|ty|tq|great|perfect|got\s*it|noted|alright|cool|nice|sounds\s*good|good|👍|🙏|😊|yep|yh|yah|understood|cheers|appreciate\s*it|brilliant|wonderful|awesome|lovely|received|noted|sure|fine|no\s*problem|np)$/i;
-const COMPLIMENT_RE = /\b(amazing|excellent|fantastic|love|best|delicious|enjoyed|happy|pleased|satisfied|impressed|recommend|5\s*star|five\s*star|well\s*done|great\s*job|keep\s*it\s*up|good\s*job|wonderful|superb|outstanding|top\s*notch|quality|wow|incredible|perfect|so\s*good|lovely|awesome|brilliant)\b/i;
+const COMPLIMENT_RE = /\b(amazing|excellent|fantastic|love|best|delicious|enjoyed|happy|pleased|satisfied|impressed|recommend|5\s*star|five\s*star|well\s*done|great\s*job|keep\s*it\s*up|good\s*job|wonderful|superb|outstanding|top\s*notch|quality|wow|incredible|perfect|so\s*good|lovely|awesome|brilliant|cool|nice)\b/i;
 const LOYALTY_RE    = /\b(will\s*always|always\s*come|come\s*back|coming\s*back|see\s*you\s*again|be\s*back|return\s*again|my\s*favourite|my\s*favorite|only\s*place|tell\s*(my\s*)?friends|spread\s*the\s*word|every\s*time|again\s*and\s*again|loyal\s*customer|your\s*service\s*again)\b/i;
 const COMPLAINT_RE  = /\b(bad|terrible|awful|horrible|disappoint|not\s*good|wrong|cold|late|missing|never|complain|refund|cheat|fraud|angry|upset|poor|issue|problem|unsatisfied|unhappy|rubbish|disgusting|unacceptable|worst)\b/i;
 const QUESTION_RE   = /[?]|^(how|when|where|what|why|can\s*you|do\s*you|is\s*there|will\s*you|could\s*you)\b/i;
@@ -177,24 +177,25 @@ export function shouldHandleAsPostFlowExpression(msg, sentiment) {
   return sub === 'LOYALTY' || (sub === 'COMPLIMENT' && sentiment === 'UNRELATED');
 }
 
-export function buildExpressionSessionContext({ ackCtx, flowData, business, subType, lastBotReply, lastCustomerMsg }) {
-  const bizName = business?.name || 'us';
+export function buildExpressionSessionContext({ business, subType, lastBotReply, lastCustomerMsg, customerMessage }) {
   const parts = [
-    `Post-flow customer reaction after ${ackCtx || 'completed activity'} at ${bizName}.`,
-    `Detected tone: ${subType}.`,
-    flowData?.item ? `Recent order/item: ${flowData.item}.` : null,
-    flowData?.service ? `Recent booking/service: ${flowData.service}.` : null,
-    lastCustomerMsg ? `Customer's previous message: "${lastCustomerMsg}".` : null,
-    lastBotReply ? `Your previous reply was: "${lastBotReply}". You MUST NOT repeat or paraphrase it — respond specifically to their NEW message and what they mean.` : null,
-    'Reply in one warm, professional WhatsApp sentence. Mirror their intent (praise, thanks, loyalty, frustration). No menu dump, no upsell.',
+    `Business: ${business?.name || 'us'}.`,
+    `Customer just said: "${String(customerMessage || '').trim()}".`,
+    lastCustomerMsg && lastCustomerMsg !== customerMessage
+      ? `Their earlier message: "${lastCustomerMsg}".`
+      : null,
+    lastBotReply
+      ? `Your last reply: "${lastBotReply}" — do NOT repeat it or say the same thing differently.`
+      : null,
+    `Optional tone hint: ${subType}. Let the customer's own words guide your reply, not order details.`,
   ];
   return parts.filter(Boolean).join(' ');
 }
 
 const EXPRESSION_FALLBACK_BY_SUBTYPE = {
   LOYALTY:    (custName) => `We'd love to see you again${custName}! 🙏`,
-  COMPLIMENT: (custName) => `So glad you enjoyed it${custName}! 😊`,
-  ACK:        (custName) => `You're welcome${custName}! 🙏`,
+  COMPLIMENT: (custName) => `That means a lot${custName}! 😊`,
+  ACK:        (custName) => `Anytime${custName}! 🙏`,
   GENERAL:    (custName) => `Thank you${custName}! 😊`,
 };
 
@@ -206,18 +207,13 @@ export async function buildPostFlowExpressionReply({
   const intent = intentOverride || (
     subType === 'COMPLAINT' ? 'COMPLAINT'
       : subType === 'QUESTION' ? 'QUESTION'
-        : subType === 'LOYALTY' || subType === 'COMPLIMENT' ? 'COMPLIMENT'
-          : 'ACKNOWLEDGEMENT'
+        : 'EXPRESSION'
   );
-  const orderContext = flowData?.item
-    ? { item: flowData.item, shortId: flowData.shortId }
-    : null;
   const sessionContext = [
     buildExpressionSessionContext({
-      ackCtx,
-      flowData,
       business,
       subType,
+      customerMessage: msg,
       lastBotReply: flowData?._lastExpressionReply,
       lastCustomerMsg: flowData?._lastCustomerExpression,
     }),
@@ -229,13 +225,13 @@ export async function buildPostFlowExpressionReply({
     business,
     session,
     intent,
-    orderContext,
+    orderContext: null,
     sessionContext,
   });
 
   const fallbackFn = EXPRESSION_FALLBACK_BY_SUBTYPE[subType] || EXPRESSION_FALLBACK_BY_SUBTYPE.GENERAL;
   const fallback = subType === 'LOYALTY'
-    ? `We can't wait to welcome you back${custName}! 🙏 — *${bizName || business?.name || 'us'}*`
+    ? `We can't wait to welcome you back${custName}! 🙏`
     : fallbackFn(custName);
 
   return formatExpressionReply(aiReply || fallback, flowData);
@@ -1314,8 +1310,8 @@ async function handleWalkInQueueAck({
   if (isCompliment || isAck || shouldHandleAsPostFlowExpression(msg, sentiment)) {
     const isConfirmed = ackCtx === 'WALKIN_CONFIRMED';
     const suffix = isConfirmed
-      ? `Customer confirmed in walk-in queue${serviceStr}${staffStr}. Acknowledge warmly — they should head over soon.`
-      : `Customer is waiting in the walk-in queue${serviceStr}${staffStr}.`;
+      ? 'Customer is confirmed in the walk-in queue — acknowledge warmly, they should head over soon.'
+      : 'Customer is in the walk-in queue — acknowledge warmly.';
     await sendPostFlowExpression({
       from, tenantId, ackCtx, flowData, msg, sentiment, business, session,
       custName, bizName, tenantDoc, sessionContextSuffix: suffix,
@@ -1421,7 +1417,7 @@ What date works best for you?`,
   if (isCompliment || isAck || shouldHandleAsPostFlowExpression(msg, sentiment)) {
     const suffix = isWalkIn
       ? 'Booking is a confirmed walk-in.'
-      : `Booking confirmed${whenStr}${staffStr}.`;
+      : 'Booking is confirmed.';
     await sendPostFlowExpression({
       from, tenantId, ackCtx, flowData, msg, sentiment, business, session,
       custName, bizName, tenantDoc, sessionContextSuffix: suffix,

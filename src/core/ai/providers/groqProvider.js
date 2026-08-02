@@ -74,6 +74,23 @@ function sanitise(str = '', maxLen = 600) {
 export function buildSystemPrompt({ business, intent, faqContext, orderContext, sessionContext = null, replyMode = null }) {
   const mode    = (business?.businessMode || 'RETAIL').toUpperCase();
   const name    = sanitise(business?.name || 'our business');
+
+  // [PFH-11] Post-flow expression replies: minimal prompt — feeling only, no menu/order/DB item names.
+  if (replyMode === 'expression') {
+    const sessionLine = sessionContext
+      ? sanitise(sessionContext, 500)
+      : '';
+    return [
+      `You are a warm, professional WhatsApp assistant for *${name}*.`,
+      sessionLine ? `Context: ${sessionLine}` : '',
+      `The customer just finished their visit and is sharing a feeling — not asking a question or placing an order.`,
+      `Read their EXACT words and reply in ONE short, natural sentence (max 10 words).`,
+      `Respond to their mood and meaning: praise → grateful warmth; thanks/ok/sure → brief friendly close; loyalty → welcome them back; frustration → brief sincere apology.`,
+      `NEVER mention food names, dish names, menu items, order numbers, or what they ordered — unless they explicitly named it in THIS message.`,
+      `NEVER repeat your previous reply. No upsells, menus, or follow-up questions.`,
+    ].filter(Boolean).join('\n');
+  }
+
   const desc    = sanitise(business?.description || '');
   const persona = getPersona(mode);
 
@@ -237,7 +254,7 @@ export function buildSystemPrompt({ business, intent, faqContext, orderContext, 
     `- NEVER suggest the customer contact another business, competitor, or third-party service.`,
     `- Use WhatsApp formatting: *bold* for emphasis. No markdown headers or bullet lists.`,
     replyMode === 'expression'
-      ? `\nPOST-FLOW REACTION MODE: The customer just finished an order/booking and is sharing a feeling (thanks, praise, loyalty, frustration). Reply in ONE short, warm, professional WhatsApp sentence (max 12 words). Respond to THEIR exact words and intent — if they say they'll come back, welcome that; if they praise the food, acknowledge that specifically. NEVER repeat your previous reply. No lists, upsells, menus, or extra questions.`
+      ? `\nPOST-FLOW REACTION MODE: Feeling-first reply only. No item names.`
       : '',
     intentInstruction,
   ].filter(Boolean).join('\n');
@@ -263,8 +280,10 @@ function getIntentInstruction(intent, mode, bizName, replyMode = null) {
         : `The customer is unhappy. Be sincerely apologetic and empathetic — never defensive. Focus on solving the problem. Offer to escalate to a real person if needed. Keep it short and genuine.`,
     'COMPLIMENT':
       replyMode === 'expression'
-        ? `The customer gave praise or loyalty after their order/booking. One warm sentence that mirrors what they said — never generic "you're welcome" unless they only said thanks.`
+        ? `Legacy — use EXPRESSION intent for post-flow replies instead.`
         : `The customer is happy and giving a compliment. Respond warmly and personally, express genuine gratitude, and invite them to come back or try something new.`,
+    'EXPRESSION':
+      `Post-flow emotional reaction. One natural sentence matching the customer's feeling from their exact words. Never mention what they ordered.`,
     'ACKNOWLEDGEMENT':
       replyMode === 'expression'
         ? `The customer sent a brief thanks or acknowledgement after their order/booking. One natural sentence — vary wording; do not repeat prior replies.`
