@@ -1079,6 +1079,27 @@ function _mfqStepLabel(flow, step) {
   return 'in the middle of something';
 }
 
+/** Strip leading backslashes and normalize for cancel-intent matching. */
+function _normalizeCancelText(text) {
+  return String(text || '')
+    .trim()
+    .toLowerCase()
+    .replace(/^\\+/, '')
+    .replace(/[^\w\s']/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/** Typed cancel phrases during an active flow (not just button id CANCEL). */
+function _isMidFlowCancelRequest(messageText) {
+  const clean = _normalizeCancelText(messageText);
+  if (!clean) return false;
+  if (['cancel', 'stop', 'quit', 'exit', 'nevermind', 'never mind', 'abort'].includes(clean)) return true;
+  if (/^cancel (my )?(booking|order|it|this)( please)?$/.test(clean)) return true;
+  if (/^(i want to|please) cancel/.test(clean)) return true;
+  return false;
+}
+
 // ── Main handler ──────────────────────────────────────────────────────────────
 export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj, phoneNumberId }) {
   const { text: messageText, imageUrl, isInteractive, isListReply, isFlowReply, flowReply } = extractMessage(msgObj);
@@ -2374,7 +2395,8 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
     // The Booking-cancel DB write that used to live inline here has been moved into
     // cancelFlow() itself (core/conversations/flowEngine.js) so every caller gets it,
     // not just this one call site — see [FIX-CANCEL-3].
-    if (upperMsg === 'CANCEL' || upperMsg === 'CANCEL_BOOKING' || upperMsg === 'CANCEL_ORDER') {
+    if (upperMsg === 'CANCEL' || upperMsg === 'CANCEL_BOOKING' || upperMsg === 'CANCEL_ORDER'
+        || (!isInteractive && _isMidFlowCancelRequest(messageText))) {
       const { cancelFlow } = await import('../core/conversations/flowEngine.js');
       const reply = await cancelFlow(session, business);
       await dispatchMessage(from, reply, tenantDoc);

@@ -459,6 +459,25 @@ export async function dispatchMessage(to, ui, tenant) {
         tenantId: tenant?._id,
       });
 
+      // [FIX-FLOW-FALLBACK] Flow sends fail when Flow ID is invalid/unpublished.
+      // Fall back to the day-list UI so the customer always gets a reply.
+      if (ui.type === 'flow' && ui.fallbackUi) {
+        const fbPayload = buildPayload(to, ui.fallbackUi);
+        if (fbPayload) {
+          logger.warn('[Dispatch] Retrying failed flow send as day-list fallback', { to, tenantId: tenant?._id });
+          resp = await _postPayloadToMeta(url, fbPayload, token);
+          if (resp.ok) {
+            logger.debug('[Dispatch] ✓ Flow fallback (day list) sent via Meta API', { to, tenantId: tenant?._id });
+            return resp;
+          }
+        }
+        const textPayload = buildPayload(to, { type: 'text', body: ui.body || ui.fallbackUi.body || 'Please pick a date below.' });
+        if (textPayload) {
+          resp = await _postPayloadToMeta(url, textPayload, token);
+          if (resp.ok) return resp;
+        }
+      }
+
       // [FIX-LIST-FALLBACK] List sends are the most common failure (row limits,
       // header issues). Retry as buttons, then plain text, before giving up.
       if (ui.type === 'list') {

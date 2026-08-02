@@ -300,14 +300,18 @@ export async function handleBookingFlow({ session, message, business, tenant, is
 
     // [FIX-7] PARTY_SIZE step — only reached for RESTAURANT mode
     case 'PARTY_SIZE': {
+      if (_isCancelIntent(clean, raw)) return cancelFlow(session, business);
+
       // Support quick-pick buttons (PARTY_2, PARTY_4, PARTY_6) as well as typed numbers
       const PARTY_SHORTCUTS = { 'PARTY_2': 2, 'PARTY_4': 4, 'PARTY_6': 6 };
       const { parseQuantity } = await import('../../utils/parseQuantity.js');
       const partySize = PARTY_SHORTCUTS[raw.toUpperCase()] ?? parseQuantity(raw);
       if (!partySize || partySize < 1) {
+        const triedCancel = _isCancelIntent(clean, raw);
+        if (triedCancel) return cancelFlow(session, business);
         return {
           type:    'buttons',
-          body:    `How many guests will be dining? 👥`,
+          body:    `How many guests will be dining? 👥\n\n_Type *cancel* anytime to stop._`,
           // [UX-BOOK-1] Drop Cancel from party size — keeps within 3-button limit.
           buttons: [
             { id: 'PARTY_2', title: '👥 2 guests'  },
@@ -771,13 +775,27 @@ export async function handleBookingFlow({ session, message, business, tenant, is
 
 // ── UI Builder Helpers ─────────────────────────────────────────────────────────
 
+function _isCancelIntent(clean, raw) {
+  const normalized = String(raw || clean || '')
+    .trim()
+    .toLowerCase()
+    .replace(/^\\+/, '')
+    .replace(/[^\w\s']/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return /^(cancel|cancel_booking|stop|quit|exit|nevermind|never mind)$/.test(normalized)
+    || /^cancel (my )?(booking|order|it|this)( please)?$/.test(normalized);
+}
+
 /**
- * _buildDatePickerUI — WhatsApp Flow calendar (auto-provisioned) or simple day list.
+ * _buildDatePickerUI — WhatsApp Flow calendar when ready; simple day list otherwise.
+ * Never blocks on Meta API — provisioning runs in the background.
  */
 async function _buildDatePickerUI(headingOrError = null, tz = 'UTC', { business, tenant, customerPhone } = {}) {
+  const dayListFallback = buildSimpleDayList(tz, headingOrError);
   let flowId = resolveBookingDateFlowId(business, tenant);
   if (!flowId && tenant?.whatsapp?.connected) {
-    flowId = await ensureBookingDateFlow({ business, tenant });
+    ensureBookingDateFlow({ business, tenant }).catch(() => {});
   }
   if (flowId) {
     const flowMsg = buildBookingDateFlowMessage({
@@ -786,9 +804,9 @@ async function _buildDatePickerUI(headingOrError = null, tz = 'UTC', { business,
       flowId,
       customerPhone,
     });
-    if (flowMsg) return flowMsg;
+    if (flowMsg) return { ...flowMsg, fallbackUi: dayListFallback };
   }
-  return buildSimpleDayList(tz, headingOrError);
+  return dayListFallback;
 }
 
 const ALL_TIME_SLOTS = [
