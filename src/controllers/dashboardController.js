@@ -42,6 +42,7 @@ import { updateSession }       from '../core/sessions/sessionService.js';
 import { dispatchText, dispatchMessage } from '../core/whatsapp/dispatcher.js';
 import { scheduleWaCatalogSync } from '../modules/catalog/waCatalogSyncScheduler.js';
 import logger from '../config/logger.js';
+import { formatOrderItemsForMessage } from '../services/orderService.js';
 
 // [AUDIT-FIX-9] User-supplied search strings were interpolated directly into
 // $regex filters (getCustomers below, and the equivalent pattern in
@@ -162,27 +163,23 @@ export async function updateOrderStatus(req, res) {
       const tenant = await loadTenant(tenantId);
       if (tenant && order.customerPhone) {
         const bizName = order.businessName || tenant.businessName || 'us';
+        const business = await BusinessConfig.findOne({ tenantId }).lean().catch(() => null);
+        const itemsBlock = formatOrderItemsForMessage(order, business || { payment: { currency: 'GMD' } });
 
         if (status === 'preparing') {
-          // [FIX-NOTIFY-PREPARING] New notification for the PREPARING state.
-          // Dashboard admins who set status → preparing were silently updating the DB
-          // with no WhatsApp message to the customer. Customer would wonder what's happening.
           await dispatchText(order.customerPhone,
             `🍳 *Your order is being prepared!*\n\n` +
-            `📦  *${order.item}* × ${order.quantity}\n` +
+            `${itemsBlock}\n` +
             `🔖  Reference: *#${order.shortId}*\n\n` +
             `Our kitchen is working on it — we'll message you the moment it's ready. 😊`,
             tenant);
 
         } else if (status === 'ready') {
-          // [FIX-NOTIFY-READY] New notification for the READY state, with collection buttons.
-          // Mirrors adminCommandService.markOrderReady() so dashboard and WhatsApp-command
-          // paths produce identical customer experience.
           await dispatchMessage(order.customerPhone, {
             type: 'buttons',
             body:
               `🍽️ *Your Order is Ready!*\n\n` +
-              `📦  *${order.item}* × ${order.quantity}\n` +
+              `${itemsBlock}\n` +
               `🔖  Reference: *#${order.shortId}*\n\n` +
               `Please collect your order at the counter 😊\n\n` +
               `Thank you for choosing *${bizName}*!`,
@@ -192,21 +189,21 @@ export async function updateOrderStatus(req, res) {
             ],
           }, tenant);
 
-          // [FIX-READY-SESSION] Set session to ORDER_READY so postFlowHandler handles
-          // follow-up messages correctly (collected button, questions, etc.).
           await updateSession(order.customerPhone, String(tenantId), {
             currentFlow:  null, step: null,
             postFlowAck:  'ORDER_READY',
-            postFlowData: { item: order.item, quantity: order.quantity, shortId: order.shortId },
+            postFlowData: {
+              item: order.item, quantity: order.quantity, shortId: order.shortId,
+              items: order.items?.length ? order.items : undefined,
+            },
           }).catch(() => {});
 
         } else if (status === 'out_for_delivery') {
-          // [FIX-NOTIFY-OUT_FOR_DELIVERY] Delivery dispatch notification.
           await dispatchMessage(order.customerPhone, {
             type: 'buttons',
             body:
               `🚗 *Your order is on its way!*\n\n` +
-              `📦  *${order.item}* × ${order.quantity}\n` +
+              `${itemsBlock}\n` +
               `🔖  Reference: *#${order.shortId}*\n\n` +
               `Sit tight — your delivery is en route! 🙏`,
             buttons: [
@@ -215,17 +212,16 @@ export async function updateOrderStatus(req, res) {
           }, tenant);
 
         } else if (status === 'confirmed') {
-          // [FIX-23] Set postFlowAck=ORDER_CONFIRMED so any customer follow-up after
-          // a dashboard-triggered confirmation gets a warm ORDER_CONFIRMED context reply
-          // instead of the cold "👋 Welcome! What would you like to do?" (GREET).
-          // This mirrors the WhatsApp button path (adminCommandService.confirmPayment()).
           await updateSession(order.customerPhone, String(tenantId), {
             currentFlow:  null, step: null,
             postFlowAck:  'ORDER_CONFIRMED',
-            postFlowData: { item: order.item, quantity: order.quantity, shortId: order.shortId },
+            postFlowData: {
+              item: order.item, quantity: order.quantity, shortId: order.shortId,
+              items: order.items?.length ? order.items : undefined,
+            },
           }).catch(() => {});
           await dispatchText(order.customerPhone,
-            `✅ *Your order is confirmed!*\n\n🍽 *${order.item}* × ${order.quantity}\n\nThank you for your patience! 😊`,
+            `✅ *Your order is confirmed!*\n\n${itemsBlock}\n\nThank you for your patience! 😊`,
             tenant);
         } else if (status === 'cancelled' || status === 'rejected') {
           // [FIX-23] Set postFlowAck=ORDER_REJECTED so customer follow-up ("ok", "why?")
@@ -318,14 +314,15 @@ export async function notifyOrderReady(req, res) {
     if (!tenant) {
       logger.warn('[Dashboard] notifyOrderReady: tenant not found (non-fatal)', { tenantId });
     } else {
-      const biz = await BusinessConfig.findOne({ tenantId }).select('name').lean();
+      const biz = await BusinessConfig.findOne({ tenantId }).lean();
       const bizName = biz?.name || 'us';
+      const itemsBlock = formatOrderItemsForMessage(order, biz || { payment: { currency: 'GMD' } });
 
       await dispatchMessage(order.customerPhone, {
         type: 'buttons',
         body:
           `🍽️ *Your Order is Ready!*\n\n` +
-          `📦  *${order.item}* × ${order.quantity}\n` +
+          `${itemsBlock}\n` +
           `🔖  Reference: *#${order.shortId}*\n\n` +
           `Please collect your order at the counter 😊\n\n` +
           `Thank you for choosing *${bizName}*!`,
@@ -339,7 +336,10 @@ export async function notifyOrderReady(req, res) {
       await updateSession(order.customerPhone, String(tenantId), {
         currentFlow:  null, step: null,
         postFlowAck:  'ORDER_READY',
-        postFlowData: { item: order.item, quantity: order.quantity, shortId: order.shortId },
+        postFlowData: {
+          item: order.item, quantity: order.quantity, shortId: order.shortId,
+          items: order.items?.length ? order.items : undefined,
+        },
       }).catch(err => logger.warn('[Dashboard] notifyOrderReady: session update failed (non-fatal)', { err: err.message }));
     }
 

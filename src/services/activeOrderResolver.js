@@ -35,6 +35,7 @@
 import Order  from '../models/Order.js';
 import logger from '../config/logger.js';
 import { formatMoney } from '../utils/formatCurrency.js';
+import { formatOrderItemSummary } from './orderService.js';
 
 // ── Active order state constants ───────────────────────────────────────────────
 export const ACTIVE_ORDER_STATES = {
@@ -142,7 +143,7 @@ function _resolveState(order, business, session) {
   const adminPhone  = business?.adminPhone || null;
   const custName    = session?.customerName ? `, ${session.customerName}` : '';
   const shortId     = order.shortId || '???';
-  const itemSummary = `*${order.item}* × ${order.quantity}`;
+  const itemSummary = formatOrderItemSummary(order);
   const priceStr    = order.totalPrice ? `${currency}${formatMoney(order.totalPrice)}` : null;
 
   // Priority 1 — Rejected payment
@@ -309,7 +310,7 @@ function _preparingCard(order, business, session, stage) {
   const currency   = business?.payment?.currency || 'D';
   const custName   = session?.customerName ? `, ${session.customerName}` : '';
   const shortId    = order.shortId || '???';
-  const itemSummary = `*${order.item}* × ${order.quantity}`;
+  const itemSummary = formatOrderItemSummary(order);
   const priceStr   = order.totalPrice ? `${currency}${formatMoney(order.totalPrice)}` : null;
 
   const statusLine = stage === 'preparing'

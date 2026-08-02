@@ -105,6 +105,7 @@ import { getModeConfig } from '../config/modes.js';
 import logger            from '../config/logger.js';
 import { formatMoney }   from '../utils/formatCurrency.js';
 import { buildOptionsReply } from '../core/shared/uiOptionsHelper.js';
+import { isNoPaymentOrder, formatOrderItemsForMessage } from './orderService.js';
 
 const MAX_INPUT_LENGTH = 500; // guard against absurdly long button IDs / command strings
 
@@ -354,7 +355,7 @@ async function confirmPayment(shortId, tenantId, adminPhone, tenantDoc, business
         abandonedCartAt:   null,
       }},
       { new: false } // need the pre-update doc for item/quantity/customerPhone
-    ).select('_id customerPhone status paymentStatus item quantity totalPrice shortId').lean();
+    ).select('_id customerPhone status paymentStatus item quantity totalPrice shortId items paymentProof').lean();
 
     if (!order) {
       // Either no such order, or it failed the state guard. Disambiguate for the admin.
@@ -365,11 +366,16 @@ async function confirmPayment(shortId, tenantId, adminPhone, tenantDoc, business
       return `⚠️ Order #${shortId} can't be confirmed — current status is *${existing.status}*.`;
     }
 
-    // [FIX-AWAIT] Check if this is a cash order (AWAIT_ADMIN_CONFIRM) so we can
-    // send the right confirmation message — "order confirmed" instead of "payment verified".
+    // [FIX-AWAIT] Cash / no-payment orders must say "Order Confirmed", not "Payment
+    // Confirmed". Previously this only checked session.step === AWAIT_ADMIN_CONFIRM,
+    // which expires with the session TTL (~30 min) — so an admin confirming a cash
+    // order 30+ minutes later wrongly told the customer "Your payment has been verified"
+    // even when payment.enabled is false and no proof was ever submitted.
     const { getSession: _getSession } = await import('../core/sessions/sessionService.js');
     const custSession2 = await _getSession(order.customerPhone, tenantId).catch(() => null);
-    const isCashConfirm = custSession2?.step === 'AWAIT_ADMIN_CONFIRM';
+    const isCashConfirm = isNoPaymentOrder(business, order, custSession2);
+
+    const itemsBlock = formatOrderItemsForMessage(order, business);
 
     // [FIX-CONFIRM-BTN] Plain text only on the initial confirmation — no welcome buttons.
     // Showing "Order Food / Book a Table" immediately after "your order is being prepared"
@@ -408,7 +414,7 @@ async function confirmPayment(shortId, tenantId, adminPhone, tenantDoc, business
     const confirmBody = isCashConfirm
       ? `✅ *Order Confirmed!*\n\n` +
         `Your order has been accepted.\n\n` +
-        `📦  Order: *${order.item}* × ${order.quantity}\n` +
+        `${itemsBlock}\n` +
         `🔖  Reference: #${order.shortId || shortId}\n\n` +
         preparingLine +
         etaLineToShow +
@@ -416,7 +422,7 @@ async function confirmPayment(shortId, tenantId, adminPhone, tenantDoc, business
         `Thank you for choosing *${bizName}* 😊`
       : `✅ *Payment Confirmed!*\n\n` +
         `Your payment has been verified.\n\n` +
-        `📦  Order: *${order.item}* × ${order.quantity}\n` +
+        `${itemsBlock}\n` +
         `🔖  Reference: #${order.shortId || shortId}\n\n` +
         preparingLine +
         etaLineToShow +
@@ -437,7 +443,11 @@ async function confirmPayment(shortId, tenantId, adminPhone, tenantDoc, business
     await updateSession(order.customerPhone, tenantId, {
       currentFlow: null, step: null,
       postFlowAck:  'ORDER_CONFIRMED',
-      postFlowData: { item: order.item, quantity: order.quantity, shortId: order.shortId || shortId },
+      postFlowData: {
+        item: order.item, quantity: order.quantity, shortId: order.shortId || shortId,
+        items: order.items?.length ? order.items : undefined,
+        totalPrice: order.totalPrice,
+      },
       lastAorInterceptAt: null,
     }).catch(() => {});
 
@@ -877,7 +887,7 @@ async function markOrderReady(shortId, tenantId, adminPhone, tenantDoc, business
       },
       { $set: { status: 'ready', readyAt: new Date() } },
       { new: false }
-    ).select('_id customerPhone item quantity shortId').lean();
+    ).select('_id customerPhone item quantity shortId items totalPrice').lean();
 
     if (!order) {
       const existing = await Order.findOne({ shortId, tenantId }).select('status paymentStatus').lean().catch(() => null);
@@ -889,12 +899,14 @@ async function markOrderReady(shortId, tenantId, adminPhone, tenantDoc, business
 
     const bizName = business?.name || 'us';
 
+    const itemsBlock = formatOrderItemsForMessage(order, business);
+
     // [SPEC-5A] Order ready notification with Collected + Need Help buttons
     await dispatchMessage(order.customerPhone, {
       type:    'buttons',
       body:
         `🍽️ *Your Order is Ready!*\n\n` +
-        `📦  *${order.item}* × ${order.quantity}\n` +
+        `${itemsBlock}\n` +
         `🔖  Reference: *#${order.shortId || shortId}*\n\n` +
         `Please collect your order at the counter 😊\n\n` +
         `Thank you for choosing *${bizName}*!`,
@@ -909,7 +921,10 @@ async function markOrderReady(shortId, tenantId, adminPhone, tenantDoc, business
     await updateSession(order.customerPhone, tenantId, {
       currentFlow:  null, step: null,
       postFlowAck:  'ORDER_READY',
-      postFlowData: { item: order.item, quantity: order.quantity, shortId: order.shortId || shortId },
+      postFlowData: {
+        item: order.item, quantity: order.quantity, shortId: order.shortId || shortId,
+        items: order.items?.length ? order.items : undefined,
+      },
     }).catch(() => {});
 
     logger.info('[AdminCmd] Order marked ready', { shortId, adminPhone });

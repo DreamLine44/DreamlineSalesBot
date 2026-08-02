@@ -27,6 +27,8 @@ import { updateSession }              from '../core/sessions/sessionService.js';
 import { dispatchText, dispatchMessage } from '../core/whatsapp/dispatcher.js';
 import { humanModeLimiter, overviewLimiter } from '../middleware/rateLimiter.js';
 import logger from '../config/logger.js';
+import BusinessConfig from '../models/BusinessConfig.js';
+import { formatOrderItemsForMessage } from '../services/orderService.js';
 
 const r = Router();
 
@@ -143,17 +145,20 @@ r.patch('/orders/:id/status', async (req, res) => {
     try {
       const tenant = await loadTenant(String(order.tenantId));
       if (tenant && order.customerPhone) {
+        const business = await BusinessConfig.findOne({ tenantId: order.tenantId }).lean().catch(() => null);
+        const itemsBlock = formatOrderItemsForMessage(order, business || { payment: { currency: 'GMD' } });
+
         if (status === 'preparing') {
           await dispatchText(
             order.customerPhone,
-            `🍳 *Your order is being prepared!*\n\n📦  *${order.item}* × ${order.quantity}\n🔖  Reference: *#${order.shortId}*\n\nOur kitchen is working on it — we'll message you the moment it's ready. 😊`,
+            `🍳 *Your order is being prepared!*\n\n${itemsBlock}\n🔖  Reference: *#${order.shortId}*\n\nOur kitchen is working on it — we'll message you the moment it's ready. 😊`,
             tenant,
           );
         } else if (status === 'ready') {
           await dispatchMessage(order.customerPhone, {
             type: 'buttons',
             body:
-              `🍽️ *Your Order is Ready!*\n\n📦  *${order.item}* × ${order.quantity}\n🔖  Reference: *#${order.shortId}*\n\nPlease collect your order at the counter 😊`,
+              `🍽️ *Your Order is Ready!*\n\n${itemsBlock}\n🔖  Reference: *#${order.shortId}*\n\nPlease collect your order at the counter 😊`,
             buttons: [
               { id: `COLLECTED_${order.shortId}`, title: '✅ Collected — Thanks!' },
               { id: 'SUPPORT',                     title: '❓ Need Help'           },
@@ -162,19 +167,22 @@ r.patch('/orders/:id/status', async (req, res) => {
           await updateSession(order.customerPhone, String(order.tenantId), {
             currentFlow: null, step: null,
             postFlowAck:  'ORDER_READY',
-            postFlowData: { item: order.item, quantity: order.quantity, shortId: order.shortId },
+            postFlowData: {
+              item: order.item, quantity: order.quantity, shortId: order.shortId,
+              items: order.items?.length ? order.items : undefined,
+            },
           }).catch(() => {});
         } else if (status === 'out_for_delivery') {
           await dispatchMessage(order.customerPhone, {
             type: 'buttons',
             body:
-              `🚗 *Your order is on its way!*\n\n📦  *${order.item}* × ${order.quantity}\n🔖  Reference: *#${order.shortId}*\n\nSit tight — your delivery is en route! 🙏`,
+              `🚗 *Your order is on its way!*\n\n${itemsBlock}\n🔖  Reference: *#${order.shortId}*\n\nSit tight — your delivery is en route! 🙏`,
             buttons: [{ id: 'SUPPORT', title: '💬 Contact Us' }],
           }, tenant);
         } else if (status === 'confirmed') {
           await dispatchText(
             order.customerPhone,
-            `✅ *Your order is confirmed!*\n\n🍽 *${order.item}* × ${order.quantity}\n\nThank you for your patience! 😊`,
+            `✅ *Your order is confirmed!*\n\n${itemsBlock}\n\nThank you for your patience! 😊`,
             tenant,
           );
         } else if (status === 'cancelled' || status === 'rejected') {

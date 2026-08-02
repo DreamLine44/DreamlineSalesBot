@@ -8,6 +8,7 @@
 import Order  from '../models/Order.js';
 import { recordOrderItem } from '../core/memory/customerMemory.js';
 import logger from '../config/logger.js';
+import { formatMoney } from '../utils/formatCurrency.js';
 
 // [MULTICART-v39] Phase 1 — pure normalization function, no DB/session
 // dependency. Given either legacy scalar order fields (item/quantity/
@@ -114,6 +115,51 @@ export async function saveOrder({ item, quantity, totalPrice, addOns, items, not
   );
 
   return order;
+}
+
+/**
+ * True when admin confirmation should say "Order Confirmed", not "Payment Confirmed".
+ * Must NOT rely on session.step alone — AWAIT_ADMIN_CONFIRM expires with the session TTL
+ * (~30 min), but cash / no-payment businesses still need order wording after that.
+ */
+export function isNoPaymentOrder(business, order, session = null) {
+  if (!business?.payment?.enabled) return true;
+  if (session?.step === 'AWAIT_ADMIN_CONFIRM') return true;
+  if (order?.paymentStatus === 'unpaid' && !order?.paymentProof) return true;
+  return false;
+}
+
+/**
+ * WhatsApp-friendly order lines for admin/customer notifications.
+ * Uses order.items[] when present (multi-item cart); falls back to item/quantity.
+ */
+export function formatOrderItemsForMessage(order, business) {
+  const currency = business?.payment?.currency || 'GMD';
+  const cartLines = Array.isArray(order?.items) && order.items.length > 0 ? order.items : null;
+
+  if (!cartLines) {
+    return `📦  Order: *${order.item}* × ${order.quantity}`;
+  }
+
+  if (cartLines.length === 1) {
+    return `📦  Order: *${cartLines[0].item}* × ${cartLines[0].quantity}`;
+  }
+
+  return cartLines.map((i) => {
+    const qty = i.quantity ?? 1;
+    const lineTotal = typeof i.unitPrice === 'number' ? i.unitPrice * qty : null;
+    const pricePart = lineTotal != null ? ` — ${currency}${formatMoney(lineTotal)}` : '';
+    return `📦  ${qty}× ${i.item}${pricePart}`;
+  }).join('\n');
+}
+
+/** Compact inline summary e.g. "*Attaya* × 1, *Akara* × 1" for status cards. */
+export function formatOrderItemSummary(order) {
+  const cartLines = Array.isArray(order?.items) && order.items.length > 1 ? order.items : null;
+  if (!cartLines) {
+    return `*${order.item}* × ${order.quantity}`;
+  }
+  return cartLines.map((i) => `*${i.item}* × ${i.quantity ?? 1}`).join(', ');
 }
 
 export async function getRecentOrders(customerPhone, tenantId, limit = 5) {
