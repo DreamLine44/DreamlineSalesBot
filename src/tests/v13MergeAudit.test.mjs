@@ -220,6 +220,6 @@ test('webhookController.js: quick STATUS command (no-flow fast path) is still ke
   const idx = src.indexOf('14.6. Quick STATUS command');
   assert.ok(idx > -1, 'Quick STATUS command section missing');
   const slice = src.slice(idx, idx + 3000);
-  assert.ok(slice.includes('customerPhone: from'), 'Order lookup must be scoped by customerPhone: from');
-  assert.ok(slice.includes('getActiveBooking(from, tenantId)'), 'Booking lookup must be scoped by from + tenantId');
+  assert.ok(slice.includes('customerPhone: from'), 'Status lookup must be scoped by customerPhone: from');
+  assert.ok(slice.includes('buildStatusReply'), 'Quick STATUS must delegate to buildStatusReply (DB-backed status service)');
 });

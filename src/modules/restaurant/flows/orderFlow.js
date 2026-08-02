@@ -978,7 +978,7 @@ async function _selectItem(item, session, business, data) {
 /**
  * handleRestaurantQuestion
  * Handles the QUESTION button and keyword-triggered FAQ intent for restaurant mode.
- * Uses AI to answer menu, hours, allergen, or general queries.
+ * Question Mode stays active until the customer explicitly switches activity.
  */
 export async function handleRestaurantQuestion({ session, message, business, tenant }) {
   const raw = String(message || '').trim();
@@ -989,10 +989,44 @@ export async function handleRestaurantQuestion({ session, message, business, ten
       body: '❓ What would you like to know? Ask about our menu, hours, allergens, or anything else!',
       buttons: [
         { id: 'ORDER',     title: '🍔 Order Food'  },
-        { id: 'VIEW_MENU', title: '📋 View Menu'   }, // [AUDIT-FIX-VIEWMENU] was SHOW_MENU
+        { id: 'VIEW_MENU', title: '📋 View Menu'   },
       ],
     };
   }
+
+  const { isRestaurantScopeQuestion } = await import('../../../services/questionModeHelper.js');
+  if (!isRestaurantScopeQuestion(raw)) {
+    return {
+      type: 'buttons',
+      body: "I'm here to help with restaurant-related questions — menu, orders, bookings, hours, and policies. What would you like to know?",
+      buttons: [
+        { id: 'QUESTION', title: '❓ Ask Another'  },
+        { id: 'ORDER',    title: '🍔 Order Food'   },
+        { id: 'BOOK',     title: '📅 Book a Table' },
+      ],
+    };
+  }
+
+  const { buildStatusReply } = await import('../../../services/activityStatusService.js');
+  const { detectIntent } = await import('../../../core/intents/intentEngine.js');
+  const { updateSession } = await import('../../../core/sessions/sessionService.js');
+
+  try {
+    const intentResult = await detectIntent({
+      message: raw, isInteractive: false,
+      session: { ...session, currentFlow: null },
+      business,
+    });
+    if (intentResult.action === 'TRACK_ORDER' && intentResult.confidence !== 'LOW') {
+      const statusReply = await buildStatusReply({ session, business, message: raw });
+      await updateSession(session.customerPhone, session.tenantId, {
+        currentFlow: 'QUESTION',
+        step: 'AWAITING_QUESTION',
+        data: { ...(session.data || {}), _questionCtx: { lastMessage: raw } },
+      });
+      return statusReply;
+    }
+  } catch (_) { /* fall through to AI */ }
 
   const aiReply = await getAIReply({
     customerMessage: raw,
@@ -1001,11 +1035,11 @@ export async function handleRestaurantQuestion({ session, message, business, ten
     intent: 'FAQ',
   });
 
-  // [FIX-Q-COMPLETE] completeFlow() clears the session. Previously it was called BEFORE
-  // building the return value and `if (_lcRrq) return _lcRrq` meant a lead-capture response
-  // REPLACED the AI answer. Fix: call completeFlow AFTER assembling the response and discard
-  // its return — the AI answer is the complete response for the QUESTION flow.
-  await completeFlow(session, 'QUESTION', business, tenant).catch(() => {});
+  await updateSession(session.customerPhone, session.tenantId, {
+    currentFlow: 'QUESTION',
+    step: 'AWAITING_QUESTION',
+    data: { ...(session.data || {}), _questionCtx: { lastMessage: raw } },
+  });
 
   return {
     type: 'buttons',

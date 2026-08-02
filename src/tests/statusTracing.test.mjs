@@ -52,6 +52,13 @@ test('detectIntent: order-status phrases still resolve to TRACK_ORDER (unchanged
   }
 });
 
+test('detectIntent: casual ordering phrases resolve to START_ORDER', async () => {
+  for (const message of ["i'm hungry", 'im hungry', 'can i place an order']) {
+    const result = await detectIntent({ message, isInteractive: false, business: { businessMode: 'RESTAURANT' } });
+    assert.equal(result.action, 'START_ORDER', `'${message}' should resolve to START_ORDER`);
+  }
+});
+
 // ── Quick STATUS command fast path (webhookController.js) ────────────────
 //
 // webhookController.js is a large, DB/dispatch-coupled controller not designed
@@ -93,17 +100,13 @@ test('STATUS_CMD_RE does not match unrelated free text (stays a narrow, exact qu
   }
 });
 
-test('webhookController.js quick-STATUS handler now checks Booking as well as Order', () => {
-  // Regression guard for the root bug: this fast path used to query ONLY the
-  // Order collection, so a customer with an active booking but no order got
-  // "no recent order" instead of their booking status. Pins that the handler
-  // now imports and calls getActiveBooking from bookingService.js.
+test('webhookController.js quick-STATUS handler uses activityStatusService', () => {
   const url = new URL('../controllers/webhookController.js', import.meta.url);
   const src = fs.readFileSync(url, 'utf8');
   const startIdx = src.indexOf('const STATUS_CMD_RE');
-  const endIdx = src.indexOf('No recent order and no active booking', startIdx);
+  const endIdx = src.indexOf('// ── 15. Active flow', startIdx);
   assert.ok(startIdx !== -1 && endIdx !== -1, 'Could not locate the quick-STATUS command block');
   const block = src.slice(startIdx, endIdx);
-  assert.ok(block.includes("getActiveBooking"), 'Quick-STATUS handler should call getActiveBooking()');
-  assert.ok(block.includes('activeBooking'), 'Quick-STATUS handler should hold an activeBooking result');
+  assert.ok(block.includes('buildStatusReply'), 'Quick-STATUS handler should call buildStatusReply()');
+  assert.ok(block.includes('activityStatusService'), 'Quick-STATUS handler should use activityStatusService');
 });

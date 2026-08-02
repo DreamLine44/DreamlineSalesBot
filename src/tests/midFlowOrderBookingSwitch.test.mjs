@@ -103,7 +103,7 @@ function loadRealDetectMidFlowSwitchRequest() {
 
   const freeTextMatch = src.match(/const MFQ_FREE_TEXT_STEPS = new Set\(\[[\s\S]*?\]\);/);
   const dateTimeMatch = src.match(/const MFQ_DATE_TIME_STEPS = new Set\(\[[\s\S]*?\]\);/);
-  const fnMatch       = src.match(/function _detectMidFlowSwitchRequest\(text, session, business\) \{[\s\S]*?\n\}/);
+  const fnMatch       = src.match(/function _detectMidFlowSwitchRequest\(text, session, business(?:, isInteractive = false)?\) \{[\s\S]*?\n\}/);
 
   assert.ok(freeTextMatch, 'MFQ_FREE_TEXT_STEPS definition not found');
   assert.ok(dateTimeMatch, 'MFQ_DATE_TIME_STEPS definition not found');
@@ -301,7 +301,7 @@ test('webhookController.js: FSI switch buttons are registered so they bypass int
 
 test('webhookController.js: mid-flow switch intercept is wired in after the MFQ question intercept, before the final advance() call', () => {
   const src = read('../controllers/webhookController.js');
-  const fsiCallIdx = src.indexOf('_detectMidFlowSwitchRequest(messageText, session, business)');
+  const fsiCallIdx = src.indexOf('const _fsiTargetFlow = _detectMidFlowSwitchRequest(');
   const mfqBlockIdx = src.indexOf('15.1c: Detect question intent in typed free-text mid-flow');
   const finalAdvanceIdx = src.indexOf('ensure imageUrl cannot be truthy here with messageText empty');
   assert.ok(fsiCallIdx > -1, 'Mid-flow switch intercept is defined but never called');

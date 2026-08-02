@@ -39,9 +39,13 @@ test('detectPreFlowEmotion: CONFUSED wins over URGENT/EXCITED when no frustratio
   assert.equal(detectPreFlowEmotion('i dont understand, can you explain').emotion, 'CONFUSED');
 });
 
-test('detectPreFlowEmotion: URGENT and EXCITED are each detected on their own', () => {
+test('detectPreFlowEmotion: URGENT and HAPPY are each detected on their own', () => {
   assert.equal(detectPreFlowEmotion('need this asap please').emotion, 'URGENT');
-  assert.equal(detectPreFlowEmotion('omg i cant wait for this').emotion, 'EXCITED');
+  assert.equal(detectPreFlowEmotion('omg i cant wait for this').emotion, 'HAPPY');
+});
+
+test('detectPreFlowEmotion: THANKFUL is detected for thanks messages', () => {
+  assert.equal(detectPreFlowEmotion('thank you so much').emotion, 'THANKFUL');
 });
 
 test('detectPreFlowEmotion: plain neutral text and empty input are NEUTRAL', () => {

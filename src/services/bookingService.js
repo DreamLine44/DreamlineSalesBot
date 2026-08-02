@@ -49,3 +49,10 @@ export async function getActiveBooking(customerPhone, tenantId) {
     status: { $in: ['pending', 'confirmed'] },
   }).sort({ createdAt: -1 }).lean();
 }
+
+export async function getActiveBookings(customerPhone, tenantId, limit = 10) {
+  return Booking.find({
+    customerPhone, tenantId,
+    status: { $in: ['pending', 'confirmed'] },
+  }).sort({ createdAt: -1 }).limit(limit).lean();
+}

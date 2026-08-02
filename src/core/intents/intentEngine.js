@@ -64,7 +64,7 @@ export const DIRECT_INTENT_EXCLUDE_RE = new RegExp(
 // [UPGRADE-DIRECT-INTENT-2] Widened beyond the literal words "order"/"book" to
 // catch phrasing that never uses them at all ("give me 2 burgers", "table for
 // tonight").
-export const ORDER_DIRECT_RE   = /\b(order|buy|purchase|shopping|can i get|can i have|i ll have|i ll take|give me|get me|i want|i d like|craving)\b/;
+export const ORDER_DIRECT_RE   = /\b(order|buy|purchase|shopping|can i get|can i have|i ll have|i ll take|give me|get me|i want|i d like|craving|hungry|starving|peckish|place an order)\b/;
 export const BOOKING_DIRECT_RE = /\b(book|reserve|reservation|appointment|table for|party of|table at|table tonight|come in|slot for|availability for)\b/;
 
 // ── Name extraction ───────────────────────────────────────────────────────────

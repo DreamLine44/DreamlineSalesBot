@@ -27,10 +27,12 @@
  * Returns exactly one label, priority-ordered because a message can trigger more
  * than one pattern (e.g. "this is ridiculous, i need it now" is both frustrated
  * and urgent — frustration is the more actionable signal so it wins):
- *   FRUSTRATED > CONFUSED > URGENT > EXCITED > NEUTRAL
+ *   ANGRY > FRUSTRATED > CONFUSED > URGENT > THANKFUL > HAPPY > NEUTRAL
  */
 
 import { normalise } from '../intents/intentEngine.js';
+
+const ANGRY_RE = /\b(furious|angry|pissed|outraged|disgusted|hate\s+this)\b/i;
 
 // ── Frustration ────────────────────────────────────────────────────────────────
 // Deliberately narrow, unambiguous frustration language — not the same list as
@@ -79,14 +81,15 @@ const CONFUSED_RE = /\b(i\s*don\s*t\s*understand|what\s*do\s*you\s*mean|confus\w
 // ── Urgency ────────────────────────────────────────────────────────────────────
 const URGENT_RE = /\b(asap|as\s*soon\s*as\s*possible|hurry|quick\w*|urgent\w*|right\s*away|in\s*a\s*rush|running\s*late|need\s*(this|it)\s*now|now\s*please|immediately)\b/i;
 
-// ── Excitement / positive ──────────────────────────────────────────────────────
-const EXCITED_RE = /\b(can\s*t\s*wait|so\s*excited|yesss+|omg|amazing|woohoo|yay|finally+)\b/i;
+// ── Thankfulness / happiness ───────────────────────────────────────────────────
+const THANKFUL_RE = /\b(thanks?|thank\s*you|thx|ty|cheers|appreciate\s*it|much\s*appreciated)\b/i;
+const HAPPY_RE = /\b(can\s*t\s*wait|so\s*excited|yesss+|omg|amazing|woohoo|yay|finally+|great|awesome|love\s+it)\b/i;
 
 /**
  * detectPreFlowEmotion(rawMessage)
  *
  * @param {string} rawMessage — the raw, un-normalised customer message text
- * @returns {{ emotion: 'FRUSTRATED'|'CONFUSED'|'URGENT'|'EXCITED'|'NEUTRAL', source: string }}
+ * @returns {{ emotion: 'ANGRY'|'FRUSTRATED'|'CONFUSED'|'URGENT'|'THANKFUL'|'HAPPY'|'NEUTRAL'|'EXCITED', source: string }}
  */
 export function detectPreFlowEmotion(rawMessage = '') {
   const raw   = String(rawMessage || '').trim();
@@ -94,9 +97,9 @@ export function detectPreFlowEmotion(rawMessage = '') {
 
   const clean = normalise(raw);
 
-  // Keyword matches always take priority over the punctuation/shouting heuristic —
-  // otherwise "ASAP!!" or "can't wait!!" get misread as FRUSTRATED just because of
-  // the double punctuation, when the words themselves clearly say URGENT/EXCITED.
+  if (ANGRY_RE.test(clean)) {
+    return { emotion: 'ANGRY', source: 'regex' };
+  }
   if (FRUSTRATED_RE.test(clean)) {
     return { emotion: 'FRUSTRATED', source: 'regex' };
   }
@@ -106,8 +109,11 @@ export function detectPreFlowEmotion(rawMessage = '') {
   if (URGENT_RE.test(clean)) {
     return { emotion: 'URGENT', source: 'regex' };
   }
-  if (EXCITED_RE.test(clean)) {
-    return { emotion: 'EXCITED', source: 'regex' };
+  if (THANKFUL_RE.test(clean)) {
+    return { emotion: 'THANKFUL', source: 'regex' };
+  }
+  if (HAPPY_RE.test(clean)) {
+    return { emotion: 'HAPPY', source: 'regex' };
   }
   // Punctuation/shouting is a weaker, fallback-only signal — checked last so it
   // never overrides a clear keyword match for a different emotion.
@@ -122,11 +128,13 @@ export function detectPreFlowEmotion(rawMessage = '') {
 // just prepend a one-line acknowledgement. Kept mode-agnostic on purpose so this
 // works identically across all business verticals without per-mode copies.
 const TONE_PREFIX = {
+  ANGRY:      "I'm really sorry — let's fix this right away.\n\n",
   FRUSTRATED: "😔 Sorry about that — let's sort this out quickly.\n\n",
   CONFUSED:   "🙂 No worries at all — let's take it one step at a time.\n\n",
-  EXCITED:    '😄 Love the energy! ',
-  // URGENT and NEUTRAL intentionally have no prefix — urgency is better served by
-  // brevity (see applyEmotionTone / GREET shortcut) than by adding more text.
+  HAPPY:      '😄 ',
+  EXCITED:    '😄 Love the energy! ', // legacy alias
+  THANKFUL:   '🙏 ',
+  // URGENT and NEUTRAL intentionally have no prefix
 };
 
 /**

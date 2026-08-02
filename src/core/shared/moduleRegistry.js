@@ -318,81 +318,9 @@ export async function registerAllModules() {
     return startFlow({ flowName: 'ORDER', session, business, tenant });
   });
 
-  registerAction('TRACK_ORDER', async ({ session, business }) => {
-    // [AUDIT-FIX-14] Root cause of two related bugs visible when a customer asks
-    // "do I have any active order or booking?":
-    //   1. This handler only ever looked at Order records, via getRecentOrders(...,1),
-    //      which returns the single MOST RECENT order regardless of its status. A
-    //      customer whose only order was completed days ago got it presented as
-    //      "Your latest order" with no indication it wasn't current — misleading when
-    //      the question was specifically about *active* items.
-    //   2. Bookings were never queried at all, so a customer who had just made a table
-    //      booking (as in the reported case) got an answer that silently ignored it,
-    //      even though they explicitly asked about "order OR booking".
-    // Fix: check for a genuinely active order (via the same non-terminal-status /
-    // 24h-pending-cutoff definition activeOrderResolver already uses elsewhere, so
-    // "active" means the same thing everywhere in the app) AND a genuinely active
-    // booking, and report on whichever actually exist — rather than always resurfacing
-    // history.
-    const { resolveActiveOrder }             = await import('../../services/activeOrderResolver.js');
-    const { getActiveBooking }                = await import('../../services/bookingService.js');
-    const { getModeConfig }                   = await import('../../config/modes.js');
-
-    const [orderResolution, activeBooking] = await Promise.all([
-      resolveActiveOrder(session.customerPhone, session.tenantId, business, session).catch(() => null),
-      getActiveBooking(session.customerPhone, session.tenantId).catch(() => null),
-    ]);
-    const activeOrder = orderResolution?.state !== 'NO_ACTIVE_ORDER' ? (orderResolution?.order || null) : null;
-
-    const phone    = business?.adminPhone;
-    const cfg      = getModeConfig(business);
-    const canOrder = cfg.flows?.includes('ORDER');
-
-    const ORDER_STATUS_LABELS = {
-      pending: '⏳ Pending', payment_pending_verification: '⏳ Awaiting payment verification',
-      confirmed: '✅ Confirmed', preparing: '👨‍🍳 Preparing', ready: '📦 Ready for collection',
-      out_for_delivery: '🚚 Out for delivery', delivered: '✅ Delivered',
-    };
-    const BOOKING_STATUS_LABELS = { pending: '⏳ Awaiting confirmation', confirmed: '✅ Confirmed' };
-
-    const extraOrderCount = Math.max((orderResolution?.orders?.length || 0) - 1, 0);
-
-    const sections = [];
-    if (activeOrder) {
-      sections.push(
-        `🍽 *${activeOrder.item}* × ${activeOrder.quantity}\n📅 ${new Date(activeOrder.createdAt).toLocaleDateString()}\n` +
-        `🔖 Status: *${ORDER_STATUS_LABELS[activeOrder.status] || activeOrder.status}*` +
-        (extraOrderCount > 0 ? `\n_+${extraOrderCount} more active order${extraOrderCount > 1 ? 's' : ''} — contact us for the full list_` : '')
-      );
-    }
-    if (activeBooking) {
-      const when = [activeBooking.date, activeBooking.time].filter(Boolean).join(' • ');
-      sections.push(
-        `📅 *Booking*${when ? ` — ${when}` : ''}\n` +
-        `🔖 Status: *${BOOKING_STATUS_LABELS[activeBooking.status] || activeBooking.status}*`
-      );
-    }
-
-    let body;
-    if (sections.length) {
-      const heading = activeOrder && activeBooking ? '📦 *Your active order & booking*' :
-                      activeBooking ? '📅 *Your active booking*' : '📦 *Your active order*';
-      body = `${heading}\n\n${sections.join('\n\n')}\n\n` +
-        (phone ? `For live updates: 📞 *${phone}*` : 'Contact us for live updates.');
-    } else {
-      body = `You don't have any active order or booking right now.\n\n` +
-        (phone ? `Contact us: 📞 *${phone}*` : 'Contact us directly for help.');
-    }
-
-    return {
-      type: 'buttons',
-      body,
-      buttons: [
-        canOrder ? { id: 'ORDER', title: '🛍 New Order' } : null,
-        { id: 'SUPPORT',   title: '💬 Contact Support' },
-        { id: 'SHOW_MENU', title: '🔄 Start Over'       },
-      ].filter(Boolean).slice(0, 3),
-    };
+  registerAction('TRACK_ORDER', async ({ session, business, message }) => {
+    const { buildStatusReply } = await import('../../services/activityStatusService.js');
+    return buildStatusReply({ session, business, message });
   });
 
   logger.info('[Registry] All modules registered ✓');

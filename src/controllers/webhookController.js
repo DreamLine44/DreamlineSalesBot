@@ -377,6 +377,7 @@ function isFlowPassthroughId(id) {
     // which has no case for ORDER_STATUS_ → FALLBACK, showing a generic help menu instead
     // of the order details the customer tapped to see.
     /^ORDER_STATUS_[A-Z0-9]+$/.test(upper) || // multiple-order picker (ORDER_STATUS_<shortId>)
+    /^BOOKING_STATUS_[A-Z0-9]+$/.test(upper) || // multiple-booking picker (BOOKING_STATUS_<shortId>)
     // [FIX-RESUME-BTN-PT] RESUME_BOT_<phone> is an admin-facing button but must also be in
     // the passthrough set so that if the admin has an active flow when they tap it, the button
     // ID isn't forwarded to the flow handler as plain text. The admin button guard at step 6
@@ -873,12 +874,24 @@ function _detectMidFlowStatusRequest(text, session) {
 // vertical doesn't support (e.g. RETAIL/FASHION/DELIVERY have no BOOKING flow).
 const normaliseFsi = normalise;
 
-function _detectMidFlowSwitchRequest(text, session, business) {
+function _detectMidFlowSwitchRequest(text, session, business, isInteractive = false) {
   const flow = (session.currentFlow || '').toUpperCase();
-  // Only ORDER/BOOKING have a meaningful "other flow" to switch into — a false
-  // positive on a niche flow (CAKE_CUSTOMIZATION, WALKIN, ENQUIRY, LEAD_CAPTURE)
-  // is a worse outcome than doing nothing, so those are deliberately left alone.
-  if (flow !== 'ORDER' && flow !== 'BOOKING') return null;
+  const questionFlows = new Set(['QUESTION', 'ENQUIRY']);
+
+  if (isInteractive) {
+    const id = String(text || '').trim().toUpperCase();
+    if (questionFlows.has(flow)) {
+      if (id === 'ORDER') return 'ORDER';
+      if (id === 'BOOK' || id === 'BOOK_NOW') return 'BOOKING';
+    }
+    if ((flow === 'ORDER' || flow === 'BOOKING') && id === 'QUESTION') return 'QUESTION';
+    if (flow === 'ORDER' && (id === 'BOOK' || id === 'BOOK_NOW')) return 'BOOKING';
+    if (flow === 'BOOKING' && id === 'ORDER') return 'ORDER';
+    return null;
+  }
+
+  // Only ORDER/BOOKING/QUESTION have a meaningful "other activity" to switch into.
+  if (flow !== 'ORDER' && flow !== 'BOOKING' && !questionFlows.has(flow)) return null;
 
   const step = (session.step || '').toUpperCase();
   if (MFQ_FREE_TEXT_STEPS.has(step) || MFQ_DATE_TIME_STEPS.has(step)) return null;
@@ -892,18 +905,23 @@ function _detectMidFlowSwitchRequest(text, session, business) {
   let targetFlow = null;
   if (BOOKING_DIRECT_RE.test(clean)) targetFlow = 'BOOKING';
   else if (ORDER_DIRECT_RE.test(clean)) targetFlow = 'ORDER';
+  else if (/\b(ask\s+(a\s+)?question|i\s+have\s+a\s+question|question\s+mode|just\s+a\s+question)\b/.test(clean)) {
+    targetFlow = 'QUESTION';
+  }
   if (!targetFlow || targetFlow === flow) return null;
 
-  // [FIX-FSI-1] Only the CURRENT flow's own catalog can suppress the switch.
-  const catalog = flow === 'ORDER' ? (business?.menuItems || []) : (business?.services || []);
-  if (catalog.length) {
-    const match = findBestMatch(catalog, raw);
-    if (match?.confidenceLevel === 'HIGH') return null;
+  // Item-name collision guard — only for ORDER/BOOKING switches.
+  if (flow === 'ORDER' || flow === 'BOOKING') {
+    const catalog = flow === 'ORDER' ? (business?.menuItems || []) : (business?.services || []);
+    if (catalog.length && targetFlow !== 'QUESTION') {
+      const match = findBestMatch(catalog, raw);
+      if (match?.confidenceLevel === 'HIGH') return null;
+    }
   }
 
-  // [FIX-FSI-2] Capability gate.
   const cfg = getModeConfig(business);
   const supportedFlows = cfg?.flows || [];
+  if (targetFlow === 'QUESTION') return 'QUESTION';
   if (!supportedFlows.includes(targetFlow)) return null;
 
   return targetFlow;
@@ -1714,30 +1732,51 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
     return;
   }
 
-  // ── 13. ENQUIRY active flow ───────────────────────────────────────────────
+  // ── 13. ENQUIRY active flow (Question Mode) ───────────────────────────────
   if (session.currentFlow === 'ENQUIRY') {
     if (session.step === 'AWAITING_QUESTION') {
-      await updateSession(from, tenantId, { step: 'ANSWERED' });
+      const { buildStatusReply } = await import('../services/activityStatusService.js');
+      const { detectIntent } = await import('../core/intents/intentEngine.js');
+      const { isRestaurantScopeQuestion } = await import('../services/questionModeHelper.js');
+
+      if (!isRestaurantScopeQuestion(messageText)) {
+        await dispatchMessage(from, {
+          type: 'text',
+          body: "I'm here to help with restaurant-related questions — menu, orders, bookings, hours, and policies. How can I assist you with that?",
+        }, tenantDoc);
+        return;
+      }
+
+      let statusReply = null;
+      try {
+        const intentResult = await detectIntent({ message: messageText, isInteractive: false, session: { ...session, currentFlow: null }, business });
+        if (intentResult.action === 'TRACK_ORDER' && intentResult.confidence !== 'LOW') {
+          statusReply = await buildStatusReply({ session, business, message: messageText });
+        }
+      } catch (_) { /* non-fatal */ }
+
+      if (statusReply) {
+        await dispatchMessage(from, statusReply, tenantDoc);
+        return;
+      }
+
+      await updateSession(from, tenantId, {
+        step: 'AWAITING_QUESTION',
+        data: { ...(session.data || {}), _questionCtx: { lastMessage: messageText } },
+      });
       const { getAIReply } = await import('../core/ai/providers/aiRouter.js');
-      const aiText = await getAIReply({ customerMessage: messageText, business, session, intent: 'QUESTION' });
-      // [FIX-ENQ-1] Clear the flow AFTER dispatching the reply, not before.
-      // The previous order (clear → dispatch) meant that if dispatchMessage threw,
-      // the session was already cleared: the customer got no response, and their next
-      // message would not re-enter the ENQUIRY step — it would just hit intent
-      // detection again. Now we clear after a confirmed (awaited) dispatch so the
-      // session only advances on success.
+      const aiText = await getAIReply({ customerMessage: messageText, business, session, intent: 'FAQ' });
       await dispatchMessage(from, {
         type:    'buttons',
         body:    aiText || 'Let me check that for you. 😊',
         buttons: [
-          { id: 'QUESTION',  title: '❓ Ask again'  },
-          { id: 'SHOW_MENU', title: '🔄 Start Over' },
+          { id: 'QUESTION',  title: '❓ Ask another'  },
+          { id: 'ORDER',     title: '🛍 Order'       },
+          { id: 'SHOW_MENU', title: '🔄 Start Over'  },
         ],
       }, tenantDoc);
-      await updateSession(from, tenantId, { currentFlow: null, step: null });
       return;
     }
-    // Stale ANSWERED state — just clear and fall through
     await updateSession(from, tenantId, { currentFlow: null, step: null });
   }
 
@@ -1905,43 +1944,41 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
   if (isInteractive && messageText && /^ORDER_STATUS_[A-Z0-9]+$/i.test(messageText.trim().toUpperCase())) {
     const pickedShortId = messageText.trim().toUpperCase().replace('ORDER_STATUS_', '');
     if (pickedShortId) {
-      // [AUDIT-FIX-TRACE-4] This query was missing `customerPhone: from` — every other
-      // order lookup in this file (pendingOrder, rejectedOrder, COLLECTED_* handler)
-      // scopes to the requesting customer's own phone number in addition to tenantId.
-      // Without it, this handler would return full order details (item, price, status,
-      // payment state) for ANY order belonging to the tenant, to whoever supplied a
-      // matching shortId — not just the order's owner. In normal use the shortId always
-      // belongs to the tapping customer because activeOrderResolver._multipleOrders()
-      // only ever builds this button from that customer's own phone-scoped order list,
-      // but the query itself should not rely on that being the only way to reach here.
       const pickedOrder = await Order.findOne({
         shortId: pickedShortId, tenantId, customerPhone: from,
         status: { $nin: ['cancelled', 'completed'] },
-      }).select('item quantity shortId status paymentStatus totalPrice').lean().catch(() => null);
+      }).lean().catch(() => null);
 
       if (pickedOrder) {
-        const currency = business?.payment?.currency || 'D';
-        const statusMap = {
-          pending: '⏳ Waiting for confirmation', confirmed: '🍳 Being prepared',
-          preparing: '🍳 Being prepared', ready: '✅ Ready for collection!',
-        };
-        const payMap = {
-          unpaid: '💳 Awaiting payment screenshot', proof_received: '📸 Screenshot received — verifying',
-          confirmed: '✅ Payment verified', rejected: '❌ Payment rejected — tap to retry',
-        };
+        const { formatOrderStatusCard } = await import('../services/activityStatusService.js');
         await dispatchMessage(from, {
           type: 'buttons',
-          body:
-            `📦 *Order #${pickedOrder.shortId}*
+          body: formatOrderStatusCard(pickedOrder, business),
+          buttons: [
+            { id: 'SUPPORT',   title: '💬 Contact Support' },
+            { id: 'SHOW_MENU', title: '🔄 Main Menu'       },
+          ],
+        }, tenantDoc);
+        return;
+      }
+    }
+  }
 
-` +
-            `🛒 *${pickedOrder.item}* × ${pickedOrder.quantity}
-` +
-            (pickedOrder.totalPrice ? `💰 Total: *${currency}${formatMoney(pickedOrder.totalPrice)}*
-` : '') +
-            `📊 Status: ${statusMap[pickedOrder.status] || pickedOrder.status}
-` +
-            `💳 Payment: ${payMap[pickedOrder.paymentStatus] || pickedOrder.paymentStatus}`,
+  // ── 14.43. BOOKING_STATUS_* — customer picking from multiple-booking list ─
+  if (isInteractive && messageText && /^BOOKING_STATUS_[A-Z0-9]+$/i.test(messageText.trim().toUpperCase())) {
+    const pickedShortId = messageText.trim().toUpperCase().replace('BOOKING_STATUS_', '');
+    if (pickedShortId) {
+      const { default: Booking } = await import('../models/Booking.js');
+      const { formatBookingStatusCard } = await import('../services/activityStatusService.js');
+      const pickedBooking = await Booking.findOne({
+        shortId: pickedShortId, tenantId, customerPhone: from,
+        status: { $in: ['pending', 'confirmed'] },
+      }).lean().catch(() => null);
+
+      if (pickedBooking) {
+        await dispatchMessage(from, {
+          type: 'buttons',
+          body: formatBookingStatusCard(pickedBooking),
           buttons: [
             { id: 'SUPPORT',   title: '💬 Contact Support' },
             { id: 'SHOW_MENU', title: '🔄 Main Menu'       },
@@ -2009,78 +2046,17 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
   // no-flow fast path and the mid-flow STATUS escape share one definition.)
   if (messageText && STATUS_CMD_RE.test(messageText.trim()) && !session.currentFlow) {
     try {
-      const { getActiveBooking } = await import('../services/bookingService.js');
-      const [recentOrder, activeBooking] = await Promise.all([
-        Order.findOne({
-          customerPhone: from,
-          tenantId,
-          status: { $nin: ['cancelled'] },
-        }).select('item quantity shortId status paymentStatus createdAt').sort({ createdAt: -1 }).lean(),
-        getActiveBooking(from, tenantId).catch(() => null),
-      ]);
+      const { buildStatusReply } = await import('../services/activityStatusService.js');
+      const statusReply = await buildStatusReply({
+        session: { ...session, customerPhone: from },
+        business,
+        message: messageText,
+      });
 
-      if (recentOrder || activeBooking) {
-        const parts = [];
-
-        if (recentOrder) {
-          // [AUDIT-FIX-TRACE-2] statusMap was missing several real Order.status values
-          // ('preparing', 'out_for_delivery', 'delivered', 'payment_pending_verification'),
-          // so a customer whose order was in one of those states saw the raw internal
-          // status string (e.g. "payment_pending_verification") instead of a readable
-          // label. Filled in to match the labels activeOrderResolver.js already uses
-          // elsewhere, so the same status always reads the same way to the customer.
-          const statusMap = {
-            pending:                      '⏳ Waiting for our team to confirm',
-            payment_pending_verification: '⏳ Awaiting payment verification',
-            confirmed:                    '🍳 Being prepared',
-            preparing:                    '👨‍🍳 Being prepared',
-            ready:                        '✅ Ready for collection!',
-            out_for_delivery:             '🚚 Out for delivery',
-            delivered:                    '✅ Delivered',
-            completed:                    '✅ Completed — thank you!',
-          };
-          const payMap = {
-            unpaid:         '💳 Awaiting payment',
-            proof_received: '📸 Payment screenshot received — verifying',
-            verified:       '✅ Payment verified',
-            paid:           '✅ Paid',
-            confirmed:      '✅ Payment confirmed',
-            rejected:       '❌ Payment rejected — please resubmit',
-          };
-          parts.push(
-            `📦 *Order Update*\n\n` +
-            `• Item: *${recentOrder.item}* × ${recentOrder.quantity}\n` +
-            `• Ref: *#${recentOrder.shortId}*\n` +
-            `• Status: ${statusMap[recentOrder.status] || recentOrder.status}\n` +
-            `• Payment: ${payMap[recentOrder.paymentStatus] || recentOrder.paymentStatus}`
-          );
-        }
-
-        if (activeBooking) {
-          const bookingStatusMap = {
-            pending:   '⏳ Awaiting confirmation',
-            confirmed: '✅ Confirmed',
-          };
-          const when = [activeBooking.date, activeBooking.time].filter(Boolean).join(' at ');
-          parts.push(
-            `📅 *Booking Update*\n\n` +
-            (activeBooking.service ? `• Service: *${activeBooking.service}*\n` : '') +
-            (when ? `• When: *${when}*\n` : '') +
-            `• Ref: *#${activeBooking.shortId}*\n` +
-            `• Status: ${bookingStatusMap[activeBooking.status] || activeBooking.status}`
-          );
-        }
-
-        await dispatchMessage(from, {
-          type: 'text',
-          body: parts.join('\n\n'),
-        }, tenantDoc);
-        return;
-      }
-      // No recent order and no active booking — fall through to intent detection
+      await dispatchMessage(from, statusReply, tenantDoc);
+      return;
     } catch (err) {
       logger.debug('[Webhook] STATUS command lookup failed (non-fatal)', { err: err.message });
-      // Non-fatal — fall through to intent detection
     }
   }
 
@@ -2851,23 +2827,19 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
       }
     }
 
-    // ── 15.1e: Detect a mid-flow request to switch to the OTHER flow ────────
-    // Only fires for non-interactive (typed) text, mirroring the 15.1c question
-    // intercept's own guards — numeric/very-short input is quantity/date noise,
-    // not a switch request.
-    if (
-      !isInteractive &&
-      messageText.length >= 4 &&
-      !/^\d+$/.test(messageText.trim()) &&
-      session.currentFlow &&
-      session.step
-    ) {
-      const _fsiTargetFlow = _detectMidFlowSwitchRequest(messageText, session, business);
+    // ── 15.1e: Detect a mid-flow request to switch activity ────────
+    const _fsiEligible = session.currentFlow && (session.step || isInteractive);
+    if (_fsiEligible) {
+      const _fsiTargetFlow = _detectMidFlowSwitchRequest(
+        messageText, session, business, isInteractive,
+      );
       if (_fsiTargetFlow) {
         const stepLabelFsi = _mfqStepLabel(session.currentFlow, session.step);
         const fsiSwitchFlow = session.currentFlow;
         const fsiSwitchStep = session.step;
         const fsiSwitchData = { ...(session.data || {}) };
+        const { snapshotActivityData } = await import('../services/questionModeHelper.js');
+        const activitySnapshot = snapshotActivityData(session, session.currentFlow);
 
         await updateSession(from, tenantId, {
           data: {
@@ -2875,7 +2847,7 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
             _fsiTargetFlow,
             _fsiResumeFlow: fsiSwitchFlow,
             _fsiResumeStep: fsiSwitchStep,
-            _fsiResumeData: fsiSwitchData,
+            _fsiResumeData: { ...fsiSwitchData, _activitySnapshot: activitySnapshot },
           },
         });
 
@@ -2885,9 +2857,14 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
         // branch too. Source it from the business's own mode config welcomeButtons
         // instead of a hardcoded string.
         const cfgFsi         = getModeConfig(business);
-        const targetBtnId   = _fsiTargetFlow === 'BOOKING' ? 'BOOK' : 'ORDER';
+        const targetBtnId   = _fsiTargetFlow === 'BOOKING' ? 'BOOK'
+          : _fsiTargetFlow === 'QUESTION' ? 'QUESTION' : 'ORDER';
         const targetBtn       = (cfgFsi.ui?.welcomeButtons || []).find(b => b.id === targetBtnId);
-        const targetLabel     = targetBtn?.title || (_fsiTargetFlow === 'BOOKING' ? '📅 Switch flow' : '🛒 Switch flow');
+        const targetLabel     = targetBtn?.title || (
+          _fsiTargetFlow === 'BOOKING' ? '📅 Switch flow'
+            : _fsiTargetFlow === 'QUESTION' ? '❓ Ask Questions'
+              : '🛒 Switch flow'
+        );
 
         await dispatchMessage(from, {
           type:    'buttons',

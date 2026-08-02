@@ -252,6 +252,7 @@ export const INTENT_PATTERNS = {
     'i want to order', 'place order', 'i want to buy', 'i want food',
     'get food', 'order food', 'i want to eat', 'add to cart', 'buy now',
     'i want', 'i would like to order', 'can i order', 'let me order',
+    'can i place an order', 'place an order', "i'm hungry", 'im hungry', 'i am hungry',
     'i need food', 'food please', 'give me food', 'bring food', 'order pls',
     'lemme order', 'i wan order', 'i wan buy', 'i wan food',
     'abeg let me order', 'pls let me order', 'i dey hungry',
