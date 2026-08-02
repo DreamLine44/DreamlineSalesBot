@@ -18,10 +18,12 @@ import logger         from '../config/logger.js';
 
 // ── POST /api/message ─────────────────────────────────────────────────────────
 export async function simulateMessage(req, res) {
-  const { userId, tenantId: bodyTenantId, message, type = 'text', buttonId, listId } = req.body;
+  const { userId, tenantId: bodyTenantId, message, type = 'text', buttonId, listId, flowReply } = req.body;
 
   if (!userId) return res.status(400).json({ error: 'userId required' });
-  if (!message && !buttonId && !listId) return res.status(400).json({ error: 'message, buttonId, or listId required' });
+  if (!message && !buttonId && !listId && !flowReply) {
+    return res.status(400).json({ error: 'message, buttonId, listId, or flowReply required' });
+  }
 
   try {
     // Resolve tenant
@@ -46,6 +48,18 @@ export async function simulateMessage(req, res) {
       msgObj = {
         id: `sim_${Date.now()}`, type: 'interactive', from: userId,
         interactive: { type: 'list_reply', list_reply: { id: val, title: val } },
+      };
+    } else if (flowReply || type === 'flow_reply') {
+      const payload = typeof flowReply === 'object' ? flowReply : { booking_date: message };
+      msgObj = {
+        id: `sim_${Date.now()}`, type: 'interactive', from: userId,
+        interactive: {
+          type: 'nfm_reply',
+          nfm_reply: {
+            name: 'flow',
+            response_json: JSON.stringify(payload),
+          },
+        },
       };
     } else if (type === 'image') {
       msgObj = {
@@ -82,6 +96,8 @@ export async function simulateMessage(req, res) {
       buttons: ui.buttons || null,
       rows:    ui.rows    || null,
       header:  ui.header  || null,
+      flowId:  ui.flowId  || null,
+      flowCta: ui.flowCta || null,
       userId,
       tenantId,
     });

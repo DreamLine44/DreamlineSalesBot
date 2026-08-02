@@ -33,6 +33,12 @@ import {
   parseMonthId,
   resolveDayPick,
 } from '../../services/bookingDatePickerUI.js';
+import {
+  resolveBookingDateFlowId,
+  buildBookingDateFlowMessage,
+  parseBookingDateFlowReply,
+  resolveFlowBookingDate,
+} from '../../services/bookingDateFlow.js';
 // buildAdminBookingAlertBody is imported dynamically inside BOOKING_CONFIRM to stay consistent
 // with the dynamic import already there. The static buildAdminBookingAlert alias was dead code.
 import { trackBookingAnalytics }   from '../analytics/analyticsService.js';
@@ -156,7 +162,7 @@ function validateTime(timeInput, parsedBookingDate, tz) {
 }
 
 // ── Booking flow handler ───────────────────────────────────────────────────────
-export async function handleBookingFlow({ session, message, business, tenant, isInteractive }) {
+export async function handleBookingFlow({ session, message, business, tenant, isInteractive, flowReply = null }) {
   const raw      = String(message || '').trim();
   const clean    = raw.toLowerCase().trim();
   const step     = session.step;
@@ -216,7 +222,7 @@ export async function handleBookingFlow({ session, message, business, tenant, is
         footer: 'Or type any number e.g. 8',
       };
     }
-    return _buildDatePickerUI(null, tz);
+    return _buildDatePickerUI(null, tz, { business, tenant, customerPhone: session.customerPhone });
   }
 
   switch (step) {
@@ -288,7 +294,7 @@ export async function handleBookingFlow({ session, message, business, tenant, is
           footer: 'Or type any number e.g. 8',
         };
       }
-      return _buildDatePickerUI(`Great — *${service.name}* selected! ✅\n\nWhat date would you like? 📅`, tz);
+      return _buildDatePickerUI(`Great — *${service.name}* selected! ✅\n\nWhat date would you like? 📅`, tz, { business, tenant, customerPhone: session.customerPhone });
     }
 
     // [FIX-7] PARTY_SIZE step — only reached for RESTAURANT mode
@@ -320,14 +326,14 @@ export async function handleBookingFlow({ session, message, business, tenant, is
       await updateSession(session.customerPhone, session.tenantId, {
         step: 'DATE', data: { ...data, partySize },
       });
-      return _buildDatePickerUI(`Perfect — *${partySize} guest${partySize > 1 ? 's' : ''}* 👥\n\nWhat date would you like? 📅`, tz);
+      return _buildDatePickerUI(`Perfect — *${partySize} guest${partySize > 1 ? 's' : ''}* 👥\n\nWhat date would you like? 📅`, tz, { business, tenant, customerPhone: session.customerPhone });
     }
 
     case 'DATE_MONTH': {
       const upper = raw.toUpperCase();
       if (upper === 'DATE_HUB_BACK' || upper === 'DATE_MONTH_BACK') {
         await updateSession(session.customerPhone, session.tenantId, { step: 'DATE' });
-        return _buildDatePickerUI(null, tz);
+        return _buildDatePickerUI(null, tz, { business, tenant, customerPhone: session.customerPhone });
       }
       const monthInfo = parseMonthId(raw);
       if (monthInfo) {
@@ -377,6 +383,16 @@ export async function handleBookingFlow({ session, message, business, tenant, is
     case 'DATE': {
       const upper = raw.toUpperCase();
 
+      // WhatsApp Flow calendar reply (nfm_reply with booking_date YYYY-MM-DD)
+      if (flowReply) {
+        const isoDate = parseBookingDateFlowReply(flowReply);
+        if (isoDate) {
+          const resolved = await resolveFlowBookingDate(isoDate, tz);
+          if (resolved.ok) return _confirmBookingDate(session, data, resolved);
+          return _buildDatePickerUI(resolved.message || `Invalid date from calendar.`, tz, { business, tenant, customerPhone: session.customerPhone });
+        }
+      }
+
       if (upper === 'DATE_HUB_WEEK_0') return buildWeekDayList(0, tz);
       if (upper === 'DATE_HUB_WEEK_1') return buildWeekDayList(1, tz);
       if (upper === 'DATE_HUB_MONTH') {
@@ -421,12 +437,12 @@ export async function handleBookingFlow({ session, message, business, tenant, is
       if (!resolved.ok) {
         const isBareOrdinal = /^\d{1,2}(st|nd|rd|th)$/i.test(raw.trim());
         if (resolved.error === 'invalid' && resolved.message) {
-          return _buildDatePickerUI(resolved.message, tz);
+          return _buildDatePickerUI(resolved.message, tz, { business, tenant, customerPhone: session.customerPhone });
         }
         const hint = isBareOrdinal
           ? `I need the *month* too 📅\n\nFor example:\n• *${raw} June*\n• *${raw} July*\n• *${raw} August*`
           : `I couldn't recognise *${raw}* as a date.\n\nExamples: *25 June*, *tomorrow*, *next Friday*, *friday*, *on the 6th*`;
-        return _buildDatePickerUI(hint, tz);
+        return _buildDatePickerUI(hint, tz, { business, tenant, customerPhone: session.customerPhone });
       }
 
       return _confirmBookingDate(session, data, resolved);
@@ -442,16 +458,16 @@ export async function handleBookingFlow({ session, message, business, tenant, is
       }
       if (clean === 'date_back' || /^(no|n|re-enter|change|back)$/i.test(clean)) {
         await updateSession(session.customerPhone, session.tenantId, { step: 'DATE' });
-        return _buildDatePickerUI(null, tz);
+        return _buildDatePickerUI(null, tz, { business, tenant, customerPhone: session.customerPhone });
       }
       const resolvedInline = await resolveBookingDateInput(raw, tz);
       if (resolvedInline.ok) {
         return _confirmBookingDate(session, data, resolvedInline);
       }
       if (resolvedInline.error === 'invalid' && resolvedInline.message) {
-        return _buildDatePickerUI(resolvedInline.message, tz);
+        return _buildDatePickerUI(resolvedInline.message, tz, { business, tenant, customerPhone: session.customerPhone });
       }
-      return _buildDatePickerUI(`Please choose a date:`, tz);
+      return _buildDatePickerUI(`Please choose a date:`, tz, { business, tenant, customerPhone: session.customerPhone });
     }
 
     case 'TIME': {
@@ -755,9 +771,19 @@ export async function handleBookingFlow({ session, message, business, tenant, is
 // ── UI Builder Helpers ─────────────────────────────────────────────────────────
 
 /**
- * _buildDatePickerUI — hub menu: this week / next week / choose month (dropdown-style).
+ * _buildDatePickerUI — WhatsApp Flow calendar when configured; else list hub fallback.
  */
-function _buildDatePickerUI(headingOrError = null, _tz = 'UTC') {
+function _buildDatePickerUI(headingOrError = null, tz = 'UTC', { business, tenant, customerPhone } = {}) {
+  const flowId = resolveBookingDateFlowId(business, tenant);
+  if (flowId) {
+    const flowMsg = buildBookingDateFlowMessage({
+      heading: headingOrError,
+      tz,
+      flowId,
+      customerPhone,
+    });
+    if (flowMsg) return flowMsg;
+  }
   return buildDatePickerHub(headingOrError);
 }
 

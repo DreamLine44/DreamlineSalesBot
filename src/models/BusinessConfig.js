@@ -300,6 +300,11 @@ const businessConfigSchema = new mongoose.Schema({
     },
   },
 
+  // WhatsApp Flows — published Flow IDs for in-chat forms (calendar picker, etc.)
+  whatsappFlows: {
+    bookingDateFlowId: { type: String, default: null, trim: true },
+  },
+
   nlp: {
     synonyms: { type: Map, of: [String], default: {} },
     keywords: {

@@ -86,6 +86,13 @@ const tenantSchema = new mongoose.Schema({
       trim: true
     },
 
+    // Published WhatsApp Flow ID for booking date calendar picker
+    bookingDateFlowId: {
+      type: String,
+      trim: true,
+      default: null,
+    },
+
     connected: {
       type: Boolean,
       default: false

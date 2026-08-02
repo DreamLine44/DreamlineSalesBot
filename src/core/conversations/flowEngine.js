@@ -49,7 +49,7 @@ export function registerGenericFlow(flowName, handler) {
  * Advance the active flow by one step.
  * Returns a UIResponse object for dispatch.
  */
-export async function advance({ session, message, business, tenant, isInteractive = false }) {
+export async function advance({ session, message, business, tenant, isInteractive = false, flowReply = null }) {
   if (!session?.currentFlow) {
     return {
       type:    'buttons',
@@ -76,7 +76,7 @@ export async function advance({ session, message, business, tenant, isInteractiv
   }
 
   try {
-    const response = await handler({ session, message, business, tenant, isInteractive });
+    const response = await handler({ session, message, business, tenant, isInteractive, flowReply });
     // null = handler already dispatched outbound UI (e.g. WA Catalog re-open)
     if (response === null) return null;
     return response || {

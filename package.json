@@ -13,7 +13,8 @@
     "seed": "node scripts/seed.js",
     "health": "node scripts/health.js",
     "genKey": "node scripts/genKey.js",
-    "migrate": "node scripts/migrate_remove_raw_api_keys.js"
+    "migrate": "node scripts/migrate_remove_raw_api_keys.js",
+    "publish:booking-date-flow": "node src/scripts/publishBookingDateFlow.mjs"
   },
   "dependencies": {
     "cloudinary": "^2.5.1",

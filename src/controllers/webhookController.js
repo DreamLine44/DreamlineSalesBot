@@ -692,25 +692,53 @@ async function checkAndHandleLoop(session, messageText, tenantId, business) {
 
 // ── Message extraction ────────────────────────────────────────────────────────
 function extractMessage(msgObj) {
-  if (!msgObj) return { text: '', imageUrl: null, isInteractive: false, isListReply: false };
+  if (!msgObj) {
+    return { text: '', imageUrl: null, isInteractive: false, isListReply: false, isFlowReply: false, flowReply: null };
+  }
   const type = msgObj.type;
 
-  if (type === 'text')
-    return { text: (msgObj.text?.body || '').trim(), imageUrl: null, isInteractive: false, isListReply: false };
+  if (type === 'text') {
+    return { text: (msgObj.text?.body || '').trim(), imageUrl: null, isInteractive: false, isListReply: false, isFlowReply: false, flowReply: null };
+  }
 
   if (type === 'interactive') {
+    const nfm = msgObj.interactive?.nfm_reply;
+    if (nfm) {
+      let flowReply = {};
+      try {
+        const raw = nfm.response_json;
+        flowReply = typeof raw === 'string' ? JSON.parse(raw) : (raw || {});
+      } catch {
+        flowReply = {};
+      }
+      const bookingDate = flowReply.booking_date || flowReply.date || '';
+      return {
+        text:          String(bookingDate || '').trim(),
+        isInteractive: true,
+        isListReply:   false,
+        isFlowReply:   true,
+        flowReply,
+        imageUrl:      null,
+      };
+    }
     const btn  = msgObj.interactive?.button_reply;
     const list = msgObj.interactive?.list_reply;
-    if (btn)  return { text: (btn.id  || btn.title  || '').trim(), isInteractive: true,  isListReply: false, imageUrl: null };
-    if (list) return { text: (list.id || list.title || '').trim(), isInteractive: true,  isListReply: true,  imageUrl: null };
-    return { text: '', isInteractive: true, isListReply: false, imageUrl: null };
+    if (btn) {
+      return { text: (btn.id  || btn.title  || '').trim(), isInteractive: true, isListReply: false, isFlowReply: false, flowReply: null, imageUrl: null };
+    }
+    if (list) {
+      return { text: (list.id || list.title || '').trim(), isInteractive: true, isListReply: true, isFlowReply: false, flowReply: null, imageUrl: null };
+    }
+    return { text: '', isInteractive: true, isListReply: false, isFlowReply: false, flowReply: null, imageUrl: null };
   }
-  if (type === 'image')
-    return { text: '', imageUrl: msgObj.image?.id || null, isInteractive: false, isListReply: false };
-  if (type === 'button')
-    return { text: (msgObj.button?.payload || '').trim(), isInteractive: true, isListReply: false, imageUrl: null };
+  if (type === 'image') {
+    return { text: '', imageUrl: msgObj.image?.id || null, isInteractive: false, isListReply: false, isFlowReply: false, flowReply: null };
+  }
+  if (type === 'button') {
+    return { text: (msgObj.button?.payload || '').trim(), isInteractive: true, isListReply: false, isFlowReply: false, flowReply: null, imageUrl: null };
+  }
 
-  return { text: '', imageUrl: null, isInteractive: false, isListReply: false };
+  return { text: '', imageUrl: null, isInteractive: false, isListReply: false, isFlowReply: false, flowReply: null };
 }
 
 // ── [MFQ] Mid-Flow Question helpers ──────────────────────────────────────────
@@ -1053,7 +1081,7 @@ function _mfqStepLabel(flow, step) {
 
 // ── Main handler ──────────────────────────────────────────────────────────────
 export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj, phoneNumberId }) {
-  const { text: messageText, imageUrl, isInteractive, isListReply } = extractMessage(msgObj);
+  const { text: messageText, imageUrl, isInteractive, isListReply, isFlowReply, flowReply } = extractMessage(msgObj);
   const wamid = msgObj?.id;
 
   logger.debug('[Webhook] handleIncomingMessage', {
@@ -1096,7 +1124,7 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
   // checkout vanished with no reply and no Order saved. Exempted here; the
   // actual handoff happens at [CATALOG-ORDER-WIRE] below, once business and
   // session are loaded the normal way.
-  if (!messageText && !imageUrl && msgObj?.type !== 'order') {
+  if (!messageText && !imageUrl && !isFlowReply && msgObj?.type !== 'order') {
     logger.debug('[Webhook] Message has no text and no image — skipping', {
       from, tenantId, msgType: msgObj?.type,
     });
@@ -2313,7 +2341,7 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
     } else
     // [FIX-BUG9] Flow-internal button IDs — bypass intent detection entirely
     if (isInteractive && isFlowPassthroughId(upperMsg)) {
-      const reply = await advance({ session: freshSession, message: messageText, business, tenant: tenantDoc, isInteractive });
+      const reply = await advance({ session: freshSession, message: messageText, business, tenant: tenantDoc, isInteractive, flowReply });
       if (reply) {
         // reply can be an array (e.g. [image, buttons]) — dispatch each in order
         const payloads = Array.isArray(reply) ? reply : [reply];
@@ -2894,7 +2922,7 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
     const reply = await advance({
       session: freshSession,
       message: messageText,
-      business, tenant: tenantDoc, isInteractive,
+      business, tenant: tenantDoc, isInteractive, flowReply,
     });
     if (reply) {
       // reply can be an array (e.g. [imagePayload, buttonsPayload]) — dispatch each in order

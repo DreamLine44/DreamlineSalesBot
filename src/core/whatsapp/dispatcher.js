@@ -267,6 +267,37 @@ function buildPayload(to, ui) {
     };
   }
 
+  // ── WhatsApp Flow message (calendar date picker, forms, etc.) ───────────────
+  // ui.type === 'flow' → interactive.type: "flow" with flow_id + navigate payload
+  if (type === 'flow') {
+    if (!ui.flowId) return null;
+    const parameters = {
+      flow_message_version: '3',
+      flow_token:           String(ui.flowToken || 'unused'),
+      flow_id:              String(ui.flowId),
+      flow_cta:             String(ui.flowCta || 'Open').slice(0, 20),
+      flow_action:          'navigate',
+    };
+    if (ui.flowMode === 'draft') parameters.mode = 'draft';
+    if (ui.flowScreen) {
+      parameters.flow_action_payload = {
+        screen: String(ui.flowScreen),
+        ...(ui.flowData && typeof ui.flowData === 'object' ? { data: ui.flowData } : {}),
+      };
+    }
+    return {
+      messaging_product: 'whatsapp', recipient_type: 'individual',
+      to, type: 'interactive',
+      interactive: {
+        type: 'flow',
+        ...(ui.header ? { header: { type: 'text', text: String(ui.header).slice(0, 60) } } : {}),
+        body:   { text: String(ui.body || '').slice(0, 1024) },
+        ...(ui.footer ? { footer: { text: String(ui.footer).slice(0, 60) } } : {}),
+        action: { name: 'flow', parameters },
+      },
+    };
+  }
+
   // ── Template message ──────────────────────────────────────────────────────
   // ui.type === 'template' → { type: 'template', name: '...', language: '...', components: [...] }
   // Used by schedulerService for 24h+ outbound messages that require pre-approved templates.
