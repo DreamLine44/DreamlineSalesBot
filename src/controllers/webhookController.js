@@ -2974,9 +2974,29 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
     session = { ...session, customerName: extractedName };
   }
 
-  const { action, intent, confidence, suggestion } = await detectIntent({
+  const { action, intent, confidence, suggestion, nlu } = await detectIntent({
     message: messageText, isInteractive, session, business,
   });
+
+  // [ENHANCED-NLU] Persist extracted entities for START_ORDER handoff (cart pre-seed).
+  if (nlu?.entities?.products?.length) {
+    updateSession(from, tenantId, {
+      data: { ...(session.data || {}), _nluPending: nlu.entities },
+    }).catch(() => {});
+    session = {
+      ...session,
+      data: { ...(session.data || {}), _nluPending: nlu.entities },
+    };
+  }
+
+  // [ENHANCED-NLU] Record typed customer message for multi-turn Groq context.
+  if (!isInteractive && messageText && messageText.trim().length >= 2) {
+    import('../core/nlu/nluContext.js').then(({ appendAiHistoryTurn }) => {
+      const aiHistory = appendAiHistoryTurn(session, 'user', messageText);
+      updateSession(from, tenantId, { aiHistory }).catch(() => {});
+      session = { ...session, aiHistory };
+    }).catch(() => {});
+  }
 
   logger.info('[Webhook] Intent detected', {
     from,
@@ -3059,7 +3079,7 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
   let reply = await route({
     action: effectiveAction, intent: effectiveIntent, session,
     message: messageText, business,
-    tenant: tenantDoc, isInteractive, suggestion,
+    tenant: tenantDoc, isInteractive, suggestion, nlu,
   });
 
   // [FEAT-EMOTION-WIRE-2] Apply the tone prefix using the SAME finalEmotion
@@ -3086,7 +3106,17 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
     }
     const lastPayload = payloads[payloads.length - 1];
     const body = typeof lastPayload === 'string' ? lastPayload : lastPayload?.body;
-    if (body) updateSession(from, tenantId, { lastBotMessage: body }).catch(() => {});
+    if (body) {
+      updateSession(from, tenantId, { lastBotMessage: body }).catch(() => {});
+      import('../core/nlu/nluContext.js').then(({ appendAiHistoryTurn }) => {
+        getSession(from, tenantId).then(s => {
+          if (!s) return;
+          updateSession(from, tenantId, {
+            aiHistory: appendAiHistoryTurn(s, 'assistant', body),
+          }).catch(() => {});
+        }).catch(() => {});
+      }).catch(() => {});
+    }
 
     // [CATALOG-ORDER-WIRE] The customer's own in-flow path (typed quantity,
     // tapped variant, etc. — as opposed to the immediate no-further-questions

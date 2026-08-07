@@ -170,7 +170,7 @@ export function buildWelcomeSequence(business, cfg) {
   ];
 }
 
-export async function route({ action, intent, session, message, business, tenant, isInteractive, suggestion }) {
+export async function route({ action, intent, session, message, business, tenant, isInteractive, suggestion, nlu }) {
   const upper = (action || 'FALLBACK').toUpperCase();
   const mode  = (business?.businessMode || 'RETAIL').toUpperCase();
 
@@ -815,6 +815,7 @@ export async function route({ action, intent, session, message, business, tenant
     case 'FALLBACK':
     case 'CLARIFY': {
       const { getAIReply } = await import('../ai/providers/aiRouter.js');
+      const { getAiHistoryMessages, buildConversationContext } = await import('../nlu/nluContext.js');
       const cfg = getModeConfig(business);
 
       // [FIX-FALLBACK-1] Off-topic gate: detect and reject messages that have
@@ -847,10 +848,19 @@ export async function route({ action, intent, session, message, business, tenant
         );
       }
 
-      const aiText = await getAIReply({ customerMessage: message, business, session, intent });
+      const aiText = await getAIReply({
+        customerMessage: message,
+        business,
+        session,
+        intent,
+        history:           getAiHistoryMessages(session),
+        sessionContext:    buildConversationContext({ session, business }),
+      });
+      // [ENHANCED-NLU] Prefer a targeted clarification from the classifier when available.
+      const nluClarify = nlu?.clarification?.trim();
       // [FIX-BUG1] cfg.messages.fallback not cfg.labels.fallback
       const fallbackMsg = business?.customMessages?.fallback || cfg.messages?.fallback;
-      const body = aiText || fallbackMsg || 'How can I help you? 😊';
+      const body = nluClarify || aiText || fallbackMsg || 'How can I help you? 😊';
 
       return buildOptionsReply(cfg, body);
     }

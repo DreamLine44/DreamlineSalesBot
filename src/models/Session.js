@@ -120,6 +120,16 @@ const sessionSchema = new mongoose.Schema({
   // survives flow completion so follow-up taps like "New Order" stay on-path.
   orderChannel: { type: String, default: null }, // 'catalog' | 'menu' | null
 
+  // [ENHANCED-NLU] Recent conversation turns for Groq context (user + assistant).
+  aiHistory: {
+    type: [{
+      role:    { type: String, enum: ['user', 'assistant'] },
+      content: { type: String, maxlength: 500 },
+      at:      { type: String, default: null },
+    }],
+    default: [],
+  },
+
   // [FIX-A] Set to the completed flow name ('ORDER'|'BOOKING') when a flow
   // finishes successfully. Survives the session reset so the next message
   // ("Ok", "Thanks", etc.) can be intercepted for a warm acknowledgement

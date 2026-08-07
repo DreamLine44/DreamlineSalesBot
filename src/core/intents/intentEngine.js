@@ -322,22 +322,22 @@ export async function detectIntent({ message, isInteractive = false, session, bu
   // Groq API call and risks overriding the flow handler with an incorrect intent.
   if (!session?.currentFlow) {
     try {
-      // [AUDIT-FIX-CLASSIFY-2] classifyWithAI now returns { intent, confidence }.
-      const { intent: aiIntent, confidence: aiConfidence } = await classifyWithAI({ message: raw, business });
+      const nluResult = await classifyWithAI({ message: raw, business, session });
+      const { intent: aiIntent, confidence: aiConfidence, entities, secondaryIntents, clarification } = nluResult;
+
       if (aiIntent && aiIntent !== 'UNKNOWN') {
         if (aiConfidence === 'HIGH') {
           const action = intentToAction(aiIntent, business);
-          return { action, intent: aiIntent, confidence: 'HIGH', source: 'ai' };
+          return {
+            action, intent: aiIntent, confidence: 'HIGH', source: 'ai',
+            nlu: { entities, secondaryIntents, clarification, nluSource: nluResult.source },
+          };
         }
-        // [AUDIT-FIX-CLASSIFY-2] Previously ANY successful AI classification —
-        // even a shaky guess — was auto-executed as if certain (confidence
-        // was a flat 'AI' tag, never checked by any caller). Per the "never
-        // force a workflow when uncertain" principle, MEDIUM/LOW confidence
-        // no longer auto-continues the guessed workflow; it routes through
-        // the existing CLARIFY path (moduleRouter.js already handles this —
-        // a natural AI reply, not a hard menu dump) instead.
         logger.info('[IntentEngine] miss', { path: 'clarify', raw, aiIntent, aiConfidence });
-        return { action: 'CLARIFY', intent: 'CLARIFY', confidence: aiConfidence, source: 'ai' };
+        return {
+          action: 'CLARIFY', intent: 'CLARIFY', confidence: aiConfidence, source: 'ai',
+          nlu: { entities, secondaryIntents, clarification, nluSource: nluResult.source },
+        };
       }
     } catch (err) {
       logger.warn('[IntentEngine] AI classify failed', { err: err.message });
@@ -358,38 +358,47 @@ export async function detectIntent({ message, isInteractive = false, session, bu
 }
 
 // ── AI intent classifier ──────────────────────────────────────────────────────
-async function classifyWithAI({ message, business }) {
+async function classifyWithAI({ message, business, session }) {
   const mode         = (business?.businessMode || 'RETAIL').toUpperCase();
   const validIntents = getValidIntents(mode);
 
-  // [FIX-AI-1] Sanitise customer input before embedding it in the prompt.
-  const sanitisedMsg = message
-    .slice(0, 200)
-    .replace(/[\r\n\t]/g, ' ')
-    .replace(/[<>]/g, '')
-    .trim();
+  try {
+    const { classifyMessageEnhanced, isEnhancedNluEnabled } = await import('../nlu/enhancedNlu.js');
+    if (isEnhancedNluEnabled()) {
+      return classifyMessageEnhanced({ message, business, session, validIntents });
+    }
+  } catch (err) {
+    logger.warn('[IntentEngine] enhanced NLU unavailable', { err: err.message });
+  }
 
-  // [FIX-CLASSIFY] Use groqProvider.classifyIntent() — a lean two-message prompt
-  // that sends ONLY the classification instruction, without the customer-service
-  // persona system prompt that groq.getReply() always prepends. The old approach
-  // (calling groq.getReply() with business:null + a crafted user message) still
-  // received "You are a helpful business assistant. Reply in 1–2 short sentences..."
-  // as its system context, which conflicted with the classification instruction and
-  // caused the model to return prose explanations instead of bare intent words.
-  //
-  // [AUDIT-FIX-CLASSIFY-2] classifyIntent now returns { intent, confidence }
-  // instead of a bare intent string — see groqProvider.js.
+  // Legacy fallback — original lean classifier
+  const sanitisedMsg = sanitiseNluMessage(message, 200);
+
   try {
     const { classifyIntent } = await import('../ai/providers/groqProvider.js').catch(() => ({ classifyIntent: null }));
     if (classifyIntent && process.env.GROQ_API_KEY) {
-      return await classifyIntent({ message: sanitisedMsg, validIntents, mode });
+      const result = await classifyIntent({ message: sanitisedMsg, validIntents, mode });
+      return {
+        ...result,
+        entities: { products: [], questions: [] },
+        secondaryIntents: [],
+        clarification: null,
+        source: 'legacy-fallback',
+      };
     }
-    // Groq not available — return UNKNOWN so caller falls back
-    return { intent: 'UNKNOWN', confidence: 'LOW' };
+    return { intent: 'UNKNOWN', confidence: 'LOW', entities: { products: [], questions: [] }, source: 'legacy-fallback' };
   } catch (err) {
     logger.warn('[IntentEngine] classifyWithAI failed', { err: err.message });
-    return { intent: 'UNKNOWN', confidence: 'LOW' };
+    return { intent: 'UNKNOWN', confidence: 'LOW', entities: { products: [], questions: [] }, source: 'legacy-fallback' };
   }
+}
+
+function sanitiseNluMessage(message, maxLen = 200) {
+  return String(message || '')
+    .slice(0, maxLen)
+    .replace(/[\r\n\t]/g, ' ')
+    .replace(/[<>]/g, '')
+    .trim();
 }
 
 function getValidIntents(mode) {
@@ -398,7 +407,7 @@ function getValidIntents(mode) {
   // keyword matcher (< 8 char threshold or not in the exact ACKNOWLEDGEMENT list).
   // Without this, the model could never return ACKNOWLEDGEMENT and would default to
   // QUESTION or SUPPORT for expressions of gratitude.
-  const base = ['ORDER', 'BOOKING', 'WALKIN', 'QUESTION', 'SUPPORT', 'GREETING', 'PAYMENT', 'TRACK_ORDER', 'ACKNOWLEDGEMENT', 'UNKNOWN'];
+  const base = ['ORDER', 'BOOKING', 'WALKIN', 'QUESTION', 'SUPPORT', 'GREETING', 'PAYMENT', 'TRACK_ORDER', 'ACKNOWLEDGEMENT', 'VIEW_MENU', 'UNKNOWN'];
   const extra = {
     RESTAURANT:  ['ADD_TO_CART', 'REMOVE_FROM_CART', 'CHECKOUT', 'RECOMMENDATION'],
     SALON:       ['AVAILABILITY_CHECK', 'AFTERCARE'],  // [FIX-AFTERCARE]

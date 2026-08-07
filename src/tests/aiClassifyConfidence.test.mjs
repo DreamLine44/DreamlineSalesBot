@@ -103,8 +103,20 @@ test('intentEngine.js: classifyWithAI returns the { intent, confidence } object 
   const fnEnd = src.indexOf('\nfunction getValidIntents', fnStart);
   const fnSrc = src.slice(fnStart, fnEnd);
 
-  assert.match(fnSrc, /return \{ intent: 'UNKNOWN', confidence: 'LOW' \};/g);
+  assert.match(fnSrc, /return \{ intent: 'UNKNOWN', confidence: 'LOW'/g);
+  assert.match(fnSrc, /entities:/);
+  assert.match(fnSrc, /classifyMessageEnhanced/);
   assert.doesNotMatch(fnSrc, /return\s+'UNKNOWN'\s*;/, 'classifyWithAI should no longer return a bare string');
+});
+
+test('groqProvider.js: classifyMessageStructured provides structured NLU for enhanced layer', () => {
+  const src = readSource('../core/ai/providers/groqProvider.js');
+  assert.match(src, /export async function classifyMessageStructured/);
+  assert.match(
+    src,
+    /Understand negation, past tense, slang, typos, and indirect phrasing/,
+    'structured classifier prompt should instruct deep NLU, not keyword matching'
+  );
 });
 
 test('intentEngine.js: detectIntent only auto-continues the AI-guessed workflow when confidence is HIGH', () => {

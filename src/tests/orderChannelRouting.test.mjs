@@ -27,7 +27,7 @@ test('START_ORDER honors session.orderChannel === catalog before offerCatalogOnS
   const start = src.indexOf("registerAction('START_ORDER'");
   const end = src.indexOf("registerAction('START_BOOKING'");
   const body = src.slice(start, end);
-  const catalogIdx = body.indexOf("session?.orderChannel === 'catalog'");
+  const catalogIdx = body.indexOf("orderChannel === 'catalog'");
   const offerIdx = body.indexOf('offerCatalogOnStartOrder(');
   assert.ok(catalogIdx !== -1, 'START_ORDER must check persisted catalog channel');
   assert.ok(offerIdx !== -1, 'START_ORDER must still call offerCatalogOnStartOrder');

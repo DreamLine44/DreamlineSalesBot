@@ -158,27 +158,45 @@ export async function registerAllModules() {
   //   dead end for a customer, even for tenants who opted into it.
   registerAction('START_ORDER', async ({ session, message, business, tenant, intent }) => {
     const { startFlow } = await import('../conversations/flowEngine.js');
+    const { updateSession } = await import('../sessions/sessionService.js');
     const normalizedIntent = intent === 'START_ORDER' ? 'ORDER' : (intent || 'ORDER');
     const msgUpper = String(message || '').trim().toUpperCase();
     const explicitOrderTap = msgUpper === 'ORDER' || msgUpper === 'NEW_ORDER';
 
+    // [ENHANCED-NLU] Pre-seed cart when AI extracted matched products (HIGH-confidence only).
+    let orderSession = session;
+    const nluProducts = session?.data?._nluPending?.products;
+    if (Array.isArray(nluProducts) && nluProducts.length > 0) {
+      const { mergeCartLines } = await import('../shared/cartEngine.js');
+      const lines = nluProducts
+        .filter(p => p?.item)
+        .map(p => ({ item: p.item, quantity: p.quantity || 1, variant: p.variant || null }));
+      if (lines.length > 0) {
+        const cart = mergeCartLines([], lines);
+        const newData = { ...(session.data || {}), cart, _nluPending: null };
+        await updateSession(session.customerPhone, session.tenantId, { data: newData, orderChannel: 'menu' });
+        orderSession = { ...session, data: newData, orderChannel: 'menu' };
+        return startFlow({ flowName: 'ORDER', session: orderSession, business, tenant });
+      }
+    }
+
     // PATH A — no WA Catalog for this tenant. Old-version behavior, verbatim.
     if (!isCatalogEnabled(business) || !hasSellableProducts(business)) {
-      return startFlow({ flowName: 'ORDER', session: { ...session, orderChannel: 'menu' }, business, tenant });
+      return startFlow({ flowName: 'ORDER', session: { ...orderSession, orderChannel: 'menu' }, business, tenant });
     }
 
     // [ORDER-CHANNEL] Customer chose Browse Catalog earlier — keep them on catalog
     // for every subsequent "New Order" / ORDER tap (including MANUAL_ONLY tenants).
-    if (session?.orderChannel === 'catalog' || explicitOrderTap) {
+    if (orderSession?.orderChannel === 'catalog' || explicitOrderTap) {
       const { browseCatalogExplicit } = await import('../../modules/catalog/waCatalogFlow.js');
-      return browseCatalogExplicit({ session, business, tenant });
+      return browseCatalogExplicit({ session: orderSession, business, tenant });
     }
 
     // PATH B — WA Catalog is actually configured for this tenant.
     const { offerCatalogOnStartOrder } = await import('../../modules/catalog/waCatalogFlow.js');
-    const { offered } = await offerCatalogOnStartOrder({ session, business, tenant, intent: normalizedIntent }).catch(() => ({ offered: false }));
+    const { offered } = await offerCatalogOnStartOrder({ session: orderSession, business, tenant, intent: normalizedIntent }).catch(() => ({ offered: false }));
     if (offered) return null; // WA Catalog message already dispatched directly — nothing further to send
-    return startFlow({ flowName: 'ORDER', session: { ...session, orderChannel: 'menu' }, business, tenant });
+    return startFlow({ flowName: 'ORDER', session: { ...orderSession, orderChannel: 'menu' }, business, tenant });
   });
 
   registerAction('START_BOOKING', async ({ session, message, business, tenant }) => {

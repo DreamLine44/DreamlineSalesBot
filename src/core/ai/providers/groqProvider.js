@@ -526,6 +526,95 @@ export async function healthCheck() {
 }
 
 /**
+ * classifyMessageStructured — enhanced NLU with JSON output.
+ * Used by core/nlu/enhancedNlu.js; falls back handled by caller.
+ */
+export async function classifyMessageStructured({
+  message,
+  validIntents,
+  mode = 'RETAIL',
+  contextBlock = '',
+  history = [],
+  menuSample = '',
+}) {
+  if (!process.env.GROQ_API_KEY) return null;
+
+  const modeContext = {
+    RESTAURANT:  'a restaurant that takes food orders and table bookings',
+    SALON:       'a hair and beauty salon that books appointments and handles walk-ins',
+    BARBERSHOP:  'a barbershop that books appointments and handles walk-ins',
+    BAKERY:      'a bakery that takes orders for bread, cakes, and pastries',
+    RETAIL:      'a retail store that sells products',
+    FASHION:     'a fashion store selling clothing and accessories',
+    COSMETICS:   'a cosmetics and skincare store',
+    ELECTRONICS: 'an electronics store selling phones, laptops, and gadgets',
+    DELIVERY:    'a delivery and courier service',
+    SERVICES:    'a professional services business',
+    GENERAL:     'a general business',
+  }[mode] || 'a business';
+
+  const systemPrompt =
+    `You are the natural-language understanding layer for ${modeContext} on WhatsApp.\n\n` +
+    `Your job: read the ENTIRE customer message (including long paragraphs and multiple sentences), ` +
+    `use conversation context, understand what they actually mean — not just keywords — and return ` +
+    `structured JSON only.\n\n` +
+    `Rules:\n` +
+    `- Understand negation, past tense, slang, typos, and indirect phrasing.\n` +
+    `- Never treat every message as a product search.\n` +
+    `- If the customer asks multiple things, pick the PRIMARY actionable intent and list others in secondaryIntents.\n` +
+    `- Extract products with quantities when clearly stated (use exact menu names when possible).\n` +
+    `- Set clarificationNeeded=true ONLY when the primary intent is genuinely unclear after reading everything.\n` +
+    `- confidence HIGH = explicit and unambiguous; MEDIUM = likely; LOW = vague.\n` +
+    `- primaryIntent must be exactly one of: ${validIntents.join(', ')}\n\n` +
+    `Reply with ONLY valid JSON (no markdown prose), shape:\n` +
+    `{"primaryIntent":"ORDER","confidence":"HIGH","secondaryIntents":[],"entities":{"products":[{"name":"Domoda","quantity":2}],"questions":[]},"clarificationNeeded":false,"clarificationQuestion":null}\n\n` +
+    (menuSample ? `${menuSample}\n\n` : '') +
+    (contextBlock ? `Current conversation state:\n${contextBlock}\n` : '');
+
+  const messages = [
+    { role: 'system', content: systemPrompt },
+    ...history.slice(-8),
+    { role: 'user', content: String(message || '').slice(0, 1200) },
+  ];
+
+  const result = await callGroq(messages, {
+    model:       GROQ_MODEL_PRIMARY,
+    maxTokens:   350,
+    temperature: 0.15,
+  });
+
+  if (!result) return null;
+
+  let parsed;
+  try {
+    let text = String(result).trim();
+    const fence = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
+    if (fence) text = fence[1].trim();
+    const start = text.indexOf('{');
+    const end = text.lastIndexOf('}');
+    if (start === -1) return null;
+    parsed = JSON.parse(text.slice(start, end + 1));
+  } catch {
+    return null;
+  }
+
+  const primaryIntent = String(parsed.primaryIntent || '').trim().split(/[\s.,;:!?—\-]/)[0].toUpperCase();
+  const confidence = String(parsed.confidence || 'MEDIUM').trim().toUpperCase();
+
+  return {
+    primaryIntent: validIntents.includes(primaryIntent) ? primaryIntent : 'UNKNOWN',
+    confidence:    ['HIGH', 'MEDIUM', 'LOW'].includes(confidence) ? confidence : 'MEDIUM',
+    secondaryIntents: Array.isArray(parsed.secondaryIntents) ? parsed.secondaryIntents : [],
+    entities: {
+      products:  Array.isArray(parsed.entities?.products) ? parsed.entities.products : [],
+      questions: Array.isArray(parsed.entities?.questions) ? parsed.entities.questions : [],
+    },
+    clarificationNeeded:    Boolean(parsed.clarificationNeeded),
+    clarificationQuestion:  parsed.clarificationQuestion || null,
+  };
+}
+
+/**
  * classifyIntent({ message, validIntents, mode })
  *
  * [FIX-CLASSIFY] Lean intent classifier that bypasses the full persona system prompt.
