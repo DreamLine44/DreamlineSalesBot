@@ -994,22 +994,9 @@ export async function handleRestaurantQuestion({ session, message, business, ten
     };
   }
 
-  const { isRestaurantScopeQuestion } = await import('../../../services/questionModeHelper.js');
-  if (!isRestaurantScopeQuestion(raw)) {
-    return {
-      type: 'buttons',
-      body: "I'm here to help with restaurant-related questions — menu, orders, bookings, hours, and policies. What would you like to know?",
-      buttons: [
-        { id: 'QUESTION', title: '❓ Ask Another'  },
-        { id: 'ORDER',    title: '🍔 Order Food'   },
-        { id: 'BOOK',     title: '📅 Book a Table' },
-      ],
-    };
-  }
-
-  const { buildStatusReply } = await import('../../../services/activityStatusService.js');
+  const { processQuestionMessage, persistQuestionSession } = await import('../../../services/questionAnswerService.js');
   const { detectIntent } = await import('../../../core/intents/intentEngine.js');
-  const { updateSession } = await import('../../../core/sessions/sessionService.js');
+  const { buildStatusReply } = await import('../../../services/activityStatusService.js');
 
   try {
     const intentResult = await detectIntent({
@@ -1017,37 +1004,14 @@ export async function handleRestaurantQuestion({ session, message, business, ten
       session: { ...session, currentFlow: null },
       business,
     });
-    if (intentResult.action === 'TRACK_ORDER' && intentResult.confidence !== 'LOW') {
+    if (intentResult.action === 'TRACK_ORDER' && intentResult.confidence === 'HIGH') {
       const statusReply = await buildStatusReply({ session, business, message: raw });
-      await updateSession(session.customerPhone, session.tenantId, {
-        currentFlow: 'QUESTION',
-        step: 'AWAITING_QUESTION',
-        data: { ...(session.data || {}), _questionCtx: { lastMessage: raw } },
-      });
+      await persistQuestionSession(session, tenant, { lastMessage: raw, lastTopic: 'ORDER_TRACKING' });
       return statusReply;
     }
-  } catch (_) { /* fall through to AI */ }
+  } catch (_) { /* fall through */ }
 
-  const aiReply = await getAIReply({
-    customerMessage: raw,
-    business,
-    session,
-    intent: 'FAQ',
-  });
-
-  await updateSession(session.customerPhone, session.tenantId, {
-    currentFlow: 'QUESTION',
-    step: 'AWAITING_QUESTION',
-    data: { ...(session.data || {}), _questionCtx: { lastMessage: raw } },
-  });
-
-  return {
-    type: 'buttons',
-    body: aiReply || "Great question! Please contact us directly and we'll be happy to help.",
-    buttons: [
-      { id: 'ORDER',    title: '🍔 Order Food'   },
-      { id: 'BOOK',     title: '📅 Book a Table' },
-      { id: 'QUESTION', title: '❓ Ask Another'  },
-    ],
-  };
+  const reply = await processQuestionMessage({ session, message: raw, business, tenant, intent: 'FAQ' });
+  await persistQuestionSession(session, tenant, reply.context || { lastMessage: raw });
+  return { type: reply.type, body: reply.body, buttons: reply.buttons };
 }

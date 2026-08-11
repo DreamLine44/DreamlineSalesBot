@@ -68,27 +68,19 @@ export async function handleGeneralQuestion({ session, message, business, tenant
     };
   }
 
-  const aiReply = await getAIReply({
-    customerMessage: raw,
-    business,
-    session,
-    intent: 'FAQ',
-  });
+  const { processQuestionMessage, persistQuestionSession } = await import('../../../services/questionAnswerService.js');
+  const reply = await processQuestionMessage({ session, message: raw, business, tenant, intent: 'FAQ' });
+  await persistQuestionSession(session, tenant, reply.context || { lastMessage: raw });
 
-  // [FIX-GENERAL-CF] completeFlow was called BEFORE building the return value.
-  // If lead capture triggered, _lcRgq replaced the AI answer entirely. 
-  // Fix: build the response first, then call completeFlow (discard its return).
-  const response = {
-    type: 'buttons',
-    body: aiReply || "That's a great question! Please reach out to us directly and we'll be happy to help.",
-    buttons: [
-      { id: 'QUESTION',   title: '❓ Another Question' },
-      { id: 'ENQUIRY',    title: '📬 Send Enquiry'     },
-      { id: 'BOOK',       title: '📅 Book Appointment' },
+  return {
+    type: reply.type,
+    body: reply.body,
+    buttons: reply.buttons || [
+      { id: 'QUESTION', title: '❓ Another Question' },
+      { id: 'ENQUIRY',  title: '📬 Send Enquiry'     },
+      { id: 'BOOK',     title: '📅 Book Appointment' },
     ],
   };
-  await completeFlow(session, 'QUESTION', business, tenant).catch(() => {});
-  return response;
 }
 
 // ── About Handler ─────────────────────────────────────────────────────────────

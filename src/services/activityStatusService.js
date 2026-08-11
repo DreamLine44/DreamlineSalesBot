@@ -10,6 +10,12 @@ import { resolveActiveOrder } from './activeOrderResolver.js';
 import { getActiveBookings } from './bookingService.js';
 import { formatOrderItemSummary } from './orderService.js';
 import { getModeConfig } from '../config/modes.js';
+import {
+  extractShortId,
+  lookupActivityByReference,
+  recoverRecentActivities,
+  formatLookupFailureMessage,
+} from './activityLookupService.js';
 
 const ORDER_STATUS_LABELS = {
   pending:                      '⏳ Waiting for our team to confirm',
@@ -130,7 +136,14 @@ export function formatBookingStatusCard(booking, business = null) {
   return lines.join('\n');
 }
 
-function _defaultButtons(business) {
+function _defaultButtons(business, { trackingContext = false } = {}) {
+  if (trackingContext) {
+    return [
+      { id: 'QUESTION', title: '❓ Ask a Question' },
+      { id: 'SUPPORT', title: '💬 Contact Support' },
+      { id: 'SHOW_MENU', title: '🔄 Start Over' },
+    ];
+  }
   const cfg = getModeConfig(business);
   const canOrder = cfg.flows?.includes('ORDER');
   const orderLabel = _isSalonMode(business) ? '🛍 Shop Products' : '🛍 New Order';
@@ -164,6 +177,54 @@ export async function buildStatusReply({ session, business, message }) {
   const phone = session.customerPhone;
   const tenantId = session.tenantId;
   const adminPhone = business?.adminPhone;
+  const ref = extractShortId(message) || session?.data?._questionCtx?.lastReference || null;
+
+  // ── Reference-first lookup ─────────────────────────────────────────────────
+  if (ref) {
+    const { order, booking, checks } = await lookupActivityByReference({
+      shortId: ref,
+      tenantId,
+      customerPhone: phone,
+      scope,
+    });
+
+    if (order && (scope === 'ORDER' || scope === 'BOTH')) {
+      if (phone && order.customerPhone && order.customerPhone !== phone) {
+        return {
+          type: 'buttons',
+          body: `Order *#${ref}* exists but may belong to a different number. Please contact us for help.${adminPhone ? `\n\n📞 *${adminPhone}*` : ''}`,
+          buttons: _defaultButtons(business, { trackingContext: true }),
+        };
+      }
+      return {
+        type: 'buttons',
+        body: formatOrderStatusCard(order, business) + (adminPhone ? `\n\n_For live updates:_ 📞 *${adminPhone}*` : ''),
+        buttons: _defaultButtons(business, { trackingContext: true }),
+      };
+    }
+
+    if (booking && (scope === 'BOOKING' || scope === 'BOTH')) {
+      if (phone && booking.customerPhone && booking.customerPhone !== phone) {
+        return {
+          type: 'buttons',
+          body: `Booking *#${ref}* exists but may belong to a different number. Please contact us for help.${adminPhone ? `\n\n📞 *${adminPhone}*` : ''}`,
+          buttons: _defaultButtons(business, { trackingContext: true }),
+        };
+      }
+      return {
+        type: 'buttons',
+        body: formatBookingStatusCard(booking, business) + (adminPhone ? `\n\n_For live updates:_ 📞 *${adminPhone}*` : ''),
+        buttons: _defaultButtons(business, { trackingContext: true }),
+      };
+    }
+
+    await recoverRecentActivities({ customerPhone: phone, tenantId, scope });
+    return {
+      type: 'buttons',
+      body: formatLookupFailureMessage({ shortId: ref, checks, adminPhone }),
+      buttons: _defaultButtons(business, { trackingContext: true }),
+    };
+  }
 
   let orderResolution = null;
   let bookings = [];
@@ -199,7 +260,7 @@ export async function buildStatusReply({ session, business, message }) {
     } else if (activeOrder) {
       sections.push(formatOrderStatusCard(activeOrder, business));
     } else if (scope === 'ORDER') {
-      sections.push(`📦 *Order Update*\n\nNo matching order was found for your number.`);
+      sections.push(`📦 *Order Update*\n\nNo matching order was found for your number. I checked your active and recent orders.`);
     }
   }
 
@@ -212,7 +273,7 @@ export async function buildStatusReply({ session, business, message }) {
     } else if (bookings.length === 1) {
       sections.push(formatBookingStatusCard(bookings[0], business));
     } else if (scope === 'BOOKING') {
-      sections.push(`📅 *Booking Update*\n\nNo matching booking was found for your number.`);
+      sections.push(`📅 *Booking Update*\n\nNo matching booking was found for your number. I checked your active bookings.`);
     }
   }
 

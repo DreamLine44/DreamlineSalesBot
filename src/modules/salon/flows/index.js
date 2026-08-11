@@ -1261,39 +1261,26 @@ export async function handleSalonQuestion({ session, message, business, tenant }
       ? (isBarbershop ? 'BARBERSHOP_QUESTION' : 'SALON_CONSULTATION')
       : (isBarbershop ? 'BARBERSHOP_QUESTION' : 'SALON_QUESTION');
 
-  const aiReply = await getAIReply({
-    customerMessage: raw,
-    business,
-    session,
-    intent,
-  });
+  const { processQuestionMessage, persistQuestionSession } = await import('../../../services/questionAnswerService.js');
+  const reply = await processQuestionMessage({ session, message: raw, business, tenant, intent });
+  await persistQuestionSession(session, tenant, reply.context || { lastMessage: raw });
 
-  // [v14-BUG-5] Build the response FIRST, then call completeFlow.
-  // completeFlow sets postFlowAck for follow-up routing but must NOT replace our answer.
   const questionResponse = {
-    type: 'buttons',
-    body: aiReply || `Great question! For detailed information please contact us directly.`,
-    buttons: [
+    type: reply.type || 'buttons',
+    body: reply.body || `Great question! For detailed information please contact us directly.`,
+    buttons: reply.buttons || [
       { id: 'BOOK',     title: isBarbershop ? '💈 Book Now'    : '📅 Book Now'      },
       { id: 'WALKIN',   title: '🚶 Walk-In Queue'                                    },
       { id: 'QUESTION', title: '❓ Another Question'                                 },
     ],
   };
 
-  // [v14-CONSULT] If it was a consultation, add a proactive booking nudge
-  if (isAftercare && aiReply) {
+  if (isAftercare && reply.body) {
     questionResponse.footer = 'We hope to see you again soon! 🙏';
-  } else if (isConsultation && aiReply) {
+  } else if (isConsultation && reply.body) {
     questionResponse.footer = 'Tap "Book Now" to schedule the recommended service';
   }
 
-  // [v14-BUG-5-FIX] completeFlow() may return a lead-capture UI. When it does,
-  // return an ARRAY so the dispatcher sends the AI answer FIRST, then the lead
-  // capture form immediately after. Previously the lead capture was discarded.
-  const lc = await completeFlow(session, 'QUESTION', business, tenant);
-  if (lc) return [questionResponse, lc];
-
-  // No lead capture — return AI answer directly
   return questionResponse;
 }
 

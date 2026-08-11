@@ -106,6 +106,8 @@ import logger            from '../config/logger.js';
 import { formatMoney }   from '../utils/formatCurrency.js';
 import { buildOptionsReply } from '../core/shared/uiOptionsHelper.js';
 import { isNoPaymentOrder, formatOrderItemsForMessage } from './orderService.js';
+import { getOrderByShortId } from './activityLookupService.js';
+import { getBookingByShortId } from './bookingService.js';
 
 const MAX_INPUT_LENGTH = 500; // guard against absurdly long button IDs / command strings
 
@@ -211,6 +213,23 @@ export async function handleAdminTextCommand(text, tenantId, adminPhone, tenantD
   const markReadyMatch = upper.match(/^MARK\s+READY\s+([A-Z0-9]{4,24})$/);
   if (markReadyMatch) return markOrderReady(markReadyMatch[1], tenantId, adminPhone, tenantDoc, business);
 
+  // [ADMIN-CANCEL-REF] Cancel confirmed activities by reference.
+  const cancelOrderMatch = upper.match(/^CANCEL\s+ORDER\s+#?([A-Z0-9]{4,24})$/);
+  if (cancelOrderMatch) return cancelOrderByShortId(cancelOrderMatch[1], tenantId, adminPhone, tenantDoc, business);
+
+  const cancelBookMatch = upper.match(/^CANCEL\s+BOOK(?:ING)?\s+#?([A-Z0-9]{4,24})$/);
+  if (cancelBookMatch) return cancelBookingByShortId(cancelBookMatch[1], tenantId, adminPhone, tenantDoc);
+
+  const cancelAnyMatch = upper.match(/^CANCEL\s+#?([A-Z0-9]{4,24})$/);
+  if (cancelAnyMatch) {
+    const id = cancelAnyMatch[1];
+    const order = await getOrderByShortId(id, tenantId).catch(() => null);
+    if (order) return cancelOrderByShortId(id, tenantId, adminPhone, tenantDoc, business);
+    const booking = await getBookingByShortId(id, tenantId).catch(() => null);
+    if (booking) return cancelBookingByShortId(id, tenantId, adminPhone, tenantDoc);
+    return `⚠️ No order or booking found: #${id}`;
+  }
+
   // [FIX-CMD-12] Widened phone pattern from [\d+\s]+ to [\d+\s()./-]+ so common
   // international formats like +220-353-2423 or (220) 353-2423 are accepted.
   // Normalisation strips all non-digit characters to produce a bare number string,
@@ -300,13 +319,16 @@ Use \`RESUME BOT <phone>\` to resume a specific customer.`;
   // [FIX-CMD-4] If it looks like an admin command attempt (APPROVE/REJECT/CONFIRM/DECLINE/RESUME/MARK)
   // but didn't match a valid pattern, return a helpful error rather than null (which falls
   // through to intent detection and produces a confusing AI response).
-  const looksLikeCommand = /^(APPROVE|REJECT|CONFIRM|DECLINE|RESUME|MARK)\b/i.test(text.trim());
+  const looksLikeCommand = /^(APPROVE|REJECT|CONFIRM|DECLINE|RESUME|MARK|CANCEL)\b/i.test(text.trim());
   if (looksLikeCommand) {
     return (
       `⚠️ *Unrecognised command format.*\n\n` +
       `Valid admin commands:\n` +
       `✅ \`APPROVE <shortId>\`\n` +
       `❌ \`REJECT <shortId>\`\n` +
+      `🛑 \`CANCEL ORDER #<shortId>\`\n` +
+      `🛑 \`CANCEL BOOKING #<shortId>\`\n` +
+      `🛑 \`CANCEL #<shortId>\`\n` +
       `📅 \`CONFIRM BOOK <shortId>\`\n` +
       `🚫 \`DECLINE BOOK <shortId> [reason]\`\n` +
       `🍽️ \`MARK READY <shortId>\` _(notify customer to collect)_\n` +
@@ -865,6 +887,110 @@ async function declineBooking(shortId, reason, tenantId, adminPhone, tenantDoc) 
     // [FIX-CMD-15] Guarantee the admin always gets a reply instead of silent failure.
     logger.error('[AdminCmd] declineBooking failed', { shortId, adminPhone, err: err.message });
     return `⚠️ Something went wrong declining booking #${shortId}. Please try again.`;
+  }
+}
+
+// ── Cancel order by reference (admin) ─────────────────────────────────────────
+async function cancelOrderByShortId(shortId, tenantId, adminPhone, tenantDoc, business) {
+  try {
+    const ref = String(shortId).toUpperCase();
+    const terminal = ['cancelled', 'completed', 'delivered', 'rejected'];
+
+    const order = await Order.findOneAndUpdate(
+      {
+        shortId: ref,
+        tenantId,
+        status: { $nin: terminal },
+      },
+      { $set: {
+        status:        'cancelled',
+        paymentStatus: 'cancelled',
+        cancelledBy:   adminPhone,
+        cancelledAt:   new Date(),
+      }},
+      { new: false },
+    ).select('_id customerPhone item shortId status paymentStatus items totalPrice').lean();
+
+    if (!order) {
+      const existing = await getOrderByShortId(ref, tenantId);
+      if (!existing) return `⚠️ No order found: #${ref}`;
+      if (terminal.includes(existing.status)) {
+        return `ℹ️ Order #${ref} is already *${existing.status}* and cannot be cancelled.`;
+      }
+      return `⚠️ Order #${ref} could not be cancelled. Please try again.`;
+    }
+
+    const modeCfg = getModeConfig(business);
+    await dispatchMessage(order.customerPhone, buildOptionsReply(
+      modeCfg,
+      `❌ *Order Cancelled*\n\nYour order *#${order.shortId || ref}* has been cancelled by our team.\n\nIf you have any questions, please contact us directly.`,
+      [
+        { id: 'ORDER',    title: '🛒 Place New Order' },
+        { id: 'QUESTION', title: '❓ Ask a Question'  },
+      ],
+    ), tenantDoc).catch(err => logger.warn('[AdminCmd] cancelOrder: customer dispatch failed', { err: err.message }));
+
+    await updateSession(order.customerPhone, tenantId, {
+      currentFlow: null, step: null,
+      postFlowAck:  'ORDER_REJECTED',
+      postFlowData: { item: order.item, shortId: order.shortId || ref },
+    }).catch(() => {});
+
+    logger.info('[AdminCmd] Order cancelled by admin', { shortId: ref, adminPhone });
+    return `🛑 *Order cancelled*\n\nOrder #${ref} — customer ${order.customerPhone} has been notified.`;
+  } catch (err) {
+    logger.error('[AdminCmd] cancelOrderByShortId failed', { shortId, adminPhone, err: err.message });
+    return `⚠️ Something went wrong cancelling order #${shortId}. Please try again.`;
+  }
+}
+
+// ── Cancel booking by reference (admin) ─────────────────────────────────────────
+async function cancelBookingByShortId(shortId, tenantId, adminPhone, tenantDoc) {
+  try {
+    const ref = String(shortId).toUpperCase();
+    const booking = await Booking.findOneAndUpdate(
+      { shortId: ref, tenantId, status: { $ne: 'cancelled' } },
+      { $set: {
+        status:          'cancelled',
+        adminDeclinedAt: new Date(),
+        adminDeclinedBy: adminPhone,
+        adminNote:       'Cancelled by admin',
+      }},
+      { new: false },
+    ).select('_id customerPhone date time service shortId bookingType staff').lean();
+
+    if (!booking) {
+      const existing = await getBookingByShortId(ref, tenantId);
+      if (!existing) return `⚠️ No booking found: #${ref}`;
+      if (existing.status === 'cancelled') return `ℹ️ Booking #${ref} is already cancelled.`;
+      if (existing.status === 'completed') return `ℹ️ Booking #${ref} is already completed and cannot be cancelled.`;
+      return `⚠️ Booking #${ref} could not be cancelled. Please try again.`;
+    }
+
+    const when = booking.time && booking.bookingType !== 'walkin'
+      ? `${booking.date} at ${booking.time}`
+      : booking.date;
+    const serviceStr = booking.service ? ` (${booking.service})` : '';
+
+    await dispatchMessage(booking.customerPhone, {
+      type:    'buttons',
+      body:    `❌ *Booking Cancelled*\n\nYour booking${serviceStr}${when ? ` for *${when}*` : ''} _(Ref: #${ref})_ has been cancelled by our team.\n\nWe'd love to help you rebook when you're ready.`,
+      buttons: [
+        { id: 'BOOK',     title: '📅 Book Again'      },
+        { id: 'QUESTION', title: '❓ Ask a Question'  },
+      ],
+    }, tenantDoc).catch(err => logger.warn('[AdminCmd] cancelBooking: customer dispatch failed', { err: err.message }));
+
+    await updateSession(booking.customerPhone, tenantId, {
+      postFlowAck:  'BOOKING_DECLINED',
+      postFlowData: { service: booking.service, date: booking.date, staff: booking.staff || null, bookingType: booking.bookingType || null },
+    }).catch(() => {});
+
+    logger.info('[AdminCmd] Booking cancelled by admin', { shortId: ref, adminPhone });
+    return `🛑 *Booking cancelled*\n\nBooking #${ref}${serviceStr} — customer ${booking.customerPhone} has been notified.`;
+  } catch (err) {
+    logger.error('[AdminCmd] cancelBookingByShortId failed', { shortId, adminPhone, err: err.message });
+    return `⚠️ Something went wrong cancelling booking #${shortId}. Please try again.`;
   }
 }
 

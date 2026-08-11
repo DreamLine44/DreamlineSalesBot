@@ -1791,44 +1791,33 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
   // ── 13. ENQUIRY active flow (Question Mode) ───────────────────────────────
   if (session.currentFlow === 'ENQUIRY') {
     if (session.step === 'AWAITING_QUESTION') {
-      const { buildStatusReply } = await import('../services/activityStatusService.js');
+      const { processQuestionMessage, persistQuestionSession } = await import('../services/questionAnswerService.js');
       const { detectIntent } = await import('../core/intents/intentEngine.js');
-      const { isRestaurantScopeQuestion } = await import('../services/questionModeHelper.js');
-
-      if (!isRestaurantScopeQuestion(messageText)) {
-        await dispatchMessage(from, {
-          type: 'text',
-          body: "I'm here to help with restaurant-related questions — menu, orders, bookings, hours, and policies. How can I assist you with that?",
-        }, tenantDoc);
-        return;
-      }
+      const { buildStatusReply } = await import('../services/activityStatusService.js');
 
       let statusReply = null;
       try {
         const intentResult = await detectIntent({ message: messageText, isInteractive: false, session: { ...session, currentFlow: null }, business });
-        if (intentResult.action === 'TRACK_ORDER' && intentResult.confidence !== 'LOW') {
+        if (intentResult.action === 'TRACK_ORDER' && intentResult.confidence === 'HIGH') {
           statusReply = await buildStatusReply({ session, business, message: messageText });
         }
       } catch (_) { /* non-fatal */ }
 
       if (statusReply) {
+        await persistQuestionSession(session, tenantDoc, { lastMessage: messageText, lastTopic: 'ORDER_TRACKING' });
         await dispatchMessage(from, statusReply, tenantDoc);
         return;
       }
 
-      await updateSession(from, tenantId, {
-        step: 'AWAITING_QUESTION',
-        data: { ...(session.data || {}), _questionCtx: { lastMessage: messageText } },
-      });
-      const { getAIReply } = await import('../core/ai/providers/aiRouter.js');
-      const aiText = await getAIReply({ customerMessage: messageText, business, session, intent: 'FAQ' });
+      const reply = await processQuestionMessage({ session, message: messageText, business, tenant: tenantDoc, intent: 'FAQ' });
+      await persistQuestionSession(session, tenantDoc, reply.context || { lastMessage: messageText });
       await dispatchMessage(from, {
-        type:    'buttons',
-        body:    aiText || 'Let me check that for you. 😊',
-        buttons: [
+        type:    reply.type || 'buttons',
+        body:    reply.body,
+        buttons: reply.buttons || [
           { id: 'QUESTION',  title: '❓ Ask another'  },
           { id: 'ORDER',     title: '🛍 Order'       },
-          { id: 'SHOW_MENU', title: '🔄 Start Over'  },
+          { id: 'SUPPORT',   title: '💬 Contact Support' },
         ],
       }, tenantDoc);
       return;

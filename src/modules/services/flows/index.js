@@ -326,24 +326,18 @@ export async function handleQuoteFollowUp({ session, message, business, tenant }
 // ── AI Question Handler ───────────────────────────────────────────────────────
 
 export async function handleServicesQuestion({ session, message, business, tenant }) {
-  const aiReply = await getAIReply({
-    customerMessage: String(message || '').trim(),
-    business,
-    session,
-    intent: 'SERVICES_QUESTION',
-  });
-  // [FIX-SQ-1] completeFlow() clears the session. Previously it was called BEFORE
-  // building the return value and its result was checked with `if (_lcRsq) return _lcRsq`
-  // — meaning a lead-capture response REPLACED the AI answer entirely (same bug as
-  // restaurant handleRestaurantQuestion). Fix: call completeFlow AFTER assembling the
-  // response; discard its return value since the AI reply is the complete response.
-  await completeFlow(session, 'QUESTION', business, tenant).catch(() => {});
+  const raw = String(message || '').trim();
+  const { processQuestionMessage, persistQuestionSession } = await import('../../../services/questionAnswerService.js');
+  const reply = await processQuestionMessage({ session, message: raw, business, tenant, intent: 'SERVICES_QUESTION' });
+  await persistQuestionSession(session, tenant, reply.context || { lastMessage: raw });
+
   return {
-    type: 'buttons',
-    body: aiReply || 'Happy to help! Feel free to ask us anything about our services.',
-    buttons: [
-      { id: 'ENQUIRY', title: '📋 Get a Quote'       },
-      { id: 'BOOK',    title: '📅 Book Consultation' },
+    type: reply.type,
+    body: reply.body,
+    buttons: reply.buttons || [
+      { id: 'QUESTION', title: '❓ Another Question' },
+      { id: 'ENQUIRY',  title: '📋 Get a Quote'       },
+      { id: 'BOOK',     title: '📅 Book Consultation' },
     ],
   };
 }
