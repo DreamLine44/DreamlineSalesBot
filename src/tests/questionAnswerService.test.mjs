@@ -129,6 +129,25 @@ test('activityStatusService uses reference-first lookup', () => {
   assert.match(src, /trackingContext/);
 });
 
+test('processQuestionMessage handles general messages without throwing', async () => {
+  const { processQuestionMessage } = await import('../services/questionAnswerService.js');
+  const business = {
+    businessMode: 'RESTAURANT',
+    menuItems: [{ name: 'Domoda', price: 200, available: true }],
+    payment: { currency: 'GMD' },
+  };
+  const session = { customerPhone: '2201234567', tenantId: 'test', data: {} };
+  const reply = await processQuestionMessage({
+    session,
+    message: 'hello',
+    business,
+    tenant: {},
+    intent: 'FAQ',
+  });
+  assert.ok(reply.body);
+  assert.equal(reply.type, 'buttons');
+});
+
 test('webhook ENQUIRY path uses DB-first questionAnswerService', () => {
   const src = readSource('../controllers/webhookController.js');
   assert.match(src, /processQuestionMessage/);

@@ -124,7 +124,7 @@ function tryFaqMatch(message, business) {
   return null;
 }
 
-function classifyQuestion(message, session) {
+function classifyQuestion(message, session, business) {
   const raw = String(message || '').trim();
   const ctx = session?.data?._questionCtx || {};
 
@@ -217,7 +217,7 @@ export async function tryDatabaseAnswer({ message, business, session }) {
     return { handled: true, body: faqAnswer, routingDecision: 'FAQ', context: { lastMessage: raw, lastTopic: 'FAQ' } };
   }
 
-  const qType = classifyQuestion(raw, session);
+  const qType = classifyQuestion(raw, session, business);
 
   if (qType === 'STATUS') {
     const statusAnswer = await answerStatusQuestion({ message: raw, business, session });
