@@ -91,6 +91,52 @@ export async function me(req, res) {
   res.json({ authMethod: 'admin_session', ...req.adminUser, tenantId: req.tenantId });
 }
 
+// ── Self-service password change ─────────────────────────────────────────────
+// [NO-SELFSERVE-PASSWORD-1] Previously there was no way for a logged-in staff/
+// owner account to change their own password — only an OWNER could DISABLE and
+// re-invite someone, which throws away their whole account history. Requires
+// an actual Bearer session (req.adminUser); a legacy shared tenant/super-admin
+// x-api-key has no individual password to change, so it's rejected with a
+// clear message rather than silently no-op'ing or 500'ing on a missing user.
+export async function changePassword(req, res) {
+  try {
+    if (!req.adminUser) {
+      return res.status(400).json({
+        error: 'Password change requires an individual staff login (Bearer session). '
+             + 'The shared tenant API key has no password to change.',
+      });
+    }
+    const { currentPassword, newPassword } = req.body;
+    if (!currentPassword || !newPassword) {
+      return res.status(400).json({ error: 'currentPassword and newPassword are required' });
+    }
+    if (String(newPassword).length < 8) {
+      return res.status(400).json({ error: 'newPassword must be at least 8 characters' });
+    }
+
+    const admin = await AdminUser.findById(req.adminUser.id)
+      .select('+passwordHash passwordSalt status');
+    if (!admin || admin.status !== 'ACTIVE') {
+      return res.status(404).json({ error: 'Admin account not found' });
+    }
+    if (!verifyPassword(currentPassword, admin.passwordSalt, admin.passwordHash)) {
+      logger.warn('[AdminAuth] Failed password-change attempt (bad current password)', { adminId: admin._id, ip: req.ip });
+      return res.status(401).json({ error: 'Current password is incorrect' });
+    }
+
+    const { salt, hash } = hashPassword(newPassword);
+    admin.passwordSalt = salt;
+    admin.passwordHash = hash;
+    await admin.save();
+
+    logger.info('[AdminAuth] Password changed', { adminId: admin._id, tenantId: admin.tenantId });
+    res.json({ ok: true });
+  } catch (err) {
+    logger.error('[AdminAuth] changePassword failed', { err: err.message });
+    res.status(500).json({ error: err.message });
+  }
+}
+
 // ── Invite acceptance (no auth — the invite token itself is the credential) ──
 
 export async function acceptInvite(req, res) {

@@ -14,11 +14,12 @@ import {
   getAnalyticsTimeseriesHandler,
   getConversations, setHumanMode,
   getCustomers,
-  getBusinessSettings, updateBusinessSettings,
+  getBusinessSettings, updateBusinessSettings, rotateOwnApiKey,
   getMenu, addMenuItem, updateMenuItem, deleteMenuItem,
   getServices, addService, updateService, deleteService,
   getFaqs, addFaq, updateFaq, deleteFaq,
 } from '../controllers/dashboardController.js';
+import { requireRole } from '../middleware/authMiddleware.js';
 import { uploadSingle, uploadMultiple } from '../middleware/uploadMiddleware.js';
 import {
   uploadMenuItemImage, removeMenuItemImage,
@@ -75,6 +76,10 @@ r.get('/:tenantId/customers',                         enforceTenantScope, getCus
 // ── Business settings ─────────────────────────────────────────────────────────
 r.get('/:tenantId/settings',                          enforceTenantScope, getBusinessSettings);
 r.patch('/:tenantId/settings',                        enforceTenantScope, updateBusinessSettings);
+// [NO-SELFSERVE-APIKEY-1] OWNER-only self-service key rotation — see
+// dashboardController.rotateOwnApiKey for why a legacy shared-key caller
+// (OWNER-equivalent per requireRole) is allowed to hit this too.
+r.post('/:tenantId/rotate-key',                       enforceTenantScope, requireRole('OWNER'), rotateOwnApiKey);
 
 // ── Menu CRUD ─────────────────────────────────────────────────────────────────
 // uploadSingle parses multipart/form-data so image files can be included.

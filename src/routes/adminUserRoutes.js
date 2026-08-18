@@ -19,7 +19,7 @@
 import { Router } from 'express';
 import { requireApiKey, requireRole } from '../middleware/authMiddleware.js';
 import {
-  login, acceptInvite, me,
+  login, acceptInvite, me, changePassword,
   claimOwner, listAdmins, inviteAdmin, updateAdmin, removeAdmin,
 } from '../controllers/adminUserController.js';
 import { createRateLimiter } from '../middleware/rateLimiter.js';
@@ -54,6 +54,11 @@ router.post('/dashboard/auth/accept-invite',  authLimiter, acceptInvite);
 
 // ── Requires a session (Bearer) or legacy x-api-key ──────────────────────────
 router.get('/dashboard/auth/me', requireApiKey, me);
+
+// [NO-SELFSERVE-PASSWORD-1] Requires an individual Bearer session — changePassword
+// itself rejects a legacy x-api-key caller (no individual password to change),
+// but requireApiKey still needs to run first to populate req.adminUser at all.
+router.post('/dashboard/auth/change-password', authLimiter, requireApiKey, changePassword);
 
 // One-time bootstrap for tenants that predate this feature — auth is the
 // EXISTING tenant/super-admin x-api-key, not a session token (there isn't

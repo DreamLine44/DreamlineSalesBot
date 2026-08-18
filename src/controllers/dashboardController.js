@@ -31,6 +31,7 @@
  * [MERGED]   getCustomerOrderHistory — returns last N orders for a customer phone.
  */
 
+import crypto          from 'crypto';
 import Order          from '../models/Order.js';
 import Booking        from '../models/Booking.js';
 import Session        from '../models/Session.js';
@@ -583,7 +584,7 @@ export async function getBusinessSettings(req, res) {
   try {
     const { tenantId } = req.params;
     const business = await BusinessConfig.findOne({ tenantId })
-      .select('name description businessMode adminPhone menuItems services faq payment leadCapture hours customMessages addOns settings waCatalog')
+      .select('name description businessMode adminPhone address menuItems services faq payment leadCapture hours customMessages addOns settings multiItemCart waCatalog')
       .lean();
     if (!business) return res.status(404).json({ error: 'Business not found' });
     res.json({ business });
@@ -596,11 +597,31 @@ export async function getBusinessSettings(req, res) {
 export async function updateBusinessSettings(req, res) {
   try {
     const { tenantId } = req.params;
-    const allowed = ['name', 'description', 'adminPhone', 'payment', 'leadCapture',
-                     'customMessages', 'hours', 'settings', 'businessMode', 'addOns'];
+    // [FIX-SETTINGS-WHITELIST-1] 'multiItemCart' and 'address' were both missing
+    // from this whitelist. multiItemCart: the schema field and the businessController.js
+    // PUT route both had it, but this PATCH route (the one PreferencesPage.jsx actually
+    // calls) silently dropped it — the "Enable Multi-Item Cart" toggle saved successfully
+    // with a "Preferences saved" toast while doing nothing, on every tenant. address:
+    // present on the schema and used by the bot's "About Us" reply, but never
+    // save-able from the dashboard at all. Both added below.
+    const allowed = ['name', 'description', 'adminPhone', 'address', 'payment', 'leadCapture',
+                     'customMessages', 'hours', 'settings', 'multiItemCart', 'businessMode', 'addOns'];
     const updates = {};
     for (const key of allowed) {
       if (req.body[key] !== undefined) updates[key] = req.body[key];
+    }
+
+    // [FIX-SETTINGS-WHITELIST-1] Same $set-replaces-whole-subdocument hazard as
+    // [CATALOG-BIZ-1]/[FIX-MULTIITEMCART-BIZ-1] in businessController.js — flatten
+    // multiItemCart and settings to dot-notation so a partial payload can't wipe
+    // sibling fields it didn't intend to touch.
+    for (const key of ['multiItemCart', 'settings']) {
+      if (updates[key] && typeof updates[key] === 'object') {
+        for (const [k, v] of Object.entries(updates[key])) {
+          updates[`${key}.${k}`] = v;
+        }
+        delete updates[key];
+      }
     }
 
     // [FIX-CATALOG-SAVE-1] waCatalog needs its own handling: it's a nested
@@ -644,6 +665,38 @@ export async function updateBusinessSettings(req, res) {
     res.json({ ok: true, business });
   } catch (err) {
     logger.error('[Dashboard] Request failed', { err: err.message });
+    res.status(500).json({ error: err.message });
+  }
+}
+
+// [NO-SELFSERVE-APIKEY-1] Previously only the super-admin could rotate a
+// tenant's shared API key (POST /admin/tenants/:id/rotate-key) — a tenant that
+// suspected their key had leaked had no way to invalidate it without a support
+// ticket. Mirrors tenantController.rotateApiKey's key-generation logic exactly;
+// gated OWNER-only in the route (requireRole('OWNER') — a legacy shared-key
+// caller is treated as OWNER-equivalent per requireRole's existing rule, so this
+// also lets that caller rotate its own key, which is the whole point).
+export async function rotateOwnApiKey(req, res) {
+  try {
+    const { tenantId } = req.params;
+    const newKey  = crypto.randomBytes(32).toString('hex');
+    const newHash = crypto.createHash('sha256').update(newKey).digest('hex');
+
+    const tenant = await Tenant.findByIdAndUpdate(
+      tenantId,
+      { $set: { apiKeyHash: newHash }, $unset: { apiKey: '' } },
+      { new: true, runValidators: false },
+    );
+    if (!tenant) return res.status(404).json({ error: 'Tenant not found' });
+
+    logger.info('[Dashboard] Tenant self-rotated API key', { tenantId });
+    res.json({
+      ok:     true,
+      apiKey: newKey,
+      note:   'Store this key immediately — it will not be shown again. The previous key is now invalid.',
+    });
+  } catch (err) {
+    logger.error('[Dashboard] rotateOwnApiKey failed', { err: err.message });
     res.status(500).json({ error: err.message });
   }
 }

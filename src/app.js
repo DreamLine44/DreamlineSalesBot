@@ -273,9 +273,19 @@ process.on('SIGINT',  () => gracefulShutdown('SIGINT'));
 process.on('unhandledRejection', (r) => {
   logger.error('[Process] Unhandled rejection', { reason: r instanceof Error ? r.message : String(r) });
 });
+// [FIX-STAY-ALIVE-1] Previously called process.exit(1) here, inconsistent with
+// the unhandledRejection handler immediately above (which only logs) and with
+// the log-and-stay-alive policy already established elsewhere on this platform
+// specifically to stop one tenant's error from taking down every other
+// tenant's bot on this same process. A single uncaught exception in, say, one
+// tenant's message-handling code path would otherwise kill the whole server —
+// every other tenant's webhook, dashboard, and API traffic goes down with it
+// until the process manager restarts it. Log and keep the process alive
+// instead; this trades a (rare, already-logged) risk of continuing after
+// truly corrupted process state for guaranteed multi-tenant isolation on the
+// far more common case of one bad code path in one tenant's flow.
 process.on('uncaughtException', (err) => {
   logger.error('[Process] Uncaught exception', { err: err.message, stack: err.stack?.slice(0, 400) });
-  process.exit(1);
 });
 
 start().catch(err => {
