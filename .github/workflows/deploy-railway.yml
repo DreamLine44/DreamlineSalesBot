@@ -8,13 +8,29 @@ on:
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      statuses: write
     
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      - name: Check RAILWAY_TOKEN
+        run: |
+          if [ -z "$RAILWAY_TOKEN" ]; then
+            echo "⚠️  RAILWAY_TOKEN not configured. Skipping Railway deployment."
+            echo "To enable auto-deploy:"
+            echo "1. Get token from Railway.app dashboard (Settings → Tokens)"
+            echo "2. Add RAILWAY_TOKEN secret to GitHub repo (Settings → Secrets → New)"
+            exit 0
+          fi
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+
       - name: Deploy to Railway
         id: deploy
+        if: secrets.RAILWAY_TOKEN != ''
         run: |
           npm install -g @railway/cli
           railway up --service WhatSalesAgent --detach
@@ -22,7 +38,7 @@ jobs:
           RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
 
       - name: Report deployment status
-        if: success()
+        if: success() && secrets.RAILWAY_TOKEN != ''
         uses: actions/github-script@v7
         with:
           script: |
@@ -37,7 +53,7 @@ jobs:
             })
 
       - name: Report deployment failure
-        if: failure()
+        if: failure() && secrets.RAILWAY_TOKEN != ''
         uses: actions/github-script@v7
         with:
           script: |
