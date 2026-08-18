@@ -138,6 +138,10 @@ export function buildWelcomeSequence(business, cfg) {
     const rows = (cfg.ui.welcomeList.rows || []).filter(
       row => row.id !== 'BROWSE_CATALOG' || shouldShowCatalogButton(business),
     );
+    // [FIX-DUPLICATE-WELCOME] Return as single object to preserve the list format.
+    // This MUST NOT be wrapped in an array with a separate text message,
+    // as that would create duplicate welcome messages in WhatsApp. The list's
+    // body already contains the greeting text, so no separate text message is needed.
     return {
       type:   'list',
       body:   `${greeting}\n\n${promptBody}`,
@@ -165,6 +169,17 @@ export function buildWelcomeSequence(business, cfg) {
     buttonsMessage = merged.rows
       ? { type: 'list', body: promptBody, button: 'Choose option', rows: merged.rows }
       : { type: 'buttons', body: promptBody, buttons: merged.buttons };
+  }
+  
+  // [FIX-DUPLICATE-WELCOME] Ensure buttonsMessage body never contains cancel/fallback text
+  // by explicitly using only the promptBody/chooseOptionPrompt. Never allow cancelMsg
+  // or other fallback messages to bleed into the welcome sequence.
+  if (buttonsMessage.body && (buttonsMessage.body.includes('No problem') || buttonsMessage.body.includes('cancelMsg'))) {
+    logger.warn('[buildWelcomeSequence] Detected cancel message in buttons body, cleaning', {
+      mode: (business?.businessMode || 'RETAIL').toUpperCase(),
+      body: buttonsMessage.body?.substring(0, 100),
+    });
+    buttonsMessage.body = promptBody; // Use only the safe promptBody
   }
 
   return [
@@ -416,12 +431,22 @@ export async function route({ action, intent, session, message, business, tenant
       // [NAV-META3] Two-step welcome: greeting text first, interactive menu
       // second — see buildWelcomeSequence() above.
       const greetReply = buildWelcomeSequence(business, cfg);
-      logger.debug('[Router GREET] buildWelcomeSequence reply', {
-        isArray: Array.isArray(greetReply),
-        replyLength: Array.isArray(greetReply) ? greetReply.length : 1,
-        firstElem: Array.isArray(greetReply) ? greetReply[0]?.body?.substring(0, 50) : greetReply.body?.substring(0, 50),
-        secondElem: Array.isArray(greetReply) && greetReply[1] ? greetReply[1].body?.substring(0, 50) : 'N/A',
-      });
+      
+      // [FIX-DUPLICATE-WELCOME] Ensure reply is never an array containing cancel message
+      // by validating the second element if present. If the reply is an array, the
+      // second element must be a welcome menu (buttons/list), never a cancel response.
+      if (Array.isArray(greetReply) && greetReply.length > 1) {
+        const secondMsg = greetReply[1];
+        if (secondMsg?.body && secondMsg.body.includes('No problem')) {
+          // [SAFETY] Unexpected cancel message in welcome sequence — log and strip it
+          logger.warn('[Router GREET] Unexpected cancel message in welcome array, removing', {
+            from: session.customerPhone, tenantId: session.tenantId,
+            secondMsg: secondMsg.body?.substring(0, 100),
+          });
+          return greetReply.slice(0, 1); // Return only the first message (text greeting)
+        }
+      }
+      
       return greetReply;
     }
 
