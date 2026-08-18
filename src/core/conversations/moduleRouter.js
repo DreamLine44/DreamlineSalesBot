@@ -138,16 +138,18 @@ export function buildWelcomeSequence(business, cfg) {
     const rows = (cfg.ui.welcomeList.rows || []).filter(
       row => row.id !== 'BROWSE_CATALOG' || shouldShowCatalogButton(business),
     );
-    // [FIX-DUPLICATE-WELCOME] Return as single object to preserve the list format.
-    // This MUST NOT be wrapped in an array with a separate text message,
-    // as that would create duplicate welcome messages in WhatsApp. The list's
-    // body already contains the greeting text, so no separate text message is needed.
-    return {
-      type:   'list',
-      body:   `${greeting}\n\n${promptBody}`,
-      button: cfg.ui.welcomeList.button || 'Choose an option',
-      rows,
-    };
+    // [FIX-DUPLICATE-WELCOME-AUDIT] For welcomeList mode (RESTAURANT), return
+    // consistently with other modes as an array of [text, interactive].
+    // This ensures dispatcher and downstream code always expect the same shape.
+    // The welcomeList body includes the greeting, so we send just the list payload.
+    return [
+      {
+        type:   'list',
+        body:   `${greeting}\n\n${promptBody}`,
+        button: cfg.ui.welcomeList.button || 'Choose an option',
+        rows,
+      },
+    ];
   }
 
   // RESTAURANT is left untouched here: it already surfaces Browse Catalog via
@@ -432,19 +434,40 @@ export async function route({ action, intent, session, message, business, tenant
       // second — see buildWelcomeSequence() above.
       const greetReply = buildWelcomeSequence(business, cfg);
       
-      // [FIX-DUPLICATE-WELCOME] Ensure reply is never an array containing cancel message
-      // by validating the second element if present. If the reply is an array, the
-      // second element must be a welcome menu (buttons/list), never a cancel response.
-      if (Array.isArray(greetReply) && greetReply.length > 1) {
-        const secondMsg = greetReply[1];
-        if (secondMsg?.body && secondMsg.body.includes('No problem')) {
-          // [SAFETY] Unexpected cancel message in welcome sequence — log and strip it
-          logger.warn('[Router GREET] Unexpected cancel message in welcome array, removing', {
+      // [FIX-DUPLICATE-WELCOME] Comprehensive safety check: ensure NO payload
+      // in the reply contains cancel/fallback messages ("No problem", etc.).
+      // This catches any path where a cancel message accidentally bleeds into
+      // the welcome sequence. Log and strip any bad payloads.
+      if (Array.isArray(greetReply)) {
+        const cleanedReply = greetReply.filter(payload => {
+          if (payload?.body && (payload.body.includes('No problem') || payload.body.includes('cancelMsg'))) {
+            logger.warn('[Router GREET] Removing cancel/fallback message from welcome array', {
+              from: session.customerPhone, tenantId: session.tenantId,
+              body: payload.body?.substring(0, 100),
+            });
+            return false; // Filter this payload out
+          }
+          return true;
+        });
+        
+        if (cleanedReply.length === 0) {
+          // All payloads were bad — return a safe fallback greeting
+          logger.error('[Router GREET] All payloads were cancel messages, using fallback', {
             from: session.customerPhone, tenantId: session.tenantId,
-            secondMsg: secondMsg.body?.substring(0, 100),
           });
-          return greetReply.slice(0, 1); // Return only the first message (text greeting)
+          const safeFallback = cfg.messages?.welcome || '👋 Welcome! How can I help you today?';
+          return { type: 'text', body: safeFallback };
         }
+        
+        return cleanedReply.length === greetReply.length ? greetReply : cleanedReply;
+      } else if (greetReply?.body && (greetReply.body.includes('No problem') || greetReply.body.includes('cancelMsg'))) {
+        // Single payload that contains cancel message — log and use safe fallback
+        logger.warn('[Router GREET] Single payload contains cancel message, using fallback', {
+          from: session.customerPhone, tenantId: session.tenantId,
+          body: greetReply.body?.substring(0, 100),
+        });
+        const safeFallback = cfg.messages?.welcome || '👋 Welcome! How can I help you today?';
+        return { type: 'text', body: safeFallback };
       }
       
       return greetReply;
@@ -529,7 +552,23 @@ export async function route({ action, intent, session, message, business, tenant
       await updateSession(session.customerPhone, session.tenantId, {
         currentFlow: null, step: null, data: {}, postFlowAck: null, postFlowData: null, orderChannel: null,
       });
-      return buildWelcomeSequence(business, cfg);
+      const mainMenuReply = buildWelcomeSequence(business, cfg);
+      
+      // [FIX-DUPLICATE-WELCOME] Apply same safety check as GREET
+      if (Array.isArray(mainMenuReply)) {
+        const cleanedReply = mainMenuReply.filter(payload => {
+          if (payload?.body && (payload.body.includes('No problem') || payload.body.includes('cancelMsg'))) {
+            logger.warn('[Router MAIN_MENU] Removing cancel message from welcome sequence', {
+              from: session.customerPhone, tenantId: session.tenantId,
+              body: payload.body?.substring(0, 100),
+            });
+            return false;
+          }
+          return true;
+        });
+        return cleanedReply.length > 0 ? cleanedReply : mainMenuReply;
+      }
+      return mainMenuReply;
     }
 
     // [NAV-META3] [AUDIT-FIX] "🛍 Browse Catalog" — browseCatalogExplicit() and
