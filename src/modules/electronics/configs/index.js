@@ -57,7 +57,7 @@ export const ELECTRONICS_CONFIG = {
     welcome:
       '📱 *Welcome!* Looking for the best tech deals?\n\n' +
       'Browse our products, get expert tech advice, or compare devices.',
-    orderPrompt:  '🛒 What are you looking for? Choose a category or type a product name:',
+    orderPrompt:  '�️ Browse our products below — tap any item to see more.',
     cancelMsg:    '✅ No problem! Come back anytime — we\'re here to help. 📱',
     fallback:
       'I can help you *shop for products*, answer *tech questions*, or *compare devices*.\n\n' +

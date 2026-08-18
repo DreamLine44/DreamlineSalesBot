@@ -83,7 +83,7 @@ export function buildProductList(items, business, categoryLabel = null) {
     header,
     body:        categoryLabel
       ? `Here are our *${categoryLabel}* products:`
-      : "Here's our full product range — tap to view details:",
+      : '🛍️ Browse our products below — tap any item to see more.',
     buttonLabel: 'Browse Products',
     rows,
   };

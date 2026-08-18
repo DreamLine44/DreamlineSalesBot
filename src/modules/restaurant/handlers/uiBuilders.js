@@ -33,7 +33,7 @@ export function buildMenuUI(business) {
   return {
     type:        'list',
     header:      business?.name || 'Menu',
-    body:        "Here's our menu — choose an item:",
+    body:        '🛍️ Browse our products below — tap any item to see more.',
     buttonLabel: 'View Menu',
     rows,
   };

@@ -84,7 +84,7 @@ export const RESTAURANT_CONFIG = {
 
   messages: {
     welcome:         '👋 Welcome! What would you like to do today?',
-    orderPrompt:     "Here's our menu — choose an item:",
+    orderPrompt:     '🛍️ Browse our products below — tap any item to see more.',
     bookPrompt:      'What date would you like to book? 📅\n\n(e.g. *25 June*, *tomorrow*, *next Monday*)',
     servicePrompt:   'Please choose a table type or service:',
     timePrompt:      'What time works for you? ⏰',
