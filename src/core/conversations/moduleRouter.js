@@ -76,6 +76,9 @@ export function buildWelcomeSequence(business, cfg) {
   const greeting = customWelcome || cfg.messages?.welcome || '👋 Welcome! How can I help you today?';
   const promptBody = cfg.messages?.chooseOptionPrompt || /** 'Choose an option below to get started ▼' */ '';
 
+  // [DEBUG] Log buildWelcomeSequence return type for debugging duplicate welcome message issue
+  logger.debug('[buildWelcomeSequence] cfg.ui.welcomeList defined:', !!cfg.ui?.welcomeList);
+
   // [AUDIT-FIX-CATALOG-WELCOME] waCatalogConfig.js's shouldShowCatalogButton() /
   // withCatalogWelcomeOption() were fully implemented (see [CATALOG-UX-BUTTON])
   // but nothing in production code ever actually called withCatalogWelcomeOption
@@ -412,7 +415,14 @@ export async function route({ action, intent, session, message, business, tenant
 
       // [NAV-META3] Two-step welcome: greeting text first, interactive menu
       // second — see buildWelcomeSequence() above.
-      return buildWelcomeSequence(business, cfg);
+      const greetReply = buildWelcomeSequence(business, cfg);
+      logger.debug('[Router GREET] buildWelcomeSequence reply', {
+        isArray: Array.isArray(greetReply),
+        replyLength: Array.isArray(greetReply) ? greetReply.length : 1,
+        firstElem: Array.isArray(greetReply) ? greetReply[0]?.body?.substring(0, 50) : greetReply.body?.substring(0, 50),
+        secondElem: Array.isArray(greetReply) && greetReply[1] ? greetReply[1].body?.substring(0, 50) : 'N/A',
+      });
+      return greetReply;
     }
 
     // [AUDIT-FIX-VIEWMENU] VIEW_MENU is distinct from SHOW_MENU (see patterns.js).
