@@ -90,6 +90,36 @@ test('tryDatabaseAnswer returns menu from database for menu questions', async ()
   assert.equal(result.routingDecision, 'VIEW_MENU');
 });
 
+test('tryDatabaseAnswer resolves a contextual follow-up about whether listed items are all available', async () => {
+  const result = await tryDatabaseAnswer({
+    message: 'Are these the only ones you have?',
+    business,
+    session: {},
+  });
+  assert.equal(result.handled, true);
+  assert.equal(result.routingDecision, 'VIEW_MENU');
+  assert.match(result.body, /Domoda/);
+});
+
+test('handleOrderFlow routes menu-availability questions to Q&A instead of item-not-found', async () => {
+  const { handleOrderFlow } = await import('../modules/restaurant/flows/orderFlow.js');
+  const reply = await handleOrderFlow({
+    session: {
+      customerPhone: '2201234567',
+      tenantId: 'tenant-1',
+      step: 'SELECT_ITEM',
+      data: {},
+    },
+    message: 'Are these the only ones you have?',
+    business,
+    tenant: {},
+    isInteractive: false,
+  });
+  assert.ok(reply);
+  assert.match(reply.body, /Today's Menu|Domoda|Benachin/i);
+  assert.doesNotMatch(reply.body, /I couldn't find .* on our menu/i);
+});
+
 test('tryDatabaseAnswer returns FAQ answer without AI', async () => {
   const result = await tryDatabaseAnswer({
     message: 'Do you offer delivery?',

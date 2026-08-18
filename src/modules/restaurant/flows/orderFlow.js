@@ -217,6 +217,24 @@ export async function handleOrderFlow({ session, message, business, tenant, isIn
         };
       }
 
+      // [Q&A-PRECEDENCE-1] Natural language menu questions such as "are these the only
+      // ones you have?" or "is there any food today?" are not item-selection intents.
+      // Route them to the existing DB-first Q&A layer before falling into the
+      // "not found on our menu" item-lookup response. This preserves the order flow for
+      // legitimate product-selection messages while keeping the ask-a-question flow helpful.
+      const questionAnswerService = await import('../../../services/questionAnswerService.js');
+      const qAnswer = await questionAnswerService.tryDatabaseAnswer({ message: raw, business, session });
+      if (qAnswer?.handled && qAnswer.body) {
+        await questionAnswerService.persistQuestionSession(session, tenant, qAnswer.context || { lastMessage: raw, lastTopic: qAnswer.routingDecision || 'QUESTION' });
+        return {
+          type: 'buttons',
+          body: qAnswer.body,
+          buttons: qAnswer.stayOnTopic
+            ? [{ id: 'QUESTION', title: '❓ Ask Another' }, { id: 'SUPPORT', title: '💬 Contact Support' }]
+            : [{ id: 'QUESTION', title: '❓ Ask Another' }, { id: 'VIEW_MENU', title: '📋 View Menu' }, { id: 'SUPPORT', title: '💬 Contact Support' }],
+        };
+      }
+
       // [MULTICART-v39-PHASE2] Try multi-item parsing FIRST. A message like
       // "2 burgers and a coke" resolves to 2+ distinct menu lines here and
       // jumps straight to ITEM_ADDED. A normal single-item message never

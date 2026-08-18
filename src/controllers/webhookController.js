@@ -2806,8 +2806,13 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
           return;
         }
 
-        const { getAIReply } = await import('../core/ai/providers/aiRouter.js');
-        const aiText = await getAIReply({ customerMessage: messageText, business, session, intent: 'QUESTION' }).catch(() => null);
+        // Use the DB-first question layer here too. It resolves contextual menu
+        // references against the current catalog before falling back to Groq.
+        const { processQuestionMessage } = await import('../services/questionAnswerService.js');
+        const questionReply = await processQuestionMessage({
+          session: flowlessSession, message: messageText, business, tenant: tenantDoc, intent: 'QUESTION',
+        }).catch(() => null);
+        const aiText = questionReply?.body || null;
 
         await dispatchMessage(from, {
           type:    'buttons',

@@ -28,7 +28,10 @@ import {
   buildQuestionContextBlock,
 } from './questionModeHelper.js';
 
-const MENU_RE = /\b(menu|what do you (have|serve|sell|offer)|today'?s menu|show menu|view menu|see menu|what('s| is) (on|in) (the )?menu|list (of )?(food|items|products|dishes|services)|price list|catalog|available (food|items|products|dishes|services))\b/i;
+// Includes conversational references to the menu just shown. Customers naturally
+// ask "are these the only ones you have?" instead of repeating the word "menu".
+// Resolve those against the real catalog rather than making the AI infer availability.
+const MENU_RE = /\b(menu|what do you (have|serve|sell|offer)|today'?s menu|show menu|view menu|see menu|what('s| is) (on|in) (the )?menu|list (of )?(food|items|products|dishes|services)|price list|catalog|available (food|items|products|dishes|services)|are (these|those) (all|the only)( ones)? (you have|available|there is)|is (that|this) all (you have|that is available)|anything else (available|on the menu)|what else do you have)\b/i;
 const HOURS_RE = /\b(hours|opening hours|business hours|when do you (open|close)|what time do you (open|close|close today|open today)|are you open|closing time|opening time|open today|close today)\b/i;
 const PRICE_RE = /\b(how much|price|cost|what does .+ cost)\b/i;
 const STATUS_RE = /\b(track|status|where is my|check my|my order|my booking|my appointment|order update|booking update)\b/i;
