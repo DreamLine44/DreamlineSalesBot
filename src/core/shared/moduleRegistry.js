@@ -256,7 +256,7 @@ export async function registerAllModules() {
     const lines = Array.isArray(nluProducts) && nluProducts.length > 0
       ? nluProducts
         .filter(p => p?.item)
-        .map(p => ({ item: p.item, quantity: p.quantity || 1, variant: p.variant || null }));
+        .map(p => ({ item: p.item, quantity: p.quantity || 1, variant: p.variant || null }))
       : (parsedDirect?.lines || []);
     if (lines.length > 0) {
       const mode = (business?.businessMode || 'RETAIL').toUpperCase();
