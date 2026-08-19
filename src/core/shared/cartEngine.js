@@ -157,9 +157,26 @@ export function parseNaturalOrderMessage(menu = [], text = '') {
   const { quantity, name } = plateMatch
     ? { quantity: parseQuantity(plateMatch[1]) || 1, name: plateMatch[2].trim() }
     : extractQuantityAndName(withoutLead);
-  const { item, confidenceLevel } = findBestMatch(menu, name);
+  const variantCandidates = [];
+  for (const item of menu) {
+    const variants = Array.isArray(item.variants) ? item.variants : [];
+    for (const variant of variants) {
+      const variantName = typeof variant === 'string' ? variant : variant?.name;
+      if (!variantName) continue;
+      variantCandidates.push({ item, variant: variantName, name: `${variantName} ${item.name}` });
+    }
+  }
+
+  const variantMatch = variantCandidates.length ? findBestMatch(variantCandidates, name) : null;
+  const baseMatch = findBestMatch(menu, name);
+  const matchedVariant = variantMatch?.confidenceLevel === 'HIGH' ? variantMatch.item : null;
+  const item = matchedVariant?.item || baseMatch.item;
+  const confidenceLevel = matchedVariant ? variantMatch.confidenceLevel : baseMatch.confidenceLevel;
   if (!item || confidenceLevel !== 'HIGH') return null;
-  return { lines: [{ item, quantity, variant: null }], unmatchedSegments: [] };
+  return {
+    lines: [{ item, quantity, variant: matchedVariant?.variant || null }],
+    unmatchedSegments: [],
+  };
 }
 
 /**

@@ -54,6 +54,15 @@ test('START_BOOKING has a direct all-in-one booking path for party, date, and ti
   assert.match(block, /advance\(/);
 });
 
+test('START_ORDER applies free-text cart modifications before starting a new order flow', () => {
+  const src = readSource('../core/shared/moduleRegistry.js');
+  const start = src.indexOf("registerAction('START_ORDER'");
+  const block = src.slice(start, src.indexOf("registerAction('START_BOOKING'", start));
+  assert.match(block, /parseCartModification/);
+  assert.match(block, /applyCartModification/);
+  assert.match(block, /existingCart/);
+});
+
 test('postFlowHandler: status commands fall through instead of generic menu', () => {
   const src = readSource('../services/postFlowHandler.js');
   assert.match(src, /isStatusCommand\(msg\)/);

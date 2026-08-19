@@ -195,8 +195,26 @@ export async function registerAllModules() {
     // to order".
     let orderSession = session;
     const nluProducts = session?.data?._nluPending?.products;
-    const { mergeCartLines, parseMultiItemMessage, parseNaturalOrderMessage } = await import('../shared/cartEngine.js');
+    const {
+      mergeCartLines, parseMultiItemMessage, parseNaturalOrderMessage,
+      parseCartModification, applyCartModification,
+    } = await import('../shared/cartEngine.js');
     const menu = (business?.menuItems || []).filter(item => item.available !== false);
+    const existingCart = Array.isArray(session?.data?.cart) ? session.data.cart : [];
+    const cartModification = existingCart.length
+      ? parseCartModification(existingCart, message)
+      : null;
+    if (cartModification) {
+      const updatedCart = applyCartModification(existingCart, cartModification);
+      const updatedData = { ...(session.data || {}), cart: updatedCart, _nluPending: null };
+      const updated = await updateSession(session.customerPhone, session.tenantId, {
+        currentFlow: 'ORDER', step: 'CONFIRM', data: updatedData, orderChannel: 'menu', menuViewed: true,
+      });
+      return advance({
+        session: { ...session, ...updated, currentFlow: 'ORDER', step: 'CONFIRM', data: updatedData, orderChannel: 'menu' },
+        message: null, business, tenant,
+      });
+    }
     const parsedDirect = parseMultiItemMessage(menu, message) || parseNaturalOrderMessage(menu, message);
     const lines = Array.isArray(nluProducts) && nluProducts.length > 0
       ? nluProducts

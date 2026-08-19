@@ -56,6 +56,14 @@ test('natural order parser handles multi-word items after word quantities', () =
   assert.equal(result.lines[0].quantity, 2);
 });
 
+test('natural order parser preserves a matching product variant', () => {
+  const variantMenu = [{ _id: '5', name: 'Domoda', price: 200, available: true, variants: ['Beef', 'Chicken'] }];
+  const result = parseNaturalOrderMessage(variantMenu, 'I want two beef Domoda');
+  assert.ok(result);
+  assert.equal(result.lines[0].variant, 'Beef');
+  assert.equal(result.lines[0].quantity, 2);
+});
+
 test('multi-item parser strips an order-introduction prefix', () => {
   const result = parseMultiItemMessage(menu, 'I want one Jollof Rice and two Cokes');
   assert.ok(result);
