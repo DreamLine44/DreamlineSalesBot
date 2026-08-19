@@ -79,6 +79,17 @@ test('webhook accepts named buttons produced by natural-order clarification', ()
   assert.match(src, /!pendingNaturalCandidate/);
 });
 
+test('webhook consumes pending natural-order selections before generic flow routing', () => {
+  const src = readSource('../controllers/webhookController.js');
+  const active = src.indexOf('// ── 15. Active flow');
+  const collision = src.indexOf('[FIX-LISTNAV-ORDER-COLLISION]', active);
+  const block = src.slice(active, collision);
+  assert.match(block, /pendingNaturalQuantity/);
+  assert.match(block, /mergeCartLines/);
+  assert.match(block, /step: 'CONFIRM'/);
+  assert.match(block, /message: null/);
+});
+
 test('postFlowHandler: status commands fall through instead of generic menu', () => {
   const src = readSource('../services/postFlowHandler.js');
   assert.match(src, /isStatusCommand\(msg\)/);

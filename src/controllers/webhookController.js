@@ -2108,6 +2108,38 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
 
   // ── 15. Active flow ───────────────────────────────────────────────────────
   if (session.currentFlow) {
+    // Natural-order ambiguity continuation: the clarification buttons use the
+    // live menu item's name as their ID. Consume that selection before any
+    // generic intent/flow-switch/stale-button logic can reset the session.
+    if (session.currentFlow === 'ORDER' && session.step === 'SELECT_ITEM' &&
+        session.data?.pendingNaturalQuantity && messageText) {
+      const selectedName = String(messageText).trim().toUpperCase();
+      const selectedItem = (business?.menuItems || [])
+        .filter(item => item.available !== false)
+        .find(item => String(item.name || '').trim().toUpperCase() === selectedName);
+      if (selectedItem) {
+        const { mergeCartLines } = await import('../core/shared/cartEngine.js');
+        const cart = mergeCartLines(
+          Array.isArray(session.data.cart) ? session.data.cart : [],
+          [{ item: selectedItem, quantity: session.data.pendingNaturalQuantity, variant: null }],
+        );
+        const data = { ...(session.data || {}), cart, pendingNaturalQuantity: null, _nluPending: null };
+        await updateSession(from, tenantId, {
+          currentFlow: 'ORDER', step: 'CONFIRM', data, orderChannel: 'menu', menuViewed: true,
+        });
+        const { advance: advanceSelectedOrder } = await import('../core/conversations/flowEngine.js');
+        const reply = await advanceSelectedOrder({
+          session: { ...session, currentFlow: 'ORDER', step: 'CONFIRM', data, orderChannel: 'menu' },
+          message: null, business, tenant: tenantDoc, isInteractive: false,
+        });
+        if (reply) {
+          const payloads = Array.isArray(reply) ? reply : [reply];
+          for (const payload of payloads) await dispatchMessage(from, payload, tenantDoc);
+        }
+        return;
+      }
+    }
+
     // [FIX-LISTNAV-ORDER-COLLISION] buildWelcomeSequence()'s LIST-NAV-1 welcome
     // list uses row id 'ORDER' for "🍔 Order Food" — which is ALSO the literal
     // currentFlow value the ORDER flow sets (flows: ['ORDER','BOOKING']). Before
