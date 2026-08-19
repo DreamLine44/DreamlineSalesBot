@@ -26,7 +26,7 @@ const {
   buildRetailerId, parseRetailerId, resolveCatalogItem, normalizeCatalogSelection,
 } = await import('../modules/catalog/waCatalogHelpers.js');
 
-const { shouldOfferCatalog, isCatalogEnabled, hasSellableProducts } =
+const { shouldOfferCatalog, isCatalogEnabled, hasSellableProducts, suppressLegacyMenuOption } =
   await import('../modules/catalog/waCatalogConfig.js');
 
 function makeBusiness(overrides = {}) {
@@ -132,6 +132,32 @@ test('shouldOfferCatalog is false for a tenant who never enabled WA Catalog (def
   const business = { waCatalog: { enabled: false, catalogId: null, mode: 'AI_DECIDES' }, menuItems: [{ available: true }] };
   assert.equal(isCatalogEnabled(business), false);
   assert.equal(shouldOfferCatalog({ business, intent: 'ORDER' }), false);
+});
+
+test('catalog-ready tenant suppresses legacy View Menu buttons', () => {
+  const business = {
+    menuItems: [{ name: 'Domoda', available: true }],
+    waCatalog: {
+      enabled: true,
+      catalogId: 'catalog-1',
+      lastSyncedAt: new Date(),
+      syncedRetailerIds: ['domoda-1'],
+    },
+  };
+  const response = suppressLegacyMenuOption({
+    type: 'buttons',
+    body: 'Choose an item',
+    buttons: [{ id: 'VIEW_MENU', title: '📋 View Menu' }],
+  }, business);
+  assert.deepEqual(response.buttons, [{ id: 'BROWSE_CATALOG', title: '🛍 View Items' }]);
+});
+
+test('catalog-disabled tenant keeps legacy View Menu buttons unchanged', () => {
+  const response = suppressLegacyMenuOption({
+    type: 'buttons',
+    buttons: [{ id: 'VIEW_MENU', title: '📋 View Menu' }],
+  }, { menuItems: [{ name: 'Domoda', available: true }] });
+  assert.deepEqual(response.buttons, [{ id: 'VIEW_MENU', title: '📋 View Menu' }]);
 });
 
 test('shouldOfferCatalog is false when enabled but no catalogId is configured yet', () => {

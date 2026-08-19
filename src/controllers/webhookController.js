@@ -1360,6 +1360,7 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
     if (
       upper.startsWith('APPROVE ')      ||
       upper.startsWith('REJECT ')       ||
+      upper.startsWith('CANCEL ')       ||
       upper.startsWith('CONFIRM BOOK ') ||
       upper.startsWith('DECLINE BOOK ') ||
       upper.startsWith('MARK READY ')   ||

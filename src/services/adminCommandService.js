@@ -106,7 +106,7 @@ import logger            from '../config/logger.js';
 import { formatMoney }   from '../utils/formatCurrency.js';
 import { buildOptionsReply } from '../core/shared/uiOptionsHelper.js';
 import { isNoPaymentOrder, formatOrderItemsForMessage } from './orderService.js';
-import { getOrderByShortId } from './activityLookupService.js';
+import { getOrderByShortId, extractShortId } from './activityLookupService.js';
 import { getBookingByShortId } from './bookingService.js';
 
 const MAX_INPUT_LENGTH = 500; // guard against absurdly long button IDs / command strings
@@ -214,15 +214,25 @@ export async function handleAdminTextCommand(text, tenantId, adminPhone, tenantD
   if (markReadyMatch) return markOrderReady(markReadyMatch[1], tenantId, adminPhone, tenantDoc, business);
 
   // [ADMIN-CANCEL-REF] Cancel confirmed activities by reference.
-  const cancelOrderMatch = upper.match(/^CANCEL\s+ORDER\s+#?([A-Z0-9]{4,24})$/);
+  const cancelOrderMatch = upper.match(/^CANCEL\s+ORDER\s+(?:#?\s*)?(?:DSB[-\s]*\d{2,8}[-\s]*)?([A-Z0-9]{4,24})$/);
   if (cancelOrderMatch) return cancelOrderByShortId(cancelOrderMatch[1], tenantId, adminPhone, tenantDoc, business);
 
-  const cancelBookMatch = upper.match(/^CANCEL\s+BOOK(?:ING)?\s+#?([A-Z0-9]{4,24})$/);
+  const cancelBookMatch = upper.match(/^CANCEL\s+BOOK(?:ING)?\s+(?:#?\s*)?(?:DSB[-\s]*\d{2,8}[-\s]*)?([A-Z0-9]{4,24})$/);
   if (cancelBookMatch) return cancelBookingByShortId(cancelBookMatch[1], tenantId, adminPhone, tenantDoc);
 
-  const cancelAnyMatch = upper.match(/^CANCEL\s+#?([A-Z0-9]{4,24})$/);
+  const cancelAnyMatch = upper.match(/^CANCEL\s+(?:#?\s*)?(?:DSB[-\s]*\d{2,8}[-\s]*)?([A-Z0-9]{4,24})$/);
   if (cancelAnyMatch) {
     const id = cancelAnyMatch[1];
+    const order = await getOrderByShortId(id, tenantId).catch(() => null);
+    if (order) return cancelOrderByShortId(id, tenantId, adminPhone, tenantDoc, business);
+    const booking = await getBookingByShortId(id, tenantId).catch(() => null);
+    if (booking) return cancelBookingByShortId(id, tenantId, adminPhone, tenantDoc);
+    return `⚠️ No order or booking found: #${id}`;
+  }
+
+  const cancelByReferenceMatch = extractShortId(text);
+  if (cancelByReferenceMatch && /\bCANCEL\b/i.test(text) && /\bDSB\b|\bORDER\b|\bBOOK\b|\bBOOKING\b|\bREF\b|\bACTIVITY\b/i.test(text)) {
+    const id = cancelByReferenceMatch;
     const order = await getOrderByShortId(id, tenantId).catch(() => null);
     if (order) return cancelOrderByShortId(id, tenantId, adminPhone, tenantDoc, business);
     const booking = await getBookingByShortId(id, tenantId).catch(() => null);

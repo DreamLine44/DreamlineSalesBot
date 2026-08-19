@@ -18,6 +18,7 @@
 import { updateSession, getSession } from '../sessions/sessionService.js';
 import logger from '../../config/logger.js';
 import { EXPRESSION_TURN_BUDGET } from '../../services/postFlowHandler.js';
+import { suppressLegacyMenuOption } from '../../modules/catalog/waCatalogConfig.js';
 
 // ── Registered flow handlers ──────────────────────────────────────────────────
 // Key: `${businessMode}:${flowName}` e.g. 'RESTAURANT:ORDER'
@@ -79,11 +80,11 @@ export async function advance({ session, message, business, tenant, isInteractiv
     const response = await handler({ session, message, business, tenant, isInteractive, flowReply });
     // null = handler already dispatched outbound UI (e.g. WA Catalog re-open)
     if (response === null) return null;
-    return response || {
+    return suppressLegacyMenuOption(response || {
       type:    'buttons',
       body:    '⚠️ Something went wrong. Please try again.',
       buttons: [{ id: 'SHOW_MENU', title: '🔄 Start Over' }],
-    };
+    }, business);
   } catch (err) {
     logger.error('[FlowEngine] Handler threw', { flow: specificKey, err: err.message });
     return {
@@ -144,7 +145,8 @@ export async function startFlow({ flowName, session, business, tenant }) {
 
   // Call handler with null message to trigger first-step UI
   const freshSession = updated || session;
-  return handler({ session: freshSession, message: null, business, tenant, isInteractive: false });
+  const response = await handler({ session: freshSession, message: null, business, tenant, isInteractive: false });
+  return suppressLegacyMenuOption(response, business);
 }
 
 /**

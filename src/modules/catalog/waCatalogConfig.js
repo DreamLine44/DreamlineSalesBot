@@ -98,6 +98,27 @@ export function hasSellableProducts(business) {
   return (business?.menuItems || []).some(i => i.available !== false);
 }
 
+/** Remove legacy text-menu actions from responses once WA Catalog is ready. */
+export function suppressLegacyMenuOption(response, business) {
+  if (!isCatalogEnabled(business) || !hasSellableProducts(business) || response == null) return response;
+  if (Array.isArray(response)) {
+    return response.map(item => suppressLegacyMenuOption(item, business));
+  }
+  if (typeof response !== 'object') return response;
+
+  const next = { ...response };
+  if (Array.isArray(next.buttons)) {
+    next.buttons = next.buttons.filter(button => button?.id !== 'VIEW_MENU');
+    if (next.buttons.length === 0) {
+      next.buttons = [{ id: 'BROWSE_CATALOG', title: '🛍 View Items' }];
+    }
+  }
+  if (Array.isArray(next.rows)) {
+    next.rows = next.rows.filter(row => row?.id !== 'VIEW_MENU');
+  }
+  return next;
+}
+
 /**
  * shouldOfferCatalog({ business, intent })
  * The single decision point for whether a START_ORDER-routed message should

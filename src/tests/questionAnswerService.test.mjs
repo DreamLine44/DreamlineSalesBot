@@ -48,6 +48,8 @@ const business = {
 test('extractShortId parses #F921EB and order #F921EB forms', () => {
   assert.equal(extractShortId('track order #F921EB'), 'F921EB');
   assert.equal(extractShortId('Cancel order #A1B2C3'), 'A1B2C3');
+  assert.equal(extractShortId('Cancel DSB-0818-782DF2'), '782DF2');
+  assert.equal(extractShortId('DSB-0818-782DF2'), '782DF2');
   assert.equal(extractShortId('hello'), null);
 });
 

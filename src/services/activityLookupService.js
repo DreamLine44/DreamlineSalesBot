@@ -17,6 +17,13 @@ export function extractShortId(message) {
   const raw = String(message || '').trim();
   if (!raw) return null;
 
+  // Real order/payment references are DSB-MMDD-XXXXXX (e.g. DSB-0818-782DF2).
+  // Earlier logic matched the middle numeric segment (0818) because it is the
+  // first 4-digit alphanumeric token in the string. Always prefer the last
+  // segment after the date prefix when a DSB reference is present.
+  const paymentRefMatch = raw.match(/\bDSB[-\s]*\d{2,8}[-\s]*([A-Z0-9]{4,24})\b/i);
+  if (paymentRefMatch) return paymentRefMatch[1].toUpperCase();
+
   const hashMatch = raw.match(/#\s*([A-Z0-9]{4,24})\b/i);
   if (hashMatch) return hashMatch[1].toUpperCase();
 
