@@ -2486,8 +2486,6 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
         if (reply) await dispatchMessage(from, reply, tenantDoc);
         return;
       }
-      // Not in an order-capable flow — no menu to show, fall through to the
-      // same reset behavior as SHOW_MENU/HOME/0 below.
     }
 
     if (upperMsg === '0' || upperMsg === 'SHOW_MENU' || upperMsg === 'MENU' || upperMsg === 'HOME'

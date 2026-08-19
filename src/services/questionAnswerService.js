@@ -249,10 +249,15 @@ export async function tryDatabaseAnswer({ message, business, session }) {
       ...(business?.menuItems || []).filter(i => i.available !== false),
       ...(business?.services || []).filter(s => s.available !== false),
     ];
-    const query = raw.replace(/\b(do you have|is there|is|available|any)\b/gi, ' ').trim();
+    const query = raw
+      .toLowerCase()
+      .replace(/[^\p{L}\p{N}\s]/gu, ' ')
+      .replace(/\b(do you have|is there|is|are there|are|available|any)\b/gi, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
     const candidates = menu.filter(item => {
       const itemName = String(item.name || '').toLowerCase();
-      return query.toLowerCase().split(/\s+/).some(token => token.length > 2 && itemName.includes(token));
+      return query.split(/\s+/).some(token => token.length > 2 && itemName.includes(token));
     });
     if (candidates.length === 1) {
       return { handled: true, body: `✅ Yes, *${candidates[0].name}* is currently available.`, routingDecision: 'QUESTION', context: { lastMessage: raw, lastTopic: 'AVAILABILITY' } };

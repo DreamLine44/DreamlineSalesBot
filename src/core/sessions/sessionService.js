@@ -49,6 +49,7 @@
  */
 
 import Session from '../../models/Session.js';
+import logger from '../../config/logger.js';
 
 // Standard conversation TTL (30 min default, configurable)
 const SESSION_TTL_MS = (parseInt(process.env.SESSION_TTL_MINUTES, 10) || 30) * 60 * 1000;
@@ -91,6 +92,15 @@ function resolveTTL(step, humanMode) {
   return SESSION_TTL_MS;
 }
 
+function handleMongoUnavailable(label, error) {
+  const message = String(error?.message || '');
+  if (message.includes('buffering timed out') || message.includes('MongoDB not connected') || message.includes('Connection refused')) {
+    logger.warn(`[SessionService] ${label} treated as no-op because MongoDB is unavailable`);
+    return true;
+  }
+  return false;
+}
+
 // ─── CREATE / RESET ───────────────────────────────────────────────────────────
 /**
  * Create or fully reset a session for (customerPhone, tenantId).
@@ -115,74 +125,84 @@ export const createSession = async (customerPhone, tenantId, data = {}) => {
   // Fix: $setOnInsert for humanMode so it defaults to false ONLY for brand-new docs.
   // Existing docs (session re-created after TTL expiry in same DB slot) keep their
   // humanMode value. The flow/step fields are still fully reset on every call.
-  return await Session.findOneAndUpdate(
-    { phone: key, tenantId: String(tenantId) },
-    {
-      $set: {
-        phone:         key,
-        customerPhone,
-        tenantId:      String(tenantId),
-        phoneNumberId: data.phoneNumberId  || null,
-        currentFlow:   data.currentFlow    || null,
-        step:          data.step           || null,
-        data:          data.data           || {},
-        suggestion:    null,
-        pendingIntent: null,
-        previousStep:  null,
-        lastMessage:   null,
-        lastWamid:     null,
-        lastBotMessage: null,
-        lastIntent:    null,
-        expiresAt:     new Date(Date.now() + ttl),
-        mode:          null,
-        loopCount:       0,
-        lastLoopMessage: null,
-        lastLoopStep:    null,
-        stepHistory:     [],
-        upsellSent:      false,
-        pendingAddOn:    null,
-        // [FIX-SES-9] Explicitly reset — createSession upserts onto the SAME doc
-        // (matched by phone+tenantId) without deleting the expired one first, so
-        // Mongo's $set only touches fields it lists and any field omitted here
-        // silently survives from the expired session. A stale postFlowAck/
-        // postFlowData from before expiry could otherwise misroute the customer's
-        // first message in a brand-new conversation through handlePostFlowMessage.
-        postFlowAck:     null,
-        postFlowData:    null,
-        // [SES-3] Preserve name if provided; don't wipe on re-create
-        ...(data.customerName ? { customerName: data.customerName } : {}),
-        // [FIX-SES-5] When humanMode is explicitly passed (e.g. TTL-restore path in
-        // webhookController), write it via $set so it wins regardless of whether this
-        // is an insert or an update. $setOnInsert only fires on new documents.
-        ...(data.humanMode !== undefined ? { humanMode: data.humanMode } : {}),
+  try {
+    return await Session.findOneAndUpdate(
+      { phone: key, tenantId: String(tenantId) },
+      {
+        $set: {
+          phone:         key,
+          customerPhone,
+          tenantId:      String(tenantId),
+          phoneNumberId: data.phoneNumberId  || null,
+          currentFlow:   data.currentFlow    || null,
+          step:          data.step           || null,
+          data:          data.data           || {},
+          suggestion:    null,
+          pendingIntent: null,
+          previousStep:  null,
+          lastMessage:   null,
+          lastWamid:     null,
+          lastBotMessage: null,
+          lastIntent:    null,
+          expiresAt:     new Date(Date.now() + ttl),
+          mode:          null,
+          loopCount:       0,
+          lastLoopMessage: null,
+          lastLoopStep:    null,
+          stepHistory:     [],
+          upsellSent:      false,
+          pendingAddOn:    null,
+          // [FIX-SES-9] Explicitly reset — createSession upserts onto the SAME doc
+          // (matched by phone+tenantId) without deleting the expired one first, so
+          // Mongo's $set only touches fields it lists and any field omitted here
+          // silently survives from the expired session. A stale postFlowAck/
+          // postFlowData from before expiry could otherwise misroute the customer's
+          // first message in a brand-new conversation through handlePostFlowMessage.
+          postFlowAck:     null,
+          postFlowData:    null,
+          // [SES-3] Preserve name if provided; don't wipe on re-create
+          ...(data.customerName ? { customerName: data.customerName } : {}),
+          // [FIX-SES-5] When humanMode is explicitly passed (e.g. TTL-restore path in
+          // webhookController), write it via $set so it wins regardless of whether this
+          // is an insert or an update. $setOnInsert only fires on new documents.
+          ...(data.humanMode !== undefined ? { humanMode: data.humanMode } : {}),
+        },
+        // humanMode defaults to false ONLY when inserting a brand-new session document.
+        // On updates (session re-create after TTL) the existing humanMode is preserved.
+        // [FIX-SES-6] humanModeNotified is also reset to false on $setOnInsert only —
+        // do NOT reset it on session re-creation; if the admin was already notified for
+        // this customer, a TTL expiry must not cause a second alert on their next message.
+        //
+        // [FIX-SES-5b] When data.humanMode is explicitly supplied it is already written
+        // above via $set. Including humanMode in $setOnInsert as well causes MongoDB to
+        // throw "Mod on humanMode not allowed due to conflicting mods" because the same
+        // field cannot appear in both $set and $setOnInsert in a single findOneAndUpdate.
+        // Guard: only add humanMode to $setOnInsert when it is NOT already in $set.
+        $setOnInsert: {
+          ...(data.humanMode === undefined ? { humanMode: false } : {}),
+          humanModeNotified: false,
+        },
       },
-      // humanMode defaults to false ONLY when inserting a brand-new session document.
-      // On updates (session re-create after TTL) the existing humanMode is preserved.
-      // [FIX-SES-6] humanModeNotified is also reset to false on $setOnInsert only —
-      // do NOT reset it on session re-creation; if the admin was already notified for
-      // this customer, a TTL expiry must not cause a second alert on their next message.
-      //
-      // [FIX-SES-5b] When data.humanMode is explicitly supplied it is already written
-      // above via $set. Including humanMode in $setOnInsert as well causes MongoDB to
-      // throw "Mod on humanMode not allowed due to conflicting mods" because the same
-      // field cannot appear in both $set and $setOnInsert in a single findOneAndUpdate.
-      // Guard: only add humanMode to $setOnInsert when it is NOT already in $set.
-      $setOnInsert: {
-        ...(data.humanMode === undefined ? { humanMode: false } : {}),
-        humanModeNotified: false,
-      },
-    },
-    { upsert: true, new: true }
-  );
+      { upsert: true, new: true }
+    );
+  } catch (error) {
+    if (!handleMongoUnavailable('createSession', error)) throw error;
+    return null;
+  }
 };
 
 // ─── GET ──────────────────────────────────────────────────────────────────────
 export const getSession = async (customerPhone, tenantId) => {
   const key = sessionKey(customerPhone, tenantId);
-  // Include tenantId as an explicit filter guard in addition to the composite key.
-  // The composite key already encodes tenantId, but an explicit filter prevents
-  // cross-tenant matches if a phone number ever contains an underscore.
-  return await Session.findOne({ phone: key, tenantId: String(tenantId), expiresAt: { $gt: new Date() } });
+  try {
+    // Include tenantId as an explicit filter guard in addition to the composite key.
+    // The composite key already encodes tenantId, but an explicit filter prevents
+    // cross-tenant matches if a phone number ever contains an underscore.
+    return await Session.findOne({ phone: key, tenantId: String(tenantId), expiresAt: { $gt: new Date() } });
+  } catch (error) {
+    if (!handleMongoUnavailable('getSession', error)) throw error;
+    return null;
+  }
 };
 
 // ─── UPDATE ───────────────────────────────────────────────────────────────────
@@ -206,58 +226,68 @@ export const updateSession = async (customerPhone, tenantId, updates = {}, inc =
   const key   = sessionKey(customerPhone, tenantId);
   const patch = { ...updates };
 
-  // Remove internal hint before writing to DB
-  const stepHint = patch._stepHint;
-  delete patch._stepHint;
+  try {
+    // Remove internal hint before writing to DB
+    const stepHint = patch._stepHint;
+    delete patch._stepHint;
 
-  // [FIX-HM-2] Extend TTL on step/flow change OR when humanMode is being toggled.
-  // humanMode=true uses a 24h TTL so the session doesn't expire mid-conversation.
-  // humanMode=false returns to the standard session TTL.
-  const humanModeChanging = updates.humanMode !== undefined;
-  const ttlNeedsRecompute = updates.step !== undefined || updates.currentFlow !== undefined || stepHint || humanModeChanging;
+    // [FIX-HM-2] Extend TTL on step/flow change OR when humanMode is being toggled.
+    // humanMode=true uses a 24h TTL so the session doesn't expire mid-conversation.
+    // humanMode=false returns to the standard session TTL.
+    const humanModeChanging = updates.humanMode !== undefined;
+    const ttlNeedsRecompute = updates.step !== undefined || updates.currentFlow !== undefined || stepHint || humanModeChanging;
 
-  if (ttlNeedsRecompute) {
-    const effectiveStep = updates.step || stepHint;
-    let effectiveHuman;
-    if (humanModeChanging) {
-      effectiveHuman = updates.humanMode;
-    } else {
-      // [FIX-SES-8] This update changes step/currentFlow but does NOT mention
-      // humanMode — e.g. adminCommandService confirming/rejecting an order or
-      // booking, which always sets `currentFlow: null, step: null` regardless
-      // of the customer's current humanMode state. Previously this branch left
-      // effectiveHuman as `undefined`, so resolveTTL() silently fell back to the
-      // 30-minute default — even when the session's *existing* humanMode was
-      // true. That meant any admin action touching step/currentFlow on a
-      // customer the admin had manually taken over would quietly collapse the
-      // 24h human-mode TTL back to 30 minutes, defeating [FIX-HM-2] (the bot
-      // could "wake up" and respond again mid-conversation without the admin
-      // ever typing RESUME BOT). Look up the session's current humanMode so
-      // the TTL is computed against the real state, not just this patch.
-      const existing = await Session.findOne(
-        { phone: key, tenantId: String(tenantId) },
-        { humanMode: 1 }
-      ).lean().catch(() => null);
-      effectiveHuman = existing?.humanMode === true;
+    if (ttlNeedsRecompute) {
+      const effectiveStep = updates.step || stepHint;
+      let effectiveHuman;
+      if (humanModeChanging) {
+        effectiveHuman = updates.humanMode;
+      } else {
+        // [FIX-SES-8] This update changes step/currentFlow but does NOT mention
+        // humanMode — e.g. adminCommandService confirming/rejecting an order or
+        // booking, which always sets `currentFlow: null, step: null` regardless
+        // of the customer's current humanMode state. Previously this branch left
+        // effectiveHuman as `undefined`, so resolveTTL() silently fell back to the
+        // 30-minute default — even when the session's *existing* humanMode was
+        // true. That meant any admin action touching step/currentFlow on a
+        // customer the admin had manually taken over would quietly collapse the
+        // 24h human-mode TTL back to 30 minutes, defeating [FIX-HM-2] (the bot
+        // could "wake up" and respond again mid-conversation without the admin
+        // ever typing RESUME BOT). Look up the session's current humanMode so
+        // the TTL is computed against the real state, not just this patch.
+        const existing = await Session.findOne(
+          { phone: key, tenantId: String(tenantId) },
+          { humanMode: 1 }
+        ).lean().catch(() => null);
+        effectiveHuman = existing?.humanMode === true;
+      }
+      patch.expiresAt = new Date(Date.now() + resolveTTL(effectiveStep, effectiveHuman));
     }
-    patch.expiresAt = new Date(Date.now() + resolveTTL(effectiveStep, effectiveHuman));
-  }
 
-  return await Session.findOneAndUpdate(
-    { phone: key, tenantId: String(tenantId) },
-    {
-      $set: patch,
-      ...(inc && Object.keys(inc).length > 0 ? { $inc: inc } : {}),
-    },
-    { new: true }
-  );
+    return await Session.findOneAndUpdate(
+      { phone: key, tenantId: String(tenantId) },
+      {
+        $set: patch,
+        ...(inc && Object.keys(inc).length > 0 ? { $inc: inc } : {}),
+      },
+      { new: true }
+    );
+  } catch (error) {
+    if (!handleMongoUnavailable('updateSession', error)) throw error;
+    return null;
+  }
 };
 
 // ─── CLEAR ────────────────────────────────────────────────────────────────────
 export const clearSession = async (customerPhone, tenantId) => {
   const key = sessionKey(customerPhone, tenantId);
-  // [FIX-SES-3] Include tenantId as an explicit filter to match createSession /
-  // updateSession / getSession. Without it, a composite-key collision (e.g. a phone
-  // number containing an underscore) could delete a session for the wrong tenant.
-  return await Session.deleteOne({ phone: key, tenantId: String(tenantId) });
+  try {
+    // [FIX-SES-3] Include tenantId as an explicit filter to match createSession /
+    // updateSession / getSession. Without it, a composite-key collision (e.g. a phone
+    // number containing an underscore) could delete a session for the wrong tenant.
+    return await Session.deleteOne({ phone: key, tenantId: String(tenantId) });
+  } catch (error) {
+    if (!handleMongoUnavailable('clearSession', error)) throw error;
+    return null;
+  }
 };
