@@ -216,6 +216,21 @@ export async function registerAllModules() {
       });
     }
     const parsedDirect = parseMultiItemMessage(menu, message) || parseNaturalOrderMessage(menu, message);
+    if (parsedDirect?.ambiguous && parsedDirect.candidates?.length) {
+      const pendingData = {
+        ...(session.data || {}),
+        pendingNaturalQuantity: parsedDirect.quantity,
+        _nluPending: null,
+      };
+      await updateSession(session.customerPhone, session.tenantId, {
+        currentFlow: 'ORDER', step: 'SELECT_ITEM', data: pendingData, menuViewed: true,
+      });
+      return {
+        type: 'buttons',
+        body: `Which one would you like?\n\n${parsedDirect.candidates.map(item => `• *${item.name}*`).join('\n')}`,
+        buttons: parsedDirect.candidates.slice(0, 3).map(item => ({ id: item.name, title: item.name.slice(0, 20) })),
+      };
+    }
     const lines = Array.isArray(nluProducts) && nluProducts.length > 0
       ? nluProducts
         .filter(p => p?.item)

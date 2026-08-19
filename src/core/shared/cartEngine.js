@@ -167,6 +167,21 @@ export function parseNaturalOrderMessage(menu = [], text = '') {
     }
   }
 
+  const queryNorm = norm(name);
+  const candidateItems = menu.filter(item => {
+    const itemNorm = norm(item.name);
+    return itemNorm.includes(queryNorm) || queryNorm.includes(itemNorm);
+  });
+  const exactItem = menu.find(item => norm(item.name) === queryNorm);
+  if (!exactItem && candidateItems.length > 1 && !variantCandidates.some(candidate => norm(candidate.name) === queryNorm)) {
+    return {
+      ambiguous: true,
+      candidates: candidateItems.slice(0, 5),
+      quantity,
+      unmatchedSegments: [],
+    };
+  }
+
   const variantMatch = variantCandidates.length ? findBestMatch(variantCandidates, name) : null;
   const baseMatch = findBestMatch(menu, name);
   const matchedVariant = variantMatch?.confidenceLevel === 'HIGH' ? variantMatch.item : null;

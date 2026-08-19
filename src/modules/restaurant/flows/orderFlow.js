@@ -942,6 +942,17 @@ async function _checkoutCart(cart, session, business, tenant) {
 
 // ── Select item helper ────────────────────────────────────────────────────────
 async function _selectItem(item, session, business, data) {
+  if (data?.pendingNaturalQuantity) {
+    const quantity = data.pendingNaturalQuantity;
+    const nextData = { ...data, item, pendingNaturalQuantity: null };
+    await updateSession(session.customerPhone, session.tenantId, {
+      step: 'ITEM_ADDED', data: nextData, menuViewed: true,
+    });
+    return _addItemAndPrompt(session, business, nextData, {
+      item, quantity, variant: null, addOns: [],
+    });
+  }
+
   // [AUDIT-FIX-ADDON-1] Previously the teaser here always advertised addOns[0],
   // but the QUANTITY step's upsell prompt picked a DIFFERENT, RANDOM add-on from
   // the same list — a customer could be told "*Soft Drink* pairs well with this"

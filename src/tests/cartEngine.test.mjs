@@ -64,6 +64,16 @@ test('natural order parser preserves a matching product variant', () => {
   assert.equal(result.lines[0].quantity, 2);
 });
 
+test('natural order parser reports ambiguous product names instead of guessing', () => {
+  const ambiguousMenu = [
+    { _id: '1', name: 'Chicken Burger', price: 200, available: true },
+    { _id: '2', name: 'Chicken Sandwich', price: 180, available: true },
+  ];
+  const result = parseNaturalOrderMessage(ambiguousMenu, 'I want chicken');
+  assert.equal(result.ambiguous, true);
+  assert.deepEqual(result.candidates.map(item => item.name), ['Chicken Burger', 'Chicken Sandwich']);
+});
+
 test('multi-item parser strips an order-introduction prefix', () => {
   const result = parseMultiItemMessage(menu, 'I want one Jollof Rice and two Cokes');
   assert.ok(result);
