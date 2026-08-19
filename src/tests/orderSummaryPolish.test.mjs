@@ -22,6 +22,7 @@ import assert from 'node:assert/strict';
 import { mergeCartLines, formatCartSummary, cartItemCount, parseNaturalOrderMessage, cartTotal } from '../core/shared/cartEngine.js';
 import { formatPhoneDisplay } from '../utils/formatPhone.js';
 import { buildCartReviewUI } from '../modules/restaurant/handlers/uiBuilders.js';
+import { handleOrderFlow } from '../modules/restaurant/flows/orderFlow.js';
 
 test('duplicate catalog lines for the same item are merged into one summed line (already fixed, not regressed)', () => {
   const item = { _id: 'abc123', name: 'Superkanja', price: 150 };
@@ -96,4 +97,39 @@ test('direct natural-language order renders the concise confirmation summary', (
     'Would you like to confirm this order?',
   );
   assert.deepEqual(ui.buttons.map(button => button.id), ['CONFIRM', 'ADD_MORE_ITEMS', 'CANCEL']);
+});
+
+test('restaurant SELECT_ITEM direct order bypasses browse UI and preserves the cart', async () => {
+  const business = {
+    businessMode: 'RESTAURANT',
+    payment: { currency: 'GMD' },
+    menuItems: [
+      { _id: 'fried-rice', name: 'Fried Rice', price: 150, available: true },
+      { _id: 'yassa', name: 'Yassa Chicken', price: 200, available: true },
+    ],
+  };
+  const session = {
+    customerPhone: 'test-phone',
+    tenantId: 'test-tenant',
+    currentFlow: 'ORDER',
+    step: 'SELECT_ITEM',
+    menuViewed: true,
+    data: {
+      cart: [{ item: business.menuItems[0], quantity: 1, variant: null }],
+    },
+  };
+
+  const reply = await handleOrderFlow({
+    session,
+    message: 'I want to order two plates of Yassa Chicken',
+    business,
+    tenant: {},
+  });
+
+  assert.equal(reply.type, 'buttons');
+  assert.match(reply.body, /1× Fried Rice — GMD150/);
+  assert.match(reply.body, /2× Yassa Chicken — GMD400/);
+  assert.match(reply.body, /Total: \*GMD550\*/);
+  assert.doesNotMatch(reply.body, /Browse our products|You still have|View Menu/);
+  assert.deepEqual(reply.buttons.map(button => button.id), ['CONFIRM', 'ADD_MORE_ITEMS', 'CANCEL']);
 });
