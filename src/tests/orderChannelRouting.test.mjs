@@ -73,6 +73,12 @@ test('START_ORDER has safe handoffs for product modes with required next steps',
   assert.match(src, /SELECT_VARIANT|SELECT_SIZE|DELIVERY_ADDRESS|ITEM_DETAIL/);
 });
 
+test('webhook accepts named buttons produced by natural-order clarification', () => {
+  const src = readSource('../controllers/webhookController.js');
+  assert.match(src, /pendingNaturalCandidate/);
+  assert.match(src, /!pendingNaturalCandidate/);
+});
+
 test('postFlowHandler: status commands fall through instead of generic menu', () => {
   const src = readSource('../services/postFlowHandler.js');
   assert.match(src, /isStatusCommand\(msg\)/);

@@ -2320,8 +2320,11 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
     // list-reply tap at SELECT_ITEM was rejected — breaking restaurant, retail, and electronics.
     if (isInteractive && !isListReply && currentStep && STEP_VALID_BUTTONS[currentStep] !== undefined) {
       const validSet = STEP_VALID_BUTTONS[currentStep];
+      const pendingNaturalCandidate = currentStep === 'SELECT_ITEM' &&
+        session.data?.pendingNaturalQuantity &&
+        (business?.menuItems || []).some(item => String(item.name || '').trim().toUpperCase() === upperMsg);
       // Only enforce when the set is non-empty (empty means free-text step, no valid buttons)
-      if (validSet.size > 0 && !validSet.has(upperMsg) && !isFlowPassthroughId(upperMsg)) {
+      if (validSet.size > 0 && !validSet.has(upperMsg) && !isFlowPassthroughId(upperMsg) && !pendingNaturalCandidate) {
         await dispatchMessage(from, {
           type: 'text',
           body: "⚠️ That option is no longer available at this stage of your order.\n\nPlease follow the current prompt, or type *CANCEL* if you'd like to start over.",
