@@ -279,6 +279,29 @@ export async function registerAllModules() {
       return advance({ flowReply: null, session: orderSession, message: null, business, tenant });
     }
 
+    // A product-bearing order request must never be converted into a browse
+    // offer just because live resolution missed. Keep the browse path for an
+    // incomplete request such as "I want to order", but explain a genuine miss
+    // and let the customer correct the product name or explicitly browse.
+    const directOrderText = String(message || '').trim();
+    const directProductText = directOrderText
+      .replace(/^(?:hi|hello|hey)[,\s]+/i, '')
+      .replace(/^(?:i\s+)?(?:want|need|would\s+like|like\s+to\s+order)\s+(?:to\s+order\s+)?/i, '')
+      .replace(/^(?:can\s+i\s+)?(?:give|get|have|order|buy|purchase)\s+(?:me\s+)?/i, '')
+      .replace(/^(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten)\s+(?:plates?\s+of\s+)?/i, '')
+      .replace(/[?!.]+$/, '')
+      .trim();
+    if (directProductText.length >= 3 && !explicitOrderTap) {
+      return {
+        type: 'buttons',
+        body: `I couldn't find *${directProductText.slice(0, 50)}* in our current products. Please check the name and try again, or browse the catalog.`,
+        buttons: [
+          { id: 'BROWSE_CATALOG', title: '🛍 Browse Catalog' },
+          { id: 'CANCEL', title: '❌ Cancel' },
+        ],
+      };
+    }
+
     // PATH A — no WA Catalog for this tenant. Old-version behavior, verbatim.
     const catalogReady = isCatalogEnabled(business) && hasSellableProducts(business);
     if (!catalogReady) {

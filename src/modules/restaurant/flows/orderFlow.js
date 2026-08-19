@@ -148,7 +148,15 @@ export async function handleOrderFlow({ session, message, business, tenant, isIn
       // boundary as well as the webhook boundary. This prevents a catalog-backed
       // session from falling into _browseForMoreItems when a resolvable order
       // sentence reaches SELECT_ITEM through a stale/deployed controller path.
-      const isDirectOrderText = /\b(?:order|want|need|give|get|buy|purchase|would like)\b/i.test(raw);
+      const directProductText = raw
+        .replace(/^(?:hi|hello|hey)[,\s]+/i, '')
+        .replace(/^(?:i\s+)?(?:want|need|would\s+like|like\s+to\s+order)\s+(?:to\s+order\s+)?/i, '')
+        .replace(/^(?:can\s+i\s+)?(?:give|get|have|order|buy|purchase)\s+(?:me\s+)?/i, '')
+        .replace(/^(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten)\s+(?:plates?\s+of\s+)?/i, '')
+        .replace(/[?!.]+$/, '')
+        .trim();
+      const isDirectOrderText = directProductText.length >= 3 &&
+        /\b(?:order|want|need|give|get|buy|purchase|would like)\b/i.test(raw);
       if (isDirectOrderText) {
         const directOrder = parseMultiItemMessage(menu, raw) || parseNaturalOrderMessage(menu, raw);
         if (directOrder?.lines?.length) {
@@ -319,6 +327,16 @@ export async function handleOrderFlow({ session, message, business, tenant, isIn
       }
 
       // No match — show helpful nudge, not just a raw menu dump
+      if (isDirectOrderText) {
+        return {
+          type: 'buttons',
+          body: `I couldn't find *${raw.slice(0, 50)}* in our current menu. Please check the dish name and try again, or browse the catalog.`,
+          buttons: [
+            { id: 'BROWSE_CATALOG', title: '🛍 Browse Catalog' },
+            { id: 'CANCEL', title: '❌ Cancel' },
+          ],
+        };
+      }
       return {
         type:    'buttons',
         body:    `I couldn't find "*${raw.slice(0,30)}*" on our menu.\n\nTap below to browse all items:`,

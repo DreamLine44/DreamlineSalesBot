@@ -175,7 +175,11 @@ export function parseNaturalOrderMessage(menu = [], text = '') {
   });
   const candidateItems = menu.filter(item => {
     const itemNorm = norm(item.name);
-    return itemNorm.includes(queryNorm) || queryNorm.includes(itemNorm);
+    const keywordMatch = (item.keywords || []).some(keyword => {
+      const keywordNorm = norm(keyword);
+      return keywordNorm && (keywordNorm.includes(queryNorm) || queryNorm.includes(keywordNorm));
+    });
+    return itemNorm.includes(queryNorm) || queryNorm.includes(itemNorm) || keywordMatch;
   });
   const exactItem = menu.find(item => norm(item.name) === queryNorm);
   if (exactItem && Array.isArray(exactItem.variants) && exactItem.variants.length && !explicitVariant) {
@@ -199,7 +203,13 @@ export function parseNaturalOrderMessage(menu = [], text = '') {
   }
 
   const variantMatch = explicitVariant || (variantCandidates.length ? findBestMatch(variantCandidates, name) : null);
-  const baseMatch = findBestMatch(menu, name);
+  const keywordMatch = candidateItems.find(item => (item.keywords || []).some(keyword => {
+    const keywordNorm = norm(keyword);
+    return keywordNorm && (keywordNorm === queryNorm || queryNorm.includes(keywordNorm));
+  }));
+  const baseMatch = keywordMatch
+    ? { item: keywordMatch, confidenceLevel: 'HIGH' }
+    : findBestMatch(menu, name);
   const matchedVariant = explicitVariant?.item
     ? explicitVariant
     : (variantMatch?.confidenceLevel === 'HIGH' ? variantMatch.item : null);
