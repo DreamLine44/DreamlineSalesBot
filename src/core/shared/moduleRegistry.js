@@ -163,10 +163,16 @@ export async function registerAllModules() {
     const msgUpper = String(message || '').trim().toUpperCase();
     const explicitOrderTap = msgUpper === 'ORDER' || msgUpper === 'NEW_ORDER';
 
+    const catalogReady = isCatalogEnabled(business) && hasSellableProducts(business);
+
     // [ENHANCED-NLU] Pre-seed cart when AI extracted matched products (HIGH-confidence only).
+    // Catalog-ready tenants must browse the WhatsApp Catalog first, even when
+    // the message also contains a product and quantity (e.g. "two plates of
+    // Benachin"). Keep the existing direct text-order shortcut for tenants
+    // without a ready catalog.
     let orderSession = session;
     const nluProducts = session?.data?._nluPending?.products;
-    if (Array.isArray(nluProducts) && nluProducts.length > 0) {
+    if (!catalogReady && Array.isArray(nluProducts) && nluProducts.length > 0) {
       const { mergeCartLines } = await import('../shared/cartEngine.js');
       const lines = nluProducts
         .filter(p => p?.item)
@@ -181,7 +187,7 @@ export async function registerAllModules() {
     }
 
     // PATH A — no WA Catalog for this tenant. Old-version behavior, verbatim.
-    if (!isCatalogEnabled(business) || !hasSellableProducts(business)) {
+    if (!catalogReady) {
       return startFlow({ flowName: 'ORDER', session: { ...orderSession, orderChannel: 'menu' }, business, tenant });
     }
 

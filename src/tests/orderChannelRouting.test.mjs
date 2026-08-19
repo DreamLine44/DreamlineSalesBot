@@ -34,6 +34,17 @@ test('START_ORDER honors session.orderChannel === catalog before offerCatalogOnS
   assert.ok(catalogIdx < offerIdx, 'catalog channel check must run before automatic offer logic');
 });
 
+test('START_ORDER gives a ready catalog priority over NLU product pre-seeding', () => {
+  const src = readSource('../core/shared/moduleRegistry.js');
+  const start = src.indexOf("registerAction('START_ORDER'");
+  const block = src.slice(start, src.indexOf("registerAction('START_BOOKING'", start));
+  const catalogReady = block.indexOf('const catalogReady = isCatalogEnabled(business) && hasSellableProducts(business);');
+  const nluBranch = block.indexOf('const nluProducts = session?.data?._nluPending?.products;');
+  assert.ok(catalogReady !== -1, 'START_ORDER must compute catalog readiness');
+  assert.ok(catalogReady < nluBranch, 'catalog readiness must be decided before NLU pre-seeding');
+  assert.match(block.slice(nluBranch, nluBranch + 300), /!catalogReady/);
+});
+
 test('postFlowHandler: status commands fall through instead of generic menu', () => {
   const src = readSource('../services/postFlowHandler.js');
   assert.match(src, /isStatusCommand\(msg\)/);
