@@ -136,6 +136,7 @@ import { route }                                     from '../core/conversations
 import { dispatchMessage }                           from '../core/whatsapp/dispatcher.js';
 import { getModeConfig }                             from '../config/modes.js';
 import { buildOptionsReply }                         from '../core/shared/uiOptionsHelper.js';
+import { parseNaturalOrderMessage }                  from '../core/shared/cartEngine.js';
 import { decryptToken, fingerprintSecret }           from './tenantController.js';
 // [FIX-IMPORT-1] handlePostFlowMessage was called at step 14 but never imported —
 // every postFlowAck message fell through to the default-case "unknown ackCtx" path in
@@ -2295,11 +2296,7 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
     // anything outside that set gets a "that option has passed" reply.
     const STEP_VALID_BUTTONS = {
       // ── Generic steps (used by restaurant / bakery / retail etc.) ──────────
-      // [AUDIT-FIX-VIEWMENU] VIEW_MENU added — restaurant/flows/orderFlow.js and
-      // delivery/flows/index.js both show a "📋 View Menu" button (id VIEW_MENU,
-      // previously mis-mapped to SHOW_MENU) at this step. Without this entry the
-      // stale-button guard above would reject a genuine View Menu tap here.
-      SELECT_ITEM:          new Set(['SHOW_MENU', 'VIEW_MENU', 'CANCEL', 'CONFIRM']),
+      SELECT_ITEM:          new Set(['SHOW_MENU', 'BROWSE_CATALOG', 'CANCEL', 'CONFIRM']),
       SUGGESTION_CONFIRM:   new Set(['CONFIRM', 'SHOW_MENU', 'CANCEL']),
       QUANTITY:             new Set([]), // expects free text — no valid buttons
       UPSELL:               new Set(['UPSELL_YES', 'UPSELL_NO']),
@@ -2346,17 +2343,21 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
     };
     const upperMsg = messageText.trim().toUpperCase();
     const currentStep = session.step;
+    const pendingNaturalQuantity = session.data?.pendingNaturalQuantity;
+    const pendingNaturalCandidate = currentStep === 'SELECT_ITEM' && pendingNaturalQuantity &&
+      parseNaturalOrderMessage(
+        (business?.menuItems || []).filter(item => item.available !== false),
+        messageText,
+      )?.lines?.length > 0;
     // [FIX-21] List-reply taps (isListReply=true) always bypass stale-button validation.
     // WhatsApp list widget row IDs are dynamic numeric strings ('1','2','3') and cannot be
     // enumerated statically in STEP_VALID_BUTTONS. Without this guard, every menu/product
     // list-reply tap at SELECT_ITEM was rejected — breaking restaurant, retail, and electronics.
     if (isInteractive && !isListReply && currentStep && STEP_VALID_BUTTONS[currentStep] !== undefined) {
       const validSet = STEP_VALID_BUTTONS[currentStep];
-      const pendingNaturalCandidate = currentStep === 'SELECT_ITEM' &&
-        session.data?.pendingNaturalQuantity &&
-        (business?.menuItems || []).some(item => String(item.name || '').trim().toUpperCase() === upperMsg);
       // Only enforce when the set is non-empty (empty means free-text step, no valid buttons)
-      if (validSet.size > 0 && !validSet.has(upperMsg) && !isFlowPassthroughId(upperMsg) && !pendingNaturalCandidate) {
+        if (validSet.size > 0 && !validSet.has(upperMsg) && upperMsg !== 'BROWSE_CATALOG'
+          && !isFlowPassthroughId(upperMsg) && !pendingNaturalCandidate) {
         await dispatchMessage(from, {
           type: 'text',
           body: "⚠️ That option is no longer available at this stage of your order.\n\nPlease follow the current prompt, or type *CANCEL* if you'd like to start over.",
@@ -2372,6 +2373,41 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
     // hit a ReferenceError on every non-passthrough, non-escape in-flow tap,
     // causing the bot to go completely silent for typed messages inside active flows.
     const freshSession = await getSession(from, tenantId) || session;
+
+    if (isInteractive && upperMsg === 'BROWSE_CATALOG') {
+      const { route } = await import('../core/conversations/moduleRouter.js');
+      const catalogReply = await route({
+        action: 'BROWSE_CATALOG',
+        intent: 'BROWSE_CATALOG',
+        session: freshSession,
+        message: messageText,
+        business,
+        tenant: tenantDoc,
+        isInteractive: true,
+      });
+      if (catalogReply) {
+        const catalogPayloads = Array.isArray(catalogReply) ? catalogReply : [catalogReply];
+        for (const catalogPayload of catalogPayloads) await dispatchMessage(from, catalogPayload, tenantDoc);
+      }
+      return;
+    }
+
+    if (isInteractive && pendingNaturalCandidate) {
+      const directReply = await route({
+        action: 'START_ORDER',
+        intent: 'ORDER',
+        session: freshSession,
+        message: `${pendingNaturalQuantity} ${messageText}`,
+        business,
+        tenant: tenantDoc,
+        isInteractive: true,
+      });
+      if (directReply) {
+        const directPayloads = Array.isArray(directReply) ? directReply : [directReply];
+        for (const directPayload of directPayloads) await dispatchMessage(from, directPayload, tenantDoc);
+      }
+      return;
+    }
 
     // [FIX-MFQ-BTN] MFQ response buttons (MFQ_SWITCH_YES, MFQ_SWITCH_NO, MFQ_RESUME_FLOW)
     // were listed in FLOW_PASSTHROUGH_IDS which caused them to be routed to advance()
@@ -2756,6 +2792,36 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
       const cfg = getModeConfig(business);
       await dispatchMessage(from, buildOptionsReply(cfg, '👇 What would you like to do?'), tenantDoc);
       return;
+    }
+
+    // [DIRECT-ORDER-SHORTCUT] A resolved natural-language order is a stronger
+    // signal than the active flow's current prompt. Reuse START_ORDER so the
+    // shared parser, cart merge, pricing, and confirmation summary remain the
+    // single implementation for both fresh and mid-flow orders.
+    if (!isInteractive && session.currentFlow && messageText.length >= 4) {
+      const cleanDirectOrder = normalise(messageText);
+      if (!DIRECT_INTENT_EXCLUDE_RE.test(cleanDirectOrder) && ORDER_DIRECT_RE.test(cleanDirectOrder)) {
+        const { parseMultiItemMessage, parseNaturalOrderMessage } = await import('../core/shared/cartEngine.js');
+        const liveMenu = (business?.menuItems || []).filter(item => item.available !== false);
+        const parsedDirectOrder = parseMultiItemMessage(liveMenu, messageText)
+          || parseNaturalOrderMessage(liveMenu, messageText);
+        if (parsedDirectOrder?.lines?.length || parsedDirectOrder?.ambiguous) {
+          const directReply = await route({
+            action: 'START_ORDER',
+            intent: 'ORDER',
+            session: freshSession,
+            message: messageText,
+            business,
+            tenant: tenantDoc,
+            isInteractive: false,
+          });
+          if (directReply) {
+            const directPayloads = Array.isArray(directReply) ? directReply : [directReply];
+            for (const directPayload of directPayloads) await dispatchMessage(from, directPayload, tenantDoc);
+          }
+          return;
+        }
+      }
     }
 
     // ── 15.1c: Detect question intent in typed free-text mid-flow ──────────

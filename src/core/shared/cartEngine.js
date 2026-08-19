@@ -150,7 +150,7 @@ export function parseNaturalOrderMessage(menu = [], text = '') {
 
   const withoutLead = raw
     .replace(/^(?:i\s+)?(?:want|need|would\s+like|like\s+to\s+order)\s+(?:to\s+order\s+)?/i, '')
-    .replace(/^(?:can\s+i\s+)?(?:get|have|order|buy|purchase)\s+(?:me\s+)?/i, '')
+    .replace(/^(?:can\s+i\s+)?(?:give|get|have|order|buy|purchase)\s+(?:me\s+)?/i, '')
     .trim();
 
   const plateMatch = withoutLead.match(/^((?:\d+|[a-z]+(?:[\s-][a-z]+)?))\s+plates?\s+of\s+(.+)$/i);
@@ -168,11 +168,27 @@ export function parseNaturalOrderMessage(menu = [], text = '') {
   }
 
   const queryNorm = norm(name);
+  const explicitVariant = variantCandidates.find(candidate => {
+    const variantNorm = norm(candidate.variant);
+    const escapedVariant = variantNorm.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/\s+/g, '\\s+');
+    return variantNorm && new RegExp(`\\b${escapedVariant}\\b`, 'i').test(queryNorm);
+  });
   const candidateItems = menu.filter(item => {
     const itemNorm = norm(item.name);
     return itemNorm.includes(queryNorm) || queryNorm.includes(itemNorm);
   });
   const exactItem = menu.find(item => norm(item.name) === queryNorm);
+  if (exactItem && Array.isArray(exactItem.variants) && exactItem.variants.length && !explicitVariant) {
+    return {
+      ambiguous: true,
+      candidates: exactItem.variants.slice(0, 5).map(variant => {
+        const variantName = typeof variant === 'string' ? variant : variant?.name;
+        return { ...exactItem, name: `${exactItem.name} (${variantName})`, variant: variantName };
+      }),
+      quantity,
+      unmatchedSegments: [],
+    };
+  }
   if (!exactItem && candidateItems.length > 1 && !variantCandidates.some(candidate => norm(candidate.name) === queryNorm)) {
     return {
       ambiguous: true,
@@ -182,11 +198,15 @@ export function parseNaturalOrderMessage(menu = [], text = '') {
     };
   }
 
-  const variantMatch = variantCandidates.length ? findBestMatch(variantCandidates, name) : null;
+  const variantMatch = explicitVariant || (variantCandidates.length ? findBestMatch(variantCandidates, name) : null);
   const baseMatch = findBestMatch(menu, name);
-  const matchedVariant = variantMatch?.confidenceLevel === 'HIGH' ? variantMatch.item : null;
+  const matchedVariant = explicitVariant?.item
+    ? explicitVariant
+    : (variantMatch?.confidenceLevel === 'HIGH' ? variantMatch.item : null);
   const item = matchedVariant?.item || baseMatch.item;
-  const confidenceLevel = matchedVariant ? variantMatch.confidenceLevel : baseMatch.confidenceLevel;
+  const confidenceLevel = explicitVariant
+    ? 'HIGH'
+    : (matchedVariant ? variantMatch.confidenceLevel : baseMatch.confidenceLevel);
   if (!item || confidenceLevel !== 'HIGH') return null;
   return {
     lines: [{ item, quantity, variant: matchedVariant?.variant || null }],

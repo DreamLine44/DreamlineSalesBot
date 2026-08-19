@@ -156,63 +156,33 @@ test('moduleRouter.js: case VIEW_MENU routes through the WA Catalog first for a 
   );
 });
 
-// ── 4. webhookController.js — mid-flow VIEW_MENU preserves flow state ───────
+// ── 4. webhookController.js — direct ordering bypasses menu UI ───────────────
 
-test('webhookController.js: SELECT_ITEM step now accepts VIEW_MENU as a valid button (stale-button guard)', () => {
+test('webhookController.js: SELECT_ITEM no longer advertises VIEW_MENU as an ordering button', () => {
   const src = readSource('../controllers/webhookController.js');
   const m = src.match(/SELECT_ITEM:\s*new Set\(\[([^\]]*)\]\)/);
   assert.ok(m, 'Could not find the SELECT_ITEM entry in STEP_VALID_BUTTONS');
-  assert.ok(
-    m[1].includes("'VIEW_MENU'"),
-    "STEP_VALID_BUTTONS.SELECT_ITEM must include 'VIEW_MENU', or a genuine View Menu tap at that " +
-    'step gets rejected with "that option is no longer available".'
-  );
   assert.ok(m[1].includes("'SHOW_MENU'"), 'SHOW_MENU must remain valid at SELECT_ITEM too (unchanged)');
+  assert.doesNotMatch(m[1], /'VIEW_MENU'/, 'VIEW_MENU should not be an active ordering button');
 });
 
-test('webhookController.js: mid-flow VIEW_MENU handling tries the WA Catalog first, falling back to startFlow when currentFlow is ORDER, without resetting currentFlow/step', () => {
+test('webhookController.js: active-flow direct orders route through the shared START_ORDER handoff', () => {
   const src = readSource('../controllers/webhookController.js');
+  const directBlock = src.match(/DIRECT-ORDER-SHORTCUT[\s\S]{0,1800}route\(\{[\s\S]*?action: 'START_ORDER'/);
+  assert.ok(
+    directBlock,
+    'Active-flow direct orders should route through START_ORDER instead of the current menu step.'
+  );
+  assert.ok(
+    directBlock[0].includes('parseNaturalOrderMessage') && directBlock[0].includes('parseMultiItemMessage'),
+    'The active-flow shortcut must resolve against the live menu before routing.'
+  );
+});
 
-  // The VIEW_MENU branch must check currentFlow === 'ORDER', try the WA
-  // Catalog first for a catalog-ready tenant (browseCatalogExplicit), and
-  // only then fall back to startFlow({ flowName: 'ORDER' }) — i.e. redisplay
-  // the menu rather than clearing state. Window widened from the original
-  // 600 chars to fit the [AUDIT-FIX-CATALOG-VIEWMENU] catalog-first gate.
-  const viewMenuBlock = src.match(
-    /upperMsg === 'VIEW_MENU'[\s\S]{0,1600}?startFlow\(\{ flowName: 'ORDER'/
-  );
-  assert.ok(
-    viewMenuBlock,
-    'webhookController.js mid-flow handling should call startFlow({ flowName: "ORDER", ... }) ' +
-    'when a VIEW_MENU escape fires inside an active ORDER flow.'
-  );
-  assert.ok(
-    viewMenuBlock[0].includes("session.currentFlow || ''"),
-    'The VIEW_MENU branch should gate on session.currentFlow to avoid starting an ORDER flow ' +
-    'for customers who are mid-booking or otherwise not in an order-capable flow.'
-  );
-  assert.ok(
-    viewMenuBlock[0].includes('isCatalogEnabled(business)') && viewMenuBlock[0].includes('browseCatalogExplicit'),
-    '[AUDIT-FIX-CATALOG-VIEWMENU] The VIEW_MENU branch should try the WA Catalog first ' +
-    '(isCatalogEnabled + browseCatalogExplicit) before ever falling back to startFlow(\'ORDER\') — ' +
-    '"View Menu" must never show the internal text/list menu once the catalog is active.'
-  );
-
-  // It must NOT clear currentFlow/step before calling startFlow (startFlow itself
-  // manages session state for the new flow) — regression guard against
-  // accidentally re-introducing the old reset-then-generic-buttons behavior
-  // inside the VIEW_MENU branch specifically. Scoped to stop at the start of
-  // the NEXT if-block (the separate SHOW_MENU reset branch) so it can't
-  // false-positive on that unrelated, intentionally-unchanged code below it.
-  const viewMenuBranchOnly = src.match(
-    /if \(upperMsg === 'VIEW_MENU'[\s\S]*?\n {4}\}\n\n {4}if \(upperMsg === '0'/
-  );
-  assert.ok(viewMenuBranchOnly, 'Could not isolate the VIEW_MENU if-block from webhookController.js');
-  assert.ok(
-    !/currentFlow:\s*null/.test(viewMenuBranchOnly[0]),
-    'The VIEW_MENU branch must not reset currentFlow to null before re-rendering the menu — ' +
-    'that would reproduce the original bug.'
-  );
+test('webhookController.js: active-flow BROWSE_CATALOG routes to the existing catalog action', () => {
+  const src = readSource('../controllers/webhookController.js');
+  const catalogBlock = src.match(/upperMsg === 'BROWSE_CATALOG'[\s\S]{0,900}action: 'BROWSE_CATALOG'/);
+  assert.ok(catalogBlock, 'Active-flow BROWSE_CATALOG should route through the catalog action');
 });
 
 test('webhookController.js: stale "Order Food" re-tap while already in an ORDER flow also tries the WA Catalog first', () => {
@@ -254,22 +224,22 @@ test('webhookController.js: the original SHOW_MENU/HOME/0 reset behavior is pres
   );
 });
 
-// ── 5. Button wiring — "View Menu"-labeled buttons use the VIEW_MENU id ─────
+// ── 5. Ordering UI has no redundant View Menu button ─────────────────────────
 
-test('restaurant/flows/orderFlow.js: "📋 View Menu" buttons use id VIEW_MENU, not SHOW_MENU', () => {
+test('restaurant/flows/orderFlow.js: ordering responses do not expose VIEW_MENU', () => {
   const src = readSource('../modules/restaurant/flows/orderFlow.js');
-  const viewMenuButtons = [...src.matchAll(/\{ id: '([A-Z_]+)', title: '📋 View Menu'/g)];
-  assert.ok(viewMenuButtons.length >= 2, 'Expected at least 2 "View Menu" buttons in restaurant/flows/orderFlow.js');
-  for (const m of viewMenuButtons) {
-    assert.equal(m[1], 'VIEW_MENU', `A "📋 View Menu" button still uses id '${m[1]}' instead of 'VIEW_MENU'`);
-  }
+  assert.doesNotMatch(src, /VIEW_MENU|📋 View Menu/);
+  assert.match(src, /BROWSE_CATALOG/);
 });
 
-test('delivery/flows/index.js: "📋 View Menu" buttons use id VIEW_MENU, not SHOW_MENU', () => {
+test('delivery/flows/index.js: ordering responses do not expose VIEW_MENU', () => {
   const src = readSource('../modules/delivery/flows/index.js');
-  const viewMenuButtons = [...src.matchAll(/\{ id: '([A-Z_]+)',\s*title: '📋 View Menu'/g)];
-  assert.ok(viewMenuButtons.length >= 4, 'Expected at least 4 "View Menu" buttons in delivery/flows/index.js');
-  for (const m of viewMenuButtons) {
-    assert.equal(m[1], 'VIEW_MENU', `A "📋 View Menu" button still uses id '${m[1]}' instead of 'VIEW_MENU'`);
-  }
+  assert.doesNotMatch(src, /VIEW_MENU|📋 View Menu/);
+  assert.match(src, /BROWSE_CATALOG/);
+});
+
+test('explicit browsing remains a separate catalog action', () => {
+  const src = readSource('../core/conversations/moduleRouter.js');
+  const browseBlock = src.match(/case 'BROWSE_CATALOG':[\s\S]*?browseCatalogExplicit/);
+  assert.ok(browseBlock, 'Explicit BROWSE_CATALOG should still use the WhatsApp Catalog flow');
 });

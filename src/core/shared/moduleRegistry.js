@@ -264,7 +264,7 @@ export async function registerAllModules() {
       if (!handoff) {
         return startFlow({ flowName: 'ORDER', session: { ...orderSession, orderChannel: 'menu' }, business, tenant });
       }
-      const cart = mergeCartLines([], lines);
+      const cart = mergeCartLines(existingCart, lines);
       const newData = handoff.cart
         ? { ...(session.data || {}), cart, _nluPending: null }
         : { ...(session.data || {}), ...handoff, _nluPending: null };

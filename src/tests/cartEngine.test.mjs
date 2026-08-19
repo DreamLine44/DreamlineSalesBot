@@ -64,6 +64,32 @@ test('natural order parser preserves a matching product variant', () => {
   assert.equal(result.lines[0].quantity, 2);
 });
 
+test('direct natural order resolves requested quantity and parenthesised variant', () => {
+  const variantMenu = [{ _id: '5', name: 'Domoda', price: 200, available: true, variants: ['Beef', 'Chicken'] }];
+  const result = parseNaturalOrderMessage(variantMenu, 'I want to order two plates of Domoda (Chicken)');
+  assert.ok(result);
+  assert.equal(result.lines[0].item._id, '5');
+  assert.equal(result.lines[0].variant, 'Chicken');
+  assert.equal(result.lines[0].quantity, 2);
+});
+
+test('direct natural order accepts give-me phrasing and preserves an existing cart', () => {
+  const variantMenu = [
+    { _id: '5', name: 'Domoda', price: 200, available: true, variants: ['Chicken'] },
+    { _id: '6', name: 'Fried Rice', price: 150, available: true },
+  ];
+  const parsed = parseNaturalOrderMessage(variantMenu, 'Give me 2 Domoda Chicken');
+  assert.equal(parsed.lines[0].quantity, 2);
+  const merged = mergeCartLines(
+    [{ item: variantMenu[1], quantity: 1, variant: null }],
+    parsed.lines,
+  );
+  assert.deepEqual(merged.map(line => [line.item.name, line.quantity]), [
+    ['Fried Rice', 1],
+    ['Domoda', 2],
+  ]);
+});
+
 test('natural order parser reports ambiguous product names instead of guessing', () => {
   const ambiguousMenu = [
     { _id: '1', name: 'Chicken Burger', price: 200, available: true },

@@ -48,13 +48,13 @@ export const DELIVERY_CONFIG = {
     // about placing an order, viewing the menu, and tracking. SUPPORT handles questions.
     welcomeButtons: [
       { id: 'ORDER',       title: '🚚 Order Now'      },
-      { id: 'VIEW_MENU',   title: '📋 View Menu'       }, // [AUDIT-FIX-VIEWMENU] was SHOW_MENU
+      { id: 'BROWSE_CATALOG', title: '🛍 Browse Catalog' },
       { id: 'TRACK_ORDER', title: '📍 Track My Order'  },
     ],
     fallbackButtons: [
       { id: 'ORDER',       title: '🚚 Order Now'     },
       { id: 'TRACK_ORDER', title: '📍 Track Order'   },
-      { id: 'VIEW_MENU',   title: '📋 View Menu'     }, // [AUDIT-FIX-VIEWMENU] was SHOW_MENU
+      { id: 'BROWSE_CATALOG', title: '🛍 Browse Catalog' },
     ],
     confirmButtons: [
       { id: 'CONFIRM', title: '✅ Confirm Order' },
@@ -125,7 +125,7 @@ export async function handleDeliveryOrder({ session, message, business, tenant, 
             body: `Did you mean *${m.name}*?`,
             buttons: [
               { id: 'CONFIRM',   title: '✅ Yes'         },
-              { id: 'VIEW_MENU', title: '📋 View Menu'   }, // [AUDIT-FIX-VIEWMENU] was SHOW_MENU
+              { id: 'BROWSE_CATALOG', title: '🛍 Browse Catalog' },
             ],
           };
         }
@@ -142,7 +142,7 @@ export async function handleDeliveryOrder({ session, message, business, tenant, 
           type: 'buttons',
           body: aiReply || `Hmm, I couldn't find *"${raw}"*. Here's what we deliver:`,
           buttons: [
-            { id: 'VIEW_MENU', title: '📋 View Menu'      }, // [AUDIT-FIX-VIEWMENU] was SHOW_MENU
+            { id: 'BROWSE_CATALOG', title: '🛍 Browse Catalog' },
             { id: 'QUESTION',  title: '❓ Ask a Question' },
           ],
         };

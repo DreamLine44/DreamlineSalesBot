@@ -72,8 +72,9 @@ test('buildWelcomeSequence: RESTAURANT uses its LIST-NAV-1 welcomeList (single l
   const business = catalogBusiness({ businessMode: 'RESTAURANT' });
   const seq = buildWelcomeSequence(business, cfg);
 
-  assert.equal(seq.type, 'list', 'RESTAURANT should return a single welcomeList message, not a [text, buttons] array');
-  assert.deepEqual(seq.rows.map(r => r.id), ['ORDER', 'BOOK', 'BROWSE_CATALOG', 'QUESTION']);
+  assert.ok(Array.isArray(seq) && seq.length === 1, 'RESTAURANT should return one welcome payload');
+  assert.equal(seq[0].type, 'list', 'RESTAURANT should return a single welcomeList payload');
+  assert.deepEqual(seq[0].rows.map(r => r.id), ['ORDER', 'BOOK', 'BROWSE_CATALOG', 'QUESTION']);
 });
 
 // ── 2. MAIN_MENU / VIEW_MENU collision ───────────────────────────────────────

@@ -188,8 +188,8 @@ export async function handleOrderFlow({ session, message, business, tenant, isIn
       if (clean.length < 3) {
         return {
           type:    'buttons',
-          body:    `Please type the name of what you'd like to order, or tap *View Menu* to see all options:`,
-          buttons: [{ id: 'VIEW_MENU', title: '📋 View Menu' }],
+          body:    `Please type the name of what you'd like to order, or tap *Browse Catalog* to see all options:`,
+          buttons: [{ id: 'BROWSE_CATALOG', title: '🛍 Browse Catalog' }],
         };
       }
 
@@ -211,7 +211,7 @@ export async function handleOrderFlow({ session, message, business, tenant, isIn
           type:    'buttons',
           body:    `Hi there! 😊 You're in the ordering flow for *${business.name || 'our restaurant'}*.\n\nPlease type the *name of a dish* you'd like to order, or tap below to browse the full menu:`,
           buttons: [
-            { id: 'VIEW_MENU', title: '📋 View Menu' }, // [AUDIT-FIX-VIEWMENU] was SHOW_MENU
+            { id: 'BROWSE_CATALOG', title: '🛍 Browse Catalog' },
             { id: 'CANCEL',    title: '❌ Cancel'    },
           ],
         };
@@ -231,7 +231,7 @@ export async function handleOrderFlow({ session, message, business, tenant, isIn
           body: qAnswer.body,
           buttons: qAnswer.stayOnTopic
             ? [{ id: 'QUESTION', title: '❓ Ask Another' }, { id: 'SUPPORT', title: '💬 Contact Support' }]
-            : [{ id: 'QUESTION', title: '❓ Ask Another' }, { id: 'VIEW_MENU', title: '📋 View Menu' }, { id: 'SUPPORT', title: '💬 Contact Support' }],
+            : [{ id: 'QUESTION', title: '❓ Ask Another' }, { id: 'BROWSE_CATALOG', title: '🛍 Browse Catalog' }, { id: 'SUPPORT', title: '💬 Contact Support' }],
         };
       }
 
@@ -284,7 +284,7 @@ export async function handleOrderFlow({ session, message, business, tenant, isIn
           body:    `🤔 Did you mean *${item.name}*?`,
           buttons: [
             { id: 'CONFIRM', title: `✅ Yes, ${item.name.slice(0,15)}` },
-            { id: 'VIEW_MENU', title: '📋 View Menu' },
+            { id: 'BROWSE_CATALOG', title: '🛍 Browse Catalog' },
           ],
         };
       }
@@ -293,7 +293,7 @@ export async function handleOrderFlow({ session, message, business, tenant, isIn
       return {
         type:    'buttons',
         body:    `I couldn't find "*${raw.slice(0,30)}*" on our menu.\n\nTap below to browse all items:`,
-        buttons: [{ id: 'VIEW_MENU', title: '📋 View Menu' }],
+        buttons: [{ id: 'BROWSE_CATALOG', title: '🛍 Browse Catalog' }],
       };
     }
 
@@ -700,7 +700,7 @@ export async function handleOrderFlow({ session, message, business, tenant, isIn
           ? `Something went wrong with your order step (*${step}*). Your cart is still saved (${count} item${count > 1 ? 's' : ''}). Tap below to continue or cancel.`
           : `Something went wrong with your order step (*${step}*). Tap below to browse the menu or cancel.`,
         buttons: [
-          { id: 'VIEW_MENU', title: '📋 View Menu' },
+          { id: 'BROWSE_CATALOG', title: '🛍 Browse Catalog' },
           ...(existingCart.length ? [{ id: 'REVIEW_CART', title: '🧾 Review Cart' }] : []),
           { id: 'CANCEL', title: '❌ Cancel' },
         ],
@@ -1018,7 +1018,7 @@ export async function handleRestaurantQuestion({ session, message, business, ten
       body: '❓ What would you like to know? Ask about our menu, hours, allergens, or anything else!',
       buttons: [
         { id: 'ORDER',     title: '🍔 Order Food'  },
-        { id: 'VIEW_MENU', title: '📋 View Menu'   },
+          { id: 'BROWSE_CATALOG', title: '🛍 Browse Catalog' },
       ],
     };
   }
