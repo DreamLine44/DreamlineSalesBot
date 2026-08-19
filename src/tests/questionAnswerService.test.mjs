@@ -132,6 +132,27 @@ test('tryDatabaseAnswer returns FAQ answer without AI', async () => {
   assert.match(result.body, /deliver within 5km/i);
 });
 
+test('tryDatabaseAnswer answers a specific availability question from live menu data', async () => {
+  const result = await tryDatabaseAnswer({
+    message: 'Do you have Domoda?',
+    business,
+    session: {},
+  });
+  assert.equal(result.handled, true);
+  assert.match(result.body, /Domoda/);
+  assert.doesNotMatch(result.body, /Today.s Menu/i);
+});
+
+test('tryDatabaseAnswer returns configured contact details for phone questions', async () => {
+  const result = await tryDatabaseAnswer({
+    message: 'What is your phone number?',
+    business,
+    session: {},
+  });
+  assert.equal(result.handled, true);
+  assert.match(result.body, /\+2201234567/);
+});
+
 test('isBusinessScopeQuestion is mode-aware (not restaurant-only)', () => {
   assert.equal(isBusinessScopeQuestion('what services do you offer', { businessMode: 'SALON' }), true);
   assert.equal(isBusinessScopeQuestion('who is the president', { businessMode: 'RESTAURANT' }), false);

@@ -6,6 +6,7 @@
  */
 
 import { formatMoney } from '../utils/formatCurrency.js';
+import { cartTotal, cartItemCount, formatCartSummary } from '../core/shared/cartEngine.js';
 import { findBestMatch } from '../utils/matchEngine.js';
 import { normalizeHoursDays } from '../utils/businessHoursUtils.js';
 import { getAIReply } from '../core/ai/providers/aiRouter.js';
@@ -34,8 +35,10 @@ import {
 const MENU_RE = /\b(menu|what do you (have|serve|sell|offer)|today'?s menu|show menu|view menu|see menu|what('s| is) (on|in) (the )?menu|list (of )?(food|items|products|dishes|services)|price list|catalog|available (food|items|products|dishes|services)|are (these|those) (all|the only)( ones)? (you have|available|there is)|is (that|this) all (you have|that is available)|anything else (available|on the menu)|what else do you have)\b/i;
 const HOURS_RE = /\b(hours|opening hours|business hours|when do you (open|close)|what time do you (open|close|close today|open today)|are you open|closing time|opening time|open today|close today)\b/i;
 const PRICE_RE = /\b(how much|price|cost|what does .+ cost)\b/i;
+const AVAILABILITY_RE = /\b(do you have|is there|is .+ available|available)\b/i;
 const STATUS_RE = /\b(track|status|where is my|check my|my order|my booking|my appointment|order update|booking update)\b/i;
 const ADDRESS_RE = /\b(address|location|where are you|find you|directions|located)\b/i;
+const CONTACT_RE = /\b(phone|phone number|telephone|call|contact number|whatsapp number|email|e-mail)\b/i;
 const PAYMENT_RE = /\b(payment|pay|wave|cash|mobile money|how (can|do) i pay)\b/i;
 
 function formatHourDecimal(h) {
@@ -135,6 +138,8 @@ function classifyQuestion(message, session, business) {
   if (ctx.lastTopic === 'ORDER_TRACKING' && /\b(deleted|removed|cancelled|canceled|missing|gone|lost|where|what happened)\b/i.test(raw)) {
     return 'STATUS';
   }
+  if (CONTACT_RE.test(raw)) return 'CONTACT';
+  if (AVAILABILITY_RE.test(raw) && !MENU_RE.test(raw)) return 'AVAILABILITY';
   if (MENU_RE.test(raw)) return 'MENU';
   if (HOURS_RE.test(raw)) return 'HOURS';
   if (PRICE_RE.test(raw)) return 'PRICE';
@@ -239,6 +244,25 @@ export async function tryDatabaseAnswer({ message, business, session }) {
     };
   }
 
+  if (qType === 'AVAILABILITY') {
+    const menu = [
+      ...(business?.menuItems || []).filter(i => i.available !== false),
+      ...(business?.services || []).filter(s => s.available !== false),
+    ];
+    const query = raw.replace(/\b(do you have|is there|is|available|any)\b/gi, ' ').trim();
+    const candidates = menu.filter(item => {
+      const itemName = String(item.name || '').toLowerCase();
+      return query.toLowerCase().split(/\s+/).some(token => token.length > 2 && itemName.includes(token));
+    });
+    if (candidates.length === 1) {
+      return { handled: true, body: `✅ Yes, *${candidates[0].name}* is currently available.`, routingDecision: 'QUESTION', context: { lastMessage: raw, lastTopic: 'AVAILABILITY' } };
+    }
+    if (candidates.length > 1) {
+      return { handled: true, body: `Which item do you mean — ${candidates.slice(0, 4).map(item => `*${item.name}*`).join(', ')}?`, routingDecision: 'QUESTION', context: { lastMessage: raw, lastTopic: 'AVAILABILITY' } };
+    }
+    return { handled: true, body: `I couldn't find that item on the current menu.`, routingDecision: 'QUESTION', context: { lastMessage: raw, lastTopic: 'AVAILABILITY' } };
+  }
+
   if (qType === 'HOURS') {
     return {
       handled: true,
@@ -253,6 +277,11 @@ export async function tryDatabaseAnswer({ message, business, session }) {
       ...(business?.menuItems || []).filter(i => i.available !== false),
       ...(business?.services || []).filter(s => s.available !== false).map(s => ({ ...s, name: s.name })),
     ];
+    const queryWords = raw.toLowerCase().split(/\s+/).filter(word => word.length > 2 && !['how', 'much', 'does', 'cost', 'price'].includes(word));
+    const candidates = menu.filter(item => queryWords.some(word => String(item.name || '').toLowerCase().includes(word)));
+    if (candidates.length > 1) {
+      return { handled: true, body: `Which one do you mean — ${candidates.slice(0, 4).map(item => `*${item.name}*`).join(', ')}?`, routingDecision: 'QUESTION', context: { lastMessage: raw, lastTopic: 'PRICE' } };
+    }
     const { item, confidenceLevel } = findBestMatch(menu, raw);
     if (item && confidenceLevel === 'HIGH') {
       const currency = business?.payment?.currency || 'GMD';
@@ -263,6 +292,26 @@ export async function tryDatabaseAnswer({ message, business, session }) {
         routingDecision: 'QUESTION',
         context: { lastMessage: raw, lastTopic: 'PRICE' },
       };
+    }
+  }
+
+  if (qType === 'ADDRESS' || qType === 'CONTACT') {
+    const addr = business?.address;
+    const phone = business?.adminPhone || business?.phone || business?.contactPhone;
+    const email = business?.email || business?.contactEmail;
+    const parts = [];
+    if (qType === 'ADDRESS' && addr) parts.push(`📍 *Location*\n\n${addr}`);
+    if (phone) parts.push(`📞 *${phone}*`);
+    if (email) parts.push(`✉️ *${email}*`);
+    if (parts.length) return { handled: true, body: parts.join('\n\n'), routingDecision: 'QUESTION', context: { lastMessage: raw, lastTopic: qType } };
+  }
+
+  if (/\b(total|how much is everything|cart total|what is my total)\b/i.test(raw)) {
+    const cart = Array.isArray(session?.data?.cart) ? session.data.cart : [];
+    const total = cartTotal(cart);
+    if (cart.length && total != null) {
+      const currency = business?.payment?.currency || 'GMD';
+      return { handled: true, body: `🧾 *Your cart*\n\n${formatCartSummary(cart, business)}\n\nItems: ${cartItemCount(cart)}\nTotal: ${currency}${formatMoney(total)}`, routingDecision: 'QUESTION', context: { lastMessage: raw, lastTopic: 'CART' } };
     }
   }
 
