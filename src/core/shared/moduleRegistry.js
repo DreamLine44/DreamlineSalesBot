@@ -44,6 +44,28 @@ async function parseDirectBookingRequest(message, business) {
   };
 }
 
+function directOrderHandoff(mode, lines) {
+  const cartModes = new Set(['RESTAURANT', 'BAKERY', 'COSMETICS', 'SALON', 'BARBERSHOP']);
+  if (cartModes.has(mode)) {
+    return { step: mode === 'RESTAURANT' ? 'CONFIRM' : 'CART_REVIEW', cart: lines };
+  }
+
+  const first = lines[0];
+  const hasVariants = Array.isArray(first?.item?.variants) && first.item.variants.length > 0;
+  switch (mode) {
+    case 'RETAIL':
+      return { step: hasVariants ? 'SELECT_VARIANT' : 'FULFILMENT', item: first.item, variant: first.variant || null, quantity: first.quantity };
+    case 'DELIVERY':
+      return { step: 'DELIVERY_ADDRESS', item: first.item, variant: first.variant || null, quantity: first.quantity };
+    case 'ELECTRONICS':
+      return { step: 'ITEM_DETAIL', item: first.item, variant: first.variant || null, quantity: first.quantity };
+    case 'FASHION':
+      return { step: hasVariants ? 'SELECT_SIZE' : 'QUANTITY', item: first.item, variant: first.variant || null, quantity: first.quantity };
+    default:
+      return null;
+  }
+}
+
 export async function registerAllModules() {
   // ── Shared booking flow (all modules that book) ───────────────────────────
   const { handleBookingFlow } = await import('../conversations/bookingFlow.js');
@@ -237,16 +259,23 @@ export async function registerAllModules() {
         .map(p => ({ item: p.item, quantity: p.quantity || 1, variant: p.variant || null }));
       : (parsedDirect?.lines || []);
     if (lines.length > 0) {
+      const mode = (business?.businessMode || 'RETAIL').toUpperCase();
+      const handoff = directOrderHandoff(mode, lines);
+      if (!handoff) {
+        return startFlow({ flowName: 'ORDER', session: { ...orderSession, orderChannel: 'menu' }, business, tenant });
+      }
       const cart = mergeCartLines([], lines);
-      const newData = { ...(session.data || {}), cart, _nluPending: null };
+      const newData = handoff.cart
+        ? { ...(session.data || {}), cart: handoff.cart, _nluPending: null }
+        : { ...(session.data || {}), ...handoff, _nluPending: null };
       const updated = await updateSession(session.customerPhone, session.tenantId, {
         currentFlow: 'ORDER',
-        step: 'CONFIRM',
+        step: handoff.step,
         data: newData,
         orderChannel: 'menu',
         menuViewed: true,
       });
-      orderSession = { ...session, ...updated, data: newData, currentFlow: 'ORDER', step: 'CONFIRM', orderChannel: 'menu' };
+      orderSession = { ...session, ...updated, data: newData, currentFlow: 'ORDER', step: handoff.step, orderChannel: 'menu' };
       return advance({ flowReply: null, session: orderSession, message: null, business, tenant });
     }
 

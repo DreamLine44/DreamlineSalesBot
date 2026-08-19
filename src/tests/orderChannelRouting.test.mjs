@@ -63,6 +63,16 @@ test('START_ORDER applies free-text cart modifications before starting a new ord
   assert.match(block, /existingCart/);
 });
 
+test('START_ORDER has safe handoffs for product modes with required next steps', () => {
+  const src = readSource('../core/shared/moduleRegistry.js');
+  assert.match(src, /function directOrderHandoff/);
+  assert.match(src, /case 'RETAIL':/);
+  assert.match(src, /case 'DELIVERY':/);
+  assert.match(src, /case 'ELECTRONICS':/);
+  assert.match(src, /case 'FASHION':/);
+  assert.match(src, /SELECT_VARIANT|SELECT_SIZE|DELIVERY_ADDRESS|ITEM_DETAIL/);
+});
+
 test('postFlowHandler: status commands fall through instead of generic menu', () => {
   const src = readSource('../services/postFlowHandler.js');
   assert.match(src, /isStatusCommand\(msg\)/);
