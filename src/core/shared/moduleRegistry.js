@@ -266,7 +266,7 @@ export async function registerAllModules() {
       }
       const cart = mergeCartLines([], lines);
       const newData = handoff.cart
-        ? { ...(session.data || {}), cart: handoff.cart, _nluPending: null }
+        ? { ...(session.data || {}), cart, _nluPending: null }
         : { ...(session.data || {}), ...handoff, _nluPending: null };
       const updated = await updateSession(session.customerPhone, session.tenantId, {
         currentFlow: 'ORDER',
