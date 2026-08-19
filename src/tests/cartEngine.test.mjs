@@ -9,7 +9,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  parseMultiItemMessage, mergeCartLines, enforceCartLimit,
+  parseMultiItemMessage, parseNaturalOrderMessage, mergeCartLines, enforceCartLimit,
   cartTotal, cartToOrderItems, formatCartSummary, buildUnmatchedNote,
   parseCartModification, applyCartModification,
 } from '../core/shared/cartEngine.js';
@@ -40,6 +40,28 @@ test('a single-item message with a separator word IN the item name is not wrongl
 test('a plain single item never triggers multi-item parsing', () => {
   assert.equal(parseMultiItemMessage(menu, 'jollof rice'), null);
   assert.equal(parseMultiItemMessage(menu, '2 burgers'), null); // not even on the menu, still just one phrase
+});
+
+test('natural order shortcut extracts quantity from "two plates of" phrasing', () => {
+  const result = parseNaturalOrderMessage(menu, 'I want to order two plates of Jollof Rice');
+  assert.ok(result);
+  assert.equal(result.lines[0].item.name, 'Jollof Rice');
+  assert.equal(result.lines[0].quantity, 2);
+});
+
+test('natural order parser handles multi-word items after word quantities', () => {
+  const result = parseNaturalOrderMessage(menu, 'I want two Jollof Rice');
+  assert.ok(result);
+  assert.equal(result.lines[0].item.name, 'Jollof Rice');
+  assert.equal(result.lines[0].quantity, 2);
+});
+
+test('multi-item parser strips an order-introduction prefix', () => {
+  const result = parseMultiItemMessage(menu, 'I want one Jollof Rice and two Cokes');
+  assert.ok(result);
+  const byName = Object.fromEntries(result.lines.map(line => [line.item.name, line.quantity]));
+  assert.equal(byName['Jollof Rice'], 1);
+  assert.equal(byName.Coke, 2);
 });
 
 test('[CART-AI-TRAILING-QTY] trailing quantity form "Coke x2" is understood, not defaulted to 1', () => {

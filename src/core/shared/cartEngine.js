@@ -105,14 +105,28 @@ const LEADING_QTY_RE = /^\s*(\d+|[a-z]+(?:[\s-][a-z]+)?)\s*[x×]?\s+(.+)$/i;
 // silently losing the customer's actual count.
 const TRAILING_QTY_RE = /^(.+?)\s*(?:[x×]\s*(\d+)|\((\d+)\)|\*\s*(\d+))\s*$/i;
 
-function extractQuantityAndName(segment) {
+export function extractQuantityAndName(segment) {
   const trimmed = segment.trim();
+
+  const plateMatch = trimmed.match(/^((?:\d+|[a-z]+(?:[\s-][a-z]+)?))\s+plates?\s+of\s+(.+)$/i);
+  if (plateMatch) {
+    const quantity = parseQuantity(plateMatch[1]);
+    if (quantity && quantity > 0) return { quantity, name: plateMatch[2].trim() };
+  }
 
   const leadingMatch = trimmed.match(LEADING_QTY_RE);
   if (leadingMatch) {
     const qty = parseQuantity(leadingMatch[1]);
     if (qty && qty > 0) {
       return { quantity: qty, name: leadingMatch[2].trim() };
+    }
+
+    // Retry with one token when the greedy word-number pattern captured an
+    // item word too, as in "two Jollof Rice".
+    const firstToken = trimmed.match(/^([a-z]+|\d+)\s+(.+)$/i);
+    const firstQuantity = firstToken ? parseQuantity(firstToken[1]) : null;
+    if (firstQuantity && firstQuantity > 0) {
+      return { quantity: firstQuantity, name: firstToken[2].trim() };
     }
   }
 
@@ -129,6 +143,25 @@ function extractQuantityAndName(segment) {
   return { quantity: 1, name: trimmed };
 }
 
+/** Resolve a complete order sentence into one cart line using live menu data. */
+export function parseNaturalOrderMessage(menu = [], text = '') {
+  const raw = String(text || '').trim();
+  if (!raw || !Array.isArray(menu) || !menu.length) return null;
+
+  const withoutLead = raw
+    .replace(/^(?:i\s+)?(?:want|need|would\s+like|like\s+to\s+order)\s+(?:to\s+order\s+)?/i, '')
+    .replace(/^(?:can\s+i\s+)?(?:get|have|order|buy|purchase)\s+(?:me\s+)?/i, '')
+    .trim();
+
+  const plateMatch = withoutLead.match(/^((?:\d+|[a-z]+(?:[\s-][a-z]+)?))\s+plates?\s+of\s+(.+)$/i);
+  const { quantity, name } = plateMatch
+    ? { quantity: parseQuantity(plateMatch[1]) || 1, name: plateMatch[2].trim() }
+    : extractQuantityAndName(withoutLead);
+  const { item, confidenceLevel } = findBestMatch(menu, name);
+  if (!item || confidenceLevel !== 'HIGH') return null;
+  return { lines: [{ item, quantity, variant: null }], unmatchedSegments: [] };
+}
+
 /**
  * parseMultiItemMessage(menu, text)
  * → { lines: [{ item, quantity, variant: null }], unmatchedSegments: string[] } | null
@@ -138,7 +171,11 @@ function extractQuantityAndName(segment) {
  * findBestMatch() flow, completely unchanged.
  */
 export function parseMultiItemMessage(menu = [], text = '') {
-  const raw = String(text || '').trim();
+  const raw = String(text || '')
+    .trim()
+    .replace(/^(?:i\s+)?(?:want|need|would\s+like)\s+(?:to\s+order\s+)?/i, '')
+    .replace(/^(?:can\s+i\s+)?(?:get|have|order|buy|purchase)\s+(?:me\s+)?/i, '')
+    .trim();
   if (!raw) return null;
 
   // Guard: some menu items legitimately have a separator word IN their own

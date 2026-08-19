@@ -34,15 +34,24 @@ test('START_ORDER honors session.orderChannel === catalog before offerCatalogOnS
   assert.ok(catalogIdx < offerIdx, 'catalog channel check must run before automatic offer logic');
 });
 
-test('START_ORDER gives a ready catalog priority over NLU product pre-seeding', () => {
+test('START_ORDER sends resolved NLU products directly to the existing cart review step', () => {
   const src = readSource('../core/shared/moduleRegistry.js');
   const start = src.indexOf("registerAction('START_ORDER'");
   const block = src.slice(start, src.indexOf("registerAction('START_BOOKING'", start));
-  const catalogReady = block.indexOf('const catalogReady = isCatalogEnabled(business) && hasSellableProducts(business);');
   const nluBranch = block.indexOf('const nluProducts = session?.data?._nluPending?.products;');
-  assert.ok(catalogReady !== -1, 'START_ORDER must compute catalog readiness');
-  assert.ok(catalogReady < nluBranch, 'catalog readiness must be decided before NLU pre-seeding');
-  assert.match(block.slice(nluBranch, nluBranch + 300), /!catalogReady/);
+  assert.ok(nluBranch !== -1, 'START_ORDER must inspect resolved NLU products');
+  assert.match(block.slice(nluBranch, nluBranch + 1300), /step: 'CONFIRM'/);
+  assert.match(block.slice(nluBranch, nluBranch + 1500), /advance\(/);
+});
+
+test('START_BOOKING has a direct all-in-one booking path for party, date, and time', () => {
+  const src = readSource('../core/shared/moduleRegistry.js');
+  const start = src.indexOf("registerAction('START_BOOKING'");
+  const end = src.indexOf("registerAction('WALKIN'", start);
+  const block = src.slice(start, end);
+  assert.match(block, /parseDirectBookingRequest/);
+  assert.match(block, /step: 'BOOKING_CONFIRM'/);
+  assert.match(block, /advance\(/);
 });
 
 test('postFlowHandler: status commands fall through instead of generic menu', () => {

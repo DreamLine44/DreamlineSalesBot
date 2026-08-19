@@ -20,6 +20,30 @@ import logger                                from '../../config/logger.js';
 // existed: one direct call to startFlow('ORDER').
 import { isCatalogEnabled, hasSellableProducts } from '../../modules/catalog/waCatalogConfig.js';
 
+async function parseDirectBookingRequest(message, business) {
+  const raw = String(message || '').trim();
+  const partyMatch = raw.match(/\b(?:table|party)\s*(?:for|of)?\s*(\d{1,2})\b/i)
+    || raw.match(/\bfor\s+(\d{1,2})\b/i);
+  const timeMatch = raw.match(/\b(\d{1,2}(?::\d{2})?\s*(?:am|pm))\b/i);
+  const dateMatch = raw.match(/\b(?:today|tomorrow|next\s+(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday))\b/i)
+    || raw.match(/\b\d{1,2}(?:st|nd|rd|th)?\s+(?:of\s+)?(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)(?:\s+\d{4})?\b/i);
+  if (!partyMatch || !timeMatch || !dateMatch) return null;
+
+  const { resolveBookingDateInput } = await import('../../services/bookingDateParser.js');
+  const tz = business?.hours?.timezone || 'UTC';
+  const resolved = await resolveBookingDateInput(dateMatch[0], tz);
+  if (!resolved.ok) return null;
+
+  const time = timeMatch[1].replace(/\s+/g, ' ').trim();
+  return {
+    partySize: Number(partyMatch[1]),
+    date: resolved.label,
+    parsedDate: resolved.parsed,
+    dateRaw: resolved.raw,
+    time,
+  };
+}
+
 export async function registerAllModules() {
   // ── Shared booking flow (all modules that book) ───────────────────────────
   const { handleBookingFlow } = await import('../conversations/bookingFlow.js');
@@ -158,35 +182,43 @@ export async function registerAllModules() {
   //   dead end for a customer, even for tenants who opted into it.
   registerAction('START_ORDER', async ({ session, message, business, tenant, intent }) => {
     const { startFlow } = await import('../conversations/flowEngine.js');
+    const { advance } = await import('../conversations/flowEngine.js');
     const { updateSession } = await import('../sessions/sessionService.js');
     const normalizedIntent = intent === 'START_ORDER' ? 'ORDER' : (intent || 'ORDER');
     const msgUpper = String(message || '').trim().toUpperCase();
     const explicitOrderTap = msgUpper === 'ORDER' || msgUpper === 'NEW_ORDER';
 
-    const catalogReady = isCatalogEnabled(business) && hasSellableProducts(business);
-
     // [ENHANCED-NLU] Pre-seed cart when AI extracted matched products (HIGH-confidence only).
-    // Catalog-ready tenants must browse the WhatsApp Catalog first, even when
-    // the message also contains a product and quantity (e.g. "two plates of
-    // Benachin"). Keep the existing direct text-order shortcut for tenants
-    // without a ready catalog.
+    // A complete product request must bypass the catalog/menu and go directly
+    // to the existing cart review step (e.g. "two plates of Benachin").
+    // The catalog remains the path for an incomplete request such as "I want
+    // to order".
     let orderSession = session;
     const nluProducts = session?.data?._nluPending?.products;
-    if (!catalogReady && Array.isArray(nluProducts) && nluProducts.length > 0) {
-      const { mergeCartLines } = await import('../shared/cartEngine.js');
-      const lines = nluProducts
+    const { mergeCartLines, parseMultiItemMessage, parseNaturalOrderMessage } = await import('../shared/cartEngine.js');
+    const menu = (business?.menuItems || []).filter(item => item.available !== false);
+    const parsedDirect = parseMultiItemMessage(menu, message) || parseNaturalOrderMessage(menu, message);
+    const lines = Array.isArray(nluProducts) && nluProducts.length > 0
+      ? nluProducts
         .filter(p => p?.item)
         .map(p => ({ item: p.item, quantity: p.quantity || 1, variant: p.variant || null }));
-      if (lines.length > 0) {
-        const cart = mergeCartLines([], lines);
-        const newData = { ...(session.data || {}), cart, _nluPending: null };
-        await updateSession(session.customerPhone, session.tenantId, { data: newData, orderChannel: 'menu' });
-        orderSession = { ...session, data: newData, orderChannel: 'menu' };
-        return startFlow({ flowName: 'ORDER', session: orderSession, business, tenant });
-      }
+      : (parsedDirect?.lines || []);
+    if (lines.length > 0) {
+      const cart = mergeCartLines([], lines);
+      const newData = { ...(session.data || {}), cart, _nluPending: null };
+      const updated = await updateSession(session.customerPhone, session.tenantId, {
+        currentFlow: 'ORDER',
+        step: 'CONFIRM',
+        data: newData,
+        orderChannel: 'menu',
+        menuViewed: true,
+      });
+      orderSession = { ...session, ...updated, data: newData, currentFlow: 'ORDER', step: 'CONFIRM', orderChannel: 'menu' };
+      return advance({ flowReply: null, session: orderSession, message: null, business, tenant });
     }
 
     // PATH A — no WA Catalog for this tenant. Old-version behavior, verbatim.
+    const catalogReady = isCatalogEnabled(business) && hasSellableProducts(business);
     if (!catalogReady) {
       return startFlow({ flowName: 'ORDER', session: { ...orderSession, orderChannel: 'menu' }, business, tenant });
     }
@@ -207,6 +239,21 @@ export async function registerAllModules() {
 
   registerAction('START_BOOKING', async ({ session, message, business, tenant }) => {
     const { startFlow } = await import('../conversations/flowEngine.js');
+    const { advance } = await import('../conversations/flowEngine.js');
+    const directBooking = await parseDirectBookingRequest(message, business).catch(() => null);
+    if (directBooking && !(business?.services || []).length) {
+      const updated = await updateSession(session.customerPhone, session.tenantId, {
+        currentFlow: 'BOOKING',
+        step: 'BOOKING_CONFIRM',
+        data: { ...(session.data || {}), ...directBooking },
+      });
+      return advance({
+        session: { ...session, ...updated, currentFlow: 'BOOKING', step: 'BOOKING_CONFIRM', data: { ...(session.data || {}), ...directBooking } },
+        message: null,
+        business,
+        tenant,
+      });
+    }
     return startFlow({ flowName: 'BOOKING', session, business, tenant });
   });
 
