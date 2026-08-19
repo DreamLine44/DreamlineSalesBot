@@ -21,7 +21,7 @@ jobs:
           if [ -z "$RAILWAY_TOKEN" ]; then
             echo "⚠️  RAILWAY_TOKEN not configured. Skipping Railway deployment."
             echo "To enable auto-deploy:"
-          echo "1. Get token from Railway.com dashboard (Settings → Tokens)"
+            echo "1. Get token from the Railway dashboard (Settings → Tokens)"
             echo "2. Add RAILWAY_TOKEN secret to GitHub repo (Settings → Secrets → New)"
             exit 0
           fi
