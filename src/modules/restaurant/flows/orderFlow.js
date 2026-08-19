@@ -61,7 +61,7 @@ import { itemLabel }        from '../../../utils/itemLabel.js';
 import { formatMoney }      from '../../../utils/formatCurrency.js';
 import { formatPhoneDisplay } from '../../../utils/formatPhone.js';
 import {
-  parseMultiItemMessage, mergeCartLines, enforceCartLimit,
+  parseMultiItemMessage, parseNaturalOrderMessage, mergeCartLines, enforceCartLimit,
   cartTotal, cartToOrderItems, formatCartSummary, buildUnmatchedNote,
   removeCartLine, incrementCartLine, decrementCartLine, clearCart,
   cartItemCount, formatNumberedCartSummary,
@@ -143,6 +143,35 @@ export async function handleOrderFlow({ session, message, business, tenant, isIn
     // ────────────────────────────────────────────────────────────────────────
     case 'SELECT_ITEM': {
       const cartAtSelect = Array.isArray(data.cart) ? data.cart : [];
+
+      // [DIRECT-ORDER-CONFIRM-SHORTCUT] Keep the shortcut at the owning flow
+      // boundary as well as the webhook boundary. This prevents a catalog-backed
+      // session from falling into _browseForMoreItems when a resolvable order
+      // sentence reaches SELECT_ITEM through a stale/deployed controller path.
+      const isDirectOrderText = /\b(?:order|want|need|give|get|buy|purchase|would like)\b/i.test(raw);
+      if (isDirectOrderText) {
+        const directOrder = parseMultiItemMessage(menu, raw) || parseNaturalOrderMessage(menu, raw);
+        if (directOrder?.lines?.length) {
+          const mergedCart = mergeCartLines(cartAtSelect, directOrder.lines);
+          const { cart: cappedCart, overflowCount } = enforceCartLimit(mergedCart, business);
+          await updateSession(session.customerPhone, session.tenantId, {
+            step: 'CONFIRM',
+            data: { ...data, cart: cappedCart, orderViaCatalog: false },
+            orderChannel: 'menu',
+            menuViewed: true,
+          });
+          return buildCartReviewUI({
+            summaryText: formatCartSummary(cappedCart, business),
+            total: cartTotal(cappedCart),
+            itemCount: cartItemCount(cappedCart),
+            business,
+            note: overflowCount > 0
+              ? `\n\n_(Your cart can hold up to ${business?.multiItemCart?.maxItems || 10} items — ${overflowCount} extra item${overflowCount > 1 ? 's were' : ' was'} left out.)_`
+              : '',
+          });
+        }
+      }
+
       if (raw === 'REVIEW_CART' && cartAtSelect.length) {
         await updateSession(session.customerPhone, session.tenantId, { step: 'CONFIRM' });
         return buildCartReviewUI({

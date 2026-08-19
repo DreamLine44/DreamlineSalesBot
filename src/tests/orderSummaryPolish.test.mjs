@@ -19,7 +19,7 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mergeCartLines, formatCartSummary, cartItemCount } from '../core/shared/cartEngine.js';
+import { mergeCartLines, formatCartSummary, cartItemCount, parseNaturalOrderMessage, cartTotal } from '../core/shared/cartEngine.js';
 import { formatPhoneDisplay } from '../utils/formatPhone.js';
 import { buildCartReviewUI } from '../modules/restaurant/handlers/uiBuilders.js';
 
@@ -72,4 +72,28 @@ test('cartItemCount sums quantities across lines (used to populate the new Items
     { item: { _id: '2', price: 5 },  quantity: 3 },
   ];
   assert.equal(cartItemCount(cart), 5);
+});
+
+test('direct natural-language order renders the concise confirmation summary', () => {
+  const menu = [{ _id: 'yassa-1', name: 'Yassa Chicken', price: 200, available: true }];
+  const parsed = parseNaturalOrderMessage(menu, 'I want to order two plates of Yassa Chicken');
+  assert.ok(parsed?.lines?.length);
+
+  const ui = buildCartReviewUI({
+    summaryText: formatCartSummary(parsed.lines, { payment: { currency: 'GMD' } }),
+    total: cartTotal(parsed.lines),
+    itemCount: cartItemCount(parsed.lines),
+    business: { payment: { currency: 'GMD' } },
+  });
+
+  assert.equal(
+    ui.body,
+    '🧾 *Order Summary*\n\n' +
+    '2× Yassa Chicken — GMD400\n' +
+    '━━━━━━━━━━\n' +
+    'Items: *2*\n' +
+    'Total: *GMD400*\n\n' +
+    'Would you like to confirm this order?',
+  );
+  assert.deepEqual(ui.buttons.map(button => button.id), ['CONFIRM', 'ADD_MORE_ITEMS', 'CANCEL']);
 });
