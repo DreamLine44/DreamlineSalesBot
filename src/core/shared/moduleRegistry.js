@@ -279,6 +279,45 @@ export async function registerAllModules() {
     const msgUpper = String(message || '').trim().toUpperCase();
     const explicitOrderTap = msgUpper === 'ORDER' || msgUpper === 'NEW_ORDER';
 
+    // [CATALOG-FIRST] A generic browsing-intent message — "I want to order",
+    // "I want food", "I want to see your menu", "show me the menu", etc. —
+    // carries no actual product name, only navigational filler. Previously
+    // this was only detected AFTER running it through the fuzzy product
+    // parser below (parseMultiItemMessage / parseNaturalOrderMessage), which
+    // matches on substrings — a generic word like "food" can accidentally
+    // substring-match a real menu item name (e.g. "Seafood Platter") and get
+    // treated as a specific product request (single match → silently added
+    // to cart, or multiple matches → "which one would you like?"), so the
+    // catalog would never even be considered for that message. Detecting a
+    // pure generic-intent message FIRST, before any NLU/fuzzy matching runs,
+    // guarantees these phrases always go straight to the catalog/menu
+    // decision below — nothing else can ever come first for them.
+    const directOrderTextEarly = String(message || '').trim();
+    const directProductTextEarly = directOrderTextEarly
+      .replace(/^(?:hi|hello|hey)[,\s]+/i, '')
+      .replace(/^(?:i\s+)?(?:want|need|would\s+like|like\s+to\s+order)\s+(?:to\s+order\s+)?/i, '')
+      .replace(/^(?:can\s+i\s+)?(?:give|get|have|order|buy|purchase)\s+(?:me\s+)?/i, '')
+      .replace(/^(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten)\s+(?:plates?\s+of\s+)?/i, '')
+      .replace(/[?!.]+$/, '')
+      .trim();
+    const FILLER_ONLY_RE = /^(?:to|the|your|our|see|view|show|browse|order|get|find|for|a|an|of|me|please|food|menu|menus|catalog|catalogue|catalogs|products?|options?|item|items)(?:\s+(?:to|the|your|our|see|view|show|browse|order|get|find|for|a|an|of|me|please|food|menu|menus|catalog|catalogue|catalogs|products?|options?|item|items))*$/i;
+    const isGenericBrowseIntent = !session?.data?._nluPending?.products?.length
+      && (directProductTextEarly.length === 0 || FILLER_ONLY_RE.test(directProductTextEarly));
+
+    if (isGenericBrowseIntent) {
+      const catalogReadyEarly = isCatalogEnabled(business) && hasSellableProducts(business);
+      if (!catalogReadyEarly) {
+        return startFlow({ flowName: 'ORDER', session: { ...session, orderChannel: 'menu' }, business, tenant });
+      }
+      const { browseCatalogExplicit, offerCatalogOnStartOrder } = await import('../../modules/catalog/waCatalogFlow.js');
+      if (session?.orderChannel === 'catalog' || explicitOrderTap) {
+        return browseCatalogExplicit({ session, business, tenant });
+      }
+      const { offered } = await offerCatalogOnStartOrder({ session, business, tenant, intent: normalizedIntent }).catch(() => ({ offered: false }));
+      if (offered) return null; // WA Catalog message already dispatched directly — nothing further to send
+      return startFlow({ flowName: 'ORDER', session: { ...session, orderChannel: 'menu' }, business, tenant });
+    }
+
     // [ENHANCED-NLU] Pre-seed cart when AI extracted matched products (HIGH-confidence only).
     // A complete product request must bypass the catalog/menu and go directly
     // to the existing cart review step (e.g. "two plates of Benachin").
@@ -385,7 +424,43 @@ export async function registerAllModules() {
     // fall through to the catalog/menu, not report a fake miss.
     const isFillerOnlyLeftover = /^(?:to|the|your|our|see|view|show|browse|order|get|find|for|a|an|of|me|please|food|menu|menus|catalog|catalogue|catalogs|products?|options?|item|items)(?:\s+(?:to|the|your|our|see|view|show|browse|order|get|find|for|a|an|of|me|please|food|menu|menus|catalog|catalogue|catalogs|products?|options?|item|items))*$/i
       .test(directProductText);
+    // PATH A — no WA Catalog for this tenant. Old-version behavior, verbatim.
+    const catalogReady = isCatalogEnabled(business) && hasSellableProducts(business);
+
     if (directProductText.length >= 3 && !explicitOrderTap && !isFillerOnlyLeftover) {
+      // [CATALOG-FIRST-ON-MISS] A named-but-unmatched product ("Domoda",
+      // "denachin") used to show ONLY this text with a "Browse Catalog"
+      // BUTTON — the catalog itself never appeared until the customer spent
+      // a second tap on that button (this is exactly what images 1-3 showed:
+      // the catalog only shows up after "Browse Catalog" is tapped, not on
+      // the original order-intent message). Per the same "must always
+      // trigger, not optional" requirement already applied to generic browse
+      // phrases, a product-name miss is still an order-intent message, so
+      // the catalog must be sent immediately here too — the explanatory text
+      // stays (it's still useful: it tells the customer their spelling/name
+      // didn't match), but the customer no longer has to tap anything to see
+      // products. Catalog is sent FIRST, exactly as with the generic-intent
+      // case, then this text follows as a second message.
+      if (catalogReady) {
+        const { browseCatalogExplicit } = await import('../../modules/catalog/waCatalogFlow.js');
+        const fallback = await browseCatalogExplicit({ session: orderSession, business, tenant }).catch(() => null);
+        if (fallback) {
+          // Every retry failed and browseCatalogExplicit already fell back to
+          // the real text/list ORDER menu — that IS the "here's what we have"
+          // answer, so send it instead of a redundant "couldn't find" notice.
+          return fallback;
+        }
+        // Catalog was dispatched successfully as its own message — follow up
+        // with the explanation, minus the now-redundant "Browse Catalog"
+        // button (the catalog is already on-screen above this message).
+        return {
+          type: 'buttons',
+          body: `I couldn't find *${directProductText.slice(0, 50)}* in our current products — take a look at the catalog above, or check the spelling and try again.`,
+          buttons: [
+            { id: 'CANCEL', title: '❌ Cancel' },
+          ],
+        };
+      }
       return {
         type: 'buttons',
         body: `I couldn't find *${directProductText.slice(0, 50)}* in our current products. Please check the name and try again, or browse the catalog.`,
@@ -396,8 +471,6 @@ export async function registerAllModules() {
       };
     }
 
-    // PATH A — no WA Catalog for this tenant. Old-version behavior, verbatim.
-    const catalogReady = isCatalogEnabled(business) && hasSellableProducts(business);
     if (!catalogReady) {
       return startFlow({ flowName: 'ORDER', session: { ...orderSession, orderChannel: 'menu' }, business, tenant });
     }

@@ -54,28 +54,31 @@ import logger                        from '../../config/logger.js';
 // left the typed-message customer staring at "temporarily unavailable" with
 // nothing to do but retype their message or tap "🔄 Try Again" themselves —
 // even though the very next attempt (proven by the button case) succeeds.
-// Since catalog-enabled tenants intentionally have no text-menu fallback
-// ([CATALOG-ONLY-1]), the send itself must be made resilient instead: retry
-// the same call in-process, once, after a short delay, before ever telling
-// the customer anything failed. Only covers a genuine transient miss (null
-// result) — does not change behavior when sendCatalogMessage never throws/
-// resolves at all, and does not add a retry anywhere the Graph API layer
-// (dispatcher.js) already has its own fallback chains.
-const CATALOG_RETRY_DELAY_MS = 700;
+// Retry the same call in-process, up to CATALOG_MAX_ATTEMPTS times with a
+// short delay between attempts, before ever telling the customer anything
+// failed. Only covers a genuine transient miss (null result) — does not add
+// a retry anywhere the Graph API layer (dispatcher.js) already has its own
+// fallback chains (list→buttons→text, product_list→catalog_message, etc.).
+const CATALOG_MAX_ATTEMPTS   = 3;
+const CATALOG_RETRY_DELAYS_MS = [500, 900]; // between attempts 1→2 and 2→3
 
 function delay(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
 async function sendCatalogMessageWithRetry(to, business, tenant) {
-  const first = await sendCatalogMessage(to, business, tenant);
-  if (first) return first;
+  for (let attempt = 1; attempt <= CATALOG_MAX_ATTEMPTS; attempt++) {
+    const result = await sendCatalogMessage(to, business, tenant);
+    if (result) return result;
 
-  logger.warn('[WACatalog] first catalog send attempt failed — retrying once', {
-    tenantId: business?.tenantId,
-  });
-  await delay(CATALOG_RETRY_DELAY_MS);
-  return sendCatalogMessage(to, business, tenant);
+    if (attempt < CATALOG_MAX_ATTEMPTS) {
+      logger.warn('[WACatalog] catalog send attempt failed — retrying', {
+        attempt, tenantId: business?.tenantId,
+      });
+      await delay(CATALOG_RETRY_DELAYS_MS[attempt - 1]);
+    }
+  }
+  return null;
 }
 
 // [CATALOG-UX-BUTTON] Shared by offerCatalogOnStartOrder() (automatic offer)
@@ -153,15 +156,19 @@ export async function offerCatalogOnStartOrder({ session, business, tenant, inte
  * condition. A tenant who never enabled WA Catalog never reaches this
  * function at all, and keeps their normal text/list ORDER menu untouched.
  *
- * Previously a Graph API send failure here fell back to the module's own
- * text/list ORDER menu (startFlow('ORDER')) — which meant a catalog-enabled
- * tenant's "View Menu"/"Browse Catalog" could silently look identical to a
- * plain text-menu tenant on any hiccup. By explicit product decision,
- * catalog-enabled tenants no longer have a text-menu fallback at all: on
- * failure this now returns a distinct "catalog unavailable, try again"
- * message instead of ever rendering the text/list menu.
- * → UIResponse (never null — always a message the customer sees, either the
- * catalog send confirmation or the retry notice below).
+ * [CATALOG-GUARANTEE] Product browsing must ALWAYS be shown to a customer
+ * who asks to order/see the menu — never a dead end. sendAndArmCatalog()
+ * already retries the Graph API send up to CATALOG_MAX_ATTEMPTS times
+ * (see [CATALOG-AUTO-RETRY] above), which covers the transient case. If
+ * every attempt still fails (real outage, catalog disconnected from the
+ * WABA, etc.), this now falls back to the module's own text/list ORDER
+ * menu (startFlow('ORDER')) instead of leaving the customer on a bare
+ * "temporarily unavailable" message with nothing to browse — a customer
+ * who typed "I want to order" gets to order regardless of whether Meta's
+ * catalog send is healthy at that instant. This supersedes the previous
+ * [CATALOG-ONLY-1] "no text-menu fallback" decision, at explicit request.
+ * → UIResponse (never null — always something the customer can act on:
+ * the catalog send, or the text/list ORDER menu as a last resort).
  */
 export async function browseCatalogExplicit({ session, business, tenant }) {
   try {
@@ -170,17 +177,13 @@ export async function browseCatalogExplicit({ session, business, tenant }) {
   } catch (err) {
     logger.warn('[WACatalog] browseCatalogExplicit failed', { err: err.message, tenantId: business?.tenantId });
   }
-  // [CATALOG-ONLY-1] No text-menu fallback for catalog-enabled tenants —
-  // surface an honest "temporarily unavailable" notice with a retry, rather
-  // than silently rendering the text/list ORDER menu instead.
-  return {
-    type: 'buttons',
-    body: '🛍 Our product catalog is temporarily unavailable. Please try again in a moment.',
-    buttons: [
-      { id: 'BROWSE_CATALOG', title: '🔄 Try Again' },
-      { id: 'SUPPORT',        title: '💬 Get Help'  },
-    ],
-  };
+  // [CATALOG-GUARANTEE] All retries exhausted — never leave the customer
+  // with nothing to browse. Fall back to the module's real ORDER menu.
+  logger.warn('[WACatalog] catalog send exhausted all retries — falling back to text/list ORDER menu', {
+    tenantId: business?.tenantId,
+  });
+  const { startFlow } = await import('../../core/conversations/flowEngine.js');
+  return startFlow({ flowName: 'ORDER', session: { ...session, orderChannel: 'menu' }, business, tenant });
 }
 
 /**
@@ -189,9 +192,11 @@ export async function browseCatalogExplicit({ session, business, tenant }) {
  *
  * [FIX-CATALOG-ADD-MORE] When the customer started ordering via WA Catalog
  * (data.orderViaCatalog), "Add More Items" must re-send the catalog — not the
- * internal text/list menu. Returns:
+ * internal text/list menu, unless every retry fails (see [CATALOG-GUARANTEE]
+ * on browseCatalogExplicit — same guarantee applies here). Returns:
  *   null  — catalog message already dispatched (caller sends nothing further)
- *   UIResponse — catalog temporarily unavailable (cart preserved)
+ *   UIResponse — text/list ORDER menu fallback (cart preserved), only after
+ *                every retry has been exhausted
  *   false — not a catalog order (caller should use the text menu path)
  */
 export async function tryResumeCatalogShopping({ session, business, tenant }) {
@@ -207,18 +212,23 @@ export async function tryResumeCatalogShopping({ session, business, tenant }) {
     });
   }
 
+  // [CATALOG-GUARANTEE] All retries exhausted — never leave the customer
+  // with nothing to browse. Preserve their cart and fall back to the
+  // module's real ORDER menu instead of a dead-end "unavailable" notice.
+  logger.warn('[WACatalog] catalog resume exhausted all retries — falling back to text/list ORDER menu', {
+    tenantId: business?.tenantId,
+  });
   const cart = Array.isArray(data.cart) ? data.cart : [];
+  const sessionData = { cart, orderViaCatalog: true };
   await updateSession(session.customerPhone, session.tenantId, {
-    data: { cart, orderViaCatalog: true },
+    data: sessionData,
   }).catch(() => {});
-  return {
-    type:    'buttons',
-    body:    '🛍 Our product catalog is temporarily unavailable. Your cart is still saved — try again in a moment.',
-    buttons: [
-      { id: 'ADD_MORE_ITEMS', title: '🔄 Try Catalog Again' },
-      { id: 'REVIEW_CART',    title: '🧾 Review Cart'       },
-    ],
-  };
+  const { startFlow } = await import('../../core/conversations/flowEngine.js');
+  return startFlow({
+    flowName: 'ORDER',
+    session:  { ...session, data: sessionData, orderChannel: 'menu' },
+    business, tenant,
+  });
 }
 
 /**
