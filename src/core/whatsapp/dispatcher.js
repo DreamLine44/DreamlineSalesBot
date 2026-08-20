@@ -504,6 +504,38 @@ export async function dispatchMessage(to, ui, tenant) {
         }
       }
 
+      // [AUDIT-FIX-CATALOG-DOWNGRADE] product_list references specific
+      // product_retailer_ids (built from waCatalog.syncedRetailerIds — see
+      // waCatalogService.js). That snapshot is only re-verified against
+      // Meta's LIVE catalog once an hour (RECONCILE_INTERVAL_MS in
+      // syncMenuToCatalog()) — so a single product falling out of Meta's
+      // catalog between reconciliation runs (removed there directly,
+      // rejected on a later re-check, temporarily deindexed, etc.) leaves
+      // this tenant's syncedRetailerIds stale for up to that long. Every
+      // product_list send in that window references at least one dead ID,
+      // Meta rejects the WHOLE interactive message (not just that row —
+      // there is no partial-success shape for this message type), and
+      // — unlike 'list'/'flow' above — there was previously NO retry here
+      // at all: the customer saw "temporarily unavailable" and "Try Again"
+      // just re-ran the exact same doomed request every time, with the
+      // underlying catalog, WABA connection, and credentials all perfectly
+      // fine the whole time. catalog_message is the fix: it opens Meta's
+      // own live catalog UI directly and references zero specific
+      // product_retailer_ids, so it can never fail for this reason — the
+      // same "safe, ID-agnostic" type sendCatalogMessage() already falls
+      // back to on its own for a tenant with >30 items (see waCatalogService.js).
+      if (ui.type === 'product_list' && ui.catalogId) {
+        const fbPayload = buildPayload(to, { type: 'catalog_message', catalogId: ui.catalogId, body: ui.body });
+        if (fbPayload) {
+          logger.warn('[Dispatch] Retrying failed product_list send as catalog_message fallback', { to, tenantId: tenant?._id });
+          resp = await _postPayloadToMeta(url, fbPayload, token);
+          if (resp.ok) {
+            logger.debug('[Dispatch] ✓ Catalog fallback (catalog_message) sent via Meta API', { to, tenantId: tenant?._id });
+            return resp;
+          }
+        }
+      }
+
       // [FIX-CATALOG-SEND-HEALTH] Catalog-type sends previously failed
       // silently from the dashboard's point of view — the error above only
       // ever reached server logs, so a tenant whose Commerce Manager sync
