@@ -137,6 +137,11 @@ import { dispatchMessage }                           from '../core/whatsapp/disp
 import { getModeConfig }                             from '../config/modes.js';
 import { buildOptionsReply }                         from '../core/shared/uiOptionsHelper.js';
 import { parseNaturalOrderMessage }                  from '../core/shared/cartEngine.js';
+// [AUDIT-FIX-XZ-REMOVE-2] Static import — used synchronously in the hot-path
+// _detectMidFlowQuestion() helper on every typed mid-flow message, so this
+// mirrors the dynamic-import usage elsewhere in this file without paying an
+// async round trip on that path.
+import { isCatalogEnabled }                          from '../modules/catalog/waCatalogConfig.js';
 import { decryptToken, fingerprintSecret }           from './tenantController.js';
 // [FIX-IMPORT-1] handlePostFlowMessage was called at step 14 but never imported —
 // every postFlowAck message fell through to the default-case "unknown ackCtx" path in
@@ -995,7 +1000,7 @@ function _detectMidFlowSwitchRequest(text, session, business, isInteractive = fa
   return targetFlow;
 }
 
-function _detectMidFlowQuestion(text, session) {
+function _detectMidFlowQuestion(text, session, business) {
   const step  = (session.step  || '').toUpperCase();
   const flow  = (session.currentFlow || '').toUpperCase();
   const clean = text.toLowerCase().replace(/[^\w\s?]/g, ' ').replace(/\s+/g, ' ').trim();
@@ -1013,7 +1018,19 @@ function _detectMidFlowQuestion(text, session) {
   if (MFQ_ORDER_INPUT_STEPS.has(step)) return false;
 
   // 3c. Catalog-sourced ORDER flows — item picks and cart actions must not pause for MFQ
-  if (flow === 'ORDER' && session?.data?.orderViaCatalog &&
+  //
+  // [AUDIT-FIX-XZ-REMOVE-2] Previously this trusted ONLY session?.data?.orderViaCatalog,
+  // the same session-level flag that orderFlow.js's SELECT_ITEM reset and
+  // _browseForMoreItems() used to trust exclusively before the audit fix there. Same
+  // root cause, same failure mode: a tenant whose WA Catalog went live after this
+  // session started (or any other path that left the flag unset on an otherwise
+  // catalog-ready session) would have typed item-picks/cart text wrongly intercepted
+  // here as a "question" and yanked into Question Mode — before the request ever
+  // reached orderFlow.js, where the earlier fix would otherwise have handled it
+  // correctly. isCatalogEnabled(business) is now checked directly alongside the flag,
+  // matching the fix already applied in orderFlow.js.
+  const catalogReady = isCatalogEnabled(business);
+  if (flow === 'ORDER' && (session?.data?.orderViaCatalog || catalogReady) &&
       ['SELECT_ITEM', 'CONFIRM', 'ITEM_ADDED', 'EDIT_CART_MENU', 'EDIT_CART_PICK'].includes(step)) {
     return false;
   }
@@ -2907,7 +2924,7 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
       session.currentFlow &&
       session.step
     ) {
-      const _mfqIsQuestionLike = _detectMidFlowQuestion(messageText, session);
+      const _mfqIsQuestionLike = _detectMidFlowQuestion(messageText, session, business);
       if (_mfqIsQuestionLike) {
         const resumeFlow = session.currentFlow;
         const resumeStep = session.step;

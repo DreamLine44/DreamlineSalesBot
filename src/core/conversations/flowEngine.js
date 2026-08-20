@@ -45,6 +45,20 @@ export function registerGenericFlow(flowName, handler) {
 }
 
 /**
+ * hasFlow(mode, flowName)
+ *
+ * [FIX-STARTFLOW-FALLBACK] Lets a caller check whether a flow actually has a
+ * registered handler for a given business mode BEFORE calling startFlow() —
+ * so it can fall back to something more helpful than the "not available"
+ * dead end (see the comment on that branch in startFlow() below for the
+ * bug class this closes). Mirrors the exact lookup startFlow() itself uses.
+ */
+export function hasFlow(mode, flowName) {
+  const key = `${String(mode || '').toUpperCase()}:${String(flowName || '').toUpperCase()}`;
+  return FLOW_REGISTRY.has(key) || GENERIC_REGISTRY.has(String(flowName || '').toUpperCase());
+}
+
+/**
  * advance({ session, message, business, tenant, isInteractive })
  *
  * Advance the active flow by one step.
@@ -96,10 +110,18 @@ export async function advance({ session, message, business, tenant, isInteractiv
 }
 
 /**
- * startFlow({ flowName, session, business, tenant })
+ * startFlow({ flowName, session, business, tenant, message })
  * Initialises a flow and returns the first-step UI.
+ *
+ * [FIX-QSTART-MSG] `message` is optional and defaults to null, preserving every
+ * existing call site's behaviour (a genuine button tap has no real question yet,
+ * so the handler's INIT branch should run and show first-step UI). Callers that
+ * DO have real customer text to answer immediately — e.g. a typed question that
+ * intent detection classified as QUESTION, arriving here instead of a button
+ * tap — can now pass it through so it reaches the handler on this very call
+ * instead of being discarded and replaced with a generic prompt.
  */
-export async function startFlow({ flowName, session, business, tenant }) {
+export async function startFlow({ flowName, session, business, tenant, message = null }) {
   const mode = (business?.businessMode || 'RETAIL').toUpperCase();
   const key  = `${mode}:${flowName.toUpperCase()}`;
 
@@ -152,9 +174,11 @@ export async function startFlow({ flowName, session, business, tenant }) {
     };
   }
 
-  // Call handler with null message to trigger first-step UI
+  // Call handler with the forwarded message (null for a genuine fresh-tap start,
+  // to trigger first-step UI; the customer's real text when one was passed in,
+  // so it gets answered on this call instead of being thrown away).
   const freshSession = updated || session;
-  const response = await handler({ session: freshSession, message: null, business, tenant, isInteractive: false });
+  const response = await handler({ session: freshSession, message, business, tenant, isInteractive: false });
   return suppressLegacyMenuOption(response, business);
 }
 

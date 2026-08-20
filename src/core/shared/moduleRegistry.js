@@ -20,6 +20,75 @@ import logger                                from '../../config/logger.js';
 // existed: one direct call to startFlow('ORDER').
 import { isCatalogEnabled, hasSellableProducts } from '../../modules/catalog/waCatalogConfig.js';
 
+// [FIX-QSTART-MSG] Shared QUESTION-action logic, factored out so any other
+// action can delegate to it as a fallback (see startFlowOrAnswerQuestion
+// below) instead of duplicating this same mode-check + typed-message-
+// forwarding + generic-AI-fallback logic at every call site.
+async function handleQuestionAction({ session, message, business, tenant, isInteractive }) {
+  const { startFlow }  = await import('../conversations/flowEngine.js');
+  const { updateSession } = await import('../sessions/sessionService.js');
+  const mode = (business?.businessMode || 'RETAIL').toUpperCase();
+  // Modes with dedicated QUESTION flows registered in this registry
+  const QUESTION_FLOW_MODES = new Set([
+    'RESTAURANT', 'SALON', 'BARBERSHOP', 'ELECTRONICS', 'SERVICES', 'GENERAL',
+  ]);
+  // A fresh tap (button/list reply) has no real question yet — its `message`
+  // is just the button id ('QUESTION') itself. Anything else reaching this
+  // action is the customer's own typed words and should be forwarded.
+  const isFreshTap = isInteractive || String(message || '').trim().toUpperCase() === 'QUESTION';
+  const typedQuestion = isFreshTap ? null : message;
+  if (QUESTION_FLOW_MODES.has(mode)) {
+    return startFlow({ flowName: 'QUESTION', session, business, tenant, message: typedQuestion });
+  }
+  // No mode-specific QUESTION flow — use the generic AI question handler.
+  await updateSession(session.customerPhone, session.tenantId, {
+    currentFlow: 'ENQUIRY', step: 'AWAITING_QUESTION',
+  });
+  if (typedQuestion) {
+    // Answer the real question right now instead of waiting for the next
+    // message — mirrors the AWAITING_QUESTION handling webhookController
+    // runs for the *following* message, so the first one isn't wasted.
+    const { processQuestionMessage, persistQuestionSession } = await import('../../services/questionAnswerService.js');
+    const reply = await processQuestionMessage({ session, message: typedQuestion, business, tenant, intent: 'FAQ' });
+    await persistQuestionSession(session, tenant, reply.context || { lastMessage: typedQuestion });
+    return { type: reply.type, body: reply.body };
+  }
+  return {
+    type: 'text',
+    body: '❓ What would you like to know? Type your question below.',
+  };
+}
+
+// [FIX-STARTFLOW-FALLBACK] Root cause: several flows are only registered for
+// the specific business mode(s) they make sense for (WARRANTY/SPEC_REQUEST
+// → ELECTRONICS, CAKE_CUSTOMIZATION → BAKERY, SKINCARE_ADVICE → COSMETICS,
+// WALKIN → SALON/BARBERSHOP, ENQUIRY → SERVICES/GENERAL) — but the intents
+// that trigger their actions are NOT mode-gated. intentEngine.js's
+// deterministic exact-keyword-match step (and its Levenshtein fuzzy-match
+// step) run the same global INTENT_PATTERNS list regardless of the tenant's
+// businessMode, and RECOMMENDATION/SIZE_GUIDE/PRODUCT_INQUIRY/
+// COMPATIBILITY_CHECK all map to the ENQUIRY action for every mode too. So a
+// RETAIL customer typing "birthday cake", or an ELECTRONICS customer asking
+// "does this work with my phone" (COMPATIBILITY_CHECK → ENQUIRY, only
+// registered for SERVICES/GENERAL), previously hit startFlow()'s "no
+// handler" branch and got a flat "⚠️ This option is not available" dead end
+// instead of any answer — for words that look exactly like an ordinary
+// question to the customer.
+//
+// Fix: check hasFlow() before starting; if this mode has no handler for the
+// requested flow, fall back to the same Q&A path the QUESTION action itself
+// uses (mode's own QUESTION flow, or the generic AI answer), forwarding the
+// customer's real words so they still get answered instead of stonewalled.
+async function startFlowOrAnswerQuestion({ flowName, session, message, business, tenant, isInteractive }) {
+  const { startFlow, hasFlow } = await import('../conversations/flowEngine.js');
+  const mode = (business?.businessMode || 'RETAIL').toUpperCase();
+  if (hasFlow(mode, flowName)) {
+    return startFlow({ flowName, session, business, tenant });
+  }
+  logger.warn(`[ModuleRegistry] ${mode} has no ${flowName} flow — falling back to Q&A`, { flowName, mode });
+  return handleQuestionAction({ session, message, business, tenant, isInteractive });
+}
+
 async function parseDirectBookingRequest(message, business) {
   const raw = String(message || '').trim();
   const partyMatch = raw.match(/\b(?:table|party)\s*(?:for|of)?\s*(\d{1,2})\b/i)
@@ -367,32 +436,41 @@ export async function registerAllModules() {
     return startFlow({ flowName: 'BOOKING', session, business, tenant });
   });
 
-  // WALKIN action — salon/barbershop walk-in queue (no date/time needed)
-  registerAction('WALKIN', async ({ session, message, business, tenant }) => {
-    const { startFlow } = await import('../conversations/flowEngine.js');
-    return startFlow({ flowName: 'WALKIN', session, business, tenant });
-  });
+  // WALKIN action — salon/barbershop walk-in queue (no date/time needed).
+  // [FIX-STARTFLOW-FALLBACK] 'walk in' / 'queue' / "i'm here" etc. are exact
+  // INTENT_PATTERNS keywords with no mode gating (see intentEngine.js step 4),
+  // so any tenant's customer can type one of these — not just SALON/
+  // BARBERSHOP, the only modes WALKIN is actually registered for. Route
+  // through the shared fallback so an unrelated mode gets a real Q&A answer
+  // instead of "⚠️ This option is not available".
+  registerAction('WALKIN', ({ session, message, business, tenant, isInteractive }) =>
+    startFlowOrAnswerQuestion({ flowName: 'WALKIN', session, message, business, tenant, isInteractive }));
 
-  registerAction('CAKE_CUSTOMIZATION', async ({ session, message, business, tenant }) => {
-    const { startFlow } = await import('../conversations/flowEngine.js');
-    return startFlow({ flowName: 'CAKE_CUSTOMIZATION', session, business, tenant });
-  });
+  // [FIX-STARTFLOW-FALLBACK] Same gap: CAKE_CUSTOMIZATION is BAKERY-only, but
+  // its keywords ('birthday cake', 'custom cake', ...) match for any mode.
+  registerAction('CAKE_CUSTOMIZATION', ({ session, message, business, tenant, isInteractive }) =>
+    startFlowOrAnswerQuestion({ flowName: 'CAKE_CUSTOMIZATION', session, message, business, tenant, isInteractive }));
 
-  registerAction('SKINCARE_ADVICE', async ({ session, message, business, tenant }) => {
-    const { startFlow } = await import('../conversations/flowEngine.js');
-    return startFlow({ flowName: 'SKINCARE_ADVICE', session, business, tenant });
-  });
+  // [FIX-STARTFLOW-FALLBACK] Same gap: SKINCARE_ADVICE is COSMETICS-only, but
+  // its keywords ('dry skin', 'oily skin', 'acne', ...) match for any mode.
+  registerAction('SKINCARE_ADVICE', ({ session, message, business, tenant, isInteractive }) =>
+    startFlowOrAnswerQuestion({ flowName: 'SKINCARE_ADVICE', session, message, business, tenant, isInteractive }));
 
   // [FIX-F] SPEC_REQUEST action was never registered — unknown action fell through to
   // a generic fallback. Now starts the SPEC_REQUEST flow registered on ELECTRONICS.
-  // For non-electronics modes it falls back gracefully (no SPEC_REQUEST flow registered).
-  registerAction('SPEC_REQUEST', async ({ session, message, business, tenant }) => {
-    const { startFlow } = await import('../conversations/flowEngine.js');
-    return startFlow({ flowName: 'SPEC_REQUEST', session, business, tenant });
-  });
+  // [FIX-STARTFLOW-FALLBACK] The comment above previously claimed non-electronics
+  // modes "fall back gracefully" — they didn't; startFlow() had no such fallback
+  // and returned the flat "not available" dead end. SPEC_REQUEST's keywords
+  // ('specs', 'features', 'battery', 'tell me about', ...) aren't mode-gated
+  // either, so this now genuinely falls back via the shared helper.
+  registerAction('SPEC_REQUEST', ({ session, message, business, tenant, isInteractive }) =>
+    startFlowOrAnswerQuestion({ flowName: 'SPEC_REQUEST', session, message, business, tenant, isInteractive }));
 
   // COMPARE — side-by-side product comparison (Electronics only).
-  // Button id: 'COMPARE' on welcome screen and fallback buttons.
+  // Button id: 'COMPARE' on welcome screen and fallback buttons — unlike the
+  // actions above, COMPARE has no free-text keyword trigger (see patterns.js),
+  // so it's only ever reachable from the ELECTRONICS-only button that shows
+  // it. No cross-mode fallback needed.
   registerAction('COMPARE', async ({ session, message, business, tenant }) => {
     const { startFlow } = await import('../conversations/flowEngine.js');
     return startFlow({ flowName: 'COMPARE', session, business, tenant });
@@ -400,15 +478,20 @@ export async function registerAllModules() {
 
   // WARRANTY — warranty + after-sales enquiry (Electronics only).
   // Can be triggered by typing "warranty", "repair", "return" etc., or future button.
-  registerAction('WARRANTY', async ({ session, message, business, tenant }) => {
-    const { startFlow } = await import('../conversations/flowEngine.js');
-    return startFlow({ flowName: 'WARRANTY', session, business, tenant });
-  });
+  // [FIX-STARTFLOW-FALLBACK] Those same keywords aren't mode-gated — falls back
+  // via the shared helper for any non-ELECTRONICS tenant.
+  registerAction('WARRANTY', ({ session, message, business, tenant, isInteractive }) =>
+    startFlowOrAnswerQuestion({ flowName: 'WARRANTY', session, message, business, tenant, isInteractive }));
 
-  registerAction('ENQUIRY', async ({ session, message, business, tenant }) => {
-    const { startFlow } = await import('../conversations/flowEngine.js');
-    return startFlow({ flowName: 'ENQUIRY', session, business, tenant });
-  });
+  // [FIX-STARTFLOW-FALLBACK] ENQUIRY is only registered for SERVICES/GENERAL,
+  // but RECOMMENDATION (RESTAURANT/COSMETICS), SIZE_GUIDE/PRODUCT_INQUIRY
+  // (FASHION), and COMPATIBILITY_CHECK (ELECTRONICS) all map to the ENQUIRY
+  // action too (see intentEngine.js intentToAction map) — so a customer in
+  // any of those modes asking a perfectly ordinary question ("what would you
+  // recommend", "does this work with my phone") previously hit the flat
+  // "not available" dead end instead of an answer.
+  registerAction('ENQUIRY', ({ session, message, business, tenant, isInteractive }) =>
+    startFlowOrAnswerQuestion({ flowName: 'ENQUIRY', session, message, business, tenant, isInteractive }));
 
   // [FIX-3] QUESTION action — routes the QUESTION button tap to the mode-specific
   // QUESTION flow (SERVICES: handleServicesQuestion, GENERAL: handleGeneralQuestion,
@@ -423,26 +506,20 @@ export async function registerAllModules() {
   // customer tapping "❓ Ask a Question" in those modes. The fix: check whether a
   // mode-specific QUESTION flow exists FIRST; if not, fall back to the generic ENQUIRY
   // flow (sets currentFlow=ENQUIRY / step=AWAITING_QUESTION → AI answers the question).
-  registerAction('QUESTION', async ({ session, message, business, tenant }) => {
-    const { startFlow }  = await import('../conversations/flowEngine.js');
-    const { updateSession } = await import('../sessions/sessionService.js');
-    const mode = (business?.businessMode || 'RETAIL').toUpperCase();
-    // Modes with dedicated QUESTION flows registered in this registry
-    const QUESTION_FLOW_MODES = new Set([
-      'RESTAURANT', 'SALON', 'BARBERSHOP', 'ELECTRONICS', 'SERVICES', 'GENERAL',
-    ]);
-    if (QUESTION_FLOW_MODES.has(mode)) {
-      return startFlow({ flowName: 'QUESTION', session, business, tenant });
-    }
-    // No mode-specific QUESTION flow — use the generic AI question handler
-    await updateSession(session.customerPhone, session.tenantId, {
-      currentFlow: 'ENQUIRY', step: 'AWAITING_QUESTION',
-    });
-    return {
-      type: 'text',
-      body: '❓ What would you like to know? Type your question below.',
-    };
-  });
+  // [FIX-QSTART-MSG] Root cause of the "still going in circles" bug: startFlow()
+  // used to unconditionally call the flow handler with message: null. That's
+  // correct for a genuine "❓ Ask a Question" / "❓ Ask Another" BUTTON tap —
+  // there's no real question yet, so the handler should show its first-step
+  // "what would you like to know?" prompt. But intent detection also routes
+  // typed free text like "i want to know the prices of your food items" to this
+  // same QUESTION action (see intentEngine.js QUESTION → 'QUESTION' mapping) —
+  // and that real, already-asked question was being thrown away and replaced
+  // with the canned prompt every single time, so the customer just got the
+  // same "What would you like to know?" reply back and looped forever.
+  // Fix: use `isInteractive` (true only for an actual button/list tap) to tell
+  // the two cases apart, and forward the customer's real text through so it
+  // gets answered on this very turn instead of discarded.
+  registerAction('QUESTION', handleQuestionAction);
 
   registerAction('QUOTE_FOLLOW', async ({ session, message, business, tenant }) => {
     const { startFlow } = await import('../conversations/flowEngine.js');

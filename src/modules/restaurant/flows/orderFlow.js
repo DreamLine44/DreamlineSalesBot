@@ -58,6 +58,10 @@ import { dispatchText }     from '../../../core/whatsapp/dispatcher.js';
 import { buildPaymentInstructionsUI } from '../../../services/paymentService.js';
 import { buildWhatsAppImageUrl }       from '../../../config/cloudinary.js';
 import { itemLabel }        from '../../../utils/itemLabel.js';
+// [AUDIT-FIX-XZ-REMOVE] isCatalogEnabled — see the two call sites below for
+// the rationale. The legacy text/list menu (buildMenuUI, the "Choose an
+// option ▼" flow) is being retired for any tenant with a live WA Catalog.
+import { isCatalogEnabled } from '../../catalog/waCatalogConfig.js';
 import { formatMoney }      from '../../../utils/formatCurrency.js';
 import { formatPhoneDisplay } from '../../../utils/formatPhone.js';
 import {
@@ -132,7 +136,18 @@ export async function handleOrderFlow({ session, message, business, tenant, isIn
   // now correctly falls through to the switch below instead of being reset.
   if (message === null && step === 'SELECT_ITEM') {
     const existingCart = Array.isArray(data.cart) ? data.cart : [];
-    const viaCatalog   = data.orderViaCatalog === true;
+    // [AUDIT-FIX-XZ-REMOVE] Previously this only trusted data.orderViaCatalog,
+    // a session-level flag stamped once at START_ORDER. If a tenant enabled/
+    // synced WA Catalog AFTER a customer's session began — or the flag was
+    // ever lost/never set on a particular session for any other reason — this
+    // fell straight to buildMenuUI() below: the legacy "Choose an option ▼"
+    // list. That path has a real, separate defect (selecting an item from it
+    // can dead-end in the QUESTION/FAQ fallback instead of continuing the
+    // order) and is being removed outright for any tenant with a live,
+    // catalog. isCatalogEnabled(business) is now checked directly, so a
+    // catalog-ready tenant NEVER sees the legacy list again, regardless of
+    // what this one session's flag happened to record.
+    const viaCatalog   = data.orderViaCatalog === true || isCatalogEnabled(business);
     const freshData    = existingCart.length
       ? { cart: existingCart, ...(viaCatalog ? { orderViaCatalog: true } : {}) }
       : (viaCatalog ? { orderViaCatalog: true } : {});
@@ -863,12 +878,32 @@ async function _resolveCartModification(session, business, data, cart, raw) {
  * [FIX-CATALOG-ADD-MORE] Catalog-sourced orders re-open WA Catalog; typed-menu
  * orders fall back to buildMenuUI(). Returns null when the catalog was sent
  * directly (no further UIResponse needed).
+ *
+ * [AUDIT-FIX-XZ-REMOVE] The catalog branch below used to key ONLY off
+ * data.orderViaCatalog. tryResumeCatalogShopping() itself returns `false`
+ * whenever that one flag is missing — even for a tenant whose WA Catalog is
+ * fully live — and this function then fell straight through to buildMenuUI()
+ * (the legacy "Choose an option ▼" list) with no further catalog attempt.
+ * That is the exact X-flow regression: a catalog-ready tenant landing back
+ * on the broken legacy list because of a stale/missing session flag rather
+ * than because catalog genuinely isn't available. isCatalogEnabled(business)
+ * is now the deciding check, matching browseCatalogExplicit()'s existing
+ * [CATALOG-ONLY-1] rule ("no text-menu fallback for catalog-enabled
+ * tenants"). When catalog is enabled but tryResumeCatalogShopping declines
+ * purely because the flag was unset, browseCatalogExplicit() is used
+ * instead — it sends the same catalog message without requiring the flag.
  */
 async function _browseForMoreItems(session, business, tenant, data, { note = '' } = {}) {
   const cart = Array.isArray(data?.cart) ? data.cart : [];
-  if (data?.orderViaCatalog) {
-    const { tryResumeCatalogShopping } = await import('../../catalog/waCatalogFlow.js');
-    const catalogResult = await tryResumeCatalogShopping({ session, business, tenant });
+  const catalogReady = isCatalogEnabled(business);
+  if (data?.orderViaCatalog || catalogReady) {
+    const { tryResumeCatalogShopping, browseCatalogExplicit } = await import('../../catalog/waCatalogFlow.js');
+    let catalogResult = await tryResumeCatalogShopping({ session, business, tenant });
+    if (catalogResult === false && catalogReady) {
+      // Flag was missing but catalog is genuinely live — send it directly
+      // instead of dropping into the legacy list.
+      catalogResult = await browseCatalogExplicit({ session, business, tenant });
+    }
     if (catalogResult === null) return null;
     if (catalogResult !== false) {
       if (note && typeof catalogResult.body === 'string') catalogResult.body = note + catalogResult.body;

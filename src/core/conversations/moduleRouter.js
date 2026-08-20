@@ -981,42 +981,16 @@ export async function route({ action, intent, session, message, business, tenant
       return buildOptionsReply(cfgPay, `😊 We couldn't find a pending order for your payment. Would you like to place a new order?`, [{ id: 'ORDER', title: '🛒 Place an Order' }]);
     }
 
-    case 'ENQUIRY': {
-      // [FIX-ENQ-ROUTE] Generic ENQUIRY fallback for modes without a dedicated ENQUIRY flow
-      // registered in ACTION_REGISTRY (e.g. RESTAURANT, BAKERY, SALON, RETAIL, etc.).
-      // SERVICES and GENERAL have dedicated flows registered via moduleRegistry which are
-      // reached through ACTION_REGISTRY BEFORE this switch case runs — so this fallback
-      // only fires for modes that have no registered ENQUIRY handler.
-      //
-      // Previously this was handled by an inline handler in webhookController before
-      // route() was ever called, which blocked SERVICES/GENERAL from reaching their flows.
-      const enquiryHandler = ACTION_REGISTRY.get('ENQUIRY');
-      if (enquiryHandler) return enquiryHandler({ session, message, business, tenant, intent, isInteractive, suggestion });
-      // Generic fallback: set the ENQUIRY flow state and prompt
-      await updateSession(session.customerPhone, session.tenantId, {
-        currentFlow: 'ENQUIRY', step: 'AWAITING_QUESTION',
-      });
-      return {
-        type: 'text',
-        body: '❓ What would you like to know? Type your question below.',
-      };
-    }
-
-    case 'QUESTION': {
-      // [FIX-BTN-Q] Generic QUESTION fallback for modes without a dedicated QUESTION flow.
-      // SERVICES → handleServicesQuestion, GENERAL → handleGeneralQuestion are reached via
-      // ACTION_REGISTRY before this case runs. All other modes fall through here.
-      const questionHandler = ACTION_REGISTRY.get('QUESTION');
-      if (questionHandler) return questionHandler({ session, message, business, tenant, intent, isInteractive, suggestion });
-      // Generic fallback: same as ENQUIRY — start the generic question-capture flow
-      await updateSession(session.customerPhone, session.tenantId, {
-        currentFlow: 'ENQUIRY', step: 'AWAITING_QUESTION',
-      });
-      return {
-        type: 'text',
-        body: '❓ What would you like to know? Type your question below.',
-      };
-    }
+    // [FIX-ENQ-ROUTE] / [FIX-BTN-Q] ENQUIRY and QUESTION used to have explicit
+    // cases here with a "generic fallback" for modes without a dedicated flow
+    // registered. That fallback was already dead code: moduleRegistry.js
+    // unconditionally registers ACTION_REGISTRY['ENQUIRY'] and ['QUESTION'] at
+    // startup (see handleQuestionAction() / startFlowOrAnswerQuestion() there,
+    // which now own the actual per-mode fallback logic), so the lookup here
+    // always succeeded and the code below it could never run. Removed the
+    // redundant cases entirely — both actions now simply fall through to the
+    // generic ACTION_REGISTRY delegation after this switch statement, which
+    // does the exact same `ACTION_REGISTRY.get(upper)` lookup.
   }
 
   // ── Module-registered actions ─────────────────────────────────────────────

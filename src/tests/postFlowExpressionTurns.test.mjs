@@ -156,5 +156,5 @@ test('groqProvider.js: expression mode uses minimal feeling-first prompt', () =>
   const groqSrc = readFileSync(join(__dirname, '../core/ai/providers/groqProvider.js'), 'utf8');
   assert.match(groqSrc, /replyMode === 'expression'/);
   assert.match(groqSrc, /NEVER mention food names, dish names, menu items/);
-  assert.match(groqSrc, /maxTokens\s*=\s*isExpression \? 45 : 350/);
+  assert.match(groqSrc, /maxTokens\s*=\s*isExpression \? 45 : 500/);
 });

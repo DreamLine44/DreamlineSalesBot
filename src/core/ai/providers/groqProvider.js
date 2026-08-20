@@ -96,18 +96,68 @@ export function buildSystemPrompt({ business, intent, faqContext, orderContext, 
 
   const desc    = sanitise(business?.description || '');
   const persona = getPersona(mode);
+  const currency = business?.payment?.currency || 'GMD';
 
   // Menu / services / products list
-  const menuLines = (business?.menuItems || business?.services || [])
-    .filter(i => i.available !== false)
-    .slice(0, 25)
-    .map(i => {
-      const price = i.price ? ` — D${formatMoney(i.price)}` : '';
-      const dur   = i.duration ? ` (${i.duration} min)` : '';
-      const desc2 = i.description ? ` — ${sanitise(i.description, 80)}` : '';
-      return `• ${i.name}${price}${dur}${desc2}`;
-    })
-    .join('\n');
+  // [FIX-AI-FULLCATALOG] Previously hard-capped at 25 items with a fixed "D"
+  // currency prefix (wrong for any tenant not using Dalasi) and no grouping,
+  // stock, or variant info — the AI effectively only saw a partial, generic
+  // slice of the catalog and had no way to answer "what are your drinks" or
+  // "is the large size in stock" from anywhere else in the business's data.
+  // Now: groups by category (so category-scoped questions can be answered
+  // directly), raises the cap, uses the business's actual currency (with a
+  // per-item override), and surfaces stock/variant/add-on data so the AI can
+  // give a complete, correctly-priced answer instead of "I'd need to check".
+  const catalogItems = (business?.menuItems || business?.services || [])
+    .filter(i => i.available !== false);
+
+  const formatItemLine = (i) => {
+    const cur = i.currency || currency;
+    const outOfStock = i.stockCount === 0 ? ' (out of stock)' : '';
+    let price = i.price ? ` — ${cur}${formatMoney(i.price)}` : '';
+    if (Array.isArray(i.variants) && i.variants.length) {
+      const prices = i.variants.map(v => Number(v.price)).filter(n => Number.isFinite(n));
+      if (prices.length) {
+        const lo = Math.min(...prices), hi = Math.max(...prices);
+        price = lo === hi ? ` — ${cur}${formatMoney(lo)}` : ` — ${cur}${formatMoney(lo)}–${formatMoney(hi)}`;
+      }
+      const variantNames = i.variants.slice(0, 6).map(v => v.name).filter(Boolean).join(', ');
+      price += variantNames ? ` (options: ${variantNames})` : '';
+    }
+    const dur   = i.duration ? ` (${i.duration} min)` : '';
+    const desc2 = i.description ? ` — ${sanitise(i.description, 80)}` : '';
+    return `• ${i.name}${price}${dur}${outOfStock}${desc2}`;
+  };
+
+  const CATALOG_LIMIT = 60;
+  const shown = catalogItems.slice(0, CATALOG_LIMIT);
+  const hasCategories = shown.some(i => i.category);
+  let menuLines;
+  if (hasCategories) {
+    const groups = new Map();
+    for (const i of shown) {
+      const cat = i.category || 'Other';
+      if (!groups.has(cat)) groups.set(cat, []);
+      groups.get(cat).push(i);
+    }
+    menuLines = [...groups.entries()]
+      .map(([cat, items]) => `${sanitise(cat, 40)}:\n${items.map(formatItemLine).join('\n')}`)
+      .join('\n\n');
+  } else {
+    menuLines = shown.map(formatItemLine).join('\n');
+  }
+  if (catalogItems.length > CATALOG_LIMIT) {
+    menuLines += `\n_...and ${catalogItems.length - CATALOG_LIMIT} more items — ask about a specific item or category for details._`;
+  }
+
+  // [FIX-AI-ADDONS] Add-ons/extras were entirely invisible to the AI, so any
+  // "can I add X" or "what extras do you have" question had no data to answer from.
+  const addOnsLine = (() => {
+    const addOns = Array.isArray(business?.addOns) ? business.addOns.filter(a => a?.name) : [];
+    if (!addOns.length) return '';
+    const lines = addOns.slice(0, 20).map(a => `• ${a.name}${a.price ? ` — ${currency}${formatMoney(a.price)}` : ''}`).join('\n');
+    return `\nAvailable add-ons/extras:\n${lines}`;
+  })();
 
   // [GROQ-OPT-1] Business hours
   // [FIX-GROQ-HOURS] Was reading cfg.openTime/cfg.closeTime — fields that don't exist
@@ -231,6 +281,7 @@ export function buildSystemPrompt({ business, intent, faqContext, orderContext, 
     `You are ${persona} for *${name}*.`,
     desc ? `About us: ${desc}` : '',
     menuLines ? `\nOur offerings:\n${menuLines}` : '',
+    addOnsLine,
     hoursLines,
     locationLine,
     paymentLine,
@@ -240,7 +291,19 @@ export function buildSystemPrompt({ business, intent, faqContext, orderContext, 
     sessionLine,
     faqContext || '',
     `\nCRITICAL RULES:`,
-    `- Reply in 1-3 short sentences maximum. Never write essays or long lists.`,
+    // [FIX-AI-LISTING] The old blanket "never write long lists" + "no bullet
+    // lists" rules meant the AI could never answer "what food do you have and
+    // how much" the way a human staff member would — with an actual itemised
+    // list of names and prices. That's a core, frequently-asked question type
+    // (menu/price/category questions), not an edge case, so it gets an
+    // explicit carve-out: keep ordinary replies short, but when the customer
+    // is asking about multiple items, a category, or "the menu"/"prices",
+    // list each one clearly using the same "• *Name* — price" format as the
+    // offerings above, pulling the real name/price/variant/stock data from
+    // whichever part of the business info above actually answers it.
+    `- For a normal question, reply in 1-3 short sentences. Never pad with filler or write essays.`,
+    `- EXCEPTION: if the customer asks about multiple items, a category (e.g. "your drinks", "what desserts do you have"), the full menu, or "how much are your X items", give a clear itemised list — one line per item as "• *Name* — ${currency}Price", pulled directly from the offerings above. Don't compress a real list into one sentence, and don't invent items not listed above.`,
+    `- You have access to every section above (offerings, add-ons, hours, location, payment, staff, FAQ) — pull the answer from whichever section actually has it, not just the first one that seems relevant.`,
     `- Sound like a helpful, friendly human — not a robot or corporate script.`,
     `- Only discuss ${name} and its services/products/policies. Stay strictly on topic.`,
     `- NEVER claim you placed an order, made a booking, or took any action.`,
@@ -255,7 +318,7 @@ export function buildSystemPrompt({ business, intent, faqContext, orderContext, 
     `- NEVER apologise repeatedly. If unsure, be brief. Never pad responses with filler sentences.`,
     `- NEVER ask more than ONE question in a response.`,
     `- NEVER suggest the customer contact another business, competitor, or third-party service.`,
-    `- Use WhatsApp formatting: *bold* for emphasis. No markdown headers or bullet lists.`,
+    `- Use WhatsApp formatting: *bold* for emphasis. No markdown headers (#), tables, or code blocks — for itemised lists use "•" per line as shown in the offerings above, that's the one exception to "no lists".`,
     replyMode === 'expression'
       ? `\nPOST-FLOW REACTION MODE: Feeling-first reply only. No item names.`
       : '',
@@ -300,7 +363,7 @@ function getIntentInstruction(intent, mode, bizName, replyMode = null) {
 
     // ── Restaurant ───────────────────────────────────────────────────────────
     'RESTAURANT_QUESTION':
-      `The customer is asking about the restaurant (menu, ingredients, allergens, hours, reservations, etc.). Answer specifically from the information above. For allergen questions, always recommend they confirm with staff directly.`,
+      `The customer is asking about the restaurant (menu, ingredients, allergens, hours, reservations, etc.). Answer specifically from the information above. If they ask about multiple dishes, a category (e.g. "starters", "drinks"), or "what food do you have and how much", list each matching item with its price (see the listing exception in the rules above) rather than naming just one. For allergen questions, always recommend they confirm with staff directly.`,
 
     // ── Salon / Barbershop ───────────────────────────────────────────────────
     'SALON_QUESTION':
@@ -346,7 +409,7 @@ function getIntentInstruction(intent, mode, bizName, replyMode = null) {
 
     // ── Retail ───────────────────────────────────────────────────────────────
     'RETAIL_QUESTION':
-      `The customer is asking about products, stock, pricing, or policies. Answer from the offerings and FAQ above. For stock queries, say "I'd need to check current stock — please contact us directly".`,
+      `The customer is asking about products, stock, pricing, or policies. Answer from the offerings and FAQ above. If they're asking about a category or several products, list each with its price (see the listing exception in the rules above). For stock queries, say "I'd need to check current stock — please contact us directly".`,
   };
 
   return instructions[intent] || instructions['FAQ'] || '';
@@ -467,7 +530,11 @@ export async function getReply({ customerMessage, business, intent = 'FALLBACK',
   ]);
   const temperature = FACTUAL_INTENTS.has((intent || '').toUpperCase()) ? 0.45 : 0.65;
   const isExpression = replyMode === 'expression';
-  const maxTokens    = isExpression ? 45 : 350;
+  // [FIX-AI-LISTING-TOKENS] 350 tokens was tuned for short 1-3 sentence
+  // replies. Now that factual/listing intents are allowed to itemise several
+  // menu items with prices (see buildSystemPrompt's listing exception), a
+  // real multi-item answer needs more room or it gets cut off mid-list.
+  const maxTokens    = isExpression ? 45 : 500;
   const temp         = isExpression ? 0.55 : temperature;
 
   const text = await callGroq(messages, { model: GROQ_MODEL_PRIMARY, maxTokens, temperature: temp });
