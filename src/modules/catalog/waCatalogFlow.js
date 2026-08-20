@@ -44,13 +44,47 @@ import {
 } from './waCatalogHelpers.js';
 import logger                        from '../../config/logger.js';
 
+// [CATALOG-AUTO-RETRY] A customer typing "hello, i want to order" (routed
+// straight to browseCatalogExplicit() via the [ORDER-CHANNEL] returning-
+// catalog-customer path in moduleRegistry.js) and a customer tapping the
+// "🛍 Browse Catalog" button both call the exact same sendCatalogMessage()
+// against the exact same Graph API endpoint — there was previously no
+// difference between them except that the button tap was, in effect, a
+// second attempt. A single transient Graph API hiccup on the FIRST attempt
+// left the typed-message customer staring at "temporarily unavailable" with
+// nothing to do but retype their message or tap "🔄 Try Again" themselves —
+// even though the very next attempt (proven by the button case) succeeds.
+// Since catalog-enabled tenants intentionally have no text-menu fallback
+// ([CATALOG-ONLY-1]), the send itself must be made resilient instead: retry
+// the same call in-process, once, after a short delay, before ever telling
+// the customer anything failed. Only covers a genuine transient miss (null
+// result) — does not change behavior when sendCatalogMessage never throws/
+// resolves at all, and does not add a retry anywhere the Graph API layer
+// (dispatcher.js) already has its own fallback chains.
+const CATALOG_RETRY_DELAY_MS = 700;
+
+function delay(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+async function sendCatalogMessageWithRetry(to, business, tenant) {
+  const first = await sendCatalogMessage(to, business, tenant);
+  if (first) return first;
+
+  logger.warn('[WACatalog] first catalog send attempt failed — retrying once', {
+    tenantId: business?.tenantId,
+  });
+  await delay(CATALOG_RETRY_DELAY_MS);
+  return sendCatalogMessage(to, business, tenant);
+}
+
 // [CATALOG-UX-BUTTON] Shared by offerCatalogOnStartOrder() (automatic offer)
 // and browseCatalogExplicit() (explicit "🛍 Browse Catalog" button tap) —
 // both end with the exact same "send the catalog, then arm the session to
 // receive the eventual 'order' webhook message" sequence; only the caller
 // and the reason for reaching it differ.
 async function sendAndArmCatalog(session, business, tenant, { preserveCart = false } = {}) {
-  const sent = await sendCatalogMessage(session.customerPhone, business, tenant);
+  const sent = await sendCatalogMessageWithRetry(session.customerPhone, business, tenant);
   if (!sent) return false; // [Failure handling] silent fallback
 
   // [CATALOG-FLOW-1] Mark the flow active + awaiting a catalog selection so:
