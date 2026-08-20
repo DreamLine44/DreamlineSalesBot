@@ -81,7 +81,7 @@ export async function generateGreeting({ business, customerName, lastOrder }) {
 export async function aiHealthCheck() {
   const groqStatus = process.env.GROQ_API_KEY
     ? await groqProvider.healthCheck()
-    : { ok: false, model: 'llama-3.1-8b-instant', error: 'No GROQ_API_KEY' };
+    : { ok: false, model: 'openai/gpt-oss-20b', error: 'No GROQ_API_KEY' };
 
   return { groq: groqStatus, mock: { ok: true, model: 'mock' } };
 }

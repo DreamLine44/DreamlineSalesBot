@@ -939,8 +939,22 @@ function _detectMidFlowSwitchRequest(text, session, business, isInteractive = fa
   // Only ORDER/BOOKING/QUESTION have a meaningful "other activity" to switch into.
   if (flow !== 'ORDER' && flow !== 'BOOKING' && !questionFlows.has(flow)) return null;
 
+  // [AUDIT-FIX-QMODE-1] AWAITING_QUESTION / SPEC_QUESTION are listed in
+  // MFQ_FREE_TEXT_STEPS so the separate MFQ *question* intercept
+  // (_detectMidFlowQuestion) doesn't re-fire on someone who is already inside
+  // Q&A — see the SPEC_QUESTION comment on that set. But this function is a
+  // different detector with the opposite goal: it exists specifically to
+  // catch "I want to order food" / "let's book instead" typed WHILE sitting
+  // in Question Mode. Applying the same free-text bail-out here silently
+  // killed that path for every question after the first one (the first
+  // question is asked while currentFlow is still 'ENQUIRY' and briefly
+  // matches a different, bespoke switch-check inside webhookController's
+  // ENQUIRY branch; every question after that runs with currentFlow flipped
+  // to 'QUESTION'/'SPEC_REQUEST' by persistQuestionSession, step stuck on
+  // AWAITING_QUESTION/SPEC_QUESTION, and only this function stands between
+  // the customer and a switch — so it must not bail out here.
   const step = (session.step || '').toUpperCase();
-  if (MFQ_FREE_TEXT_STEPS.has(step) || MFQ_DATE_TIME_STEPS.has(step)) return null;
+  if (!questionFlows.has(flow) && (MFQ_FREE_TEXT_STEPS.has(step) || MFQ_DATE_TIME_STEPS.has(step))) return null;
 
   const raw = String(text || '').trim();
   if (!raw || raw.length < 4 || /^\d+$/.test(raw)) return null;

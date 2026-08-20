@@ -307,7 +307,25 @@ export async function handleOrderFlow({ session, message, business, tenant, isIn
       const questionAnswerService = await import('../../../services/questionAnswerService.js');
       const qAnswer = await questionAnswerService.tryDatabaseAnswer({ message: raw, business, session });
       if (qAnswer?.handled && qAnswer.body) {
-        await questionAnswerService.persistQuestionSession(session, tenant, qAnswer.context || { lastMessage: raw, lastTopic: qAnswer.routingDecision || 'QUESTION' });
+        // [AUDIT-FIX-QMODE-2] This is an INLINE aside inside an active ORDER flow — the
+        // customer is still browsing/building a cart and just asked a quick menu
+        // question. persistQuestionSession() unconditionally writes currentFlow:
+        // 'QUESTION', step: 'AWAITING_QUESTION', which silently ended their ORDER flow
+        // right here even though the comment above this block explicitly says the goal
+        // is to "preserve the order flow". Worse: if they then tapped the "❓ Ask
+        // Another" button this reply shows, ACTION_REGISTRY's QUESTION handler calls
+        // startFlow('QUESTION', ...) — and startFlow() only preserves data.cart when
+        // the flow being started is 'ORDER', so their in-progress cart was wiped.
+        // Fix: keep currentFlow/step exactly as they are (still mid-ORDER) and only
+        // stash the Q&A context, mirroring what persistQuestionSession does internally
+        // minus the flow/step overwrite.
+        const { mergeQuestionContext } = await import('../../../services/questionModeHelper.js');
+        await updateSession(session.customerPhone, session.tenantId, {
+          data: {
+            ...(session.data || {}),
+            _questionCtx: mergeQuestionContext(session, qAnswer.context || { lastMessage: raw, lastTopic: qAnswer.routingDecision || 'QUESTION' }),
+          },
+        });
         return {
           type: 'buttons',
           body: qAnswer.body,

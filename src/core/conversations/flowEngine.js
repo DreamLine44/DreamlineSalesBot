@@ -110,7 +110,16 @@ export async function startFlow({ flowName, session, business, tenant }) {
   // what was just written. Removing it shaves a full Mongo round trip off every flow
   // start (Order Food, View Menu, Book a Table, etc.), directly on the tap-to-reply path.
   const flowUpper = flowName.toUpperCase();
-  const existingCart = flowUpper === 'ORDER' && Array.isArray(session?.data?.cart) && session.data.cart.length
+  // [AUDIT-FIX-QMODE-2] Also preserve an in-progress cart when starting the QUESTION
+  // flow, not just ORDER. A customer mid-ORDER who asks a question and then taps
+  // "❓ Ask Another" (or any other path that calls startFlow('QUESTION', ...) while
+  // a cart already exists) was having their cart silently wiped here, because this
+  // condition only ever recognised flowUpper === 'ORDER'. The cart sits unused while
+  // in Question Mode and is picked back up correctly once the customer switches back
+  // to ORDER (that branch already handles restoring it) — so preserving it here now
+  // costs nothing and just stops it from being lost outright.
+  const existingCart = (flowUpper === 'ORDER' || flowUpper === 'QUESTION')
+    && Array.isArray(session?.data?.cart) && session.data.cart.length
     ? session.data.cart
     : null;
   const orderViaCatalog = session?.data?.orderViaCatalog === true;

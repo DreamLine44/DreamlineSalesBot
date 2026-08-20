@@ -198,15 +198,42 @@ test('_detectMidFlowSwitchRequest: never intercepts free-text or date/time flow 
   assert.equal(detectMidFlowSwitchRequest('please book this in for the office, not home', notesSession, RESTAURANT_BIZ), null);
 });
 
-test('_detectMidFlowSwitchRequest: never intercepts flows other than ORDER/BOOKING', () => {
+test('_detectMidFlowSwitchRequest: never intercepts flows other than ORDER/BOOKING/question flows', () => {
   // A false-positive switch prompt on a niche flow (CAKE_CUSTOMIZATION, WALKIN,
-  // ENQUIRY, LEAD_CAPTURE) is a worse outcome than doing nothing, so these are
-  // deliberately left untouched.
+  // LEAD_CAPTURE) is a worse outcome than doing nothing, so these are
+  // deliberately left untouched. (ENQUIRY/QUESTION/SPEC_REQUEST — the question
+  // flows — DO want switch detection; see the dedicated tests below.)
   const cakeSession = { currentFlow: 'CAKE_CUSTOMIZATION', step: 'SELECT_FLAVOUR', data: {} };
   assert.equal(detectMidFlowSwitchRequest('I want to order food', cakeSession, RESTAURANT_BIZ), null);
+});
+
+// ── [AUDIT-FIX-QMODE-1] Switch detection must survive past the first turn ───
+//
+// PROBLEM: persistQuestionSession() (services/questionAnswerService.js) always
+// writes currentFlow: 'QUESTION' (or 'SPEC_REQUEST' for electronics), never
+// 'ENQUIRY' — so only the customer's FIRST question runs with currentFlow
+// still 'ENQUIRY' (handled by webhookController's own bespoke switch check at
+// its ENQUIRY branch). Every question after that has currentFlow flipped to
+// 'QUESTION'/'SPEC_REQUEST' with step stuck on AWAITING_QUESTION/SPEC_QUESTION
+// — and this function was the only thing standing between the customer and a
+// switch. Because AWAITING_QUESTION/SPEC_QUESTION are (correctly) listed in
+// MFQ_FREE_TEXT_STEPS for the unrelated MFQ *question* intercept, reusing that
+// same set here silently killed switch detection for every question after the
+// first one. Typing "I want to order food" while in ongoing Q&A got no
+// response at all beyond another AI answer attempt.
+test('_detectMidFlowSwitchRequest: DOES detect a switch from AWAITING_QUESTION (ongoing Question Mode, not just the first turn)', () => {
+  const questionSession = { currentFlow: 'QUESTION', step: 'AWAITING_QUESTION', data: {} };
+  assert.equal(detectMidFlowSwitchRequest('book a table', questionSession, RESTAURANT_BIZ), 'BOOKING');
+  assert.equal(detectMidFlowSwitchRequest('I want to order food', questionSession, RESTAURANT_BIZ), 'ORDER');
 
   const enquirySession = { currentFlow: 'ENQUIRY', step: 'AWAITING_QUESTION', data: {} };
-  assert.equal(detectMidFlowSwitchRequest('book a table', enquirySession, RESTAURANT_BIZ), null);
+  assert.equal(detectMidFlowSwitchRequest('book a table', enquirySession, RESTAURANT_BIZ), 'BOOKING');
+});
+
+test('_detectMidFlowSwitchRequest: DOES detect a switch from SPEC_QUESTION (ongoing electronics Question Mode)', () => {
+  const specSession = { currentFlow: 'SPEC_REQUEST', step: 'SPEC_QUESTION', data: {} };
+  const electronicsBiz = { businessMode: 'ELECTRONICS', menuItems: [], services: [] };
+  assert.equal(detectMidFlowSwitchRequest('I want to order this laptop', specSession, electronicsBiz), 'ORDER');
 });
 
 test('_detectMidFlowSwitchRequest: ignores bare numbers and very short input (quantity/date noise)', () => {

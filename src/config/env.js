@@ -135,7 +135,7 @@ export function validateEnv() {
   if (!process.env.GROQ_API_KEY) {
     warnings.push(
       'GROQ_API_KEY is not set — AI responses will use the mock/deterministic fallback. ' +
-      'Set GROQ_API_KEY to enable live AI (Groq llama-3.1-8b-instant).'
+      'Set GROQ_API_KEY to enable live AI (Groq openai/gpt-oss-20b).'
     );
   }
 

@@ -51,10 +51,13 @@ import logger from '../../../config/logger.js';
 import { formatMoney } from '../../../utils/formatCurrency.js';
 
 const GROQ_URL     = 'https://api.groq.com/openai/v1/chat/completions';
-// [GROQ-V3-1] Primary model upgraded — smarter, context-aware responses
-const GROQ_MODEL_PRIMARY   = 'llama-3.3-70b-versatile';
-// [GROQ-V3-2/3] Fast model retained for classification and greeting generation
-const GROQ_MODEL_FAST      = 'llama-3.1-8b-instant';
+// [GROQ-V4-1] llama-3.3-70b-versatile was decommissioned by Groq on 2026-06-17.
+// Migrated to openai/gpt-oss-120b per Groq's official deprecation guidance
+// (https://console.groq.com/docs/deprecations).
+const GROQ_MODEL_PRIMARY   = 'openai/gpt-oss-120b';
+// [GROQ-V4-1] llama-3.1-8b-instant was decommissioned in the same wave.
+// Migrated to openai/gpt-oss-20b per Groq's official deprecation guidance.
+const GROQ_MODEL_FAST      = 'openai/gpt-oss-20b';
 const GROQ_TIMEOUT = 14000; // slightly longer timeout for 70b
 const MAX_RETRIES  = 2;
 
