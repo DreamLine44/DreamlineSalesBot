@@ -198,7 +198,8 @@ test('processQuestionMessage handles general messages without throwing', async (
     intent: 'FAQ',
   });
   assert.ok(reply.body);
-  assert.equal(reply.type, 'buttons');
+  assert.equal(reply.type, 'text');
+  assert.equal(reply.buttons, undefined);
 });
 
 test('webhook ENQUIRY path uses DB-first questionAnswerService', () => {

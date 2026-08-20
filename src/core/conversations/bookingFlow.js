@@ -584,14 +584,24 @@ export async function handleBookingFlow({ session, message, business, tenant, is
       // handleSalonBooking's global escape catches it only when the flow delegates here;
       // for non-salon modes (restaurant, services) that call handleBookingFlow directly,
       // no outer escape exists, so the fix must live here in the shared flow.
-      if (/^(cancel|cancel_booking|no|nope|show_menu)$/i.test(clean)) {
+      // [FIX-DUALLAYER-CONFIRM] Widened via the shared regex guard so "no thanks",
+      // "please cancel it", "nah changed my mind" etc. also escape instead of
+      // silently falling through to the confirm re-prompt below.
+      const { isAffirmative: _isAffirmativeBooking, isNegative: _isNegativeBooking } =
+        await import('../shared/confirmationMatcher.js');
+      if (/^(cancel|cancel_booking|no|nope|show_menu)$/i.test(clean) || _isNegativeBooking(raw)) {
         return cancelFlow(session, business);
       }
 
       // [FIX-CONFIRM-1] "yeah"/"yep" were missing here even though DATE_CONFIRM
       // and TIME_CONFIRM in this same file already accept them. This is the step
       // that actually saves the booking, so it matters most.
-      if (!/^(yes|y|yeah|yep|confirm|ok|okay|sure)$/i.test(clean) && clean !== 'confirm') {
+      // [FIX-DUALLAYER-CONFIRM] Widened via the shared regex guard so "yes
+      // please", "sounds good", "go ahead" etc. also confirm — not just a bare
+      // single-word match.
+      const isBookingConfirm = /^(yes|y|yeah|yep|confirm|ok|okay|sure)$/i.test(clean) || clean === 'confirm' ||
+        _isAffirmativeBooking(raw);
+      if (!isBookingConfirm) {
         const { date, time, service, partySize, stylist, staff } = data;
         const staffDisplay2 = stylist || staff || null;
         const isBarbershopReprompt = (business?.businessMode || '').toUpperCase() === 'BARBERSHOP';

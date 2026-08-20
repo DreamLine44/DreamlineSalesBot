@@ -389,13 +389,18 @@ export async function handleSalonWalkIn({ session, message, business, tenant, is
     }
 
     // ── CONFIRM ──────────────────────────────────────────────────────────────
+    // [FIX-DUALLAYER-CONFIRM] See core/shared/confirmationMatcher.js — the old
+    // exact-match check meant a typed "yes please"/"go ahead" (instead of
+    // tapping the button) silently failed and just re-showed this prompt.
     case 'CONFIRM': {
-      // [v14-BUG-3] CANCEL_BOOKING must be intercepted before the catch-all re-prompt.
-      if (['CANCEL', 'CANCEL_BOOKING', 'SHOW_MENU', 'NO'].includes(raw.toUpperCase())) {
-        return cancelFlow(session, business);
-      }
+      const { resolveConfirmation } = await import('../../../core/shared/confirmationMatcher.js');
+      const verdict = await resolveConfirmation({
+        raw, business,
+        negateIds: ['CANCEL', 'CANCEL_BOOKING', 'SHOW_MENU', 'NO'],
+      });
+      if (verdict === 'no') return cancelFlow(session, business);
 
-      if (!['CONFIRM', 'YES'].includes(raw.toUpperCase())) {
+      if (verdict !== 'yes') {
         return {
           type: 'buttons',
           body: `${emoji} Ready to join the walk-in queue?`,
@@ -824,7 +829,11 @@ export async function handleSalonProductOrder({ session, message, business, tena
         return cancelFlow(session, business);
       }
 
-      const isCheckout = raw === 'CONFIRM' || /^(yes|y|yeah|yep|confirm|ok|okay|sure|checkout|place|done)$/i.test(clean);
+      // [FIX-DUALLAYER-CONFIRM] Widened via shared regex guard so "yes please" /
+      // "let's checkout" / "go ahead" also register, not just a bare word.
+      const { isAffirmative: _isAffirmativeCheckout } = await import('../../../core/shared/confirmationMatcher.js');
+      const isCheckout = raw === 'CONFIRM' || /^(yes|y|yeah|yep|confirm|ok|okay|sure|checkout|place|done)$/i.test(clean) ||
+        _isAffirmativeCheckout(raw);
       if (isCheckout) {
         return await _checkoutProductCart(cart, session, business, tenant, isBarbershop);
       }
@@ -922,12 +931,20 @@ export async function handleSalonProductOrder({ session, message, business, tena
     }
 
     // ── CONFIRM ───────────────────────────────────────────────────────────
+    // [FIX-DUALLAYER-CONFIRM] See core/shared/confirmationMatcher.js — the old
+    // exact-match check meant a typed "yes please"/"go ahead" (instead of
+    // tapping the button) silently failed and just re-showed this prompt.
     case 'CONFIRM': {
+      const { resolveConfirmation } = await import('../../../core/shared/confirmationMatcher.js');
+
       // [v14-BUG-4] CANCEL must be caught here; the global escape above won't fire
       // when step=CONFIRM because the switch falls through before reaching default.
-      if (['CANCEL', 'CANCEL_BOOKING', 'SHOW_MENU', 'NO'].includes(raw.toUpperCase())) {
-        return cancelFlow(session, business);
-      }
+      const cancelVerdict = await resolveConfirmation({
+        raw, business,
+        negateIds: ['CANCEL', 'CANCEL_BOOKING', 'SHOW_MENU', 'NO'],
+        allowAI: false, // AI check happens once below, after the add-another-item branch
+      });
+      if (cancelVerdict === 'no') return cancelFlow(session, business);
 
       // [MULTICART-v39-PHASE2] "Add Another Item" — folds the item that just
       // reached this summary into data.cart and loops back to product
@@ -936,7 +953,12 @@ export async function handleSalonProductOrder({ session, message, business, tena
         if (data.item) return await _addAnotherProduct(session, business, data, isBarbershop);
       }
 
-      if (!['CONFIRM', 'YES'].includes(raw.toUpperCase())) {
+      const confirmVerdict = await resolveConfirmation({
+        raw, business,
+        negateIds: ['CANCEL', 'CANCEL_BOOKING', 'SHOW_MENU', 'NO'],
+      });
+      if (confirmVerdict === 'no') return cancelFlow(session, business);
+      if (confirmVerdict !== 'yes') {
         const currency = data.item?.currency || business?.payment?.currency || 'D';
         const total = data.totalPrice || (data.item?.price || 0) * (data.quantity || 1);
         return {
@@ -1225,12 +1247,8 @@ export async function handleSalonQuestion({ session, message, business, tenant }
       step: 'AWAITING_QUESTION', data: {},
     });
     return {
-      type: 'buttons',
+      type: 'text',
       body: `${isBarbershop ? '✂️' : '💇'} What would you like to know? Feel free to type your question.\n\n_(e.g. pricing, opening hours, aftercare tips, which service is right for me)_`,
-      buttons: [
-        { id: 'BOOK',      title: isBarbershop ? '💈 Book Cut' : '📅 Book Appointment' },
-        { id: 'SHOW_MENU', title: '🔄 Main Menu'                                       },
-      ],
     };
   }
 
@@ -1243,12 +1261,8 @@ export async function handleSalonQuestion({ session, message, business, tenant }
   // ── AWAITING_QUESTION ─────────────────────────────────────────────────────
   if (!raw || raw.length < 2) {
     return {
-      type: 'buttons',
+      type: 'text',
       body: `${isBarbershop ? '✂️' : '💇'} What would you like to know? Feel free to type your question.\n\n_(e.g. pricing, opening hours, aftercare tips, product recommendations)_`,
-      buttons: [
-        { id: 'BOOK',      title: isBarbershop ? '💈 Book Cut' : '📅 Book Appointment' },
-        { id: 'SHOW_MENU', title: '🔄 Main Menu'                                       },
-      ],
     };
   }
 
@@ -1265,20 +1279,18 @@ export async function handleSalonQuestion({ session, message, business, tenant }
   const reply = await processQuestionMessage({ session, message: raw, business, tenant, intent });
   await persistQuestionSession(session, tenant, reply.context || { lastMessage: raw });
 
+  // Answer-only: stay in QUESTION mode and wait — no buttons. Switching activity
+  // is picked up upstream from the customer's own words, not from a tap target.
   const questionResponse = {
-    type: reply.type || 'buttons',
+    type: reply.type || 'text',
     body: reply.body || `Great question! For detailed information please contact us directly.`,
-    buttons: reply.buttons || [
-      { id: 'BOOK',     title: isBarbershop ? '💈 Book Now'    : '📅 Book Now'      },
-      { id: 'WALKIN',   title: '🚶 Walk-In Queue'                                    },
-      { id: 'QUESTION', title: '❓ Another Question'                                 },
-    ],
   };
 
+  // [text type ignores the footer field — fold the same hint into the body]
   if (isAftercare && reply.body) {
-    questionResponse.footer = 'We hope to see you again soon! 🙏';
+    questionResponse.body += `\n\n_We hope to see you again soon! 🙏_`;
   } else if (isConsultation && reply.body) {
-    questionResponse.footer = 'Tap "Book Now" to schedule the recommended service';
+    questionResponse.body += `\n\n_Just say the word when you're ready to book that service._`;
   }
 
   return questionResponse;

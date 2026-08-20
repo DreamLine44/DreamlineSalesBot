@@ -346,32 +346,23 @@ export async function tryDatabaseAnswer({ message, business, session }) {
   return { handled: false };
 }
 
-/** Default Q&A buttons — soft CTAs, no forced ordering. */
-export function buildQuestionButtons(business, { includeOrder = true } = {}) {
-  const mode = (business?.businessMode || 'RETAIL').toUpperCase();
-  const buttons = [{ id: 'QUESTION', title: '❓ Ask Another' }];
-
-  if (includeOrder && ['RESTAURANT', 'BAKERY', 'DELIVERY', 'RETAIL', 'FASHION', 'COSMETICS', 'ELECTRONICS', 'SALON', 'BARBERSHOP'].includes(mode)) {
-    const orderLabel = (mode === 'SALON' || mode === 'BARBERSHOP') ? '📅 Book' : '🛍 Order';
-    buttons.push({ id: mode === 'SALON' || mode === 'BARBERSHOP' ? 'BOOK' : 'ORDER', title: orderLabel });
-  }
-
-  buttons.push({ id: 'SUPPORT', title: '💬 Contact Support' });
-  return buttons.slice(0, 3);
-}
-
 /**
  * Process a question-mode message: DB-first, then AI fallback.
- * Returns a WhatsApp UI payload (buttons/text).
+ *
+ * Question Mode is answer-only: no buttons are ever attached here. The
+ * customer stays in Q&A and can ask another question freely; switching to
+ * another activity (ordering, booking, etc.) is detected upstream from their
+ * own words (see webhookController's mid-flow switch detector /
+ * _detectMidFlowSwitchRequest) rather than offered as a tap target after
+ * every answer.
  */
 export async function processQuestionMessage({ session, message, business, tenant, intent = 'FAQ' }) {
   const raw = String(message || '').trim();
 
   if (!isBusinessScopeQuestion(raw, business)) {
     return {
-      type: 'buttons',
+      type: 'text',
       body: "I'm here to help with questions about our business — menu, services, hours, orders, and bookings. What would you like to know?",
-      buttons: buildQuestionButtons(business),
       context: mergeQuestionContext(session, { lastMessage: raw }),
     };
   }
@@ -379,11 +370,8 @@ export async function processQuestionMessage({ session, message, business, tenan
   const dbAnswer = await tryDatabaseAnswer({ message: raw, business, session });
   if (dbAnswer.handled && dbAnswer.body) {
     return {
-      type: 'buttons',
+      type: 'text',
       body: dbAnswer.body,
-      buttons: dbAnswer.stayOnTopic
-        ? [{ id: 'QUESTION', title: '❓ Ask Another' }, { id: 'SUPPORT', title: '💬 Contact Support' }]
-        : buildQuestionButtons(business, { includeOrder: dbAnswer.routingDecision !== 'TRACK_ORDER' }),
       context: mergeQuestionContext(session, dbAnswer.context || { lastMessage: raw }),
     };
   }
@@ -399,9 +387,8 @@ export async function processQuestionMessage({ session, message, business, tenan
   });
 
   return {
-    type: 'buttons',
+    type: 'text',
     body: aiReply || "Great question! Please contact us directly and we'll be happy to help.",
-    buttons: buildQuestionButtons(business),
     context: mergeQuestionContext(session, { lastMessage: raw, lastTopic: 'GENERAL' }),
   };
 }

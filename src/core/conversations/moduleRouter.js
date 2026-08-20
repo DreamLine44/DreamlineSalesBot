@@ -564,6 +564,9 @@ export async function route({ action, intent, session, message, business, tenant
         ).catch(() => null);
       } catch (_) { /* non-fatal */ }
 
+      // buildRescheduleDatePicker() (core/conversations/bookingFlow.js) writes
+      // currentFlow: 'BOOKING', step: 'DATE' to the session and carries the
+      // previous service/staff forward via resumeData, never an empty object.
       const { buildRescheduleDatePicker } = await import('./bookingFlow.js');
       return buildRescheduleDatePicker({
         session,
@@ -994,9 +997,8 @@ export async function route({ action, intent, session, message, business, tenant
         currentFlow: 'ENQUIRY', step: 'AWAITING_QUESTION',
       });
       return {
-        type:    'buttons',
-        body:    '❓ What would you like to know? Type your question below.',
-        buttons: [{ id: 'SHOW_MENU', title: '🔄 Start Over' }],
+        type: 'text',
+        body: '❓ What would you like to know? Type your question below.',
       };
     }
 
@@ -1011,9 +1013,8 @@ export async function route({ action, intent, session, message, business, tenant
         currentFlow: 'ENQUIRY', step: 'AWAITING_QUESTION',
       });
       return {
-        type:    'buttons',
-        body:    '❓ What would you like to know? Type your question below.',
-        buttons: [{ id: 'SHOW_MENU', title: '🔄 Start Over' }],
+        type: 'text',
+        body: '❓ What would you like to know? Type your question below.',
       };
     }
   }

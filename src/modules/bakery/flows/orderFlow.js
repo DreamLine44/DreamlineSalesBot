@@ -13,7 +13,7 @@
  */
 
 import { updateSession }  from '../../../core/sessions/sessionService.js';
-import { completeFlow }   from '../../../core/conversations/flowEngine.js';
+import { completeFlow, cancelFlow } from '../../../core/conversations/flowEngine.js';
 import { findBestMatch }  from '../../../utils/matchEngine.js';
 import { parseQuantity }  from '../../../utils/parseQuantity.js';
 import { saveOrder }      from '../../../services/orderService.js';
@@ -199,7 +199,11 @@ export async function handleBakeryOrderFlow({ session, message, business, tenant
     case 'CART_REVIEW': {
       const cart = Array.isArray(data.cart) ? data.cart : [];
 
-      const isCheckout = raw === 'CONFIRM' || /^(yes|y|yeah|yep|confirm|ok|okay|sure|checkout|place|done)$/i.test(clean);
+      // [FIX-DUALLAYER-CONFIRM] Widened via shared regex guard so "yes please" /
+      // "let's checkout" / "go ahead" also register, not just a bare word.
+      const { isAffirmative: _isAffirmativeCheckout } = await import('../../../core/shared/confirmationMatcher.js');
+      const isCheckout = raw === 'CONFIRM' || /^(yes|y|yeah|yep|confirm|ok|okay|sure|checkout|place|done)$/i.test(clean) ||
+        _isAffirmativeCheckout(raw);
       if (isCheckout) {
         await updateSession(session.customerPhone, session.tenantId, {
           step: 'NOTES', data: { ...data, totalPrice: cartTotal(cart) },
@@ -428,8 +432,16 @@ export async function handleBakeryOrderFlow({ session, message, business, tenant
     }
 
     // ── CONFIRM ───────────────────────────────────────────────────────────────
+    // [FIX-DUALLAYER-CONFIRM] Was exact-match-only ('CONFIRM'/'YES' strings),
+    // so a typed "yes please" / "sure, confirm it" / "go ahead" silently
+    // failed and just re-showed this same prompt. resolveConfirmation() adds
+    // regex + Groq AI understanding on top of the button-ID check, which
+    // still wins outright when it's an actual button tap.
     case 'CONFIRM': {
-      if (!['CONFIRM', 'YES'].includes(raw.toUpperCase())) {
+      const { resolveConfirmation } = await import('../../../core/shared/confirmationMatcher.js');
+      const verdict = await resolveConfirmation({ raw, business });
+      if (verdict === 'no') return cancelFlow(session, business);
+      if (verdict !== 'yes') {
         return {
           type:    'buttons',
           body:    '🧁 Ready to place your bakery order?',

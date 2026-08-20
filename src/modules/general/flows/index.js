@@ -14,7 +14,7 @@
  */
 
 import { updateSession }     from '../../../core/sessions/sessionService.js';
-import { completeFlow }      from '../../../core/conversations/flowEngine.js';
+import { completeFlow, cancelFlow } from '../../../core/conversations/flowEngine.js';
 import { handleBookingFlow } from '../../../core/conversations/bookingFlow.js';
 import { getAIReply }        from '../../../core/ai/providers/aiRouter.js';
 import { saveOrder }         from '../../../services/orderService.js';
@@ -59,12 +59,8 @@ export async function handleGeneralQuestion({ session, message, business, tenant
   const raw = String(message || '').trim();
   if (!raw || raw.length < 2) {
     return {
-      type: 'buttons',
+      type: 'text',
       body: '❓ What would you like to know? Feel free to type your question.',
-      buttons: [
-        { id: 'ENQUIRY',   title: '📬 Send Enquiry' },
-        { id: 'SHOW_MENU', title: '🔄 Start Over'   },
-      ],
     };
   }
 
@@ -72,14 +68,11 @@ export async function handleGeneralQuestion({ session, message, business, tenant
   const reply = await processQuestionMessage({ session, message: raw, business, tenant, intent: 'FAQ' });
   await persistQuestionSession(session, tenant, reply.context || { lastMessage: raw });
 
+  // Answer-only: stay in QUESTION mode and wait — no buttons. Switching activity
+  // is picked up upstream from the customer's own words, not from a tap target.
   return {
-    type: reply.type,
+    type: reply.type || 'text',
     body: reply.body,
-    buttons: reply.buttons || [
-      { id: 'QUESTION', title: '❓ Another Question' },
-      { id: 'ENQUIRY',  title: '📬 Send Enquiry'     },
-      { id: 'BOOK',     title: '📅 Book Appointment' },
-    ],
   };
 }
 
@@ -205,7 +198,15 @@ export async function handleGeneralEnquiry({ session, message, business, tenant 
 
     // ── CONTACT_CONFIRM ──────────────────────────────────────────────────────
     case 'CONTACT_CONFIRM': {
-      if (!['ENQUIRY_SEND', 'CONFIRM', 'YES'].includes(raw.toUpperCase())) {
+      // [FIX-DUALLAYER-CONFIRM] See core/shared/confirmationMatcher.js — was
+      // exact-match-only, so a typed "yes please"/"go ahead" never registered.
+      const { resolveConfirmation } = await import('../../../core/shared/confirmationMatcher.js');
+      const verdict = await resolveConfirmation({
+        raw, business,
+        affirmIds: ['ENQUIRY_SEND', 'CONFIRM', 'YES'],
+      });
+      if (verdict === 'no') return cancelFlow(session, business);
+      if (verdict !== 'yes') {
         return {
           type: 'buttons',
           body: 'Ready to send your enquiry?',

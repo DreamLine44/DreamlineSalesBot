@@ -15,7 +15,7 @@
  */
 
 import { updateSession }  from '../../../core/sessions/sessionService.js';
-import { completeFlow }   from '../../../core/conversations/flowEngine.js';
+import { completeFlow, cancelFlow } from '../../../core/conversations/flowEngine.js';
 import { getAIReply }     from '../../../core/ai/providers/aiRouter.js';
 import { findBestMatch }  from '../../../utils/matchEngine.js';
 import { buildWhatsAppImageUrl } from '../../../config/cloudinary.js';
@@ -367,8 +367,13 @@ export async function handleRetailOrder({ session, message, business, tenant, is
     }
 
     // ── CONFIRM ───────────────────────────────────────────────────────────────
+    // [FIX-DUALLAYER-CONFIRM] See core/shared/confirmationMatcher.js — was
+    // exact-match-only, so a typed "yes please"/"go ahead" never registered.
     case 'CONFIRM': {
-      if (!['CONFIRM', 'YES'].includes(raw.toUpperCase())) {
+      const { resolveConfirmation } = await import('../../../core/shared/confirmationMatcher.js');
+      const verdict = await resolveConfirmation({ raw, business });
+      if (verdict === 'no') return cancelFlow(session, business);
+      if (verdict !== 'yes') {
         return {
           type: 'buttons',
           body: 'Would you like to confirm your order?',

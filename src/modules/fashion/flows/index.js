@@ -317,7 +317,11 @@ export async function handleFashionOrder({ session, message, business, tenant, i
     }
 
     case 'CONFIRM': {
-      if (!/^(yes|y|confirm|ok)$/i.test(clean)) {
+      // [FIX-DUALLAYER-CONFIRM] See core/shared/confirmationMatcher.js —
+      // widened from a 4-word exact-match regex so "yes please"/"go ahead"/
+      // "sounds good" also register, not just a bare "yes"/"y"/"confirm"/"ok".
+      const { isAffirmative: _isAffirmativeConfirm } = await import('../../../core/shared/confirmationMatcher.js');
+      if (!(/^(yes|y|confirm|ok)$/i.test(clean) || _isAffirmativeConfirm(raw))) {
         return {
           type: 'buttons',
           body: '👗 Ready to place your order?',

@@ -580,7 +580,16 @@ export async function handleOrderFlow({ session, message, business, tenant, isIn
 
       // [FIX-CONFIRM-1] "yeah"/"yep" were missing here even though every other
       // confirm-style step in this file (SUGGESTION_CONFIRM, UPSELL) accepts them.
-      const isConfirm = /^(yes|y|yeah|yep|confirm|ok|okay|sure|place|confirmed)$/i.test(clean);
+      // [FIX-DUALLAYER-CONFIRM] Widened further via the shared regex guard
+      // (core/shared/confirmationMatcher.js / negationGuard.js) so phrases
+      // like "yes please", "sounds good", "go ahead" also register — the
+      // original list only matched a SINGLE bare word exactly. Kept as a
+      // sync (non-AI) check here, deliberately BEFORE the cart-modification
+      // parser below, so a message like "remove the coke" is never at risk
+      // of being swept up as a confirm/decline guess.
+      const { isAffirmative: _isAffirmativeConfirm } = await import('../../../core/shared/confirmationMatcher.js');
+      const isConfirm = /^(yes|y|yeah|yep|confirm|ok|okay|sure|place|confirmed)$/i.test(clean) ||
+        _isAffirmativeConfirm(raw);
       if (isConfirm) {
         // [MULTICART-v40-EDIT] One consolidated save — _checkoutCart already
         // handles items[] persistence, payment-vs-cash branching, and admin
@@ -606,7 +615,11 @@ export async function handleOrderFlow({ session, message, business, tenant, isIn
         return buildEditCartMenuUI();
       }
 
-      const wantsCancel = raw === 'CANCEL' || /^(cancel|cancel order|no|nope|stop)$/i.test(clean);
+      // [FIX-DUALLAYER-CONFIRM] Same widening for the decline side — "no
+      // thanks", "cancel it please", "nah I changed my mind" now register.
+      const { isNegative: _isNegativeConfirm } = await import('../../../core/shared/confirmationMatcher.js');
+      const wantsCancel = raw === 'CANCEL' || /^(cancel|cancel order|no|nope|stop)$/i.test(clean) ||
+        _isNegativeConfirm(raw);
       if (wantsCancel) {
         return cancelFlow(session, business);
       }
@@ -1106,12 +1119,8 @@ export async function handleRestaurantQuestion({ session, message, business, ten
 
   if (!raw || raw.length < 2) {
     return {
-      type: 'buttons',
+      type: 'text',
       body: '❓ What would you like to know? Ask about our menu, hours, allergens, or anything else!',
-      buttons: [
-        { id: 'ORDER',     title: '🍔 Order Food'  },
-          { id: 'BROWSE_CATALOG', title: '🛍 Browse Catalog' },
-      ],
     };
   }
 
@@ -1132,7 +1141,10 @@ export async function handleRestaurantQuestion({ session, message, business, ten
     }
   } catch (_) { /* fall through */ }
 
+  // Answer-only: stay in QUESTION mode and wait for the next message. Switching
+  // to another activity is handled upstream (webhookController's mid-flow switch
+  // detector) from the customer's own words, not from buttons on this reply.
   const reply = await processQuestionMessage({ session, message: raw, business, tenant, intent: 'FAQ' });
   await persistQuestionSession(session, tenant, reply.context || { lastMessage: raw });
-  return { type: reply.type, body: reply.body, buttons: reply.buttons };
+  return { type: reply.type, body: reply.body };
 }

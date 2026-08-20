@@ -12,7 +12,7 @@
  */
 
 import { updateSession }     from '../../../core/sessions/sessionService.js';
-import { completeFlow }      from '../../../core/conversations/flowEngine.js';
+import { completeFlow, cancelFlow } from '../../../core/conversations/flowEngine.js';
 import { handleBookingFlow } from '../../../core/conversations/bookingFlow.js';
 import { getAIReply }        from '../../../core/ai/providers/aiRouter.js';
 import { saveOrder }         from '../../../services/orderService.js';
@@ -211,7 +211,15 @@ export async function handleEnquiryFlow({ session, message, business, tenant }) 
 
     // ── CONTACT_CONFIRM ──────────────────────────────────────────────────────
     case 'CONTACT_CONFIRM': {
-      if (!['ENQUIRY_CONFIRM', 'CONFIRM', 'YES'].includes(raw.toUpperCase())) {
+      // [FIX-DUALLAYER-CONFIRM] See core/shared/confirmationMatcher.js — was
+      // exact-match-only, so a typed "yes please"/"go ahead" never registered.
+      const { resolveConfirmation } = await import('../../../core/shared/confirmationMatcher.js');
+      const verdict = await resolveConfirmation({
+        raw, business,
+        affirmIds: ['ENQUIRY_CONFIRM', 'CONFIRM', 'YES'],
+      });
+      if (verdict === 'no') return cancelFlow(session, business);
+      if (verdict !== 'yes') {
         return {
           type: 'buttons',
           body: 'Would you like us to send you a quote based on the details provided?',
@@ -331,14 +339,12 @@ export async function handleServicesQuestion({ session, message, business, tenan
   const reply = await processQuestionMessage({ session, message: raw, business, tenant, intent: 'SERVICES_QUESTION' });
   await persistQuestionSession(session, tenant, reply.context || { lastMessage: raw });
 
+  // Answer-only: stay in QUESTION mode and wait — no buttons. Switching activity
+  // (e.g. asking for a quote, booking a consultation) is picked up upstream from
+  // the customer's own words, not from a tap target.
   return {
-    type: reply.type,
+    type: reply.type || 'text',
     body: reply.body,
-    buttons: reply.buttons || [
-      { id: 'QUESTION', title: '❓ Another Question' },
-      { id: 'ENQUIRY',  title: '📋 Get a Quote'       },
-      { id: 'BOOK',     title: '📅 Book Consultation' },
-    ],
   };
 }
 

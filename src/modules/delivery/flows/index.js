@@ -20,6 +20,7 @@
  */
 
 import { updateSession }  from '../../../core/sessions/sessionService.js';
+import { cancelFlow }     from '../../../core/conversations/flowEngine.js';
 // [FIX-DELIVERY-IMPORT] completeFlow was imported but never called in this module.
 // Delivery flow completion (postFlowAck + lead capture) is triggered by adminCommandService
 // after admin APPROVE/REJECT — not inline here. Removed the dead import to prevent
@@ -451,8 +452,13 @@ export async function handleDeliveryOrder({ session, message, business, tenant, 
     }
 
     // ── CONFIRM ───────────────────────────────────────────────────────────────
+    // [FIX-DUALLAYER-CONFIRM] See core/shared/confirmationMatcher.js — was
+    // exact-match-only, so a typed "yes please"/"go ahead" never registered.
     case 'CONFIRM': {
-      if (!['CONFIRM', 'YES'].includes(raw.toUpperCase())) {
+      const { resolveConfirmation } = await import('../../../core/shared/confirmationMatcher.js');
+      const verdict = await resolveConfirmation({ raw, business });
+      if (verdict === 'no') return cancelFlow(session, business);
+      if (verdict !== 'yes') {
         return {
           type: 'buttons',
           body: 'Shall we confirm your delivery order?',

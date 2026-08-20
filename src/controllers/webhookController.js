@@ -772,7 +772,12 @@ const MFQ_FREE_TEXT_STEPS = new Set([
   'SPECIAL_REQUEST', 'GIFT_NOTE', 'CAKE_MESSAGE', 'CUSTOM_NOTES',
   'ENTER_NAME', 'ENTER_PHONE', 'ENTER_ADDRESS', 'ENTER_EMAIL',
   'AWAITING_QUESTION',  // already in Q&A mode
-  'SPEC_ANSWER',        // electronics mid-spec-Q&A
+  'SPEC_ANSWER',        // electronics mid-spec-Q&A (legacy step name)
+  'SPEC_QUESTION',      // electronics mid-spec-Q&A — actual step name set by handleSpecRequest;
+                         // SPEC_ANSWER above never matched any real session, which meant typed
+                         // questions asked while already inside electronics Question Mode were
+                         // wrongly treated as a NEW mid-flow question and intercepted with a
+                         // "pause and continue?" prompt instead of just being answered.
   'ENQUIRY_DETAILS',    // services enquiry details step
   'QUOTE_DETAILS',
   'PROJECT_DETAILS',
@@ -912,7 +917,12 @@ const normaliseFsi = normalise;
 
 function _detectMidFlowSwitchRequest(text, session, business, isInteractive = false) {
   const flow = (session.currentFlow || '').toUpperCase();
-  const questionFlows = new Set(['QUESTION', 'ENQUIRY']);
+  // 'SPEC_REQUEST' is electronics' Question Mode currentFlow value (set when a
+  // customer enters Q&A via the "Ask a Question" button on an item detail card,
+  // as opposed to the top-level QUESTION action which uses currentFlow='QUESTION').
+  // Without it here, a switch request typed while in electronics Question Mode via
+  // that entry point was silently ignored instead of prompting to switch.
+  const questionFlows = new Set(['QUESTION', 'ENQUIRY', 'SPEC_REQUEST']);
 
   if (isInteractive) {
     const id = String(text || '').trim().toUpperCase();
@@ -1841,16 +1851,14 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
         return;
       }
 
+      // Answer-only: stay in Question Mode and wait — no buttons. Switching to
+      // another activity is already detected above (switchIntent) from the
+      // customer's own words, not offered as a tap target on every answer.
       const reply = await processQuestionMessage({ session, message: messageText, business, tenant: tenantDoc, intent: 'FAQ' });
       await persistQuestionSession(session, tenantDoc, reply.context || { lastMessage: messageText });
       await dispatchMessage(from, {
-        type:    reply.type || 'buttons',
-        body:    reply.body,
-        buttons: reply.buttons || [
-          { id: 'QUESTION',  title: '❓ Ask another'  },
-          { id: 'ORDER',     title: '🛍 Order'       },
-          { id: 'SUPPORT',   title: '💬 Contact Support' },
-        ],
+        type: reply.type || 'text',
+        body: reply.body,
       }, tenantDoc);
       return;
     }

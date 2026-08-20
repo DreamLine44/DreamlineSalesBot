@@ -107,7 +107,7 @@ test('restaurant/flows/orderFlow.js: QUANTITY step still honours a pre-pinned pe
   const src = read('../modules/restaurant/flows/orderFlow.js');
   const start = src.indexOf("case 'QUANTITY'");
   assert.ok(start !== -1, 'QUANTITY case not found');
-  const body = src.slice(start, start + 1800);
+  const body = src.slice(start, start + 2600);
   assert.match(
     body,
     /data\.pendingAddOn\s*\|\|\s*addOns\[/,

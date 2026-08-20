@@ -40,7 +40,10 @@ test('orderFlow.js: CONFIRM step accepts "yeah" and "yep" like every other confi
   assert.ok(start !== -1, 'CONFIRM case not found');
   const body = src.slice(start, start + 1200);
 
-  const match = body.match(/const isConfirm = (\/\^.*?\$\/i)\.test\(clean\);/);
+  // [FIX-DUALLAYER-CONFIRM] widened this to a two-part OR (bare-word regex ||
+  // the shared confirmationMatcher check), spanning multiple lines, so the
+  // statement no longer ends in `.test(clean);` on the same line.
+  const match = body.match(/const isConfirm = (\/\^.*?\$\/i)\.test\(clean\)/);
   assert.ok(match, 'expected an isConfirm regex test in the CONFIRM case');
 
   const re = new RegExp(match[1].slice(1, -2), 'i'); // strip surrounding /.../i for reuse
@@ -60,7 +63,11 @@ test('bookingFlow.js: BOOKING_CONFIRM step accepts "yeah" and "yep" like DATE_CO
   assert.ok(start !== -1, 'BOOKING_CONFIRM case not found');
   const body = src.slice(start, start + 1800);
 
-  const match = body.match(/if \(!(\/\^.*?\$\/i)\.test\(clean\) && clean !== 'confirm'\)/);
+  // [FIX-DUALLAYER-CONFIRM] the guard is now computed into a named
+  // `isBookingConfirm` variable (bare-word regex || clean === 'confirm' ||
+  // the shared confirmationMatcher check) and checked via `if (!isBookingConfirm)`,
+  // rather than an inline `if (!(/regex/i).test(clean) && ...)` expression.
+  const match = body.match(/const isBookingConfirm = (\/\^.*?\$\/i)\.test\(clean\)/);
   assert.ok(match, 'expected the BOOKING_CONFIRM guard regex');
 
   const re = new RegExp(match[1].slice(1, -2), 'i');

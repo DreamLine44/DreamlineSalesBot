@@ -413,7 +413,6 @@ export async function registerAllModules() {
   registerAction('QUESTION', async ({ session, message, business, tenant }) => {
     const { startFlow }  = await import('../conversations/flowEngine.js');
     const { updateSession } = await import('../sessions/sessionService.js');
-    const { getModeConfig } = await import('../../config/modes.js');
     const mode = (business?.businessMode || 'RETAIL').toUpperCase();
     // Modes with dedicated QUESTION flows registered in this registry
     const QUESTION_FLOW_MODES = new Set([
@@ -426,11 +425,9 @@ export async function registerAllModules() {
     await updateSession(session.customerPhone, session.tenantId, {
       currentFlow: 'ENQUIRY', step: 'AWAITING_QUESTION',
     });
-    const cfg = getModeConfig(business);
     return {
-      type:    'buttons',
-      body:    '❓ What would you like to know? Type your question below.',
-      buttons: [{ id: 'SHOW_MENU', title: '🔄 Start Over' }],
+      type: 'text',
+      body: '❓ What would you like to know? Type your question below.',
     };
   });
 

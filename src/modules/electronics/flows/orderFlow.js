@@ -419,7 +419,14 @@ export async function handleElectronicsOrder({
 
     // ── CONFIRM ──────────────────────────────────────────────────────────────
     case 'CONFIRM': {
-      const isConfirm = /^(yes|y|confirm|ok|okay|sure|place|confirmed)$/i.test(clean);
+      // [FIX-DUALLAYER-CONFIRM] See core/shared/confirmationMatcher.js — the
+      // bare exact-word regex missed compound phrasing like "yes please" /
+      // "sounds good" / "go ahead". Widened via the shared sync regex guard
+      // (no AI here — this step has no cart-modification path to protect,
+      // but AI adds latency this simple gate doesn't need).
+      const { isAffirmative: _isAffirmativeConfirm } = await import('../../../core/shared/confirmationMatcher.js');
+      const isConfirm = /^(yes|y|confirm|ok|okay|sure|place|confirmed)$/i.test(clean) ||
+        _isAffirmativeConfirm(raw);
       if (!isConfirm) {
         return buildOrderSummary({
           item: itemLabel(data.item, data.variant), qty: data.quantity, total: data.totalPrice,
@@ -623,12 +630,8 @@ export async function handleSpecRequest({ session, message, business, tenant }) 
 
   if (!raw || raw.length < 2) {
     return {
-      type:    'buttons',
-      body:    'What product or tech question can I help you with? 📱',
-      buttons: [
-        { id: 'ORDER',     title: '🛒 Browse Products' },
-        { id: 'SHOW_MENU', title: '🔄 Start Over'      },
-      ],
+      type: 'text',
+      body: 'What product or tech question can I help you with? 📱',
     };
   }
 
@@ -642,24 +645,17 @@ export async function handleSpecRequest({ session, message, business, tenant }) 
     customerMessage: raw, business, session, intent: 'SPEC_REQUEST',
   });
 
-  // [FIX-ELEC-CF-2] completeFlow was never called for SPEC_REQUEST. After delivering
-  // the AI answer the session still had currentFlow='SPEC_REQUEST'. Tapping '🛒 Buy Now'
-  // or '🔄 Start Over' re-entered this handler with 'ORDER' or 'SHOW_MENU' as the
-  // question text, producing a nonsensical AI reply instead of routing to the ORDER
-  // flow or welcome screen. The '❓ More Questions' button (SPEC_REQUEST ID) is in
-  // FLOW_PASSTHROUGH_IDS, so it will still re-enter this handler and re-trigger
-  // startFlow('SPEC_REQUEST') — that path works correctly without completeFlow.
-  // completeFlow clears currentFlow/step so ORDER and SHOW_MENU can route correctly.
-  await completeFlow(session, 'SPEC_REQUEST', business, null);
+  // Answer-only: stay in Question Mode (step: SPEC_QUESTION) and wait for the next
+  // question — no buttons, and no completeFlow() reset. Switching to another
+  // activity (ordering, warranty, etc.) is detected upstream from the customer's
+  // own words (webhookController's mid-flow switch detector), not from a tap target.
+  await updateSession(session.customerPhone, session.tenantId, {
+    currentFlow: session.currentFlow || 'SPEC_REQUEST', step: 'SPEC_QUESTION', data: {},
+  });
 
   return {
-    type: 'buttons',
+    type: 'text',
     body: aiReply || `📋 Great question! Let me help you with that. 📱`,
-    buttons: [
-      { id: 'ORDER',        title: '🛒 Buy Now'       },
-      { id: 'SPEC_REQUEST', title: '❓ More Questions' },
-      { id: 'SHOW_MENU',    title: '🔄 Start Over'     },
-    ],
   };
 }
 
