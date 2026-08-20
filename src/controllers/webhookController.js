@@ -123,7 +123,7 @@
  */
 
 import { getSession, createSession, updateSession } from '../core/sessions/sessionService.js';
-import { detectIntent, extractCustomerName, normalise } from '../core/intents/intentEngine.js';
+import { detectIntent, extractCustomerName, normalise, VIEW_MENU_DIRECT_RE } from '../core/intents/intentEngine.js';
 import { INTENT_PATTERNS }                           from '../core/intents/patterns.js';
 // [FSI] Direct ORDER/BOOKING phrase regexes — same single source of truth
 // intentEngine.js's own pre-flow step 4.5 uses, reused here so the mid-flow
@@ -2577,7 +2577,8 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
     // "Start Over" taps still reset exactly as before via the block below).
     if (upperMsg === 'VIEW_MENU' || upperMsg === 'SHOW_MENU' || upperMsg === 'MENU' || upperMsg === 'SHOW MENU'
         || upperMsg === 'VIEW MENU' || upperMsg === 'SEE MENU' || upperMsg === 'MAIN MENU'
-        || upperMsg === 'BACK TO MENU') {
+      || upperMsg === 'BACK TO MENU'
+      || (!isInteractive && VIEW_MENU_DIRECT_RE.test(normalise(messageText)))) {
       if ((session.currentFlow || '').toUpperCase() === 'ORDER') {
         // [AUDIT-FIX-CATALOG-VIEWMENU] This branch used to call
         // startFlow('ORDER') unconditionally, which renders the module's own

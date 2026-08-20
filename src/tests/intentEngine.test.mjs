@@ -56,3 +56,27 @@ test('detectIntent: other documented emoji shortcuts still resolve to a real act
     assert.equal(result.action, expectedAction, `emoji '${emoji}' should resolve to '${expectedAction}'`);
   }
 });
+
+test('detectIntent: natural menu and food-option requests resolve to BROWSE_CATALOG', async () => {
+  const cases = [
+    'I want to see the menu',
+    'I want to see all the foods',
+    'What food options do you have?',
+    'Show me all the products',
+  ];
+
+  for (const message of cases) {
+    const result = await detectIntent({ message, business: { businessMode: 'RESTAURANT' } });
+    assert.equal(result.action, 'BROWSE_CATALOG', `expected native catalog browse for "${message}"`);
+    assert.equal(result.intent, 'BROWSE_CATALOG');
+    assert.equal(result.source, 'direct-phrase');
+  }
+});
+
+test('detectIntent: product-specific order requests remain START_ORDER', async () => {
+  const result = await detectIntent({
+    message: 'I want to order jollof rice',
+    business: { businessMode: 'RESTAURANT' },
+  });
+  assert.equal(result.action, 'START_ORDER');
+});

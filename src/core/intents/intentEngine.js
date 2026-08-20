@@ -76,7 +76,7 @@ export const BOOKING_DIRECT_RE = /\b(book|reserve|reservation|appointment|table 
 // what you sell" — is completely unambiguous. This is a deterministic catch
 // for the common natural phrasings, so viewing the menu/catalog never depends
 // on AI being configured or confident.
-export const VIEW_MENU_DIRECT_RE = /\b(what (?:do|does) (?:you|yall|you all) (?:have|sell|offer|serve|carry)|what'?s on (?:the|your) menu|(?:can|could) i see (?:the|your) (?:menu|catalog|catalogue)|show me (?:the|your) (?:menu|catalog|catalogue)|see (?:the|your) (?:menu|catalog|catalogue)|view (?:the|your) (?:menu|catalog|catalogue)|browse (?:the|your)? ?(?:menu|catalog|catalogue))\b/;
+export const VIEW_MENU_DIRECT_RE = /\b(what (?:do|does) (?:you|yall|you all) (?:have|sell|offer|serve|carry)|what (?:food\s+options?|food|foods|items?|products?|dishes|options?) (?:do|does) (?:you|yall|you all) (?:have|sell|offer|serve|carry)|what'?s on (?:the|your) menu|(?:can|could) i see (?:all\s+)?(?:the|your) (?:food|foods|items?|products?|dishes|options?|menu|catalog|catalogue)|(?:i\s+)?(?:want|would like|would love|need) to (?:see|view|browse) (?:all\s+)?(?:the|your)?\s*(?:food|foods|items?|products?|dishes|options?|menu|catalog|catalogue)|show me (?:all\s+)?(?:the|your) (?:food|foods|items?|products?|dishes|options?|menu|catalog|catalogue)|see (?:all\s+)?(?:the|your) (?:food|foods|items?|products?|dishes|options?|menu|catalog|catalogue)|view (?:all\s+)?(?:the|your) (?:food|foods|items?|products?|dishes|options?|menu|catalog|catalogue)|browse (?:all\s+)?(?:the|your)? ?(?:food|foods|items?|products?|dishes|options?|menu|catalog|catalogue))\b/;
 
 // [FIX-QUESTION-VS-ORDER] ORDER_DIRECT_RE matches the bare word "i want" —
 // but "I want to know the prices of your food items" / "I'd like to know
@@ -307,7 +307,10 @@ export async function detectIntent({ message, isInteractive = false, session, bu
   // behavior — the order/booking intent itself never depends on AI succeeding.
   if (!session?.currentFlow && !DIRECT_INTENT_EXCLUDE_RE.test(clean) && !QUESTION_LEADIN_RE.test(clean)) {
     if (VIEW_MENU_DIRECT_RE.test(clean)) {
-      return { action: 'VIEW_MENU', intent: 'VIEW_MENU', confidence: 'HIGH', source: 'direct-phrase' };
+      // Natural browsing requests use the same explicit catalog action as the
+      // "View items" button, so they cannot be diverted into a generic menu
+      // renderer before the native WhatsApp catalog path is reached.
+      return { action: 'BROWSE_CATALOG', intent: 'BROWSE_CATALOG', confidence: 'HIGH', source: 'direct-phrase' };
     }
     if (BOOKING_DIRECT_RE.test(clean)) {
       return { action: 'START_BOOKING', intent: 'BOOKING', confidence: 'HIGH', source: 'direct-phrase' };
@@ -538,7 +541,10 @@ function intentToAction(intent, business) {
     // typed "menu" / "view menu" / "show menu" etc. now map to their own
     // action instead of silently reusing the reset-to-top-level SHOW_MENU
     // action, which never rendered any menu content.
-    VIEW_MENU:          'VIEW_MENU',
+    // Typed menu/catalog browsing uses the explicit native-catalog action.
+    // Tenants without a ready catalog still receive the existing ORDER-menu
+    // fallback from browseCatalogExplicit().
+    VIEW_MENU:          'BROWSE_CATALOG',
     // [AUDIT-FIX-MAINMENU-COLLISION] Companion to the patterns.js keyword move —
     // typed "main menu" now reaches the same action as the "🏠 Main Menu" button tap.
     MAIN_MENU:          'MAIN_MENU',

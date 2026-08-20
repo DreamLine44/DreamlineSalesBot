@@ -100,15 +100,24 @@ test('detectIntent: tapping a VIEW_MENU button resolves to action VIEW_MENU (not
   assert.equal(result.source, 'button');
 });
 
-test('detectIntent: typed "menu" / "view menu" resolve to action VIEW_MENU via exact keyword match', async () => {
+test('detectIntent: typed "menu" / "view menu" resolve to the explicit catalog action', async () => {
   // [AUDIT-FIX-MAINMENU-COLLISION] 'main menu' intentionally excluded here — it
   // now resolves to action MAIN_MENU instead (see the dedicated test below).
   const phrases = ['menu', 'view menu', 'show menu', 'see menu'];
   for (const message of phrases) {
     const result = await detectIntent({ message, isInteractive: false, session: {}, business: { businessMode: 'RESTAURANT' } });
-    assert.equal(result.action, 'VIEW_MENU', `'${message}' should resolve to VIEW_MENU, got ${result.action}`);
+    assert.equal(result.action, 'BROWSE_CATALOG', `'${message}' should resolve to BROWSE_CATALOG, got ${result.action}`);
     assert.equal(result.source, 'keyword');
   }
+});
+
+test('intentEngine.js: natural browse phrases are available to the active-flow webhook escape path', () => {
+  const src = readSource('../core/intents/intentEngine.js');
+  assert.match(src, /export const VIEW_MENU_DIRECT_RE\s*=\s*\//);
+
+  const webhook = readSource('../controllers/webhookController.js');
+  assert.match(webhook, /VIEW_MENU_DIRECT_RE\.test\(normalise\(messageText\)\)/,
+    'Active ORDER flows must reuse the same natural browse matcher as fresh conversations');
 });
 
 test('detectIntent: typed "start over" / "home" / "restart" / "0" still resolve to SHOW_MENU (unchanged)', async () => {
@@ -122,6 +131,12 @@ test('detectIntent: typed "start over" / "home" / "restart" / "0" still resolve 
 test('detectIntent: tapping a SHOW_MENU button still resolves to action SHOW_MENU (unchanged)', async () => {
   const result = await detectIntent({ message: 'SHOW_MENU', isInteractive: true, session: {}, business: { businessMode: 'RESTAURANT' } });
   assert.equal(result.action, 'SHOW_MENU');
+});
+
+test('intentEngine.js: VIEW_MENU intent maps to the explicit native catalog action', () => {
+  const src = readSource('../core/intents/intentEngine.js');
+  assert.match(src, /VIEW_MENU:\s+'BROWSE_CATALOG'/,
+    'Menu browsing must use the same action as the native View items catalog button');
 });
 
 // ── 3. moduleRouter.js — VIEW_MENU starts the ORDER flow ────────────────────
