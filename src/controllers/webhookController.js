@@ -1798,16 +1798,46 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
       const { buildStatusReply } = await import('../services/activityStatusService.js');
 
       let statusReply = null;
+      let switchIntent = null;
       try {
         const intentResult = await detectIntent({ message: messageText, isInteractive: false, session: { ...session, currentFlow: null }, business });
         if (intentResult.action === 'TRACK_ORDER' && intentResult.confidence === 'HIGH') {
           statusReply = await buildStatusReply({ session, business, message: messageText });
+        } else if (
+          intentResult.confidence === 'HIGH' &&
+          ['START_ORDER', 'START_BOOKING', 'CANCEL', 'CANCEL_ALL'].includes(intentResult.action)
+        ) {
+          // [ENHANCED-QA-SWITCH] Spec: "should not automatically push the customer
+          // into ordering or other workflows unless the customer's intent clearly
+          // changes." Only HIGH confidence — same bar the TRACK_ORDER escape above
+          // already uses — so a vague message never yanks the customer out of Q&A.
+          // Handled locally (route() called directly, same as buildStatusReply
+          // above) rather than falling through the rest of the webhook pipeline,
+          // so nothing else about message handling (postFlowAck, active-order
+          // resolver, etc.) is touched by this change.
+          switchIntent = intentResult;
         }
       } catch (_) { /* non-fatal */ }
 
       if (statusReply) {
         await persistQuestionSession(session, tenantDoc, { lastMessage: messageText, lastTopic: 'ORDER_TRACKING' });
         await dispatchMessage(from, statusReply, tenantDoc);
+        return;
+      }
+
+      if (switchIntent) {
+        await updateSession(from, tenantId, { currentFlow: null, step: null }).catch(() => {});
+        const { route } = await import('../core/conversations/moduleRouter.js');
+        const switchReply = await route({
+          action: switchIntent.action, intent: switchIntent.intent,
+          session: { ...session, currentFlow: null, step: null },
+          message: messageText, business, tenant: tenantDoc,
+          isInteractive: false, suggestion: switchIntent.suggestion, nlu: switchIntent.nlu,
+        });
+        if (switchReply) {
+          const payloads = Array.isArray(switchReply) ? switchReply : [switchReply];
+          for (const payload of payloads) await dispatchMessage(from, payload, tenantDoc);
+        }
         return;
       }
 
@@ -3189,6 +3219,37 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
       reply = applyEmotionTone(reply, finalEmotion);
     } catch (err) {
       logger.debug('[Webhook] emotion tone skipped', { err: err.message });
+    }
+  }
+
+  // [ENHANCED-NLU] Multi-intent messages ("add 2 Domoda, also what time do you
+  // close?") — the primary intent already executed normally via route() above.
+  // If the classifier pulled out a distinct secondary business question, answer
+  // it too and append the answer to the same reply, rather than silently
+  // dropping it. Deliberately DB-first/deterministic (tryDatabaseAnswer, same
+  // lookup QUESTION mode uses) and never triggers a flow itself — consistent
+  // with the golden rule that AI never triggers flows directly, it only
+  // informs. Skipped when the primary action already IS 'QUESTION' (that
+  // path already answers this exact message) or when there's nothing to add.
+  if (reply && effectiveAction !== 'QUESTION' && nlu?.entities?.questions?.length) {
+    try {
+      const { tryDatabaseAnswer } = await import('../services/questionAnswerService.js');
+      const secondaryQuestion = nlu.entities.questions[0];
+      const dbAnswer = await tryDatabaseAnswer({ message: secondaryQuestion, business, session });
+      if (dbAnswer?.handled && dbAnswer.body) {
+        const wasArray = Array.isArray(reply);
+        const payloads = wasArray ? [...reply] : [reply];
+        const idx = payloads.length - 1;
+        const last = payloads[idx];
+        if (typeof last === 'string') {
+          payloads[idx] = `${last}\n\n${dbAnswer.body}`;
+        } else if (last && typeof last.body === 'string') {
+          payloads[idx] = { ...last, body: `${last.body}\n\n${dbAnswer.body}` };
+        }
+        reply = wasArray ? payloads : payloads[0];
+      }
+    } catch (err) {
+      logger.debug('[Webhook] secondary question answer skipped', { err: err.message });
     }
   }
 

@@ -291,7 +291,19 @@ export async function registerAllModules() {
       .replace(/^(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten)\s+(?:plates?\s+of\s+)?/i, '')
       .replace(/[?!.]+$/, '')
       .trim();
-    if (directProductText.length >= 3 && !explicitOrderTap) {
+    // [FIX-GENERIC-LEFTOVER] The strip-regex above only removes ONE lead-in
+    // phrase, so a message like "I want to order" (no trailing product) or
+    // "I want to see the menu" leaves navigational filler ("to order", "to
+    // see the menu", "food", "menu") behind as if it were the product name
+    // the customer typed — and this block would then tell them "I couldn't
+    // find *to order*", which is nonsensical and was exactly what images
+    // 2-4 showed. A leftover made up ENTIRELY of filler words (no real
+    // content word survives) means the request was genuinely incomplete —
+    // that's the case this whole block's own comment already says should
+    // fall through to the catalog/menu, not report a fake miss.
+    const isFillerOnlyLeftover = /^(?:to|the|your|our|see|view|show|browse|order|get|find|for|a|an|of|me|please|food|menu|menus|catalog|catalogue|catalogs|products?|options?|item|items)(?:\s+(?:to|the|your|our|see|view|show|browse|order|get|find|for|a|an|of|me|please|food|menu|menus|catalog|catalogue|catalogs|products?|options?|item|items))*$/i
+      .test(directProductText);
+    if (directProductText.length >= 3 && !explicitOrderTap && !isFillerOnlyLeftover) {
       return {
         type: 'buttons',
         body: `I couldn't find *${directProductText.slice(0, 50)}* in our current products. Please check the name and try again, or browse the catalog.`,

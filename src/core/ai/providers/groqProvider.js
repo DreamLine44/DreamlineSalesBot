@@ -563,6 +563,10 @@ export async function classifyMessageStructured({
     `- Never treat every message as a product search.\n` +
     `- If the customer asks multiple things, pick the PRIMARY actionable intent and list others in secondaryIntents.\n` +
     `- Extract products with quantities when clearly stated (use exact menu names when possible).\n` +
+    `- If the message contains a distinct business question (hours, menu, price, location, availability, etc.) ` +
+    `that is separate from the primary intent — e.g. "add 2 Domoda, also what time do you close?" — put that ` +
+    `question in entities.questions (short, close to the customer's own words) so it can be answered alongside ` +
+    `the primary action. Only include genuine standalone questions here, not the primary request itself.\n` +
     `- Set clarificationNeeded=true ONLY when the primary intent is genuinely unclear after reading everything.\n` +
     `- confidence HIGH = explicit and unambiguous; MEDIUM = likely; LOW = vague.\n` +
     `- primaryIntent must be exactly one of: ${validIntents.join(', ')}\n\n` +

@@ -110,7 +110,27 @@ export async function handleOrderFlow({ session, message, business, tenant, isIn
   }
 
   // ── INIT (message = null — start of flow) ─────────────────────────────────
-  if (message === null) {
+  // [FIX-INIT-HIJACK] This block used to run on EVERY message===null call,
+  // regardless of `step`. But message===null isn't only used to start a
+  // fresh flow — moduleRegistry.js's direct-order handoff ("two plates of
+  // Yassa Chicken"), its cart-modification handoff, and
+  // webhookController.js's ambiguity-resolution handoff all deliberately
+  // set step:'CONFIRM' with a pre-populated cart, then call advance() with
+  // message:null specifically so the customer lands straight on the Order
+  // Summary — skipping catalog/menu/quantity/upsell entirely, as intended.
+  // Because this block ran unconditionally, it fired FIRST on every one of
+  // those calls, silently overwrote step back to 'SELECT_ITEM', and showed
+  // the catalog or (if data.orderViaCatalog wasn't set) the legacy
+  // buildMenuUI() text list instead of the summary — even for a tenant with
+  // a fully live, synced WA Catalog.
+  // Fix: only treat message===null as a fresh-flow INIT when the step is
+  // actually the default starting step. A genuine startFlow() call always
+  // passes step:null (see flowEngine.js), which falls back to 'SELECT_ITEM'
+  // via the `step` const above — so this still fires exactly as before for
+  // every real "Order Food" tap / catalog offer / plain "I want to order".
+  // Any handoff that deliberately set a further-along step (CONFIRM, etc.)
+  // now correctly falls through to the switch below instead of being reset.
+  if (message === null && step === 'SELECT_ITEM') {
     const existingCart = Array.isArray(data.cart) ? data.cart : [];
     const viaCatalog   = data.orderViaCatalog === true;
     const freshData    = existingCart.length
@@ -155,7 +175,13 @@ export async function handleOrderFlow({ session, message, business, tenant, isIn
         .replace(/^(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten)\s+(?:plates?\s+of\s+)?/i, '')
         .replace(/[?!.]+$/, '')
         .trim();
-      const isDirectOrderText = directProductText.length >= 3 &&
+      // [FIX-GENERIC-LEFTOVER] Mirrors the same fix in moduleRegistry.js —
+      // see that file for the full rationale. A leftover made entirely of
+      // filler/navigational words ("to order", "to see the menu", "food")
+      // is not a product-lookup attempt.
+      const isFillerOnlyLeftover = /^(?:to|the|your|our|see|view|show|browse|order|get|find|for|a|an|of|me|please|food|menu|menus|catalog|catalogue|catalogs|products?|options?|item|items)(?:\s+(?:to|the|your|our|see|view|show|browse|order|get|find|for|a|an|of|me|please|food|menu|menus|catalog|catalogue|catalogs|products?|options?|item|items))*$/i
+        .test(directProductText);
+      const isDirectOrderText = directProductText.length >= 3 && !isFillerOnlyLeftover &&
         /\b(?:order|want|need|give|get|buy|purchase|would like)\b/i.test(raw);
       if (isDirectOrderText) {
         const directOrder = parseMultiItemMessage(menu, raw) || parseNaturalOrderMessage(menu, raw);
@@ -178,6 +204,25 @@ export async function handleOrderFlow({ session, message, business, tenant, isIn
               : '',
           });
         }
+        // [FIX-SILENT-ORDER-MISS] isDirectOrderText is true and the filler-only
+        // guard above already confirmed directProductText has real content
+        // (e.g. "Yassa Chicken"), yet neither parser could match it against
+        // the live menu. Previously this fell through with no explicit
+        // return, silently landing in _browseForMoreItems/buildMenuUI below —
+        // which just re-shows the same "still have N items in cart" note the
+        // customer already saw, with no explanation of why their order
+        // didn't go through. That produced the exact repeat-message loop in
+        // image 1: the customer retries the identical text and gets the
+        // identical non-answer forever. Now we tell them plainly what
+        // happened and offer a way forward instead of silence.
+        return {
+          type: 'buttons',
+          body: `I couldn't match *${directProductText.slice(0, 50)}* to an item on our menu. Please check the name and try again, or browse the menu below.`,
+          buttons: [
+            { id: 'SHOW_MENU', title: '📋 Browse Menu' },
+            { id: 'CANCEL', title: '❌ Cancel' },
+          ],
+        };
       }
 
       if (raw === 'REVIEW_CART' && cartAtSelect.length) {

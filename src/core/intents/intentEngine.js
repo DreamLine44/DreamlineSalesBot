@@ -66,6 +66,17 @@ export const DIRECT_INTENT_EXCLUDE_RE = new RegExp(
 // tonight").
 export const ORDER_DIRECT_RE   = /\b(order|buy|purchase|shopping|can i get|can i have|i ll have|i ll take|give me|get me|i want|i d like|craving|hungry|starving|peckish|place an order)\b/;
 export const BOOKING_DIRECT_RE = /\b(book|reserve|reservation|appointment|table for|party of|table at|table tonight|come in|slot for|availability for)\b/;
+// [FIX-CATALOG-QUESTION-DIRECT] "What do you have in your menu?" / "Can I see
+// your catalog?" / "What's on the menu?" never equal a bare VIEW_MENU keyword
+// (step 4's exact-match-only comparison), and don't contain any ORDER_DIRECT_RE
+// word either — so they fell all the way through to AI classify. If Groq is
+// unavailable, disabled, or just returns LOW confidence for a phrasing it
+// wasn't primed for, the customer gets the generic "I'm not sure I understood
+// that" fallback with no recovery path, even though the intent — "show me
+// what you sell" — is completely unambiguous. This is a deterministic catch
+// for the common natural phrasings, so viewing the menu/catalog never depends
+// on AI being configured or confident.
+export const VIEW_MENU_DIRECT_RE = /\b(what (?:do|does) (?:you|yall|you all) (?:have|sell|offer|serve|carry)|what'?s on (?:the|your) menu|(?:can|could) i see (?:the|your) (?:menu|catalog|catalogue)|show me (?:the|your) (?:menu|catalog|catalogue)|see (?:the|your) (?:menu|catalog|catalogue)|view (?:the|your) (?:menu|catalog|catalogue)|browse (?:the|your)? ?(?:menu|catalog|catalogue))\b/;
 
 // ── Name extraction ───────────────────────────────────────────────────────────
 // [FIX-NAME-6] Explicit-declaration-only approach.
@@ -252,12 +263,58 @@ export async function detectIntent({ message, isInteractive = false, session, bu
   // Booking is checked before order: "i want" (order) also appears inside
   // "I want to book a table", so booking-first avoids misrouting a booking
   // request that happens to contain an order-ish lead-in phrase.
+  // [FIX-DIRECT-ORDER-AI] This block used to return immediately and
+  // deterministically the instant ORDER_DIRECT_RE/BOOKING_DIRECT_RE matched —
+  // which is EVERY natural-language order phrase ("I want to order X", "give
+  // me 2 Y", "I want food"), since those are exactly the phrases the regex is
+  // built to catch. Because detectIntent() returned right here, step 7 (Groq
+  // AI classify, see classifyWithAI below) was UNREACHABLE for this entire
+  // class of message — `nlu.entities.products` was always empty, so
+  // moduleRegistry.js's AI-seeded cart bypass (session.data._nluPending.products)
+  // never had anything to consume, and every order fell back to the much
+  // weaker local regex parser (parseMultiItemMessage/parseNaturalOrderMessage),
+  // which has no fuzzy matching and no conversation context. Any miss there
+  // either silently looped (no feedback) or mis-parsed leftover filler words
+  // ("to order", "to see the menu") as a failed product lookup.
+  //
+  // Fix: keep the deterministic ORDER/BOOKING routing — a message that
+  // matches these patterns must always resolve to START_ORDER/START_BOOKING,
+  // never get downgraded to UNKNOWN/CLARIFY by the AI — but before returning,
+  // ask Groq (via the same classifyWithAI/enhanced-NLU path step 7 uses) to
+  // extract structured product entities from the message, using full menu +
+  // conversation history context. Those entities ride along on `nlu` exactly
+  // like a step-7 AI result does, so webhookController.js's existing
+  // `_nluPending` wiring (line ~3076) picks them up and moduleRegistry.js's
+  // START_ORDER handler gets a real, context-aware line-item match instead of
+  // falling back to brittle regex stripping. If Groq is unavailable, disabled,
+  // or extracts nothing, this degrades gracefully to the old deterministic
+  // behavior — the order/booking intent itself never depends on AI succeeding.
   if (!session?.currentFlow && !DIRECT_INTENT_EXCLUDE_RE.test(clean)) {
+    if (VIEW_MENU_DIRECT_RE.test(clean)) {
+      return { action: 'VIEW_MENU', intent: 'VIEW_MENU', confidence: 'HIGH', source: 'direct-phrase' };
+    }
     if (BOOKING_DIRECT_RE.test(clean)) {
       return { action: 'START_BOOKING', intent: 'BOOKING', confidence: 'HIGH', source: 'direct-phrase' };
     }
     if (ORDER_DIRECT_RE.test(clean)) {
-      return { action: 'START_ORDER', intent: 'ORDER', confidence: 'HIGH', source: 'direct-phrase' };
+      let nlu = null;
+      try {
+        const nluResult = await classifyWithAI({ message: raw, business, session });
+        if (nluResult?.entities?.products?.length || nluResult?.entities?.questions?.length) {
+          nlu = {
+            entities: nluResult.entities,
+            secondaryIntents: nluResult.secondaryIntents || [],
+            clarification: nluResult.clarification || null,
+            nluSource: nluResult.source,
+          };
+        }
+      } catch (err) {
+        logger.warn('[IntentEngine] direct-order AI entity extraction failed', { err: err.message });
+      }
+      return {
+        action: 'START_ORDER', intent: 'ORDER', confidence: 'HIGH', source: 'direct-phrase',
+        ...(nlu ? { nlu } : {}),
+      };
     }
   }
 
