@@ -33,13 +33,29 @@ import {
 // ask "are these the only ones you have?" instead of repeating the word "menu".
 // Resolve those against the real catalog rather than making the AI infer availability.
 const MENU_RE = /\b(menu|what do you (have|serve|sell|offer)|today'?s menu|show menu|view menu|see menu|what('s| is) (on|in) (the )?menu|list (of )?(food|items|products|dishes|services)|price list|catalog|available (food|items|products|dishes|services)|are (these|those) (all|the only)( ones)? (you have|available|there is)|is (that|this) all (you have|that is available)|anything else (available|on the menu)|what else do you have)\b/i;
-const HOURS_RE = /\b(hours|opening hours|business hours|when do you (open|close)|what time do you (open|close|close today|open today)|are you open|closing time|opening time|open today|close today)\b/i;
-const PRICE_RE = /\b(how much|price|cost|what does .+ cost)\b/i;
+// [FIX-HOURS-NATURAL] Customers rarely say "opening hours" — they ask "are
+// you open on sundays?", "what days are you open", or just "you open?". The
+// old pattern only matched "are you open" (no day) and "open/close today",
+// so day-specific and terse phrasing fell through to GENERAL.
+const HOURS_RE = /\b(hours|opening hours|business hours|when do you (open|close)|what time do you (open|close|close today|open today)|are you open|you open\b|closing time|opening time|open today|close today|open (on |every )?(mon|tues?|wednes|thurs?|fri|satur|sun)\w*days?|open (on )?weekends?|what days are you open|which days are you open|do you open on)\b/i;
+// [FIX-PRICE-PLURAL] \bprice\b / \bcost\b never matched the far more common
+// plural phrasing "what are the prices of your food items" / "what are the
+// costs" — the word-boundary after "price"/"cost" fails when an "s" follows
+// with no boundary in between, so classifyQuestion() fell through to
+// 'GENERAL' for exactly the plural questions customers actually ask, and the
+// message went to the ORDER-phrase detectors instead of this PRICE handler.
+const PRICE_RE = /\b(how much|prices?|costs?|what does .+ cost)\b/i;
 const AVAILABILITY_RE = /\b(do you have|is there|is .+ available|available)\b/i;
 const STATUS_RE = /\b(track|status|where is my|check my|my order|my booking|my appointment|order update|booking update)\b/i;
 const ADDRESS_RE = /\b(address|location|where are you|find you|directions|located)\b/i;
-const CONTACT_RE = /\b(phone|phone number|telephone|call|contact number|whatsapp number|email|e-mail)\b/i;
-const PAYMENT_RE = /\b(payment|pay|wave|cash|mobile money|how (can|do) i pay)\b/i;
+// [FIX-CONTACT-NATURAL] "how do I reach you" / "get in touch" / "your whatsapp"
+// are common ways customers ask for contact info without saying "phone" or
+// "contact number" verbatim.
+const CONTACT_RE = /\b(phone|phone number|telephone|call|contact number|whatsapp number|(your|ur) whatsapp|reach you|get in touch|get a hold of you|email|e-mail)\b/i;
+// [FIX-PAYMENT-NATURAL] "do you accept card payments" / "credit card" never
+// matched because the old pattern required the bare words "payment"/"pay"/
+// "wave"/"cash"/"mobile money" — "accept ... card" phrasing fell through.
+const PAYMENT_RE = /\b(payment|pay|wave|cash|mobile money|how (can|do) i pay|accept (cards?|visa|mastercard|credit|debit)|credit card|debit card|card payment)\b/i;
 
 function formatHourDecimal(h) {
   if (h == null || h === '') return null;
@@ -125,7 +141,7 @@ function tryFaqMatch(message, business) {
     const trigger = String(faq.trigger || '').trim().toLowerCase();
     if (!trigger || trigger.length < 2) continue;
     const re = new RegExp(`\\b${trigger.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i');
-    if (re.test(raw)) return faq.answer;
+    if (re.test(raw)) return faq.reply;
   }
   return null;
 }
@@ -282,7 +298,8 @@ export async function tryDatabaseAnswer({ message, business, session }) {
       ...(business?.menuItems || []).filter(i => i.available !== false),
       ...(business?.services || []).filter(s => s.available !== false).map(s => ({ ...s, name: s.name })),
     ];
-    const queryWords = raw.toLowerCase().split(/\s+/).filter(word => word.length > 2 && !['how', 'much', 'does', 'cost', 'price'].includes(word));
+    const priceStopWords = ['how', 'much', 'does', 'cost', 'costs', 'price', 'prices', 'the', 'your', 'for', 'and', 'are', 'what'];
+    const queryWords = raw.toLowerCase().split(/\s+/).filter(word => word.length > 2 && !priceStopWords.includes(word));
     const candidates = menu.filter(item => queryWords.some(word => String(item.name || '').toLowerCase().includes(word)));
     if (candidates.length > 1) {
       return { handled: true, body: `Which one do you mean — ${candidates.slice(0, 4).map(item => `*${item.name}*`).join(', ')}?`, routingDecision: 'QUESTION', context: { lastMessage: raw, lastTopic: 'PRICE' } };
@@ -294,6 +311,25 @@ export async function tryDatabaseAnswer({ message, business, session }) {
       return {
         handled: true,
         body: `💰 *${item.name}* — ${priceStr}`,
+        routingDecision: 'QUESTION',
+        context: { lastMessage: raw, lastTopic: 'PRICE' },
+      };
+    }
+    // [FIX-PRICE-GENERAL] A price question that doesn't name a specific item
+    // ("what are the prices of your food items", "how much is everything")
+    // has no single item to match against, so candidates is empty and
+    // findBestMatch never reaches HIGH confidence. This used to fall all the
+    // way through the function to `{ handled: false }`, handing a plain
+    // price question to the ORDER-phrase detectors upstream (which then
+    // tried to parse it as a product name and reported a catalogue miss —
+    // see [FIX-QUESTION-VS-ORDER] in intentEngine.js/webhookController.js).
+    // The business's own priced menu answers this directly, so show it
+    // instead of reporting a dead end.
+    if (menu.length) {
+      const menuText = formatMenuText(business, { heading: '💰 Prices' });
+      return {
+        handled: true,
+        body: `${menuText}\n\n_Ask about a specific item for its exact price._`,
         routingDecision: 'QUESTION',
         context: { lastMessage: raw, lastTopic: 'PRICE' },
       };

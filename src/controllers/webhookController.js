@@ -128,7 +128,7 @@ import { INTENT_PATTERNS }                           from '../core/intents/patte
 // [FSI] Direct ORDER/BOOKING phrase regexes — same single source of truth
 // intentEngine.js's own pre-flow step 4.5 uses, reused here so the mid-flow
 // switch intercept below can never silently drift from the pre-flow behavior.
-import { ORDER_DIRECT_RE, BOOKING_DIRECT_RE, DIRECT_INTENT_EXCLUDE_RE } from '../core/intents/intentEngine.js';
+import { ORDER_DIRECT_RE, BOOKING_DIRECT_RE, DIRECT_INTENT_EXCLUDE_RE, QUESTION_LEADIN_RE } from '../core/intents/intentEngine.js';
 import { findBestMatch }                             from '../utils/matchEngine.js';
 import { updateName as persistCustomerName }         from '../core/memory/customerMemory.js';
 import { advance, startFlow }                        from '../core/conversations/flowEngine.js';
@@ -962,12 +962,20 @@ function _detectMidFlowSwitchRequest(text, session, business, isInteractive = fa
   const clean = normaliseFsi(raw);
   if (DIRECT_INTENT_EXCLUDE_RE.test(clean)) return null;
 
+  // [FIX-QUESTION-VS-ORDER] Checked BEFORE BOOKING_DIRECT_RE/ORDER_DIRECT_RE:
+  // "I want to know the prices of your food items" contains "i want" (an
+  // ORDER_DIRECT_RE trigger) but is an information request, not an order.
+  // Left unguarded, this function treated it as "customer wants to switch
+  // out of Question Mode into ORDER", which handed the raw sentence to the
+  // order flow's product-name parser — it obviously matched no menu item,
+  // producing a nonsense "I couldn't find ... in our current products"
+  // reply for a question the business's own menu data could have answered.
+  // QUESTION_LEADIN_RE (shared with intentEngine.js's step 4.5) catches this
+  // "asking" framing and routes/keeps the customer in QUESTION instead.
   let targetFlow = null;
-  if (BOOKING_DIRECT_RE.test(clean)) targetFlow = 'BOOKING';
+  if (QUESTION_LEADIN_RE.test(clean)) targetFlow = 'QUESTION';
+  else if (BOOKING_DIRECT_RE.test(clean)) targetFlow = 'BOOKING';
   else if (ORDER_DIRECT_RE.test(clean)) targetFlow = 'ORDER';
-  else if (/\b(ask\s+(a\s+)?question|i\s+have\s+a\s+question|question\s+mode|just\s+a\s+question)\b/.test(clean)) {
-    targetFlow = 'QUESTION';
-  }
   if (!targetFlow || targetFlow === flow) return null;
 
   // Item-name collision guard — only for ORDER/BOOKING switches.
@@ -2852,7 +2860,7 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
     // single implementation for both fresh and mid-flow orders.
     if (!isInteractive && session.currentFlow && messageText.length >= 4) {
       const cleanDirectOrder = normalise(messageText);
-      if (!DIRECT_INTENT_EXCLUDE_RE.test(cleanDirectOrder) && ORDER_DIRECT_RE.test(cleanDirectOrder)) {
+      if (!DIRECT_INTENT_EXCLUDE_RE.test(cleanDirectOrder) && !QUESTION_LEADIN_RE.test(cleanDirectOrder) && ORDER_DIRECT_RE.test(cleanDirectOrder)) {
         const { parseMultiItemMessage, parseNaturalOrderMessage } = await import('../core/shared/cartEngine.js');
         const liveMenu = (business?.menuItems || []).filter(item => item.available !== false);
         const parsedDirectOrder = parseMultiItemMessage(liveMenu, messageText)

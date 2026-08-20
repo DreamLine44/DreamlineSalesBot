@@ -34,7 +34,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import { ORDER_DIRECT_RE, BOOKING_DIRECT_RE, DIRECT_INTENT_EXCLUDE_RE, normalise } from '../core/intents/intentEngine.js';
+import { ORDER_DIRECT_RE, BOOKING_DIRECT_RE, DIRECT_INTENT_EXCLUDE_RE, QUESTION_LEADIN_RE, normalise } from '../core/intents/intentEngine.js';
 
 function read(relPath) {
   return fs.readFileSync(new URL(relPath, import.meta.url), 'utf8');
@@ -111,7 +111,7 @@ function loadRealDetectMidFlowSwitchRequest() {
 
   // eslint-disable-next-line no-new-func
   const factory = new Function(
-    'ORDER_DIRECT_RE', 'BOOKING_DIRECT_RE', 'DIRECT_INTENT_EXCLUDE_RE', 'normaliseFsi',
+    'ORDER_DIRECT_RE', 'BOOKING_DIRECT_RE', 'DIRECT_INTENT_EXCLUDE_RE', 'QUESTION_LEADIN_RE', 'normaliseFsi',
     'findBestMatch', 'getModeConfig',
     `
     ${freeTextMatch[0]}
@@ -121,7 +121,7 @@ function loadRealDetectMidFlowSwitchRequest() {
     `
   );
   return factory(
-    ORDER_DIRECT_RE, BOOKING_DIRECT_RE, DIRECT_INTENT_EXCLUDE_RE, normalise,
+    ORDER_DIRECT_RE, BOOKING_DIRECT_RE, DIRECT_INTENT_EXCLUDE_RE, QUESTION_LEADIN_RE, normalise,
     stubFindBestMatch, stubGetModeConfig
   );
 }
@@ -382,4 +382,55 @@ test('webhookController.js [AUDIT-FIX-9]: FSI switch prompt is mode-aware, not h
     'FSI switch prompt must not hardcode restaurant-only wording — non-restaurant verticals (salon, bakery, cosmetics, etc.) can reach this branch via the [FIX-FSI-2] capability gate'
   );
   assert.ok(slice.includes('welcomeButtons'), 'expected the label to be sourced from the business\'s own mode config welcomeButtons');
+});
+
+// ── [FIX-QUESTION-VS-ORDER] "I want to know the price ..." is a question, ──
+// ── not an order, even though it contains "i want" ──────────────────────────
+//
+// PROBLEM (screenshot-reported bug): a customer sitting in Question Mode
+// typed "what are the prices of your food items" (answered with a generic
+// clarifying prompt — see the questionAnswerService.js PRICE_RE fix in
+// questionAnswerService.test.mjs) and then rephrased as "i want to know the
+// prices of your food items". ORDER_DIRECT_RE matches the bare "i want" in
+// that sentence, so this function reported a switch request to ORDER. The
+// order flow then tried to parse "know the prices of your food items" as a
+// product name, found nothing, and replied "I couldn't find ... in our
+// current products" — a nonsense answer to a question the business's own
+// menu data could answer directly. QUESTION_LEADIN_RE fixes this by
+// recognising the "asking" framing before ORDER_DIRECT_RE/BOOKING_DIRECT_RE
+// are even checked.
+test('intentEngine.js: QUESTION_LEADIN_RE is exported', () => {
+  assert.ok(QUESTION_LEADIN_RE instanceof RegExp, 'QUESTION_LEADIN_RE must be exported as a RegExp');
+});
+
+test('_detectMidFlowSwitchRequest: "I want to know the price/hours/menu ..." switches to QUESTION, not ORDER, even mid-ORDER', () => {
+  const orderSession = { currentFlow: 'ORDER', step: 'SELECT_ITEM', data: {} };
+  const phrases = [
+    'i want to know the prices of your food items',
+    "i'd like to know your opening hours",
+    'i want to ask about allergens',
+    'i have a question about the menu',
+    'just wondering what the price is',
+  ];
+  for (const message of phrases) {
+    assert.equal(
+      detectMidFlowSwitchRequest(message, orderSession, RESTAURANT_BIZ), 'QUESTION',
+      `"${message}" mid-order should be detected as a switch request to QUESTION, not ORDER`
+    );
+  }
+});
+
+test('_detectMidFlowSwitchRequest: "I want to know ..." while already in Question Mode does not (pointlessly) re-trigger a switch prompt', () => {
+  const questionSession = { currentFlow: 'QUESTION', step: 'AWAITING_QUESTION', data: {} };
+  assert.equal(
+    detectMidFlowSwitchRequest('i want to know the prices of your food items', questionSession, RESTAURANT_BIZ),
+    null,
+    'already in QUESTION mode — target flow equals current flow, so no switch prompt should fire; the message should just be answered as a question'
+  );
+});
+
+test('_detectMidFlowSwitchRequest: genuine order/booking phrases containing "i want" are unaffected by the QUESTION_LEADIN_RE guard', () => {
+  const questionSession = { currentFlow: 'QUESTION', step: 'AWAITING_QUESTION', data: {} };
+  assert.equal(detectMidFlowSwitchRequest('i want to order two burgers', questionSession, RESTAURANT_BIZ), 'ORDER');
+  assert.equal(detectMidFlowSwitchRequest('i want to book a table for tonight', questionSession, RESTAURANT_BIZ), 'BOOKING');
 });

@@ -78,6 +78,22 @@ export const BOOKING_DIRECT_RE = /\b(book|reserve|reservation|appointment|table 
 // on AI being configured or confident.
 export const VIEW_MENU_DIRECT_RE = /\b(what (?:do|does) (?:you|yall|you all) (?:have|sell|offer|serve|carry)|what'?s on (?:the|your) menu|(?:can|could) i see (?:the|your) (?:menu|catalog|catalogue)|show me (?:the|your) (?:menu|catalog|catalogue)|see (?:the|your) (?:menu|catalog|catalogue)|view (?:the|your) (?:menu|catalog|catalogue)|browse (?:the|your)? ?(?:menu|catalog|catalogue))\b/;
 
+// [FIX-QUESTION-VS-ORDER] ORDER_DIRECT_RE matches the bare word "i want" —
+// but "I want to know the prices of your food items" / "I'd like to know
+// your hours" also contain "i want"/"i d like" and are genuine information
+// requests, not orders. Without this guard, step 4.5 below deterministically
+// returned START_ORDER for any "I want to know/ask ..." phrasing, and the
+// order flow then tried to parse "know the prices of your food items" as a
+// product name, missed, and told the customer "I couldn't find ... in our
+// current products" — even though the exact answer (a price) was sitting in
+// the business's own menu data one layer away in questionAnswerService.js.
+// This regex catches the "asking", not "ordering", framing so those messages
+// fall through to QUESTION detection (keyword/AI classify) instead of being
+// deterministically hijacked into START_ORDER/START_BOOKING. Used both here
+// and by webhookController.js's mid-flow switch detector, which shares
+// ORDER_DIRECT_RE/BOOKING_DIRECT_RE as its source of truth.
+export const QUESTION_LEADIN_RE = /\b(i want to know|i wanted to know|i would like to know|i d like to know|want to know|wanted to know|like to know|i want to ask|want to ask|i have a question|i ve got a question|just wondering|wondering if|wondering about|curious about|curious if|want to find out|wanted to find out|can you tell me|could you tell me|do you know|ask a question|question mode|just a question)\b/;
+
 // ── Name extraction ───────────────────────────────────────────────────────────
 // [FIX-NAME-6] Explicit-declaration-only approach.
 //
@@ -289,7 +305,7 @@ export async function detectIntent({ message, isInteractive = false, session, bu
   // falling back to brittle regex stripping. If Groq is unavailable, disabled,
   // or extracts nothing, this degrades gracefully to the old deterministic
   // behavior — the order/booking intent itself never depends on AI succeeding.
-  if (!session?.currentFlow && !DIRECT_INTENT_EXCLUDE_RE.test(clean)) {
+  if (!session?.currentFlow && !DIRECT_INTENT_EXCLUDE_RE.test(clean) && !QUESTION_LEADIN_RE.test(clean)) {
     if (VIEW_MENU_DIRECT_RE.test(clean)) {
       return { action: 'VIEW_MENU', intent: 'VIEW_MENU', confidence: 'HIGH', source: 'direct-phrase' };
     }

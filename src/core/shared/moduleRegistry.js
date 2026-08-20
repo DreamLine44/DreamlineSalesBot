@@ -262,6 +262,19 @@ export async function registerAllModules() {
       const mode = (business?.businessMode || 'RETAIL').toUpperCase();
       const handoff = directOrderHandoff(mode, lines);
       if (!handoff) {
+        // [AUDIT-FIX-CATALOG-DIRECTORDER-GAP] This fallback used to call
+        // startFlow('ORDER') unconditionally — the one order-start path in
+        // this file that never checked catalog readiness first, unlike PATH
+        // A/B below and every other case. A catalog-ready tenant whose
+        // handoff shape wasn't recognised for this businessMode (handoff
+        // null) would silently see the internal text/list menu instead of
+        // WA Catalog, with no catalog offer at all. Now mirrors the same
+        // catalogReady gate used everywhere else in this handler.
+        const catalogReadyDirect = isCatalogEnabled(business) && hasSellableProducts(business);
+        if (catalogReadyDirect) {
+          const { browseCatalogExplicit } = await import('../../modules/catalog/waCatalogFlow.js');
+          return browseCatalogExplicit({ session: orderSession, business, tenant });
+        }
         return startFlow({ flowName: 'ORDER', session: { ...orderSession, orderChannel: 'menu' }, business, tenant });
       }
       const cart = mergeCartLines(existingCart, lines);
