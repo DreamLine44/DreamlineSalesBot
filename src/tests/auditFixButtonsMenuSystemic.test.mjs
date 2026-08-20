@@ -92,9 +92,9 @@ test('detectIntent: typed "main menu" resolves to action MAIN_MENU, same as tapp
   assert.equal(tapped.action, 'MAIN_MENU');
 });
 
-test('detectIntent: typed "menu" / "view menu" still resolve to VIEW_MENU, unaffected by the MAIN_MENU split', async () => {
+test('detectIntent: typed "menu" / "view menu" resolve to the native catalog action', async () => {
   for (const message of ['menu', 'view menu', 'see menu']) {
     const result = await detectIntent({ message, isInteractive: false, session: {}, business: {} });
-    assert.equal(result.action, 'VIEW_MENU', `'${message}' should still resolve to VIEW_MENU`);
+    assert.equal(result.action, 'BROWSE_CATALOG', `'${message}' should resolve to BROWSE_CATALOG`);
   }
 });
