@@ -83,6 +83,19 @@ test('product_list with no sections/catalogId is refused, never sent malformed',
   assert.equal(p2, null);
 });
 
+test('product_list without a header downgrades to native catalog_message instead of returning null', async () => {
+  const { payload } = await dispatchMessage('1234567890', {
+    type: 'product_list',
+    catalogId: 'CATALOG_123',
+    body: 'Browse our products',
+    sections: [{ title: 'Products', productRetailerIds: ['sku-1'] }],
+  }, {});
+
+  assert.equal(payload.interactive.type, 'catalog_message');
+  assert.equal(payload.interactive.action.name, 'catalog_message');
+  assert.equal(payload.interactive.body.text, 'Browse our products');
+});
+
 // ── Non-catalog tenants: byte-for-byte unchanged ────────────────────────────
 
 test('text/buttons/list/image message shapes are unchanged by the WA Catalog addition', async () => {
