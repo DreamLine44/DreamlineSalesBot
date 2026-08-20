@@ -232,8 +232,8 @@ function buildPayload(to, ui) {
     // to catalog_message instead of returning null and sending the customer
     // into the ordinary text-menu fallback. catalog_message is the native
     // browse-all experience and does not require a header or product IDs.
-    if (!ui.catalogId || !sections.length) return null;
-    if (!ui.header) {
+    if (!ui.catalogId) return null;
+    if (!sections.length || !ui.header) {
       return {
         messaging_product: 'whatsapp', recipient_type: 'individual',
         to, type: 'interactive',

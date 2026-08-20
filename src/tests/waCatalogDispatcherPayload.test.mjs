@@ -76,9 +76,9 @@ test('product_list builds sections with product_retailer_id entries, capped at M
   assert.equal(payload.interactive.action.sections[0].product_items[0].product_retailer_id, 'sku-1');
 });
 
-test('product_list with no sections/catalogId is refused, never sent malformed', async () => {
+test('product_list without catalogId is refused; valid catalogId downgrades safely', async () => {
   const { payload: p1 } = await dispatchMessage('1234567890', { type: 'product_list', catalogId: 'X' }, {});
-  assert.equal(p1, null);
+  assert.equal(p1.interactive.type, 'catalog_message');
   const { payload: p2 } = await dispatchMessage('1234567890', { type: 'product_list', sections: [{ productRetailerIds: ['a'] }] }, {});
   assert.equal(p2, null);
 });
@@ -94,6 +94,19 @@ test('product_list without a header downgrades to native catalog_message instead
   assert.equal(payload.interactive.type, 'catalog_message');
   assert.equal(payload.interactive.action.name, 'catalog_message');
   assert.equal(payload.interactive.body.text, 'Browse our products');
+});
+
+test('product_list with an empty section list downgrades to native catalog_message', async () => {
+  const { payload } = await dispatchMessage('1234567890', {
+    type: 'product_list',
+    catalogId: 'CATALOG_123',
+    body: 'Browse our products',
+    header: 'Products',
+    sections: [],
+  }, {});
+
+  assert.equal(payload.interactive.type, 'catalog_message');
+  assert.equal(payload.interactive.action.name, 'catalog_message');
 });
 
 // ── Non-catalog tenants: byte-for-byte unchanged ────────────────────────────
