@@ -123,7 +123,7 @@
  */
 
 import { getSession, createSession, updateSession } from '../core/sessions/sessionService.js';
-import { detectIntent, extractCustomerName, normalise, VIEW_MENU_DIRECT_RE, GENERIC_CATALOG_DIRECT_RE } from '../core/intents/intentEngine.js';
+import { detectIntent, extractCustomerName, normalise, VIEW_MENU_DIRECT_RE } from '../core/intents/intentEngine.js';
 import { INTENT_PATTERNS }                           from '../core/intents/patterns.js';
 // [FSI] Direct ORDER/BOOKING phrase regexes — same single source of truth
 // intentEngine.js's own pre-flow step 4.5 uses, reused here so the mid-flow
@@ -896,6 +896,83 @@ function _detectMidFlowStatusRequest(text, session) {
   return isStatusCommand(text);
 }
 
+// ── [FIX-STUCK-ORDER-GENERIC] Mid-flow generic re-order request detector ────
+//
+// PROBLEM: a customer already sitting inside an active ORDER flow (started
+// earlier, possibly abandoned/forgotten) who types a *generic* re-order
+// phrase with no actual product name — "I want to order food", "I want to
+// order", "can I order" — never reaches the [CATALOG-FIRST] generic-browse
+// handling in moduleRegistry.js at all, because that code only runs from
+// fresh intent detection (step 16 below), which is gated behind
+// `!session.currentFlow`. With currentFlow already set to 'ORDER', the
+// message goes straight to advance() (step 15), which treats it as a
+// free-text answer to whatever step the customer happens to be stuck on —
+// e.g. re-prompting for a delivery address, or trying (and failing) to
+// match "food" against a specific menu item. The customer sees the exact
+// same "couldn't find *food* in our products" or unrelated re-prompt
+// regardless of how many times they retype it — a real dead end, distinct
+// from (and not covered by) _detectMidFlowSwitchRequest above, which
+// deliberately no-ops when the requested flow equals the current flow
+// (targetFlow === flow) since it assumes same-flow text is a valid in-flow
+// answer.
+//
+// FIX: mirrors moduleRegistry.js's own FILLER_ONLY_RE / isGenericBrowseIntent
+// logic (the exact test already used to decide "this message names no real
+// product, it's pure navigational filler") so a phrase this narrow can never
+// be a genuine specific-item answer to any real ORDER-flow step. Deliberately
+// does NOT fire for a message that names an actual item ("I want to order
+// jollof rice") — that must still reach advance() as a normal in-flow
+// answer. Reuses the same step exclusions (MFQ_FREE_TEXT_STEPS/
+// MFQ_DATE_TIME_STEPS/PAYMENT_PROOF) as every other mid-flow detector in
+// this file, for the same reason: those steps expect arbitrary free text
+// (an address, a name, a date) that must never be hijacked.
+const MID_FLOW_GENERIC_ORDER_STRIP_RE =
+  /^(?:hi|hello|hey)[,\s]+/i;
+const MID_FLOW_GENERIC_ORDER_LEADIN_RE =
+  /^(?:i\s+)?(?:want|need|would\s+like|like\s+to\s+order)\s+(?:to\s+order\s+)?/i;
+// [FIX-STUCK-ORDER-GENERIC-VERB] Trailing part must be OPTIONAL — the original
+// draft of this regex required something to follow the verb (`\s+` with no
+// `?`), so a bare "can I order" (nothing after "order") failed to match at
+// all and fell straight through as unrecognized leftover text. Verified by
+// isolated testing against a matrix of phrases before this shipped.
+const MID_FLOW_GENERIC_ORDER_VERB_RE =
+  /^(?:can\s+i\s+)?(?:give|get|have|order|buy|purchase)(?:\s+me)?\s*/i;
+const MID_FLOW_GENERIC_ORDER_QTY_RE =
+  /^(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten)\s+(?:plates?\s+of\s+)?/i;
+// [FIX-STUCK-ORDER-GENERIC-SOME] "some" added — moduleRegistry.js's original
+// FILLER_ONLY_RE (mirrored here) was missing it, so "I want to order some
+// food please" left "some food please" as unrecognized leftover even though
+// every word in it is filler. Added here only (not touching moduleRegistry.js
+// — different file, different verified/tested contract; out of scope to
+// change there right now).
+const MID_FLOW_GENERIC_ORDER_FILLER_RE =
+  /^(?:to|the|your|our|see|view|show|browse|order|get|find|for|a|an|of|me|please|some|food|menu|menus|catalog|catalogue|catalogs|products?|options?|item|items)(?:\s+(?:to|the|your|our|see|view|show|browse|order|get|find|for|a|an|of|me|please|some|food|menu|menus|catalog|catalogue|catalogs|products?|options?|item|items))*$/i;
+
+function _detectMidFlowGenericOrderRequest(text, session) {
+  const flow = (session.currentFlow || '').toUpperCase();
+  if (flow !== 'ORDER') return false;
+  const step = (session.step || '').toUpperCase();
+  if (MFQ_FREE_TEXT_STEPS.has(step) || MFQ_DATE_TIME_STEPS.has(step)) return false;
+  if (step === 'PAYMENT_PROOF') return false;
+  const raw = String(text || '').trim();
+  if (!raw) return false;
+
+  // Must actually look like a re-order attempt (contains "order"/"want"/etc.)
+  // — bail out fast on anything that isn't even shaped like this, so a plain
+  // one-word item answer ("Fries") is never routed through the filler check.
+  if (!/\b(order|want|need|buy|purchase)\b/i.test(raw)) return false;
+
+  const leftover = raw
+    .replace(MID_FLOW_GENERIC_ORDER_STRIP_RE, '')
+    .replace(MID_FLOW_GENERIC_ORDER_LEADIN_RE, '')
+    .replace(MID_FLOW_GENERIC_ORDER_VERB_RE, '')
+    .replace(MID_FLOW_GENERIC_ORDER_QTY_RE, '')
+    .replace(/[?!.]+$/, '')
+    .trim();
+
+  return leftover.length === 0 || MID_FLOW_GENERIC_ORDER_FILLER_RE.test(leftover);
+}
+
 // ── [FSI] Mid-Flow Order/Booking-Switch intercept detector ───────────────────
 //
 // PROBLEM: a customer already inside an active BOOKING flow (or ORDER flow) who
@@ -1152,7 +1229,105 @@ function _isMidFlowCancelRequest(messageText) {
 }
 
 // ── Main handler ──────────────────────────────────────────────────────────────
+// ── [FIX-RACE-1] Per-customer message serialization ─────────────────────────
+// ROOT CAUSE of the "reply gets clobbered / session snaps back to the welcome
+// menu" class of bug (production case: customer sends "i want to see your
+// menu" 2-3 times while impatient — each hits the WA-Catalog-offer path,
+// which does several awaited network calls (sendCatalogMessageWithRetry, up
+// to 3 attempts with 500ms/900ms backoff — see waCatalogFlow.js) — then
+// sends "hello i want to order four plates of domoda", which resolves FAST
+// (no network calls) and correctly writes an ambiguity-resolution session
+// state (currentFlow:'ORDER', step:'SELECT_ITEM', data.pendingNaturalQuantity).
+// The customer then taps "Domoda (Beef)". Meta delivers every one of these as
+// its OWN separate webhook HTTP POST, and receiveWebhook() replies 200 and
+// starts processing immediately (fire-and-forget) with NO lock across
+// requests — so all of these handleIncomingMessage() calls for the SAME
+// customer run fully concurrently. Each one independently reads `session`
+// near-simultaneously (step 4 below), does its own async work, and
+// independently calls updateSession() from ITS OWN stale snapshot. Whichever
+// write finishes LAST wins, regardless of which message arrived last. A slow
+// "menu" request finishing after the fast "domoda" ambiguity is exactly what
+// overwrites data.pendingNaturalQuantity / currentFlow back to a fresh state
+// — which is why the very next message (the button tap) finds no active
+// flow, falls through to intent detection, and gets the welcome menu instead
+// of the order continuing.
+//
+// Fix: serialize all processing for a given (tenantId, customerPhone) pair
+// through an in-memory promise chain, so messages from the same customer are
+// always handled one at a time, strictly in arrival order — the read-modify-
+// write session cycle for message N always completes before message N+1
+// starts reading. This is transparent to every caller (webhook + simulator)
+// since the lock lives inside handleIncomingMessage itself.
+//
+// [CAVEAT] This lock is per-process (an in-memory Map). It fully protects a
+// single Railway instance/process — the common case here — but does NOT
+// protect across multiple horizontally-scaled replicas sharing one Mongo
+// instance. If WhatSales ever runs >1 replica, this same class of race can
+// reappear across processes and would need a distributed lock (e.g. a Mongo
+// findOneAndUpdate-based mutex) instead.
+const _customerLocks = new Map(); // key `${tenantId}:${from}` → tail Promise of the chain
+
+// [FIX-RACE-2] Bounded queue hold — without this, [FIX-RACE-1]'s strict
+// serialization becomes a head-of-line-blocking bug of its own. A single slow
+// message can legitimately take a long time to resolve here: WA Catalog's
+// sendCatalogMessageWithRetry (waCatalogFlow.js) chains up to 3 attempts, and
+// each attempt's dispatchMessage() (dispatcher.js) can itself fall through
+// list→buttons→text or catalog_message→text retries — every individual Meta
+// Graph API call has its own independent 10s timeout (_postPayloadToMeta).
+// Worst case, ONE "i want to see your menu" message — especially while WA
+// Catalog is unhealthy for a tenant (see the ongoing catalog-send investigation
+// in memory) — can take upwards of a minute to fully settle. Strict
+// serialization with no ceiling means every later message from that SAME
+// customer, including completely unrelated ones like a plain "hello", queues
+// behind it for the full duration — which looks exactly like "half my
+// messages are being ignored," when they are actually just stuck waiting.
+// Fix: the lock only holds the queue for CUSTOMER_LOCK_MAX_HOLD_MS. After
+// that, the NEXT queued message is allowed to start even if the current one
+// hasn't finished — the slow task keeps running in the background and still
+// dispatches its own reply whenever it completes (nothing is cancelled, JS
+// can't abort an in-flight await), it just no longer blocks anyone else.
+// This preserves the [FIX-RACE-1] ordering guarantee for the common case
+// (fast messages) while capping the worst-case delay for everyone behind a
+// slow one.
+const CUSTOMER_LOCK_MAX_HOLD_MS = 12000; // 12s — comfortably covers a single
+// full dispatchMessage() fallback chain (worst case ~3×10s Meta timeouts is
+// still possible for a single attempt, but the common slow case — one Meta
+// call succeeding on retry — resolves well within this) without leaving a
+// customer's other messages stuck for anywhere near the multi-attempt worst case.
+
+function _runSerialized(key, task) {
+  const prior = _customerLocks.get(key) || Promise.resolve();
+  const run = prior.then(task, task); // run even if the prior link in the chain rejected
+
+  let releaseTimer;
+  const timeoutGate = new Promise(resolve => {
+    releaseTimer = setTimeout(() => {
+      logger.warn('[Webhook] Customer message lock held past max — releasing queue for next message', { key });
+      resolve();
+    }, CUSTOMER_LOCK_MAX_HOLD_MS);
+  });
+  const settled = run.then(() => {}, () => {});
+  // Whichever comes first — the task actually finishing, or the hold timeout —
+  // unblocks the NEXT queued message. clearTimeout on the fast path avoids
+  // leaking timers when messages resolve quickly (the overwhelming majority).
+  const gate = Promise.race([settled, timeoutGate]).finally(() => clearTimeout(releaseTimer));
+
+  _customerLocks.set(key, gate);
+  gate.finally(() => {
+    // Only clean up if nothing newer has chained onto this key since —
+    // avoids deleting a newer in-flight lock out from under a later caller.
+    if (_customerLocks.get(key) === gate) _customerLocks.delete(key);
+  });
+  return run;
+}
+
 export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj, phoneNumberId }) {
+  const _lockKey = `${tenantId}:${from}`;
+  return _runSerialized(_lockKey, () =>
+    _handleIncomingMessageSerialized({ tenantId, tenantDoc, from, msgObj, phoneNumberId }));
+}
+
+async function _handleIncomingMessageSerialized({ tenantId, tenantDoc, from, msgObj, phoneNumberId }) {
   const { text: messageText, imageUrl, isInteractive, isListReply, isFlowReply, flowReply } = extractMessage(msgObj);
   const wamid = msgObj?.id;
 
@@ -1732,25 +1907,6 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
     }).select('_id item quantity shortId paymentStatus').sort({ createdAt: -1 }).lean().catch(() => null);
 
     if (pendingOrder) {
-      const isCatalogBrowsePOL = !isInteractive && (
-        VIEW_MENU_DIRECT_RE.test(normalise(messageText))
-        || GENERIC_CATALOG_DIRECT_RE.test(normalise(messageText))
-      );
-
-      if (isCatalogBrowsePOL) {
-        const catalogReply = await route({
-          action: 'BROWSE_CATALOG',
-          intent: 'BROWSE_CATALOG',
-          session,
-          message: messageText,
-          business,
-          tenant: tenantDoc,
-          isInteractive: false,
-        });
-        if (catalogReply) await dispatchMessage(from, catalogReply, tenantDoc);
-        return;
-      }
-
       // ── Cancel escape ────────────────────────────────────────────────────
       if (isEscPOL) {
         await Order.findOneAndUpdate(
@@ -2489,38 +2645,20 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
     }
 
     if (isInteractive && pendingNaturalCandidate) {
-      // The customer is answering the ambiguity prompt, not starting a new
-      // order. Resolve the selected item/variant directly so START_ORDER's
-      // generic browse detection cannot discard the pending quantity or reset
-      // the session to the welcome menu.
-      const { mergeCartLines, parseNaturalOrderMessage: parseSelectedOrder } = await import('../core/shared/cartEngine.js');
-      const selected = parseSelectedOrder(
-        (business?.menuItems || []).filter(item => item.available !== false),
-        `${pendingNaturalQuantity} ${messageText}`,
-      );
-      if (selected?.lines?.length === 1) {
-        const data = {
-          ...(freshSession.data || {}),
-          cart: mergeCartLines(
-            Array.isArray(freshSession.data?.cart) ? freshSession.data.cart : [],
-            selected.lines,
-          ),
-          pendingNaturalQuantity: null,
-          _nluPending: null,
-        };
-        await updateSession(from, tenantId, {
-          currentFlow: 'ORDER', step: 'CONFIRM', data, orderChannel: 'menu', menuViewed: true,
-        });
-        const reply = await advance({
-          session: { ...freshSession, currentFlow: 'ORDER', step: 'CONFIRM', data, orderChannel: 'menu' },
-          message: null, business, tenant: tenantDoc, isInteractive: false,
-        });
-        if (reply) {
-          const payloads = Array.isArray(reply) ? reply : [reply];
-          for (const payload of payloads) await dispatchMessage(from, payload, tenantDoc);
-        }
-        return;
+      const directReply = await route({
+        action: 'START_ORDER',
+        intent: 'ORDER',
+        session: freshSession,
+        message: `${pendingNaturalQuantity} ${messageText}`,
+        business,
+        tenant: tenantDoc,
+        isInteractive: true,
+      });
+      if (directReply) {
+        const directPayloads = Array.isArray(directReply) ? directReply : [directReply];
+        for (const directPayload of directPayloads) await dispatchMessage(from, directPayload, tenantDoc);
       }
+      return;
     }
 
     // [FIX-MFQ-BTN] MFQ response buttons (MFQ_SWITCH_YES, MFQ_SWITCH_NO, MFQ_RESUME_FLOW)
@@ -2615,7 +2753,13 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
     if (upperMsg === 'VIEW_MENU' || upperMsg === 'SHOW_MENU' || upperMsg === 'MENU' || upperMsg === 'SHOW MENU'
         || upperMsg === 'VIEW MENU' || upperMsg === 'SEE MENU' || upperMsg === 'MAIN MENU'
       || upperMsg === 'BACK TO MENU'
-      || (!isInteractive && VIEW_MENU_DIRECT_RE.test(normalise(messageText)))) {
+      || (!isInteractive && VIEW_MENU_DIRECT_RE.test(normalise(messageText)))
+      // [FIX-STUCK-ORDER-GENERIC] A generic re-order phrase with no actual
+      // product name ("I want to order food", "I want to order") gets the
+      // exact same treatment as an explicit "view menu" request — see
+      // _detectMidFlowGenericOrderRequest above for why this must be scoped
+      // this narrowly (never fires on a message that names a real item).
+      || (!isInteractive && _detectMidFlowGenericOrderRequest(messageText, session))) {
       if ((session.currentFlow || '').toUpperCase() === 'ORDER') {
         // [AUDIT-FIX-CATALOG-VIEWMENU] This branch used to call
         // startFlow('ORDER') unconditionally, which renders the module's own
@@ -3541,6 +3685,21 @@ export async function receiveWebhook(req, res) {
               from: msg?.from,
               phoneNumberId,
             });
+            // [FIX-SILENCE-SAFETYNET] Previously an uncaught exception anywhere in
+            // handleIncomingMessage() (a bug, a genuinely broken dependency, an
+            // unexpected null, etc.) resulted in TOTAL silence for the customer —
+            // logged here but nothing ever sent back. From the customer's side
+            // that's indistinguishable from the bot being dead. A best-effort,
+            // dependency-free plain-text reply here guarantees they always get
+            // SOMETHING, even when the real handler failed in a way we haven't
+            // seen before. Wrapped in its own try/catch and never rethrows —
+            // this is a last resort, not a new failure point.
+            try {
+              await dispatchMessage(from, {
+                type: 'text',
+                body: "⚠️ Sorry, something went wrong on our end processing that. Please try again in a moment.",
+              }, tenant);
+            } catch { /* truly nothing more we can do */ }
           }
         }
       }

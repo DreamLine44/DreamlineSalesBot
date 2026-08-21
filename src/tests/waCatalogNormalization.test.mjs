@@ -193,3 +193,42 @@ test('shouldOfferCatalog: MANUAL_ONLY never auto-offers, regardless of intent', 
   const business = makeBusiness({ waCatalog: { enabled: true, catalogId: 'C1', mode: 'MANUAL_ONLY' } });
   assert.equal(shouldOfferCatalog({ business, intent: 'ORDER' }), false);
 });
+
+test('catalog-ready tenant: a lone VIEW_MENU row falls back to a View Items row, not an empty list', () => {
+  const business = {
+    menuItems: [{ name: 'Domoda', available: true }],
+    waCatalog: {
+      enabled: true,
+      catalogId: 'catalog-1',
+      lastSyncedAt: new Date(),
+      syncedRetailerIds: ['domoda-1'],
+    },
+  };
+  const response = suppressLegacyMenuOption({
+    type: 'list',
+    body: 'Choose an option',
+    rows: [{ id: 'VIEW_MENU', title: '📋 View Menu' }],
+  }, business);
+  assert.equal(response.rows.length, 1);
+  assert.equal(response.rows[0].id, 'BROWSE_CATALOG');
+});
+
+test('catalog-ready tenant: a section left with zero rows after VIEW_MENU removal falls back to a View Items row', () => {
+  const business = {
+    menuItems: [{ name: 'Domoda', available: true }],
+    waCatalog: {
+      enabled: true,
+      catalogId: 'catalog-1',
+      lastSyncedAt: new Date(),
+      syncedRetailerIds: ['domoda-1'],
+    },
+  };
+  const response = suppressLegacyMenuOption({
+    type: 'list',
+    body: 'Choose an option',
+    sections: [{ title: 'Main', rows: [{ id: 'VIEW_MENU', title: '📋 View Menu' }] }],
+  }, business);
+  const allRows = response.sections.flatMap(s => s.rows);
+  assert.equal(allRows.length, 1);
+  assert.equal(allRows[0].id, 'BROWSE_CATALOG');
+});

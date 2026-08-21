@@ -76,12 +76,23 @@ export const BOOKING_DIRECT_RE = /\b(book|reserve|reservation|appointment|table 
 // what you sell" — is completely unambiguous. This is a deterministic catch
 // for the common natural phrasings, so viewing the menu/catalog never depends
 // on AI being configured or confident.
-export const VIEW_MENU_DIRECT_RE = /\b(what can (?:i|we) (?:eat|order|buy|get|have)|what could (?:i|we) (?:eat|order|buy|get|have)|what (?:do|does) (?:you|yall|you all) (?:have|sell|offer|serve|carry)|what (?:food\s+options?|food|foods|items?|products?|dishes|options?) (?:do|does) (?:you|yall|you all) (?:have|sell|offer|serve|carry)|what'?s on (?:the|your) menu|(?:can|could) i see (?:all\s+)?(?:the|your) (?:food|foods|items?|products?|dishes|options?|menu|catalog|catalogue)|(?:i\s+)?(?:want|would like|would love|need) to (?:see|view|browse) (?:all\s+)?(?:the|your)?\s*(?:food|foods|items?|products?|dishes|options?|menu|catalog|catalogue)|show me (?:all\s+)?(?:the|your) (?:food|foods|items?|products?|dishes|options?|menu|catalog|catalogue)|see (?:all\s+)?(?:the|your) (?:food|foods|items?|products?|dishes|options?|menu|catalog|catalogue)|view (?:all\s+)?(?:the|your) (?:food|foods|items?|products?|dishes|options?|menu|catalog|catalogue)|browse (?:all\s+)?(?:the|your)? ?(?:food|foods|items?|products?|dishes|options?|menu|catalog|catalogue))\b/;
-
-// Generic food requests are browse requests when no specific product name is
-// supplied. Keep this matcher exported because webhookController reuses it
-// for active-flow and pending-order escape handling.
-export const GENERIC_CATALOG_DIRECT_RE = /\b(i want food|i need food|food please|get food|order food|order some food|i want to order food|i want to order some food|i want to eat|what (?:can|could) i eat|what do you have to eat|what food do you have|what are (?:your|the) food options)\b/;
+// [FIX-VIEWMENU-WHATCANIEAT] "what can I eat" / "what could I eat" (and the
+// "we/they" variants) were previously unmatched — fell through to AI/fallback
+// even though the intent is exactly the same as "what do you have" just
+// above. Added as its own alternative rather than folded into the existing
+// "what (do|does) you have" branch since the verb ("eat") and pronoun shape
+// differ enough that squeezing it in there would have made that branch's
+// pronoun/verb groups ambiguous.
+// [FIX-PIDGIN-VIEWMENU] The phrasings above are all Standard-English shapes.
+// West-African Pidgin/Krio menu requests — very common in this platform's
+// actual Gambian customer base — never contain "what do you have", "can I
+// see", etc., so they fell straight past this deterministic layer to Groq,
+// which (per groqProvider.js's un-localized prompt) often returned MEDIUM/LOW
+// confidence for them, landing the customer on a generic CLARIFY instead of
+// the catalog. Added as its own alternative group rather than folded into the
+// Standard-English branches above, since pidgin word order ("wetin una get",
+// subject-final "get") doesn't fit those groups' pronoun/verb slots.
+export const VIEW_MENU_DIRECT_RE = /\b(what (?:do|does) (?:you|yall|you all) (?:have|sell|offer|serve|carry)|what (?:food\s+options?|food|foods|items?|products?|dishes|options?) (?:do|does) (?:you|yall|you all) (?:have|sell|offer|serve|carry)|what (?:can|could) (?:i|we|they) (?:eat|order|get)|what'?s on (?:the|your) menu|(?:can|could) i see (?:all\s+)?(?:the|your) (?:food|foods|items?|products?|dishes|options?|menu|catalog|catalogue)|(?:i\s+)?(?:want|would like|would love|need) to (?:see|view|browse) (?:all\s+)?(?:the|your)?\s*(?:food|foods|items?|products?|dishes|options?|menu|catalog|catalogue)|show me (?:all\s+)?(?:the|your) (?:food|foods|items?|products?|dishes|options?|menu|catalog|catalogue)|see (?:all\s+)?(?:the|your) (?:food|foods|items?|products?|dishes|options?|menu|catalog|catalogue)|view (?:all\s+)?(?:the|your) (?:food|foods|items?|products?|dishes|options?|menu|catalog|catalogue)|browse (?:all\s+)?(?:the|your)? ?(?:food|foods|items?|products?|dishes|options?|menu|catalog|catalogue)|wetin (?:una|you|unu|you all|yall) (?:get|dey sell|dey get|get for sell|get to sell|de sell)|una get wetin|wetin dey (?:for|inside|on) (?:menu|catalog|catalogue)|make (?:i|we|una) see (?:the |una )?(?:menu|catalog|catalogue|wetin (?:una|you) get)|show (?:me|us) wetin (?:una|you|unu) (?:get|dey sell)|wetin (?:you|una) get (?:for|to) (?:chop|eat|order))\b/;
 
 // [FIX-QUESTION-VS-ORDER] ORDER_DIRECT_RE matches the bare word "i want" —
 // but "I want to know the prices of your food items" / "I'd like to know
@@ -241,13 +252,6 @@ export async function detectIntent({ message, isInteractive = false, session, bu
   // ── 3. Digit / very short (likely quantity or noise) ──────────────────────
   if (/^\d+$/.test(raw) || raw.length <= 1) {
     return { action: 'CONTINUE_FLOW', intent: 'CONTINUE_FLOW', confidence: 'HIGH', source: 'numeric' };
-  }
-
-  // Generic food/menu requests must win before exact ORDER keywords such as
-  // "i need food" or "order food", so they use the explicit catalog action.
-  if (!session?.currentFlow && !DIRECT_INTENT_EXCLUDE_RE.test(clean)
-      && !QUESTION_LEADIN_RE.test(clean) && GENERIC_CATALOG_DIRECT_RE.test(clean)) {
-    return { action: 'BROWSE_CATALOG', intent: 'BROWSE_CATALOG', confidence: 'HIGH', source: 'generic-catalog-phrase' };
   }
 
   // ── 4. Exact keyword match ────────────────────────────────────────────────

@@ -102,3 +102,90 @@ test('dispatchMessage retries a failed list send as buttons fallback before retu
     global.fetch = realFetch;
   }
 });
+
+// [FIX-DISPATCH-CATALOG-LAST-RESORT] A product_list send that fails, whose
+// catalog_message downgrade ALSO fails at Meta's end (real 4xx/5xx, not a
+// payload-building issue) — previously returned null right there with
+// nothing further attempted, which is the exact silent-reply bug reported
+// against this codebase. There must now be one final plain-text attempt
+// before dispatchMessage gives up.
+test('[FIX-DISPATCH-CATALOG-LAST-RESORT] product_list → catalog_message → plain text, all three attempted before giving up', async () => {
+  const realFetch = global.fetch;
+  let callCount = 0;
+  const typesSeen = [];
+  global.fetch = async (_url, init) => {
+    callCount++;
+    const body = JSON.parse(init.body);
+    typesSeen.push(body?.interactive?.type || body?.type);
+    if (body?.interactive?.type === 'product_list') {
+      return { ok: false, status: 400, text: async () => '{"error":"product_list rejected"}' };
+    }
+    if (body?.interactive?.type === 'catalog_message') {
+      return { ok: false, status: 400, text: async () => '{"error":"catalog_message also rejected"}' };
+    }
+    if (body?.type === 'text') {
+      return { ok: true, status: 200, text: async () => '{}' };
+    }
+    return { ok: false, status: 400, text: async () => '{}' };
+  };
+
+  try {
+    const { dispatchMessage } = await import('../core/whatsapp/dispatcher.js');
+    const result = await dispatchMessage('1234567890', {
+      type: 'product_list',
+      catalogId: 'CATALOG_123',
+      header: 'Featured',
+      body: '🛍 Browse our products below — tap any item to see more.',
+      sections: [{ title: 'Popular', productRetailerIds: ['sku-1', 'sku-2'] }],
+    }, tenant);
+
+    assert.ok(result, 'must succeed via the plain-text last resort, not return null');
+    assert.deepEqual(typesSeen, ['product_list', 'catalog_message', 'text'],
+      'expected product_list attempt, then catalog_message downgrade, then a plain text send');
+    assert.equal(callCount, 3, 'expected exactly three attempts: product_list, catalog_message, text');
+  } finally {
+    global.fetch = realFetch;
+  }
+});
+
+test('[FIX-DISPATCH-CATALOG-LAST-RESORT] returns falsy only if the plain-text last resort ALSO fails', async () => {
+  const realFetch = global.fetch;
+  global.fetch = async () => ({ ok: false, status: 500, text: async () => '{"error":"total outage"}' });
+
+  try {
+    const { dispatchMessage } = await import('../core/whatsapp/dispatcher.js');
+    const result = await dispatchMessage('1234567890', {
+      type: 'catalog_message',
+      catalogId: 'CATALOG_123',
+      body: '🛍 Browse our products below — tap any item to see more.',
+    }, tenant);
+    assert.ok(!result, 'a genuine total outage (every attempt fails) must still return falsy, never a fake success');
+  } finally {
+    global.fetch = realFetch;
+  }
+});
+
+test('[FIX-DISPATCH-CATALOG-LAST-RESORT] the plain-text last resort carries the same body text the customer would have seen on the catalog card', async () => {
+  const realFetch = global.fetch;
+  const bodiesSeen = [];
+  global.fetch = async (_url, init) => {
+    const body = JSON.parse(init.body);
+    if (body?.type === 'text') bodiesSeen.push(body.text.body);
+    if (body?.interactive?.type === 'catalog_message') {
+      return { ok: false, status: 400, text: async () => '{}' };
+    }
+    return { ok: true, status: 200, text: async () => '{}' };
+  };
+
+  try {
+    const { dispatchMessage } = await import('../core/whatsapp/dispatcher.js');
+    await dispatchMessage('1234567890', {
+      type: 'catalog_message',
+      catalogId: 'CATALOG_123',
+      body: '🛍 Browse our products below — tap any item to see more.',
+    }, tenant);
+    assert.deepEqual(bodiesSeen, ['🛍 Browse our products below — tap any item to see more.']);
+  } finally {
+    global.fetch = realFetch;
+  }
+});

@@ -113,8 +113,51 @@ export function suppressLegacyMenuOption(response, business) {
       next.buttons = [{ id: 'BROWSE_CATALOG', title: '🛍 View Items' }];
     }
   }
+  // [FIX-CATALOG-EMPTY-LIST] Flat 'rows' (used by every module's product/menu
+  // list — see dispatcher.js buildPayload's 'list' branch) was ONLY filtered
+  // here, unlike the 'buttons' branch just above which falls back to a
+  // BROWSE_CATALOG button when filtering empties the array. A list whose only
+  // row was 'VIEW_MENU' (the common case for a tenant with a single legacy
+  // menu entry point) filtered down to a LIST MESSAGE WITH ZERO ROWS.
+  // dispatcher.js's buildPayload guards exactly that case —
+  // `if (!sections.length || !sections[0].rows.length) return null;` — so the
+  // whole message was silently dropped and dispatched as nothing at all. The
+  // customer never saw a "View Items" row (or ANY row) to tap — from their
+  // side, the bot just went silent right where the catalog button-replacement
+  // logic clearly intended them to see one. Mirrors the buttons branch: fall
+  // back to a single BROWSE_CATALOG row so the list always has something to
+  // send instead of ending up empty.
+  const VIEW_ITEMS_ROW = {
+    id:          'BROWSE_CATALOG',
+    title:       '🛍 View Items',
+    description: 'Browse our full catalog',
+  };
   if (Array.isArray(next.rows)) {
     next.rows = next.rows.filter(row => row?.id !== 'VIEW_MENU');
+    if (next.rows.length === 0) {
+      next.rows = [VIEW_ITEMS_ROW];
+    }
+  }
+  // [FIX-CATALOG-EMPTY-LIST] Multi-section lists (ui.sections — e.g. a
+  // welcomeList config) weren't touched by this function at all, so a
+  // VIEW_MENU row nested inside a section survived every catalog-ready
+  // filter this function performs elsewhere. Apply the same per-section
+  // filter + fallback so a section that becomes empty after removing
+  // VIEW_MENU doesn't leave a titled section with zero rows (dispatcher.js
+  // drops any section reduced to zero rows once MAX_TOTAL_ROWS bookkeeping
+  // runs, which can just as easily zero out the whole message).
+  if (Array.isArray(next.sections)) {
+    next.sections = next.sections
+      .map(sec => {
+        if (!Array.isArray(sec?.rows)) return sec;
+        const rows = sec.rows.filter(row => row?.id !== 'VIEW_MENU');
+        return { ...sec, rows };
+      })
+      .filter(sec => !Array.isArray(sec?.rows) || sec.rows.length > 0);
+    const hasAnyRow = next.sections.some(sec => Array.isArray(sec?.rows) && sec.rows.length > 0);
+    if (!hasAnyRow) {
+      next.sections = [{ title: undefined, rows: [VIEW_ITEMS_ROW] }];
+    }
   }
   return next;
 }

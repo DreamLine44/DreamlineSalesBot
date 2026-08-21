@@ -377,6 +377,11 @@ export const INTENT_PATTERNS = {
   // webhookController.js mid-flow handling) that actually renders the menu.
   VIEW_MENU: [
     'menu', 'show menu', 'view menu', 'see menu', 'back to menu',
+    // [FIX-PIDGIN-VIEWMENU] Common exact-typed pidgin phrasings for this
+    // platform's Gambian customer base — see VIEW_MENU_DIRECT_RE in
+    // intentEngine.js for the broader regex-based catch of the same intent
+    // embedded in a longer sentence.
+    'wetin una get', 'wetin you get', 'una get wetin',
   ],
 
   SHOW_MENU: [

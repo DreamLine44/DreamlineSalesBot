@@ -630,6 +630,12 @@ export async function classifyMessageStructured({
     `structured JSON only.\n\n` +
     `Rules:\n` +
     `- Understand negation, past tense, slang, typos, and indirect phrasing.\n` +
+    `- This platform's customers are primarily in the Gambia/West Africa and frequently write in ` +
+    `West African Pidgin/Krio mixed with English — e.g. "wetin una get" = "what do you have", ` +
+    `"make i see menu" = "let me see the menu", "i dey hungry"/"abeg let me order" = wants to order, ` +
+    `"how much e cost" = "how much does it cost". Treat these as completely ordinary, unambiguous ` +
+    `phrasings — the same confidence rules apply as for Standard English of equivalent clarity; do not ` +
+    `default to LOW/MEDIUM or clarificationNeeded=true just because a message is in Pidgin.\n` +
     `- Never treat every message as a product search.\n` +
     `- If the customer asks multiple things, pick the PRIMARY actionable intent and list others in secondaryIntents.\n` +
     `- Extract products with quantities when clearly stated (use exact menu names when possible).\n` +

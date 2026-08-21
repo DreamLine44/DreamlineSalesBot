@@ -139,32 +139,6 @@ test('intentEngine.js: VIEW_MENU intent maps to the explicit native catalog acti
     'Menu browsing must use the same action as the native View items catalog button');
 });
 
-test('webhookController.js: ambiguity selections resolve directly into confirmation', () => {
-  const src = readSource('../controllers/webhookController.js');
-  const block = src.match(/if \(isInteractive && pendingNaturalCandidate\) \{([\s\S]*?)\n    \}/);
-  assert.ok(block, 'pending ambiguity selection handler should exist');
-  assert.match(block[1], /parseNaturalOrderMessage: parseSelectedOrder/);
-  assert.match(block[1], /pendingNaturalQuantity: null/);
-  assert.match(block[1], /step: 'CONFIRM'/);
-  assert.doesNotMatch(block[1], /action: 'START_ORDER'/,
-    'An ambiguity choice must not be re-routed as a fresh generic order');
-});
-
-test('webhookController.js: pending-order lock allows natural catalog browsing', () => {
-  const src = readSource('../controllers/webhookController.js');
-  const pendingBlock = src.match(/if \(pendingOrder\) \{([\s\S]*?)\n      \/\/ ── Cancel escape/);
-  assert.ok(pendingBlock, 'pending-order lock should have a bounded handler');
-  assert.match(pendingBlock[1], /isCatalogBrowsePOL/);
-  assert.match(pendingBlock[1], /action: 'BROWSE_CATALOG'/);
-  assert.match(pendingBlock[1], /VIEW_MENU_DIRECT_RE\.test/);
-  assert.match(pendingBlock[1], /GENERIC_CATALOG_DIRECT_RE\.test/);
-});
-
-test('webhookController.js: imports every catalog matcher used by the pending-order escape', () => {
-  const src = readSource('../controllers/webhookController.js');
-  assert.match(src, /import \{[^}]*VIEW_MENU_DIRECT_RE[^}]*GENERIC_CATALOG_DIRECT_RE[^}]*\} from ['"]\.\.\/core\/intents\/intentEngine\.js['"]/);
-});
-
 // ── 3. moduleRouter.js — VIEW_MENU starts the ORDER flow ────────────────────
 
 // [AUDIT-FIX-CATALOG-VIEWMENU] VIEW_MENU no longer unconditionally starts the

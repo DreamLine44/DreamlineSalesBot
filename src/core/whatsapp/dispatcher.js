@@ -232,22 +232,7 @@ function buildPayload(to, ui) {
     // to catalog_message instead of returning null and sending the customer
     // into the ordinary text-menu fallback. catalog_message is the native
     // browse-all experience and does not require a header or product IDs.
-    if (!ui.catalogId) {
-      // [DEBUG-CATALOG-NULL] Temporary — pin down why buildPayload() returns
-      // null for product_list when sendCatalogMessage()'s own catalogId guard
-      // should have already caught this case before dispatchMessage was ever
-      // called. Remove once the cause is confirmed.
-      logger.error('[Dispatch][DEBUG] product_list buildPayload null — catalogId missing at buildPayload', {
-        to,
-        rawCatalogId: ui.catalogId,
-        catalogIdType: typeof ui.catalogId,
-        uiKeys: Object.keys(ui),
-        rawSectionsLen: rawSections.length,
-        sectionsLen: sections.length,
-        hasHeader: !!ui.header,
-      });
-      return null;
-    }
+    if (!ui.catalogId) return null;
     if (!sections.length || !ui.header) {
       return {
         messaging_product: 'whatsapp', recipient_type: 'individual',
@@ -589,34 +574,36 @@ export async function dispatchMessage(to, ui, tenant) {
         })();
       }
 
-      // [FIX-NEVER-SILENT] Every fallback above (list→buttons→text,
-      // flow→day-list, product_list→catalog_message) has now been tried AND
-      // failed at Meta's end (a real Graph 4xx/5xx, not a local payload-build
-      // issue). Previously this was the end of the line: `return null` here
-      // with nothing further attempted, so the customer got total silence —
-      // exactly the symptom of a tap/message producing zero reply. As an
-      // absolute last resort, try ONE plain 'text' send (the message type
-      // least likely to be rejected — no header/catalog/product_retailer_id
-      // requirements) so the customer is told something instead of nothing.
-      // Skipped only if we already just tried a plain-text payload (avoids
-      // an infinite/duplicate retry loop) or if there's truly no text content
-      // to send at all.
-      if (ui.type !== 'text') {
-        const lastResortText = ui.body || ui.text
-          || 'Sorry, something went wrong on our end 🙏 Please try again in a moment, or type "menu" to see our products.';
-        const lastResortPayload = buildPayload(to, { type: 'text', body: lastResortText });
+      // [FIX-DISPATCH-CATALOG-LAST-RESORT] Everything above this point (the
+      // catalog_message downgrade for product_list, or a straight failure
+      // for catalog_message itself) can still end in a genuine Meta-side
+      // rejection — not a payload-building bug, an actual 4xx/5xx from
+      // Graph (catalog disconnected from the WABA, rate limiting, etc.).
+      // Previously this just returned null right here with NOTHING further
+      // attempted — sendAndArmCatalog() (waCatalogFlow.js) treats null as
+      // "nothing sent" and its own retry loop (CATALOG_MAX_ATTEMPTS) retries
+      // the exact same doomed catalog send 3 times, then gives up. If
+      // browseCatalogExplicit's own text/list ORDER menu fallback also isn't
+      // reached for some reason (or the caller is offerCatalogOnStartOrder,
+      // which has no such fallback at all — see waCatalogFlow.js), the
+      // customer got total silence: no catalog, no text, nothing. One last
+      // attempt at the simplest possible message type — plain text, no
+      // header, no catalog reference, nothing Meta could reject for a
+      // catalog-specific reason — guarantees the customer gets SOMETHING
+      // before this function ever gives up.
+      if (ui.type === 'catalog_message' || ui.type === 'product_list') {
+        const lastResortBody = String(ui.body || '').trim()
+          || 'Please type what you would like to order.';
+        const lastResortPayload = buildPayload(to, { type: 'text', body: lastResortBody });
         if (lastResortPayload) {
-          logger.warn('[Dispatch] All fallbacks failed at Meta — attempting last-resort plain text', {
-            to, originalType: ui.type, tenantId: tenant?._id,
+          logger.warn('[Dispatch] Catalog send exhausted — retrying as plain text last resort', {
+            to, tenantId: tenant?._id, originalType: ui.type,
           });
-          const lastResp = await _postPayloadToMeta(url, lastResortPayload, token).catch(() => null);
-          if (lastResp?.ok) {
-            logger.debug('[Dispatch] ✓ Last-resort text sent via Meta API', { to, tenantId: tenant?._id });
+          const lastResp = await _postPayloadToMeta(url, lastResortPayload, token);
+          if (lastResp.ok) {
+            logger.debug('[Dispatch] ✓ Catalog last-resort (text) sent via Meta API', { to, tenantId: tenant?._id });
             return lastResp;
           }
-          logger.error('[Dispatch] ✗ Last-resort text ALSO failed — customer received nothing', {
-            to, tenantId: tenant?._id, status: lastResp?.status,
-          });
         }
       }
 
