@@ -149,6 +149,7 @@ export function parseNaturalOrderMessage(menu = [], text = '') {
   if (!raw || !Array.isArray(menu) || !menu.length) return null;
 
   const withoutLead = raw
+    .replace(/^(?:hi|hello|hey|hiya|good\s+(?:morning|afternoon|evening))[!,\s]+/i, '')
     .replace(/^(?:i\s+)?(?:want|need|would\s+like|like\s+to\s+order)\s+(?:to\s+order\s+)?/i, '')
     .replace(/^(?:can\s+i\s+)?(?:give|get|have|order|buy|purchase)\s+(?:me\s+)?/i, '')
     .trim();
@@ -235,6 +236,7 @@ export function parseNaturalOrderMessage(menu = [], text = '') {
 export function parseMultiItemMessage(menu = [], text = '') {
   const raw = String(text || '')
     .trim()
+    .replace(/^(?:hi|hello|hey|hiya|good\s+(?:morning|afternoon|evening))[!,\s]+/i, '')
     .replace(/^(?:i\s+)?(?:want|need|would\s+like)\s+(?:to\s+order\s+)?/i, '')
     .replace(/^(?:can\s+i\s+)?(?:get|have|order|buy|purchase)\s+(?:me\s+)?/i, '')
     .trim();

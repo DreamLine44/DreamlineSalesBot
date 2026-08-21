@@ -100,6 +100,32 @@ test('natural order parser reports ambiguous product names instead of guessing',
   assert.deepEqual(result.candidates.map(item => item.name), ['Chicken Burger', 'Chicken Sandwich']);
 });
 
+test('natural order parser asks before choosing between duplicate menu variants with a greeting', () => {
+  const ambiguousMenu = [
+    { _id: '1', name: 'Domoda (Beef)', price: 200, available: true },
+    { _id: '2', name: 'Domoda (Chicken)', price: 180, available: true },
+  ];
+  const result = parseNaturalOrderMessage(
+    ambiguousMenu,
+    'hello i want to order four plates of domoda',
+  );
+
+  assert.equal(result.ambiguous, true);
+  assert.deepEqual(result.candidates.map(item => item.name), [
+    'Domoda (Beef)', 'Domoda (Chicken)',
+  ]);
+  assert.equal(result.quantity, 4);
+});
+
+test('natural order parser asks before choosing an item variant', () => {
+  const variantMenu = [{ _id: '1', name: 'Domoda', price: 200, available: true, variants: ['Beef', 'Chicken'] }];
+  const result = parseNaturalOrderMessage(variantMenu, 'four plates of domoda');
+
+  assert.equal(result.ambiguous, true);
+  assert.deepEqual(result.candidates.map(item => item.variant), ['Beef', 'Chicken']);
+  assert.equal(result.quantity, 4);
+});
+
 test('multi-item parser strips an order-introduction prefix', () => {
   const result = parseMultiItemMessage(menu, 'I want one Jollof Rice and two Cokes');
   assert.ok(result);
