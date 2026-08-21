@@ -80,7 +80,14 @@ function hashItemData(data) {
 export async function sendCatalogMessage(to, business, tenant, { productRetailerIds = null, sectionTitle = 'Products' } = {}) {
   const catalogId = business?.waCatalog?.catalogId;
   if (!catalogId) {
-    logger.debug('[WACatalog] sendCatalogMessage skipped — no catalogId configured', { tenantId: business?.tenantId });
+    // [DEBUG-CATALOG-NULL] Temporarily at warn (not debug) so this shows up in
+    // production logs — need to confirm whether this guard is even the one
+    // firing. Revert to logger.debug once the cause is confirmed.
+    logger.warn('[WACatalog][DEBUG] sendCatalogMessage skipped — no catalogId configured', {
+      tenantId: business?.tenantId,
+      hasWaCatalogObj: !!business?.waCatalog,
+      waCatalogKeys: business?.waCatalog ? Object.keys(business.waCatalog) : null,
+    });
     return null;
   }
 

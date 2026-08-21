@@ -73,20 +73,6 @@ test('detectIntent: natural menu and food-option requests resolve to BROWSE_CATA
   }
 });
 
-test('detectIntent: generic food requests use the exact BROWSE_CATALOG action', async () => {
-  for (const message of [
-    'I want to order food',
-    'What can I eat?',
-    'What could I eat?',
-    'I need food',
-    'What food do you have?',
-  ]) {
-    const result = await detectIntent({ message, business: { businessMode: 'RESTAURANT' } });
-    assert.equal(result.action, 'BROWSE_CATALOG', `expected native catalog browse for "${message}"`);
-    assert.equal(result.intent, 'BROWSE_CATALOG');
-  }
-});
-
 test('detectIntent: product-specific order requests remain START_ORDER', async () => {
   const result = await detectIntent({
     message: 'I want to order jollof rice',

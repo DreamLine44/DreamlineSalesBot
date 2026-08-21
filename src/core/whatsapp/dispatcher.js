@@ -232,7 +232,22 @@ function buildPayload(to, ui) {
     // to catalog_message instead of returning null and sending the customer
     // into the ordinary text-menu fallback. catalog_message is the native
     // browse-all experience and does not require a header or product IDs.
-    if (!ui.catalogId) return null;
+    if (!ui.catalogId) {
+      // [DEBUG-CATALOG-NULL] Temporary — pin down why buildPayload() returns
+      // null for product_list when sendCatalogMessage()'s own catalogId guard
+      // should have already caught this case before dispatchMessage was ever
+      // called. Remove once the cause is confirmed.
+      logger.error('[Dispatch][DEBUG] product_list buildPayload null — catalogId missing at buildPayload', {
+        to,
+        rawCatalogId: ui.catalogId,
+        catalogIdType: typeof ui.catalogId,
+        uiKeys: Object.keys(ui),
+        rawSectionsLen: rawSections.length,
+        sectionsLen: sections.length,
+        hasHeader: !!ui.header,
+      });
+      return null;
+    }
     if (!sections.length || !ui.header) {
       return {
         messaging_product: 'whatsapp', recipient_type: 'individual',
@@ -574,25 +589,34 @@ export async function dispatchMessage(to, ui, tenant) {
         })();
       }
 
-      // [FIX-CATALOG-TEXT-LAST-RESORT] If Meta rejects both the original
-      // catalog payload and the catalog_message downgrade, make one final
-      // plain-text attempt. This cannot repair invalid credentials or a
-      // network outage, but it prevents a rich-message schema/catalog error
-      // from becoming total silence when ordinary text delivery still works.
-      const finalFallbackText = ui.body || ui.text;
-      if (finalFallbackText && ui.type !== 'text') {
-        const finalTextPayload = buildPayload(to, { type: 'text', body: finalFallbackText });
-        if (finalTextPayload) {
-          logger.warn('[Dispatch] Retrying rejected message as final plain-text fallback', {
+      // [FIX-NEVER-SILENT] Every fallback above (list→buttons→text,
+      // flow→day-list, product_list→catalog_message) has now been tried AND
+      // failed at Meta's end (a real Graph 4xx/5xx, not a local payload-build
+      // issue). Previously this was the end of the line: `return null` here
+      // with nothing further attempted, so the customer got total silence —
+      // exactly the symptom of a tap/message producing zero reply. As an
+      // absolute last resort, try ONE plain 'text' send (the message type
+      // least likely to be rejected — no header/catalog/product_retailer_id
+      // requirements) so the customer is told something instead of nothing.
+      // Skipped only if we already just tried a plain-text payload (avoids
+      // an infinite/duplicate retry loop) or if there's truly no text content
+      // to send at all.
+      if (ui.type !== 'text') {
+        const lastResortText = ui.body || ui.text
+          || 'Sorry, something went wrong on our end 🙏 Please try again in a moment, or type "menu" to see our products.';
+        const lastResortPayload = buildPayload(to, { type: 'text', body: lastResortText });
+        if (lastResortPayload) {
+          logger.warn('[Dispatch] All fallbacks failed at Meta — attempting last-resort plain text', {
             to, originalType: ui.type, tenantId: tenant?._id,
           });
-          const finalResp = await _postPayloadToMeta(url, finalTextPayload, token);
-          if (finalResp.ok) {
-            logger.debug('[Dispatch] ✓ Final plain-text fallback sent via Meta API', {
-              to, tenantId: tenant?._id,
-            });
-            return finalResp;
+          const lastResp = await _postPayloadToMeta(url, lastResortPayload, token).catch(() => null);
+          if (lastResp?.ok) {
+            logger.debug('[Dispatch] ✓ Last-resort text sent via Meta API', { to, tenantId: tenant?._id });
+            return lastResp;
           }
+          logger.error('[Dispatch] ✗ Last-resort text ALSO failed — customer received nothing', {
+            to, tenantId: tenant?._id, status: lastResp?.status,
+          });
         }
       }
 

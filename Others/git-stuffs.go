@@ -9,3 +9,7 @@ git config --global user.email "dreamlineking@gmail.com"
 git add .
 git commit -m "updates added"
 git push origin main
+
+git add .
+git commit -m "updates added"
+git push
