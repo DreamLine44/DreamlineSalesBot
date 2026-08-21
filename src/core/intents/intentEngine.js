@@ -78,6 +78,11 @@ export const BOOKING_DIRECT_RE = /\b(book|reserve|reservation|appointment|table 
 // on AI being configured or confident.
 export const VIEW_MENU_DIRECT_RE = /\b(what can (?:i|we) (?:eat|order|buy|get|have)|what could (?:i|we) (?:eat|order|buy|get|have)|what (?:do|does) (?:you|yall|you all) (?:have|sell|offer|serve|carry)|what (?:food\s+options?|food|foods|items?|products?|dishes|options?) (?:do|does) (?:you|yall|you all) (?:have|sell|offer|serve|carry)|what'?s on (?:the|your) menu|(?:can|could) i see (?:all\s+)?(?:the|your) (?:food|foods|items?|products?|dishes|options?|menu|catalog|catalogue)|(?:i\s+)?(?:want|would like|would love|need) to (?:see|view|browse) (?:all\s+)?(?:the|your)?\s*(?:food|foods|items?|products?|dishes|options?|menu|catalog|catalogue)|show me (?:all\s+)?(?:the|your) (?:food|foods|items?|products?|dishes|options?|menu|catalog|catalogue)|see (?:all\s+)?(?:the|your) (?:food|foods|items?|products?|dishes|options?|menu|catalog|catalogue)|view (?:all\s+)?(?:the|your) (?:food|foods|items?|products?|dishes|options?|menu|catalog|catalogue)|browse (?:all\s+)?(?:the|your)? ?(?:food|foods|items?|products?|dishes|options?|menu|catalog|catalogue))\b/;
 
+// Generic food requests are browse requests when no specific product name is
+// supplied. Keep this matcher exported because webhookController reuses it
+// for active-flow and pending-order escape handling.
+export const GENERIC_CATALOG_DIRECT_RE = /\b(i want food|i need food|food please|get food|order food|order some food|i want to order food|i want to order some food|i want to eat|what (?:can|could) i eat|what do you have to eat|what food do you have|what are (?:your|the) food options)\b/;
+
 // [FIX-QUESTION-VS-ORDER] ORDER_DIRECT_RE matches the bare word "i want" —
 // but "I want to know the prices of your food items" / "I'd like to know
 // your hours" also contain "i want"/"i d like" and are genuine information
