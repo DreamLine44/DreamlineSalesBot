@@ -32,6 +32,29 @@ const __dirname  = path.dirname(fileURLToPath(import.meta.url));
 const _require   = createRequire(import.meta.url);
 const { version } = (() => { try { return _require('./package.json'); } catch { return { version: '2.0.0' }; } })();
 
+function getRuntimeBuildFingerprint() {
+  const files = [
+    'core/whatsapp/dispatcher.js',
+    'modules/catalog/waCatalogService.js',
+    'core/intents/intentEngine.js',
+  ];
+  const hashes = {};
+  for (const relativePath of files) {
+    try {
+      const absolutePath = path.join(__dirname, relativePath);
+      hashes[relativePath] = crypto.createHash('sha256')
+        .update(_require('fs').readFileSync(absolutePath))
+        .digest('hex');
+    } catch (err) {
+      hashes[relativePath] = `unavailable:${err.code || 'read_error'}`;
+    }
+  }
+  return {
+    commit: process.env.RAILWAY_GIT_COMMIT_SHA || process.env.GIT_COMMIT_SHA || 'unknown',
+    hashes,
+  };
+}
+
 import crypto            from 'crypto';
 import { connectToDB }           from './config/database.js';
 import logger                    from './config/logger.js';
@@ -58,6 +81,8 @@ import whatsappOnboardingRoutes from './routes/whatsappOnboardingRoutes.js';
 
 const app        = express();
 const isProduction = process.env.NODE_ENV === 'production';
+
+logger.info('[App] Runtime build fingerprint', getRuntimeBuildFingerprint());
 
 // ── Security headers ──────────────────────────────────────────────────────────
 app.use(helmet({

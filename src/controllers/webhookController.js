@@ -123,7 +123,7 @@
  */
 
 import { getSession, createSession, updateSession } from '../core/sessions/sessionService.js';
-import { detectIntent, extractCustomerName, normalise, VIEW_MENU_DIRECT_RE } from '../core/intents/intentEngine.js';
+import { detectIntent, extractCustomerName, normalise, VIEW_MENU_DIRECT_RE, GENERIC_CATALOG_DIRECT_RE } from '../core/intents/intentEngine.js';
 import { INTENT_PATTERNS }                           from '../core/intents/patterns.js';
 // [FSI] Direct ORDER/BOOKING phrase regexes — same single source of truth
 // intentEngine.js's own pre-flow step 4.5 uses, reused here so the mid-flow
@@ -2186,6 +2186,25 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
 
   // ── 15. Active flow ───────────────────────────────────────────────────────
   if (session.currentFlow) {
+    // Typed browse requests must escape an active flow before advance() can
+    // consume them as a flow answer. Use the same explicit catalog action as
+    // the Browse Catalog button; product-specific order text remains owned by
+    // the active ORDER flow.
+    if (!isInteractive && (VIEW_MENU_DIRECT_RE.test(normalise(messageText))
+        || GENERIC_CATALOG_DIRECT_RE.test(normalise(messageText)))) {
+      const catalogReply = await route({
+        action: 'BROWSE_CATALOG',
+        intent: 'BROWSE_CATALOG',
+        session,
+        message: messageText,
+        business,
+        tenant: tenantDoc,
+        isInteractive: false,
+      });
+      if (catalogReply) await dispatchMessage(from, catalogReply, tenantDoc);
+      return;
+    }
+
     // Natural-order ambiguity continuation: the clarification buttons use the
     // live menu item's name as their ID. Consume that selection before any
     // generic intent/flow-switch/stale-button logic can reset the session.

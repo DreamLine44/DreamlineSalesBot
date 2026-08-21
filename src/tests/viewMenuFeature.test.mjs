@@ -118,6 +118,8 @@ test('intentEngine.js: natural browse phrases are available to the active-flow w
   const webhook = readSource('../controllers/webhookController.js');
   assert.match(webhook, /VIEW_MENU_DIRECT_RE\.test\(normalise\(messageText\)\)/,
     'Active ORDER flows must reuse the same natural browse matcher as fresh conversations');
+  assert.match(webhook, /GENERIC_CATALOG_DIRECT_RE\.test\(normalise\(messageText\)\)/,
+    'Active flows must also recognize generic food requests as native catalog browse requests');
 });
 
 test('detectIntent: typed "start over" / "home" / "restart" / "0" still resolve to SHOW_MENU (unchanged)', async () => {

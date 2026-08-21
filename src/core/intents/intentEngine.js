@@ -78,6 +78,11 @@ export const BOOKING_DIRECT_RE = /\b(book|reserve|reservation|appointment|table 
 // on AI being configured or confident.
 export const VIEW_MENU_DIRECT_RE = /\b(what (?:do|does) (?:you|yall|you all) (?:have|sell|offer|serve|carry)|what (?:food\s+options?|food|foods|items?|products?|dishes|options?) (?:do|does) (?:you|yall|you all) (?:have|sell|offer|serve|carry)|what'?s on (?:the|your) menu|(?:can|could) i see (?:all\s+)?(?:the|your) (?:food|foods|items?|products?|dishes|options?|menu|catalog|catalogue)|(?:i\s+)?(?:want|would like|would love|need) to (?:see|view|browse) (?:all\s+)?(?:the|your)?\s*(?:food|foods|items?|products?|dishes|options?|menu|catalog|catalogue)|show me (?:all\s+)?(?:the|your) (?:food|foods|items?|products?|dishes|options?|menu|catalog|catalogue)|see (?:all\s+)?(?:the|your) (?:food|foods|items?|products?|dishes|options?|menu|catalog|catalogue)|view (?:all\s+)?(?:the|your) (?:food|foods|items?|products?|dishes|options?|menu|catalog|catalogue)|browse (?:all\s+)?(?:the|your)? ?(?:food|foods|items?|products?|dishes|options?|menu|catalog|catalogue))\b/;
 
+// Generic food requests are browsing requests when they contain no product
+// name. Route them through the same explicit catalog action as the Browse
+// Catalog button; product-specific requests still use START_ORDER below.
+export const GENERIC_CATALOG_DIRECT_RE = /\b(i want food|i need food|food please|get food|order food|order some food|i want to order food|i want to order some food|i want to eat|what can i eat|what do you have to eat|what food do you have|what are (?:your|the) food options)\b/;
+
 // [FIX-QUESTION-VS-ORDER] ORDER_DIRECT_RE matches the bare word "i want" —
 // but "I want to know the prices of your food items" / "I'd like to know
 // your hours" also contain "i want"/"i d like" and are genuine information
@@ -236,6 +241,14 @@ export async function detectIntent({ message, isInteractive = false, session, bu
   // ── 3. Digit / very short (likely quantity or noise) ──────────────────────
   if (/^\d+$/.test(raw) || raw.length <= 1) {
     return { action: 'CONTINUE_FLOW', intent: 'CONTINUE_FLOW', confidence: 'HIGH', source: 'numeric' };
+  }
+
+  // Generic food/menu requests must win before exact ORDER keywords such as
+  // "i need food" or "order food", so they use the same explicit catalog
+  // action as the interactive Browse Catalog button.
+  if (!session?.currentFlow && !DIRECT_INTENT_EXCLUDE_RE.test(clean)
+      && !QUESTION_LEADIN_RE.test(clean) && GENERIC_CATALOG_DIRECT_RE.test(clean)) {
+    return { action: 'BROWSE_CATALOG', intent: 'BROWSE_CATALOG', confidence: 'HIGH', source: 'generic-catalog-phrase' };
   }
 
   // ── 4. Exact keyword match ────────────────────────────────────────────────
