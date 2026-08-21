@@ -77,6 +77,7 @@ test('detectIntent: generic food requests use the exact BROWSE_CATALOG action', 
   for (const message of [
     'I want to order food',
     'What can I eat?',
+    'What could I eat?',
     'I need food',
     'What food do you have?',
   ]) {

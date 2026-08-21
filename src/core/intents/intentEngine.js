@@ -81,7 +81,7 @@ export const VIEW_MENU_DIRECT_RE = /\b(what (?:do|does) (?:you|yall|you all) (?:
 // Generic food requests are browsing requests when they contain no product
 // name. Route them through the same explicit catalog action as the Browse
 // Catalog button; product-specific requests still use START_ORDER below.
-export const GENERIC_CATALOG_DIRECT_RE = /\b(i want food|i need food|food please|get food|order food|order some food|i want to order food|i want to order some food|i want to eat|what can i eat|what do you have to eat|what food do you have|what are (?:your|the) food options)\b/;
+export const GENERIC_CATALOG_DIRECT_RE = /\b(i want food|i need food|food please|get food|order food|order some food|i want to order food|i want to order some food|i want to eat|what (?:can|could) i eat|what do you have to eat|what food do you have|what are (?:your|the) food options)\b/;
 
 // [FIX-QUESTION-VS-ORDER] ORDER_DIRECT_RE matches the bare word "i want" —
 // but "I want to know the prices of your food items" / "I'd like to know

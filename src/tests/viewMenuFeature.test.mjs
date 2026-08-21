@@ -122,6 +122,13 @@ test('intentEngine.js: natural browse phrases are available to the active-flow w
     'Active flows must also recognize generic food requests as native catalog browse requests');
 });
 
+test('dispatcher.js: rejected catalog messages get one final plain-text attempt', () => {
+  const src = readSource('../core/whatsapp/dispatcher.js');
+  assert.match(src, /FIX-CATALOG-TEXT-LAST-RESORT/);
+  assert.match(src, /finalFallbackText = ui\.body \|\| ui\.text/);
+  assert.match(src, /finalTextPayload = buildPayload\(to, \{ type: 'text'/);
+});
+
 test('detectIntent: typed "start over" / "home" / "restart" / "0" still resolve to SHOW_MENU (unchanged)', async () => {
   const phrases = ['start over', 'home', 'restart'];
   for (const message of phrases) {

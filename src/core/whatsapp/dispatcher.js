@@ -574,6 +574,28 @@ export async function dispatchMessage(to, ui, tenant) {
         })();
       }
 
+      // [FIX-CATALOG-TEXT-LAST-RESORT] If Meta rejects both the original
+      // catalog payload and the catalog_message downgrade, make one final
+      // plain-text attempt. This cannot repair invalid credentials or a
+      // network outage, but it prevents a rich-message schema/catalog error
+      // from becoming total silence when ordinary text delivery still works.
+      const finalFallbackText = ui.body || ui.text;
+      if (finalFallbackText && ui.type !== 'text') {
+        const finalTextPayload = buildPayload(to, { type: 'text', body: finalFallbackText });
+        if (finalTextPayload) {
+          logger.warn('[Dispatch] Retrying rejected message as final plain-text fallback', {
+            to, originalType: ui.type, tenantId: tenant?._id,
+          });
+          const finalResp = await _postPayloadToMeta(url, finalTextPayload, token);
+          if (finalResp.ok) {
+            logger.debug('[Dispatch] ✓ Final plain-text fallback sent via Meta API', {
+              to, tenantId: tenant?._id,
+            });
+            return finalResp;
+          }
+        }
+      }
+
       // [FIX-DISPATCH-FALSE-SUCCESS] A Meta 4xx/5xx must not be handed back to
       // callers as a truthy value — sendCatalogMessage() and friends treat any
       // truthy return as "message actually sent" and skip fallback behavior.
