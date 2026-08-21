@@ -238,6 +238,13 @@ export async function detectIntent({ message, isInteractive = false, session, bu
     return { action: 'CONTINUE_FLOW', intent: 'CONTINUE_FLOW', confidence: 'HIGH', source: 'numeric' };
   }
 
+  // Generic food/menu requests must win before exact ORDER keywords such as
+  // "i need food" or "order food", so they use the explicit catalog action.
+  if (!session?.currentFlow && !DIRECT_INTENT_EXCLUDE_RE.test(clean)
+      && !QUESTION_LEADIN_RE.test(clean) && GENERIC_CATALOG_DIRECT_RE.test(clean)) {
+    return { action: 'BROWSE_CATALOG', intent: 'BROWSE_CATALOG', confidence: 'HIGH', source: 'generic-catalog-phrase' };
+  }
+
   // ── 4. Exact keyword match ────────────────────────────────────────────────
   for (const [intent, keywords] of Object.entries(INTENT_PATTERNS)) {
     if (keywords.includes(clean)) {

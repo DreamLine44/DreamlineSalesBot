@@ -123,7 +123,7 @@
  */
 
 import { getSession, createSession, updateSession } from '../core/sessions/sessionService.js';
-import { detectIntent, extractCustomerName, normalise, VIEW_MENU_DIRECT_RE } from '../core/intents/intentEngine.js';
+import { detectIntent, extractCustomerName, normalise, VIEW_MENU_DIRECT_RE, GENERIC_CATALOG_DIRECT_RE } from '../core/intents/intentEngine.js';
 import { INTENT_PATTERNS }                           from '../core/intents/patterns.js';
 // [FSI] Direct ORDER/BOOKING phrase regexes — same single source of truth
 // intentEngine.js's own pre-flow step 4.5 uses, reused here so the mid-flow
@@ -1732,6 +1732,25 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
     }).select('_id item quantity shortId paymentStatus').sort({ createdAt: -1 }).lean().catch(() => null);
 
     if (pendingOrder) {
+      const isCatalogBrowsePOL = !isInteractive && (
+        VIEW_MENU_DIRECT_RE.test(normalise(messageText))
+        || GENERIC_CATALOG_DIRECT_RE.test(normalise(messageText))
+      );
+
+      if (isCatalogBrowsePOL) {
+        const catalogReply = await route({
+          action: 'BROWSE_CATALOG',
+          intent: 'BROWSE_CATALOG',
+          session,
+          message: messageText,
+          business,
+          tenant: tenantDoc,
+          isInteractive: false,
+        });
+        if (catalogReply) await dispatchMessage(from, catalogReply, tenantDoc);
+        return;
+      }
+
       // ── Cancel escape ────────────────────────────────────────────────────
       if (isEscPOL) {
         await Order.findOneAndUpdate(
@@ -2470,20 +2489,38 @@ export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj,
     }
 
     if (isInteractive && pendingNaturalCandidate) {
-      const directReply = await route({
-        action: 'START_ORDER',
-        intent: 'ORDER',
-        session: freshSession,
-        message: `${pendingNaturalQuantity} ${messageText}`,
-        business,
-        tenant: tenantDoc,
-        isInteractive: true,
-      });
-      if (directReply) {
-        const directPayloads = Array.isArray(directReply) ? directReply : [directReply];
-        for (const directPayload of directPayloads) await dispatchMessage(from, directPayload, tenantDoc);
+      // The customer is answering the ambiguity prompt, not starting a new
+      // order. Resolve the selected item/variant directly so START_ORDER's
+      // generic browse detection cannot discard the pending quantity or reset
+      // the session to the welcome menu.
+      const { mergeCartLines, parseNaturalOrderMessage: parseSelectedOrder } = await import('../core/shared/cartEngine.js');
+      const selected = parseSelectedOrder(
+        (business?.menuItems || []).filter(item => item.available !== false),
+        `${pendingNaturalQuantity} ${messageText}`,
+      );
+      if (selected?.lines?.length === 1) {
+        const data = {
+          ...(freshSession.data || {}),
+          cart: mergeCartLines(
+            Array.isArray(freshSession.data?.cart) ? freshSession.data.cart : [],
+            selected.lines,
+          ),
+          pendingNaturalQuantity: null,
+          _nluPending: null,
+        };
+        await updateSession(from, tenantId, {
+          currentFlow: 'ORDER', step: 'CONFIRM', data, orderChannel: 'menu', menuViewed: true,
+        });
+        const reply = await advance({
+          session: { ...freshSession, currentFlow: 'ORDER', step: 'CONFIRM', data, orderChannel: 'menu' },
+          message: null, business, tenant: tenantDoc, isInteractive: false,
+        });
+        if (reply) {
+          const payloads = Array.isArray(reply) ? reply : [reply];
+          for (const payload of payloads) await dispatchMessage(from, payload, tenantDoc);
+        }
+        return;
       }
-      return;
     }
 
     // [FIX-MFQ-BTN] MFQ response buttons (MFQ_SWITCH_YES, MFQ_SWITCH_NO, MFQ_RESUME_FLOW)
