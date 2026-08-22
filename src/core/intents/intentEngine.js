@@ -32,6 +32,8 @@ import levenshtein from 'fast-levenshtein';
 import { INTENT_PATTERNS, BUTTON_ID_MAP, EMOJI_MAP } from './patterns.js';
 import { getAIReply } from '../ai/providers/aiRouter.js';
 import { analyzeMessage } from './negationGuard.js';
+import { isMenuBrowsingIntent } from './menuIntentDetector.js';
+import { getModeConfig } from '../../config/modes.js';
 import logger from '../../config/logger.js';
 
 // ── Normalise ─────────────────────────────────────────────────────────────────
@@ -321,13 +323,40 @@ export async function detectIntent({ message, isInteractive = false, session, bu
   // falling back to brittle regex stripping. If Groq is unavailable, disabled,
   // or extracts nothing, this degrades gracefully to the old deterministic
   // behavior — the order/booking intent itself never depends on AI succeeding.
+  // [FIX-MENU-QUESTION-GUARD] Menu-browsing requests must NOT be gated behind
+  // QUESTION_LEADIN_RE. That guard exists to stop "I want to know the price"
+  // from being misread as an ORDER (a purchase-risk action) — it was never
+  // meant to also block "I want to know what's on the menu" from reaching the
+  // catalog. Browsing the menu carries none of ORDER's/BOOKING's risk (nothing
+  // is purchased or reserved), so it's checked in its own unguarded block,
+  // ahead of the ORDER/BOOKING phrase match below. Still respects
+  // DIRECT_INTENT_EXCLUDE_RE (cancel/track/status phrasing) and the no-active-
+  // flow rule like every other step-4.5 check.
+  //
+  // [FIX-MENU-CAPABILITY-GATE] Mirrors the [FIX-FSI-2] capability gate
+  // webhookController.js's _detectMidFlowSwitchRequest already applies before
+  // offering a flow switch. SERVICES/GENERAL businesses declare
+  // flows: ['ENQUIRY', 'BOOKING'] — no ORDER/catalog flow exists for them at
+  // all (they're pure quote/consultation businesses with nothing to
+  // "browse"). The welcome-menu "🛍 Browse Catalog" button is already hidden
+  // for them via shouldShowCatalogButton(), but a typed phrase had no
+  // equivalent gate — "what do you offer" variants that don't exact-match
+  // the QUESTION keyword list would otherwise be deterministically routed
+  // into BROWSE_CATALOG → browseCatalogExplicit() → a fallback
+  // startFlow('ORDER') that has no registered ORDER handler for their mode,
+  // producing a broken/empty response instead of the text answer their
+  // QUESTION flow would have given. Gating on cfg.flows.includes('ORDER')
+  // lets the message fall through to QUESTION/AI classify instead, which is
+  // what these modes are actually built to answer.
+  const _menuCapableMode = (getModeConfig(business).flows || []).includes('ORDER');
+  if (_menuCapableMode && !session?.currentFlow && !DIRECT_INTENT_EXCLUDE_RE.test(clean) && isMenuBrowsingIntent(clean)) {
+    // Natural browsing requests use the same explicit catalog action as the
+    // "View items" button, so they cannot be diverted into a generic menu
+    // renderer before the native WhatsApp catalog path is reached.
+    return { action: 'BROWSE_CATALOG', intent: 'BROWSE_CATALOG', confidence: 'HIGH', source: 'direct-phrase' };
+  }
+
   if (!session?.currentFlow && !DIRECT_INTENT_EXCLUDE_RE.test(clean) && !QUESTION_LEADIN_RE.test(clean)) {
-    if (VIEW_MENU_DIRECT_RE.test(clean)) {
-      // Natural browsing requests use the same explicit catalog action as the
-      // "View items" button, so they cannot be diverted into a generic menu
-      // renderer before the native WhatsApp catalog path is reached.
-      return { action: 'BROWSE_CATALOG', intent: 'BROWSE_CATALOG', confidence: 'HIGH', source: 'direct-phrase' };
-    }
     if (BOOKING_DIRECT_RE.test(clean)) {
       return { action: 'START_BOOKING', intent: 'BOOKING', confidence: 'HIGH', source: 'direct-phrase' };
     }
@@ -527,6 +556,27 @@ function actionToIntent(action) {
 // ── Map intent → action ───────────────────────────────────────────────────────
 function intentToAction(intent, business) {
   const mode = (business?.businessMode || 'RETAIL').toUpperCase();
+
+  // [FIX-MENU-CAPABILITY-GATE] VIEW_MENU can reach this function from three
+  // places — the step-4 exact-keyword match, the direct-phrase detector
+  // (menuIntentDetector.js), and the AI classifier (getValidIntents() lists
+  // VIEW_MENU for every mode unconditionally) — so the gate belongs here,
+  // centrally, rather than duplicated at each call site. SERVICES/GENERAL
+  // businesses have no ORDER/catalog flow (flows: ['ENQUIRY', 'BOOKING']);
+  // mapping VIEW_MENU → BROWSE_CATALOG for them would route into
+  // browseCatalogExplicit()'s fallback startFlow('ORDER'), which for these
+  // modes only ever finds the generic ORDER handler operating on a business
+  // with no menuItems — a broken/empty response instead of the text answer
+  // their QUESTION flow is actually built to give. Downgrading to QUESTION
+  // here reuses the exact same mode-specific Q&A handler "what do you offer"
+  // already resolves to when it hits the QUESTION keyword list directly.
+  if (intent === 'VIEW_MENU') {
+    const cfg = getModeConfig(business);
+    if (!(cfg.flows || []).includes('ORDER')) {
+      return 'QUESTION';
+    }
+  }
+
   const map = {
     ACKNOWLEDGEMENT:    'ACKNOWLEDGE',
     CANCEL_ALL:         'CANCEL_ALL',  // [FIX-CANCEL-ALL] bulk cancel all active orders

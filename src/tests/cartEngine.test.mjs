@@ -108,6 +108,92 @@ test('multi-item parser strips an order-introduction prefix', () => {
   assert.equal(byName.Coke, 2);
 });
 
+test('[FIX-MULTIITEM-REPEATED-LEADIN] a repeated "I want (to order)" lead-in on the SECOND item does not swallow its quantity', () => {
+  // Real customer phrasing: the "I want ..." clause is repeated per item
+  // instead of said once at the start of the message. Before the fix, the
+  // second occurrence survived per-segment extraction untouched, so its
+  // quantity (4) was lost and it defaulted to 1.
+  const gambianMenu = [
+    { _id: '10', name: 'Benachin', price: 150, available: true },
+    { _id: '11', name: 'Domoda',   price: 180, available: true },
+  ];
+  const result = parseMultiItemMessage(
+    gambianMenu,
+    'I want a plate of benachin, I want to order 4 plates of domoda',
+  );
+  assert.ok(result);
+  const byName = Object.fromEntries(result.lines.map(l => [l.item.name, l.quantity]));
+  assert.equal(byName['Benachin'], 1);
+  assert.equal(byName['Domoda'], 4);
+});
+
+test('[FIX-MULTIITEM-REPEATED-LEADIN] works with a word-number quantity too ("four plates of domoda")', () => {
+  const gambianMenu = [
+    { _id: '10', name: 'Benachin', price: 150, available: true },
+    { _id: '11', name: 'Domoda',   price: 180, available: true },
+  ];
+  const result = parseMultiItemMessage(
+    gambianMenu,
+    'I want a plate of benachin, I want to order four plates of domoda',
+  );
+  assert.ok(result);
+  const domoda = result.lines.find(l => l.item.name === 'Domoda');
+  assert.equal(domoda.quantity, 4);
+});
+
+test('[FIX-MULTIITEM-NO-PUNCTUATION] repeated "I want" with NO comma/connector between clauses still splits into 2 items', () => {
+  // Customers don't always punctuate. A repeated "I want"/"I want to order"
+  // mid-message is itself an unambiguous new-item signal even with nothing
+  // else marking the boundary.
+  const gambianMenu = [
+    { _id: '10', name: 'Benachin', price: 150, available: true },
+    { _id: '11', name: 'Domoda',   price: 180, available: true },
+  ];
+  const result = parseMultiItemMessage(
+    gambianMenu,
+    'i want a plate of benachin i want to order 4 plates of domoda',
+  );
+  assert.ok(result);
+  const byName = Object.fromEntries(result.lines.map(l => [l.item.name, l.quantity]));
+  assert.equal(byName['Benachin'], 1);
+  assert.equal(byName['Domoda'], 4);
+});
+
+test('[FIX-MULTIITEM-PERIOD-SEP] two sentences separated by a period both parse correctly', () => {
+  const gambianMenu = [
+    { _id: '10', name: 'Benachin', price: 150, available: true },
+    { _id: '11', name: 'Domoda',   price: 180, available: true },
+  ];
+  const result = parseMultiItemMessage(
+    gambianMenu,
+    'I want a plate of Benachin. I want to order 4 plates of Domoda.',
+  );
+  assert.ok(result);
+  const byName = Object.fromEntries(result.lines.map(l => [l.item.name, l.quantity]));
+  assert.equal(byName['Benachin'], 1);
+  assert.equal(byName['Domoda'], 4);
+});
+
+test('[FIX-MULTIITEM-PERIOD-SEP] a trailing period on an ordinary single-item message does not falsely trigger multi-item parsing', () => {
+  const result = parseMultiItemMessage(menu, 'I want mac and cheese.');
+  assert.equal(result, null);
+});
+
+test('[FIX-MULTIITEM-SLASH-QTY] literal "four/4" (two spellings of the same quantity jammed together) resolves to 4, not 1', () => {
+  const gambianMenu = [
+    { _id: '10', name: 'Benachin', price: 150, available: true },
+    { _id: '11', name: 'Domoda',   price: 180, available: true },
+  ];
+  const result = parseMultiItemMessage(
+    gambianMenu,
+    'I want a plate of benachin, I want to order four/4 plates of domoda',
+  );
+  assert.ok(result);
+  const byName = Object.fromEntries(result.lines.map(l => [l.item.name, l.quantity]));
+  assert.equal(byName['Benachin'], 1);
+  assert.equal(byName['Domoda'], 4);
+});
+
 test('[CART-AI-TRAILING-QTY] trailing quantity form "Coke x2" is understood, not defaulted to 1', () => {
   const result = parseMultiItemMessage(menu, 'Coke x2, Fries x3');
   assert.ok(result);
