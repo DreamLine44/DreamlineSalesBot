@@ -99,7 +99,16 @@ app.use(cors({
     return cb(null, true);
   },
   methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'x-api-key', 'x-sim-key'],
+  // [FIX-CORS-AUTH-HEADER] authMiddleware.js's tryBearerAuth() (the
+  // multi-admin staff-login system — [FEATURE-MULTIADMIN-1]) reads
+  // `Authorization: Bearer <token>` on every request, but that header was
+  // never in allowedHeaders. A cross-origin request from the real dashboard
+  // frontend sending Authorization fails the browser's CORS preflight
+  // before the request is even sent — the backend logic was correct and
+  // fully tested, but no browser-based caller could ever reach it. Staff
+  // login (StaffPage.jsx / AcceptInvitePage.jsx) was silently unusable from
+  // any deployed frontend origin.
+  allowedHeaders: ['Content-Type', 'x-api-key', 'x-sim-key', 'Authorization'],
 }));
 
 // ── Body parsing ──────────────────────────────────────────────────────────────

@@ -39,6 +39,7 @@ import UserProfile    from '../models/UserProfile.js';
 import BusinessConfig from '../models/BusinessConfig.js';
 import Tenant         from '../models/Tenant.js';
 import { getAnalyticsSummary, getAnalyticsTimeseries } from '../core/analytics/analyticsService.js';
+import { getTenantUsageSummary } from '../services/usageService.js';
 import { updateSession }       from '../core/sessions/sessionService.js';
 import { dispatchText, dispatchMessage } from '../core/whatsapp/dispatcher.js';
 import { scheduleWaCatalogSync } from '../modules/catalog/waCatalogSyncScheduler.js';
@@ -72,19 +73,25 @@ export async function getDashboardOverview(req, res) {
     const { tenantId } = req.params;
     const since30 = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
 
-    const [orders, bookings, customers, humanModes, analytics, business] = await Promise.all([
+    const [orders, bookings, customers, humanModes, analytics, business, usage] = await Promise.all([
       Order.countDocuments({ tenantId, createdAt: { $gte: since30 } }),
       Booking.countDocuments({ tenantId, createdAt: { $gte: since30 } }),
       UserProfile.countDocuments({ tenantId }),
       Session.countDocuments({ tenantId, humanMode: true }),
       getAnalyticsSummary(tenantId, 30),
       BusinessConfig.findOne({ tenantId }).select('name businessMode adminPhone').lean(),
+      // [AUDIT-FIX-USAGE-WIRE] getTenantUsageSummary() was built specifically
+      // "for the dashboard overview" per its own doc comment, but nothing ever
+      // called it — plan/limits/usage were invisible to every tenant. Folded
+      // in here alongside the other overview reads.
+      getTenantUsageSummary(tenantId).catch(() => null),
     ]);
 
     res.json({
       business,
       last30Days: { orders, bookings, customers, revenue: analytics.revenue },
       activeHumanSessions: humanModes,
+      usage,
     });
   } catch (err) {
     logger.error('[Dashboard] getDashboardOverview failed', { err: err.message });

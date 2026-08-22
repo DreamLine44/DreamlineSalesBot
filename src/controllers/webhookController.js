@@ -1392,6 +1392,19 @@ async function _handleIncomingMessageSerialized({ tenantId, tenantDoc, from, msg
     return;
   }
 
+  // [AUDIT-FIX-USAGE-WIRE] usageService.incrementTenantUsage() was fully built
+  // (Tenant.usage.messagesThisMonth counter + resetDate rollover) but never
+  // actually called from anywhere — the schema field was pure dead weight and
+  // every tenant's usage stayed at 0 forever, regardless of plan or traffic.
+  // Fire-and-forget per the service's own contract: never awaited, errors are
+  // swallowed inside the service itself, so a tracking failure can never
+  // delay or break the actual customer-facing reply. Placed here — past the
+  // dedup and empty-message guards, with a confirmed BusinessConfig — so it
+  // only counts genuine inbound customer messages, not retries or no-ops.
+  import('../services/usageService.js')
+    .then(({ incrementTenantUsage }) => incrementTenantUsage(tenantId))
+    .catch(() => {});
+
   // ── 4. Session ────────────────────────────────────────────────────────────
   let session = await getSession(from, tenantId);
   if (!session) {

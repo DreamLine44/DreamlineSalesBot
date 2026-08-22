@@ -232,18 +232,7 @@ function buildPayload(to, ui) {
     // to catalog_message instead of returning null and sending the customer
     // into the ordinary text-menu fallback. catalog_message is the native
     // browse-all experience and does not require a header or product IDs.
-    // [DIAG-PRODLIST-NULL] This is the only path that returns null for
-    // product_list. Every legitimate caller (waCatalogService.sendCatalogMessage)
-    // sets ui.catalogId unconditionally, so this should only ever fire if a
-    // caller is passing a malformed ui object directly — log exactly why so
-    // that's diagnosable instead of a bare "malformed" with no cause, since
-    // the generic [Dispatch] warn one level up only reports type/hadBody.
-    if (!ui.catalogId) {
-      logger.warn('[Dispatch] product_list buildPayload: missing ui.catalogId — this should never happen from sendCatalogMessage()', {
-        to, hasHeader: !!ui.header, sectionCount: (ui.sections || []).length,
-      });
-      return null;
-    }
+    if (!ui.catalogId) return null;
     if (!sections.length || !ui.header) {
       return {
         messaging_product: 'whatsapp', recipient_type: 'individual',

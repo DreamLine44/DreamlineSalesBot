@@ -254,8 +254,15 @@ test('moduleRouter.js: case BROWSE_CATALOG delegates to the existing browseCatal
   const src = readSource('../core/conversations/moduleRouter.js');
   const start = src.indexOf("case 'BROWSE_CATALOG':");
   assert.ok(start !== -1, 'case BROWSE_CATALOG must exist');
-  const end = src.indexOf('case ', start + 10) === -1 ? src.length : src.indexOf("case '", start + 20);
-  const body = src.slice(start, start + 600);
+  // [FIX-VIEWMENU-BUTTON-FIRST] added an early-return "View Items" button
+  // gate ahead of the browseCatalogExplicit() call, so the import/call now
+  // sits further into the case body than a short fixed-width slice
+  // reaches. Bound the slice on the next top-level `case ` instead of a
+  // fixed char count, so this guard still catches any *actual*
+  // reimplementation of catalog logic without going stale every time a
+  // legitimate comment or branch is added above the existing call.
+  const nextCaseIdx = src.indexOf("\n    case '", start + 20);
+  const body = src.slice(start, nextCaseIdx === -1 ? src.length : nextCaseIdx);
   assert.ok(body.includes("import('../../modules/catalog/waCatalogFlow.js')"));
   assert.ok(body.includes('browseCatalogExplicit({ session, business, tenant })'));
 });

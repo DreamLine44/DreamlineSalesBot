@@ -73,7 +73,7 @@ test('a direct-order handoff (message: null, step already CONFIRM) lands straigh
   assert.ok(!reply.buttonLabel || reply.buttonLabel !== 'View Menu');
 });
 
-test('a genuine fresh flow start (message: null, no step set) still shows the normal INIT menu — no regression', async () => {
+test('a genuine fresh flow start (message: null, no step set) on a WA-Catalog-ready tenant goes straight to catalog — not the legacy list', async () => {
   const session = {
     customerPhone: '2203532423',
     tenantId:      't1',
@@ -84,8 +84,32 @@ test('a genuine fresh flow start (message: null, no step set) still shows the no
 
   const reply = await handleOrderFlow({ session, message: null, business, tenant });
 
-  // No catalog session flag set (data.orderViaCatalog !== true), so this
-  // legitimately falls back to the text/list menu — unchanged behavior.
+  // [AUDIT-FIX-XZ-REMOVE] `business` here has a fully live, synced WA
+  // Catalog (isCatalogEnabled() === true). Per that fix, a catalog-ready
+  // tenant is routed to the catalog even when the session never stamped
+  // data.orderViaCatalog — the legacy text/list menu is retired for these
+  // tenants. This must NOT be the legacy list.
+  assert.notEqual(reply.type, 'list');
+});
+
+test('a genuine fresh flow start (message: null, no step set) on a tenant WITHOUT WA Catalog still shows the normal legacy list menu — no regression', async () => {
+  const nonCatalogBusiness = {
+    ...business,
+    waCatalog: { enabled: false },
+  };
+  const session = {
+    customerPhone: '2203532423',
+    tenantId:      't1',
+    currentFlow:   'ORDER',
+    step:          null,
+    data:          {},
+  };
+
+  const reply = await handleOrderFlow({ session, message: null, business: nonCatalogBusiness, tenant });
+
+  // No catalog session flag set (data.orderViaCatalog !== true) and
+  // isCatalogEnabled() is false, so this legitimately falls back to the
+  // text/list menu — unchanged behavior for non-catalog tenants.
   assert.equal(reply.type, 'list');
   assert.equal(reply.buttonLabel, 'View Menu');
 });

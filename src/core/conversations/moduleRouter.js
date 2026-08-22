@@ -530,15 +530,30 @@ export async function route({ action, intent, session, message, business, tenant
     // already handles its own graceful fallback to the module's normal ORDER
     // flow when WA Catalog isn't configured/enabled for the tenant.
     case 'BROWSE_CATALOG': {
-      // [REMOVE-VIEWMENU-BUTTON-FIRST] A typed natural-language menu request
-      // (e.g. "what do you have in your menu", matched by
-      // VIEW_MENU_DIRECT_RE) previously showed an interstitial "🛍 View
-      // Items" button and waited for a second tap before sending the actual
-      // WA Catalog product list ([FIX-VIEWMENU-BUTTON-FIRST]). That extra
-      // round trip is now removed: any trigger of this action — typed or
-      // tapped — goes straight to browseCatalogExplicit(), which already
-      // handles its own graceful fallback to the module's normal ORDER
-      // flow when WA Catalog isn't configured/enabled for the tenant.
+      // [FIX-VIEWMENU-BUTTON-FIRST] A typed natural-language menu request
+      // (isInteractive: false — e.g. "what do you have in your menu",
+      // matched by VIEW_MENU_DIRECT_RE) previously jumped straight into
+      // browseCatalogExplicit(), silently dispatching the full native WA
+      // Catalog product list. That's inconsistent with every other entry
+      // point to this same action, which is always a deliberate tap on
+      // the "🛍 View Items"/"Browse Catalog" button — the customer asked
+      // a question, they didn't ask to have a Meta catalog UI pushed at
+      // them unprompted. Show that same button first; only send the
+      // actual catalog once THAT tap comes back through here as
+      // isInteractive: true. Only shown when shouldShowCatalogButton() is
+      // true (catalog enabled + has sellable products) — a tenant without
+      // WA Catalog configured skips straight to browseCatalogExplicit(),
+      // which already falls back to the text/list ORDER menu on its own,
+      // so gating the button here avoids a pointless extra round trip
+      // that would only end in that same fallback anyway.
+      if (!isInteractive && shouldShowCatalogButton(business)) {
+        return {
+          type: 'buttons',
+          body: business?.customMessages?.viewMenuPrompt
+            || `🍽️ Here's how to see what we have — tap below!`,
+          buttons: [{ id: 'BROWSE_CATALOG', title: '🛍 View Items' }],
+        };
+      }
       const { browseCatalogExplicit } = await import('../../modules/catalog/waCatalogFlow.js');
       return browseCatalogExplicit({ session, business, tenant });
     }
