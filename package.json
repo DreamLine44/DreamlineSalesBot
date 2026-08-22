@@ -3,17 +3,18 @@
   "version": "2.0.0",
   "description": "WhatSales AI WhatsApp Business Sales Automation Platform",
   "type": "module",
-  "main": "app.js",
+  "main": "src/app.js",
   "engines": {
     "node": ">=18.0.0"
   },
   "scripts": {
-    "start": "node app.js",
+    "start": "node src/app.js",
     "dev": "node --watch src/app.js",
-    "seed": "node scripts/seed.js",
-    "health": "node scripts/health.js",
-    "genKey": "node scripts/genKey.js",
-    "migrate": "node scripts/migrate_remove_raw_api_keys.js",
+    "test": "node --test src/tests/*.test.mjs",
+    "seed": "node src/scripts/seed.js",
+    "health": "node src/scripts/health.js",
+    "genKey": "node src/scripts/genKey.js",
+    "migrate": "node src/scripts/migrate_remove_raw_api_keys.js",
     "publish:booking-date-flow": "node src/scripts/publishBookingDateFlow.mjs"
   },
   "dependencies": {
