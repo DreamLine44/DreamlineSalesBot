@@ -179,6 +179,21 @@ test('[FIX-MULTIITEM-PERIOD-SEP] a trailing period on an ordinary single-item me
   assert.equal(result, null);
 });
 
+test('[FIX-MULTIITEM-SLASH-QTY] literal "four/4" (two spellings of the same quantity jammed together) resolves to 4, not 1', () => {
+  const gambianMenu = [
+    { _id: '10', name: 'Benachin', price: 150, available: true },
+    { _id: '11', name: 'Domoda',   price: 180, available: true },
+  ];
+  const result = parseMultiItemMessage(
+    gambianMenu,
+    'I want a plate of benachin, I want to order four/4 plates of domoda',
+  );
+  assert.ok(result);
+  const byName = Object.fromEntries(result.lines.map(l => [l.item.name, l.quantity]));
+  assert.equal(byName['Benachin'], 1);
+  assert.equal(byName['Domoda'], 4);
+});
+
 test('[CART-AI-TRAILING-QTY] trailing quantity form "Coke x2" is understood, not defaulted to 1', () => {
   const result = parseMultiItemMessage(menu, 'Coke x2, Fries x3');
   assert.ok(result);

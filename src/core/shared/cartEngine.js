@@ -145,8 +145,30 @@ function stripLeadIn(s) {
   return String(s || '').replace(LEAD_IN_RE, '').trim();
 }
 
+// [FIX-MULTIITEM-SLASH-QTY] A customer sometimes writes the quantity as
+// "four/4 plates of domoda" or "4/4 plates of domoda" — two spellings of the
+// SAME number jammed together with a slash (voice-to-text artifact, or
+// autocorrect offering both forms), not a fraction. Previously neither the
+// plate-phrase regex nor the leading-quantity regex could match a token
+// containing "/", so the whole "four/4" token was rejected outright and the
+// quantity silently defaulted to 1. This collapses a leading "A/B" token to
+// a single resolved number first, whenever at least one side parses as a
+// real quantity, so downstream matching sees a normal "4 plates of domoda".
+const LEADING_SLASH_QTY_RE = /^([a-z]+|\d+)\s*\/\s*([a-z]+|\d+)(\s+.*)$/i;
+
+function collapseSlashQuantity(s) {
+  const m = s.match(LEADING_SLASH_QTY_RE);
+  if (!m) return s;
+  const left = parseQuantity(m[1]);
+  const right = parseQuantity(m[2]);
+  const resolved = left || right; // both forms of "four/4" agree; if they
+  // genuinely differ, favor the left (first-spoken) side rather than reject.
+  if (!resolved) return s;
+  return `${resolved}${m[3]}`;
+}
+
 export function extractQuantityAndName(segment) {
-  const trimmed = stripLeadIn(segment.trim()) || segment.trim();
+  const trimmed = collapseSlashQuantity(stripLeadIn(segment.trim()) || segment.trim());
 
   const plateMatch = trimmed.match(/^((?:\d+|[a-z]+(?:[\s-][a-z]+)?))\s+plates?\s+of\s+(.+)$/i);
   if (plateMatch) {
@@ -188,10 +210,10 @@ export function parseNaturalOrderMessage(menu = [], text = '') {
   const raw = String(text || '').trim();
   if (!raw || !Array.isArray(menu) || !menu.length) return null;
 
-  const withoutLead = raw
+  const withoutLead = collapseSlashQuantity(raw
     .replace(/^(?:i\s+)?(?:want|need|would\s+like|like\s+to\s+order)\s+(?:to\s+order\s+)?/i, '')
     .replace(/^(?:can\s+i\s+)?(?:give|get|have|order|buy|purchase)\s+(?:me\s+)?/i, '')
-    .trim();
+    .trim());
 
   const plateMatch = withoutLead.match(/^((?:\d+|[a-z]+(?:[\s-][a-z]+)?))\s+plates?\s+of\s+(.+)$/i);
   const { quantity, name } = plateMatch
