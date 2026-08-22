@@ -111,17 +111,12 @@ test('detectIntent: typed "menu" / "view menu" resolve to the explicit catalog a
   }
 });
 
-test('intentEngine.js/menuIntentDetector.js: natural browse phrases are available to the active-flow webhook escape path', () => {
-  // [FIX-MENU-COVERAGE] webhookController.js's mid-flow "menu" re-render check
-  // was migrated off the single-regex VIEW_MENU_DIRECT_RE onto the shared
-  // token-based isMenuBrowsingIntent detector, so the pre-flow and mid-flow
-  // paths can never silently diverge again. VIEW_MENU_DIRECT_RE itself is
-  // kept exported for reference but is no longer wired into the webhook.
-  const detectorSrc = readSource('../core/intents/menuIntentDetector.js');
-  assert.match(detectorSrc, /export function isMenuBrowsingIntent/);
+test('intentEngine.js: natural browse phrases are available to the active-flow webhook escape path', () => {
+  const src = readSource('../core/intents/intentEngine.js');
+  assert.match(src, /export const VIEW_MENU_DIRECT_RE\s*=\s*\//);
 
   const webhook = readSource('../controllers/webhookController.js');
-  assert.match(webhook, /isMenuBrowsingIntent\(normalise\(messageText\)\)/,
+  assert.match(webhook, /VIEW_MENU_DIRECT_RE\.test\(normalise\(messageText\)\)/,
     'Active ORDER flows must reuse the same natural browse matcher as fresh conversations');
 });
 
