@@ -1,29 +1,17 @@
 // tests/viewMenuButtonFirst.test.mjs
 //
-// [FIX-VIEWMENU-BUTTON-FIRST] Regression tests.
+// [FIX-VIEWMENU-BUTTON-FIRST] / [AUDIT-FIX-CATALOG-DIRECT] Regression tests.
 //
-// BUG: A typed natural-language menu request ("what do you have in your
-// menu", matched by VIEW_MENU_DIRECT_RE) resolves to intent VIEW_MENU ->
-// action BROWSE_CATALOG (intentToAction), which moduleRouter.js's case
-// 'BROWSE_CATALOG' handled by calling browseCatalogExplicit() immediately —
-// silently dispatching the full native WhatsApp Catalog product list with
-// no button ever shown. Every OTHER path into this same action (tapping the
-// actual "🛍 View Items"/"Browse Catalog" nav button, or the "📋 View Menu"
-// button inside an active order) is a deliberate tap; a typed question
-// should not skip straight past the button and unilaterally push a Meta
-// catalog UI at the customer.
+// HISTORY: [FIX-VIEWMENU-BUTTON-FIRST] originally made a typed menu request
+// (isInteractive: false) show a "🛍 View Items" confirmation button before
+// ever calling browseCatalogExplicit(), so the customer had to tap twice —
+// once to trigger the flow, once more to actually see the catalog.
 //
-// FIX: core/conversations/moduleRouter.js's case 'BROWSE_CATALOG' now
-// checks `isInteractive`. When the trigger was NOT an interactive tap (i.e.
-// it came from typed-text intent detection) AND the tenant's WA Catalog is
-// actually usable (shouldShowCatalogButton), it returns a buttons reply
-// showing "🛍 View Items" instead of calling browseCatalogExplicit()
-// directly. Tapping that button re-enters this same case with
-// isInteractive: true, which then dispatches the catalog exactly as
-// before. A tenant with no usable catalog (shouldShowCatalogButton false)
-// skips the button and goes straight to browseCatalogExplicit(), which
-// already falls back to the text/list ORDER menu on its own — unchanged,
-// since showing a button that would only ever fail serves no purpose.
+// [AUDIT-FIX-CATALOG-DIRECT] removed that intermediate step at explicit
+// request: both a typed menu request AND a real button tap now call
+// browseCatalogExplicit() immediately and unconditionally — no button-first
+// gate, no isInteractive check in this case at all. These tests were updated
+// to assert the current (direct) behavior instead of the old two-step one.
 //
 // moduleRouter.js is a large, DB/session-coupled router not designed for
 // full unit import in isolation (same constraint noted in
@@ -40,16 +28,18 @@ function readSource(relPath) {
   return fs.readFileSync(new URL(relPath, import.meta.url), 'utf8');
 }
 
-test('moduleRouter.js: case BROWSE_CATALOG shows the View Items button for a non-interactive (typed) trigger', () => {
+test('moduleRouter.js: case BROWSE_CATALOG calls browseCatalogExplicit() directly for a typed (non-interactive) trigger — no intermediate button', () => {
   const src = readSource('../core/conversations/moduleRouter.js');
   const caseMatch = src.match(/case 'BROWSE_CATALOG':\s*\{[\s\S]*?\n    \}/);
   assert.ok(caseMatch, 'case BROWSE_CATALOG block should exist');
   const block = caseMatch[0];
 
-  assert.match(block, /if \(!isInteractive && shouldShowCatalogButton\(business\)\)/,
-    'must gate the button-first reply on !isInteractive and an actually-usable catalog');
-  assert.match(block, /id:\s*'BROWSE_CATALOG',\s*title:\s*'🛍 View Items'/,
-    'the typed-trigger reply must offer the same BROWSE_CATALOG button id so tapping it re-enters this case');
+  assert.doesNotMatch(block, /if \(!isInteractive/,
+    'the button-first gate was intentionally removed — this case must not branch on isInteractive');
+  assert.doesNotMatch(block, /id:\s*'BROWSE_CATALOG',\s*title:\s*'🛍 View Items'/,
+    'the intermediate "🛍 View Items" confirmation button object was intentionally removed');
+  assert.match(block, /const \{ browseCatalogExplicit \} = await import\('\.\.\/\.\.\/modules\/catalog\/waCatalogFlow\.js'\);/);
+  assert.match(block, /return browseCatalogExplicit\(\{ session, business, tenant \}\);/);
 });
 
 test('moduleRouter.js: case BROWSE_CATALOG still dispatches the catalog directly for a real button tap', () => {
@@ -57,8 +47,7 @@ test('moduleRouter.js: case BROWSE_CATALOG still dispatches the catalog directly
   const caseMatch = src.match(/case 'BROWSE_CATALOG':\s*\{[\s\S]*?\n    \}/);
   const block = caseMatch[0];
 
-  // The fallthrough (isInteractive: true, or no usable catalog) must still
-  // reach the unchanged browseCatalogExplicit() call.
+  // Unconditional now — same call path for both a tap and typed text.
   assert.match(block, /const \{ browseCatalogExplicit \} = await import\('\.\.\/\.\.\/modules\/catalog\/waCatalogFlow\.js'\);/);
   assert.match(block, /return browseCatalogExplicit\(\{ session, business, tenant \}\);/);
 });
