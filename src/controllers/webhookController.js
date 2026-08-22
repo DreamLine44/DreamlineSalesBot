@@ -123,7 +123,12 @@
  */
 
 import { getSession, createSession, updateSession } from '../core/sessions/sessionService.js';
-import { detectIntent, extractCustomerName, normalise, VIEW_MENU_DIRECT_RE } from '../core/intents/intentEngine.js';
+import { detectIntent, extractCustomerName, normalise } from '../core/intents/intentEngine.js';
+// [FIX-MENU-COVERAGE] Replaces the old VIEW_MENU_DIRECT_RE single-regex import —
+// this mid-flow "menu" re-render check must use the same token-based detector
+// as the pre-flow path (intentEngine.js step 4.5), or the two paths silently
+// diverge again every time one gets a new phrasing added and the other doesn't.
+import { isMenuBrowsingIntent } from '../core/intents/menuIntentDetector.js';
 import { INTENT_PATTERNS }                           from '../core/intents/patterns.js';
 // [FSI] Direct ORDER/BOOKING phrase regexes — same single source of truth
 // intentEngine.js's own pre-flow step 4.5 uses, reused here so the mid-flow
@@ -2766,7 +2771,13 @@ async function _handleIncomingMessageSerialized({ tenantId, tenantDoc, from, msg
     if (upperMsg === 'VIEW_MENU' || upperMsg === 'SHOW_MENU' || upperMsg === 'MENU' || upperMsg === 'SHOW MENU'
         || upperMsg === 'VIEW MENU' || upperMsg === 'SEE MENU' || upperMsg === 'MAIN MENU'
       || upperMsg === 'BACK TO MENU'
-      || (!isInteractive && VIEW_MENU_DIRECT_RE.test(normalise(messageText)))
+      // [FIX-MENU-COVERAGE] Was VIEW_MENU_DIRECT_RE — a single hand-written
+      // regex that only matched sentence shapes it was explicitly written
+      // for (e.g. missed "what to eat" while matching "what can I eat").
+      // isMenuBrowsingIntent uses the same token-based verb+noun detector as
+      // the pre-flow check in intentEngine.js, so a customer mid-ORDER-flow
+      // gets identical menu-phrase coverage to a customer with no active flow.
+      || (!isInteractive && isMenuBrowsingIntent(normalise(messageText)))
       // [FIX-STUCK-ORDER-GENERIC] A generic re-order phrase with no actual
       // product name ("I want to order food", "I want to order") gets the
       // exact same treatment as an explicit "view menu" request — see

@@ -87,10 +87,30 @@ import { formatMoney } from '../../utils/formatCurrency.js';
 const norm = (s = '') =>
   s.toLowerCase().replace(/[^\w\s]/g, ' ').replace(/\s+/g, ' ').trim();
 
-// Segment separators: commas, semicolons, newlines, "+"/"&", and the words
-// and/also/plus used as connectors between items ("a burger AND a coke").
-// Word-boundary so "sandwich" doesn't get split on a stray "and" substring.
-const SEGMENT_SPLIT_RE = /\s*(?:,|;|\n|\+|&|\band\b|\balso\b|\bplus\b)\s*/i;
+// Segment separators: commas, periods, semicolons, newlines, "+"/"&", and
+// the words and/also/plus used as connectors between items ("a burger AND a
+// coke"). Word-boundary so "sandwich" doesn't get split on a stray "and"
+// substring. [FIX-MULTIITEM-PERIOD-SEP] Period added — customers who write
+// two full sentences ("I want a plate of benachin. I want 4 plates of
+// domoda.") got no split at all before this, since "." wasn't a recognised
+// separator, silently defeating multi-item detection.
+const SEGMENT_SPLIT_RE = /\s*(?:,|;|\.|\n|\+|&|\band\b|\balso\b|\bplus\b)\s*/i;
+
+// [FIX-MULTIITEM-NO-PUNCTUATION] Customers who list several items with NO
+// punctuation or connector word at all between clauses — "i want a plate of
+// benachin i want to order 4 plates of domoda" — never hit SEGMENT_SPLIT_RE
+// above either, so the whole message was treated as one unsplittable phrase
+// and multi-item detection silently gave up (returned null) even though a
+// repeated "I want"/"I need"/"can I get" mid-message is itself an
+// unambiguous signal that a new item clause is starting. This inserts an
+// explicit boundary right before each such mid-message occurrence (not the
+// one at position 0, which the leading .replace() calls above already
+// consume) so the normal split above can then do its job.
+const IMPLICIT_ITEM_BOUNDARY_RE = /\b(?:i\s+(?:want|need|would\s+like)(?:\s+to\s+order)?|can\s+i\s+(?:get|have|order|buy|purchase)(?:\s+me)?)\b/gi;
+
+function insertImplicitItemBoundaries(text) {
+  return text.replace(IMPLICIT_ITEM_BOUNDARY_RE, (match, offset) => (offset === 0 ? match : `, ${match}`));
+}
 
 // Leading-quantity extraction: "2 burgers", "two burgers", "2x burgers",
 // "2× burgers", "a burger", "twenty five burgers". Falls back to quantity 1
@@ -105,8 +125,28 @@ const LEADING_QTY_RE = /^\s*(\d+|[a-z]+(?:[\s-][a-z]+)?)\s*[x×]?\s+(.+)$/i;
 // silently losing the customer's actual count.
 const TRAILING_QTY_RE = /^(.+?)\s*(?:[x×]\s*(\d+)|\((\d+)\)|\*\s*(\d+))\s*$/i;
 
+// [FIX-MULTIITEM-REPEATED-LEADIN] Customers frequently repeat a full
+// "I want (to order)" / "can I get" clause on EACH item when listing several
+// in one message — e.g. "I want a plate of benachin, I want to order 4
+// plates of domoda" — rather than saying it only once at the very start.
+// Previously this lead-in was stripped once from the whole raw message
+// (below, in parseMultiItemMessage/parseNaturalOrderMessage), so a SECOND
+// occurrence mid-message survived untouched into extractQuantityAndName(),
+// which had no idea "I want to order 4 plates of domoda" meant qty 4 — the
+// leading-quantity regex greedily consumed "I want" as a fake word-number,
+// parseQuantity("I want") correctly returned null, and the whole clause fell
+// through to the qty-1 default with the item name reduced to garbage. This
+// shared helper strips the same lead-in phrasing per-segment too, so every
+// item in a multi-item message gets its quantity read correctly regardless
+// of which item it's mentioned alongside.
+const LEAD_IN_RE = /^(?:(?:i\s+)?(?:want|need|would\s+like)\s+(?:to\s+order\s+)?|(?:can\s+i\s+)?(?:get|have|order|buy|purchase)\s+(?:me\s+)?)/i;
+
+function stripLeadIn(s) {
+  return String(s || '').replace(LEAD_IN_RE, '').trim();
+}
+
 export function extractQuantityAndName(segment) {
-  const trimmed = segment.trim();
+  const trimmed = stripLeadIn(segment.trim()) || segment.trim();
 
   const plateMatch = trimmed.match(/^((?:\d+|[a-z]+(?:[\s-][a-z]+)?))\s+plates?\s+of\s+(.+)$/i);
   if (plateMatch) {
@@ -259,7 +299,7 @@ export function parseMultiItemMessage(menu = [], text = '') {
     if (ratio <= 1.5) return null;
   }
 
-  const segments = raw
+  const segments = insertImplicitItemBoundaries(raw)
     .split(SEGMENT_SPLIT_RE)
     .map(s => s.trim())
     .filter(Boolean);
