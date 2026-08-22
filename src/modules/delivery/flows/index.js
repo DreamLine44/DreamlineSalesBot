@@ -391,8 +391,10 @@ export async function handleDeliveryOrder({ session, message, business, tenant, 
         const timeMatch = raw.match(/(\d{1,2})(:\d{2})?\s*(am|pm)/i) ||
                           raw.match(/\b([01]?\d|2[0-3]):[0-5]\d\b/);
         if (timeMatch && parsedSlotDate) {
-          const { validateTime: _vt } = await import('../../../core/conversations/bookingFlow.js').catch(() => ({ validateTime: null }));
-          // validateTime is not exported — inline a lightweight check
+          // [AUDIT-FIX-DEAD-IMPORT] validateTime is not exported by bookingFlow.js
+          // (it's a private, unexported function there) — the dynamic import that
+          // used to sit here always resolved to undefined and was discarded
+          // unused. Removed; the lightweight inline check below is the real logic.
           const safeZone = (() => { try { Intl.DateTimeFormat(undefined, { timeZone: tz }); return tz; } catch { return 'UTC'; } })();
           const parts = new Intl.DateTimeFormat('en-CA', { timeZone: safeZone, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false }).formatToParts(new Date());
           const get = (type) => parseInt(parts.find(p => p.type === type)?.value || '0', 10);

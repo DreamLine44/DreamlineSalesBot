@@ -492,6 +492,12 @@ export async function registerAllModules() {
   registerAction('START_BOOKING', async ({ session, message, business, tenant }) => {
     const { startFlow } = await import('../conversations/flowEngine.js');
     const { advance } = await import('../conversations/flowEngine.js');
+    // [AUDIT-FIX-BOOKING-UPDATESESSION] updateSession was called here but never
+    // imported in this action handler's closure (it's imported inside the
+    // separate START_ORDER handler above, which doesn't help this one) —
+    // every direct-booking request for a service-less business threw
+    // "updateSession is not defined" instead of confirming the booking.
+    const { updateSession } = await import('../sessions/sessionService.js');
     const directBooking = await parseDirectBookingRequest(message, business).catch(() => null);
     if (directBooking && !(business?.services || []).length) {
       const updated = await updateSession(session.customerPhone, session.tenantId, {

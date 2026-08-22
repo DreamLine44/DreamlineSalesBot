@@ -3619,8 +3619,19 @@ export async function receiveWebhook(req, res) {
         }
 
         for (const msg of value.messages || []) {
+          // [AUDIT-FIX-SAFETYNET-SCOPE] Hoisted out of the try block below.
+          // Previously `from` and `tenant` were declared with `const` INSIDE the
+          // try{} — invisible to the catch{} block that follows it. The
+          // [FIX-SILENCE-SAFETYNET] fallback reply in that catch block referenced
+          // both, so instead of guaranteeing the customer got a reply on any
+          // unexpected error, it threw its own "from is not defined" /
+          // "tenant is not defined" ReferenceError, which was swallowed by the
+          // fallback's own inner try/catch — leaving the customer with the exact
+          // total silence this safety net was written to prevent.
+          let from   = msg?.from;
+          let tenant = null;
           try {
-            const from   = msg.from;
+            from   = msg.from;
             const msgType = msg.type || 'unknown';
 
             logger.info('[Webhook] ► Incoming message', {
@@ -3630,7 +3641,7 @@ export async function receiveWebhook(req, res) {
               wamid: msg.id,
             });
 
-            const tenant = await Tenant.findOne({ 'whatsapp.phoneNumberId': phoneNumberId, status: 'ACTIVE' }).lean();
+            tenant = await Tenant.findOne({ 'whatsapp.phoneNumberId': phoneNumberId, status: 'ACTIVE' }).lean();
 
             // [LOG-1d] No ACTIVE tenant for this phoneNumberId — the most common
             // cause of total silence. Warn so the operator knows immediately.
