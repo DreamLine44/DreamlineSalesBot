@@ -16,7 +16,7 @@ import {
   tryDatabaseAnswer,
 } from '../services/questionAnswerService.js';
 import { resolveDirectOrderParse } from '../core/shared/cartEngine.js';
-import { isBusinessScopeQuestion, isInformationalActivityQuestion, isStayInQuestionMessage } from '../services/questionModeHelper.js';
+import { isBusinessScopeQuestion, isInformationalActivityQuestion, isBookingInfoQuestion, isStayInQuestionMessage, isGreetingMessage } from '../services/questionModeHelper.js';
 
 function readSource(relPath) {
   return fs.readFileSync(new URL(relPath, import.meta.url), 'utf8');
@@ -348,7 +348,19 @@ test('isInformationalActivityQuestion distinguishes asks from actions', () => {
   assert.equal(isInformationalActivityQuestion('what can i book'), true);
   assert.equal(isInformationalActivityQuestion('what i can o book'), true);
   assert.equal(isInformationalActivityQuestion('what is this all about'), true);
+  assert.equal(isInformationalActivityQuestion('what do you have on your menu'), false);
   assert.equal(isInformationalActivityQuestion('i want to book a table for tonight'), false);
+});
+
+test('isBookingInfoQuestion blocks catalog for booking asks', () => {
+  assert.equal(isBookingInfoQuestion('what do you offer for booking'), true);
+  assert.equal(isBookingInfoQuestion('what do you have on your menu'), false);
+});
+
+test('isGreetingMessage recognises bare hi/hello', () => {
+  assert.equal(isGreetingMessage('hi'), true);
+  assert.equal(isGreetingMessage('hello'), true);
+  assert.equal(isGreetingMessage('what can i book'), false);
 });
 
 test('isStayInQuestionMessage recognises keep-asking phrasing', () => {
@@ -407,7 +419,7 @@ test('activityStatusService uses reference-first lookup', () => {
   assert.match(src, /trackingContext/);
 });
 
-test('processQuestionMessage handles general messages without throwing', async () => {
+test('processQuestionMessage returns welcome menu for bare greetings', async () => {
   const { processQuestionMessage } = await import('../services/questionAnswerService.js');
   const business = {
     businessMode: 'RESTAURANT',
@@ -422,9 +434,8 @@ test('processQuestionMessage handles general messages without throwing', async (
     tenant: {},
     intent: 'FAQ',
   });
-  assert.ok(reply.body);
-  assert.equal(reply.type, 'text');
-  assert.equal(reply.buttons, undefined);
+  assert.equal(reply.type, 'welcome_sequence');
+  assert.ok(Array.isArray(reply.sequence) && reply.sequence.length > 0);
 });
 
 test('webhook ENQUIRY path uses resolveQuestionReply and recordQuestionHistory', () => {

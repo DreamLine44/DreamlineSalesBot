@@ -35,6 +35,8 @@
  * browse-the-catalog request", not whether it's safe to act on right now.
  */
 
+import { isBookingInfoQuestion } from '../../services/questionModeHelper.js';
+
 // Words that unambiguously mean "the browsable list of things you sell",
 // regardless of surrounding words. Safe to fire on their own.
 const STRONG_STANDALONE_NOUNS = [
@@ -104,6 +106,7 @@ export function isMenuBrowsingIntent(clean) {
 export function isCatalogBrowseRequest(message) {
   const raw = String(message || '').trim();
   if (!raw) return false;
+  if (isBookingInfoQuestion(raw)) return false;
   const clean = raw.toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, ' ').replace(/\s+/g, ' ').trim();
   if (isMenuBrowsingIntent(clean)) return true;
   if (MENU_BROWSE_RE.test(raw)) return true;

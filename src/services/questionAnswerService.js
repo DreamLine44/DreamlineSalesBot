@@ -29,6 +29,7 @@ import {
   mergeQuestionContext,
   buildQuestionContextBlock,
   isInformationalActivityQuestion,
+  isGreetingMessage,
 } from './questionModeHelper.js';
 import { getModeConfig } from '../config/modes.js';
 
@@ -500,6 +501,16 @@ export async function tryDatabaseAnswer({ message, business, session }) {
  */
 export async function processQuestionMessage({ session, message, business, tenant, intent = 'FAQ' }) {
   const raw = String(message || '').trim();
+
+  if (isGreetingMessage(raw)) {
+    const cfg = getModeConfig(business);
+    const { buildWelcomeSequence } = await import('../core/conversations/moduleRouter.js');
+    return {
+      type: 'welcome_sequence',
+      sequence: buildWelcomeSequence(business, cfg),
+      exitQuestionMode: true,
+    };
+  }
 
   if (!isBusinessScopeQuestion(raw, business)) {
     return {

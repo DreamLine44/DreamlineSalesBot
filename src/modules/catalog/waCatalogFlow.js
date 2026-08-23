@@ -203,11 +203,13 @@ export async function tryShowCatalogForMenuRequest({ message, session, business,
     normalise, DIRECT_INTENT_EXCLUDE_RE, ORDER_DIRECT_RE, QUESTION_LEADIN_RE,
   } = await import('../../core/intents/intentEngine.js');
   const { isCatalogBrowseRequest } = await import('../../core/intents/menuIntentDetector.js');
+  const { isBookingInfoQuestion } = await import('../../services/questionModeHelper.js');
   const { resolveDirectOrderParse } = await import('../../core/shared/cartEngine.js');
 
   const raw = String(message || '').trim();
   const clean = normalise(raw);
   if (!clean || DIRECT_INTENT_EXCLUDE_RE.test(clean)) return null;
+  if (isBookingInfoQuestion(raw)) return null;
 
   let shouldShow = isCatalogBrowseRequest(raw);
 

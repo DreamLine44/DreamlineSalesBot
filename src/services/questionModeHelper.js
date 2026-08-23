@@ -9,6 +9,9 @@ const OFF_TOPIC_RE = /\b(weather|forecast|temperature|president|election|politic
 /** Customer wants to stay in Q&A — not switch to order/booking. */
 const STAY_IN_QUESTION_RE = /\b(still asking|keep asking|am still asking|i'?m still asking|just asking|still have questions|more questions|continue asking|asking questions|not ready to (?:book|order)|don'?t want to (?:book|order) yet)\b/i;
 
+/** Bare greetings — should show the welcome menu, not a text-only AI reply. */
+const GREETING_ONLY_RE = /^(?:hi|hello|hey|hiya|howdy|yo|sup|good morning|good afternoon|good evening|greetings|salaam|salam)[!.?\s]*$/i;
+
 const RESTAURANT_TOPIC_RE = /\b(menu|food|dish|meal|order|booking|book|table|price|cost|how\s+much|allergen|gluten|nut|dairy|vegan|halal|hours|open|close|opening|closing|promo|discount|policy|payment|pay|wave|cash|contact|phone|address|location|delivery|pickup|collect|ingredient|special|today|tonight|tomorrow|track|status|ref|reference|#\w+)\b/i;
 
 const SALON_TOPIC_RE = /\b(service|hair|cut|style|salon|barber|appointment|booking|walk.?in|queue|price|cost|hours|open|close|aftercare|product|track|status|ref|reference)\b/i;
@@ -49,7 +52,10 @@ export function isInformationalActivityQuestion(message) {
   }
   if (/\bwhat is this (?:all )?about\b/.test(clean)) return true;
   if (/\bhow does (?:booking|ordering|reservation) work\b/.test(clean)) return true;
-  if (/\bwhat (?:do you|can you|could you) (?:offer|have|provide|serve)\b/.test(clean)) return true;
+  if (/\bwhat (?:do you|can you|could you) (?:offer|have|provide|serve)\b/.test(clean)) {
+    if (/\b(?:menu|food|dishes?|meals?|eat)\b/.test(clean)) return false;
+    if (/\b(?:book|reserve|booking|reservation|table|appointment)\b/.test(clean)) return true;
+  }
 
   if (/\bwhat\b/.test(clean) && /\b(?:book|order|reserve|booking|reservation)\b/.test(clean)) {
     if (/\bwhat (?:can|could|do|should|is|are)\b/.test(clean)) return true;
@@ -63,6 +69,21 @@ export function isStayInQuestionMessage(message) {
   const raw = String(message || '').trim();
   if (!raw) return false;
   return STAY_IN_QUESTION_RE.test(raw);
+}
+
+/** True for bare hi/hello/hey — route to welcome menu with options, not AI text. */
+export function isGreetingMessage(message) {
+  const raw = String(message || '').trim();
+  if (!raw) return false;
+  return GREETING_ONLY_RE.test(raw);
+}
+
+/** Booking/reservation info ask — should be answered in Q&A, not open WA Catalog. */
+export function isBookingInfoQuestion(message) {
+  const raw = String(message || '').trim();
+  if (!raw || !/\b(?:book|reserve|booking|reservation|table|appointment)\b/i.test(raw)) return false;
+  if (/\b(?:menu|food|dishes?|meals?|eat)\b/i.test(raw)) return false;
+  return isInformationalActivityQuestion(raw);
 }
 
 /** @deprecated Use isBusinessScopeQuestion — kept for backward compatibility. */

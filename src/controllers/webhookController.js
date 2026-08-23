@@ -134,7 +134,7 @@ import { INTENT_PATTERNS }                           from '../core/intents/patte
 // intentEngine.js's own pre-flow step 4.5 uses, reused here so the mid-flow
 // switch intercept below can never silently drift from the pre-flow behavior.
 import { ORDER_DIRECT_RE, BOOKING_DIRECT_RE, DIRECT_INTENT_EXCLUDE_RE, QUESTION_LEADIN_RE } from '../core/intents/intentEngine.js';
-import { isInformationalActivityQuestion, isStayInQuestionMessage } from '../services/questionModeHelper.js';
+import { isInformationalActivityQuestion, isStayInQuestionMessage, isGreetingMessage } from '../services/questionModeHelper.js';
 import { findBestMatch }                             from '../utils/matchEngine.js';
 import { updateName as persistCustomerName }         from '../core/memory/customerMemory.js';
 import { advance, startFlow }                        from '../core/conversations/flowEngine.js';
@@ -2286,6 +2286,28 @@ async function _handleIncomingMessageSerialized({ tenantId, tenantDoc, from, msg
       return;
     }
 
+    // Bare hi/hello while in Q&A → full welcome menu with options (not text-only AI).
+    if (!isInteractive && (isGreetingMessage(messageText) || intentResult?.action === 'GREET')) {
+      await updateSession(from, tenantId, {
+        currentFlow: null, step: null, postFlowAck: null, postFlowData: null,
+      }).catch(() => {});
+      const { route } = await import('../core/conversations/moduleRouter.js');
+      const greetReply = await route({
+        action: 'GREET',
+        intent: 'GREETING',
+        session: { ...session, currentFlow: null, step: null, data: {} },
+        message: messageText,
+        business,
+        tenant: tenantDoc,
+        isInteractive: false,
+      });
+      if (greetReply) {
+        const payloads = Array.isArray(greetReply) ? greetReply : [greetReply];
+        for (const payload of payloads) await dispatchMessage(from, payload, tenantDoc);
+      }
+      return;
+    }
+
     const reply = await resolveQuestionReply({
       session, message: messageText, business, tenant: tenantDoc, intent: 'FAQ',
       initPayload: {
@@ -2293,6 +2315,14 @@ async function _handleIncomingMessageSerialized({ tenantId, tenantDoc, from, msg
         body: '❓ What would you like to know? Ask about our menu, hours, orders, or bookings.',
       },
     });
+
+    if (reply?.type === 'welcome_sequence' && Array.isArray(reply.sequence)) {
+      await updateSession(from, tenantId, {
+        currentFlow: null, step: null, postFlowAck: null, postFlowData: null,
+      }).catch(() => {});
+      for (const payload of reply.sequence) await dispatchMessage(from, payload, tenantDoc);
+      return;
+    }
 
     await persistQuestionSession(session, tenantDoc, reply.context || { lastMessage: messageText });
     await recordQuestionHistory(session, messageText, reply);
@@ -3393,6 +3423,10 @@ async function _handleIncomingMessageSerialized({ tenantId, tenantDoc, from, msg
         const questionReply = await processQuestionMessage({
           session: flowlessSession, message: messageText, business, tenant: tenantDoc, intent: 'QUESTION',
         }).catch(() => null);
+        if (questionReply?.type === 'welcome_sequence' && Array.isArray(questionReply.sequence)) {
+          for (const payload of questionReply.sequence) await dispatchMessage(from, payload, tenantDoc);
+          return;
+        }
         if (questionReply) {
           await recordQuestionHistory(flowlessSession, messageText, questionReply).catch(() => {});
         }

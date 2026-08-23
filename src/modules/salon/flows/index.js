@@ -1275,14 +1275,12 @@ export async function handleSalonQuestion({ session, message, business, tenant }
       ? (isBarbershop ? 'BARBERSHOP_QUESTION' : 'SALON_CONSULTATION')
       : (isBarbershop ? 'BARBERSHOP_QUESTION' : 'SALON_QUESTION');
 
-  const { resolveQuestionReply, persistQuestionSession, recordQuestionHistory } = await import('../../../services/questionAnswerService.js');
+  const { resolveQuestionReply, persistQuestionSession, recordQuestionHistory, toWhatsAppPayload } = await import('../../../services/questionAnswerService.js');
   const reply = await resolveQuestionReply({ session, message: raw, business, tenant, intent });
   await persistQuestionSession(session, tenant, reply.context || { lastMessage: raw });
   await recordQuestionHistory(session, raw, reply);
 
-  // Answer-only: stay in QUESTION mode and wait — no buttons. Switching activity
-  // is picked up upstream from the customer's own words, not from a tap target.
-  const questionResponse = {
+  const questionResponse = toWhatsAppPayload(reply) || {
     type: reply.type || 'text',
     body: reply.body || `Great question! For detailed information please contact us directly.`,
   };
