@@ -1178,7 +1178,7 @@ export async function handleRestaurantQuestion({ session, message, business, ten
     };
   }
 
-  const { resolveQuestionReply, persistQuestionSession, recordQuestionHistory } = await import('../../../services/questionAnswerService.js');
+  const { resolveQuestionReply, persistQuestionSession, recordQuestionHistory, toWhatsAppPayload } = await import('../../../services/questionAnswerService.js');
 
   const reply = await resolveQuestionReply({
     session, message: raw, business, tenant, intent: 'FAQ',
@@ -1190,6 +1190,5 @@ export async function handleRestaurantQuestion({ session, message, business, ten
 
   await persistQuestionSession(session, tenant, reply.context || { lastMessage: raw });
   await recordQuestionHistory(session, raw, reply);
-  // Answer-only: stay in QUESTION mode — switching handled upstream.
-  return { type: reply.type, body: reply.body };
+  return toWhatsAppPayload(reply) || { type: 'text', body: '' };
 }

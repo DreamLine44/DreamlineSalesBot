@@ -95,7 +95,59 @@ test('tryDatabaseAnswer STATUS without ref delegates to buildStatusReply', () =>
   assert.match(statusBlock, /answerStatusQuestion/);
 });
 
-test('tryDatabaseAnswer returns menu from database for menu questions', async () => {
+test('tryDatabaseAnswer MENU requests catalog when WA Catalog is enabled', async () => {
+  const business = {
+    businessMode: 'RESTAURANT',
+    menuItems: [{ name: 'Domoda', price: 200, available: true }],
+    payment: { currency: 'GMD' },
+    waCatalog: {
+      enabled: true,
+      catalogId: 'cat123',
+      mode: 'ALWAYS_OFFER',
+      lastSyncedAt: '2026-01-01T00:00:00.000Z',
+      syncedRetailerIds: ['domoda-001'],
+    },
+    meta: { catalogId: 'cat123' },
+  };
+  const result = await tryDatabaseAnswer({
+    message: 'What do you have on your menu?',
+    business,
+    session: { customerPhone: '2201234567', tenantId: 'test', data: {} },
+  });
+  assert.equal(result.showCatalog, true);
+  assert.equal(result.routingDecision, 'BROWSE_CATALOG');
+});
+
+test('isCatalogBrowseRequest detects natural menu phrasing', async () => {
+  const { isCatalogBrowseRequest } = await import('../core/intents/menuIntentDetector.js');
+  assert.ok(isCatalogBrowseRequest('what do you have in your menu'));
+  assert.ok(isCatalogBrowseRequest('what can i eat'));
+  assert.ok(isCatalogBrowseRequest('i want to order food'));
+  assert.equal(isCatalogBrowseRequest('cancel my order'), false);
+});
+
+test('waCatalogFlow exposes tryShowCatalogForMenuRequest', () => {
+  const src = readSource('../modules/catalog/waCatalogFlow.js');
+  assert.match(src, /tryShowCatalogForMenuRequest/);
+  assert.match(src, /isCatalogBrowseRequest/);
+});
+
+test('questionAnswerService exposes toWhatsAppPayload for catalog replies', () => {
+  const src = readSource('../services/questionAnswerService.js');
+  assert.match(src, /toWhatsAppPayload/);
+  assert.match(src, /catalogDispatched/);
+});
+
+test('webhook Q&A opens catalog before switch confirmation for menu asks', () => {
+  const src = readSource('../controllers/webhookController.js');
+  const block = src.slice(
+    src.indexOf('// ── 13. Question Mode (ENQUIRY'),
+    src.indexOf('// ── 14. Post-flow acknowledgement'),
+  );
+  assert.match(block, /tryShowCatalogForMenuRequest/);
+});
+
+test('tryDatabaseAnswer returns text menu when WA Catalog is not enabled', async () => {
   const result = await tryDatabaseAnswer({
     message: 'What do you have on your menu today?',
     business,
@@ -104,6 +156,7 @@ test('tryDatabaseAnswer returns menu from database for menu questions', async ()
   assert.equal(result.handled, true);
   assert.match(result.body, /Domoda/);
   assert.equal(result.routingDecision, 'VIEW_MENU');
+  assert.notEqual(result.showCatalog, true);
 });
 
 test('tryDatabaseAnswer resolves a contextual follow-up about whether listed items are all available', async () => {

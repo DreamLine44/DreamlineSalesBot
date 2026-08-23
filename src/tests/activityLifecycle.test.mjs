@@ -47,6 +47,25 @@ test('buildCustomerCancellableOrderFilter includes confirmed orders within 24h',
 test('extractShortId parses cancel #F93217', () => {
   assert.equal(extractShortId('cancel #F93217'), 'F93217');
   assert.equal(extractShortId('Cancel order #F93217'), 'F93217');
+  assert.equal(extractShortId('cancel DSB-0823-4C7DB7'), '4C7DB7');
+});
+
+test('extractShortId does not treat bare "cancel" as a reference', () => {
+  assert.equal(extractShortId('cancel'), null);
+  assert.equal(extractShortId('Cancel my order'), null);
+  assert.equal(extractShortId('cancel all'), null);
+});
+
+test('tryCustomerCancelRequest cancels most recent activity for bare cancel', async () => {
+  const src = readSource('../services/activityLifecycleService.js');
+  assert.match(src, /tryCustomerCancelRequest/);
+  assert.match(src, /BARE_CANCEL_RE/);
+  assert.match(src, /_cancelMostRecentActivity/);
+});
+
+test('webhookController uses tryCustomerCancelRequest for customer cancel', () => {
+  const src = readSource('../controllers/webhookController.js');
+  assert.match(src, /tryCustomerCancelRequest/);
 });
 
 test('moduleRouter CANCEL_ALL delegates to cancelAllActiveForCustomer', () => {
@@ -54,11 +73,6 @@ test('moduleRouter CANCEL_ALL delegates to cancelAllActiveForCustomer', () => {
   const block = src.slice(src.indexOf("case 'CANCEL_ALL':"), src.indexOf("case 'SUPPORT':"));
   assert.match(block, /cancelAllActiveForCustomer/);
   assert.doesNotMatch(block, /status:\s*'pending'/);
-});
-
-test('webhookController handles customer cancel-by-reference before routing', () => {
-  const src = readSource('../controllers/webhookController.js');
-  assert.match(src, /tryCustomerCancelByReference/);
 });
 
 test('activeOrderResolver expires stale activities on every lookup', () => {

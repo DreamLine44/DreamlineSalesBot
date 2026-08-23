@@ -12,6 +12,11 @@ import { getActiveBookings, getBookingByShortId } from './bookingService.js';
 
 const SHORT_ID_RE = /#?([A-Z0-9]{4,24})\b/i;
 
+/** Words that must never be parsed as activity reference IDs. */
+const RESERVED_REF_WORDS = new Set([
+  'CANCEL', 'ORDER', 'BOOKING', 'BOOK', 'STATUS', 'TRACK', 'REF', 'ACTIVITY', 'ALL',
+]);
+
 /** Extract a shortId from customer or admin text (#F921EB or F921EB). */
 export function extractShortId(message, session = null) {
   const raw = String(message || '').trim();
@@ -32,7 +37,8 @@ export function extractShortId(message, session = null) {
 
   const bare = raw.match(SHORT_ID_RE);
   if (bare && /\b(track|status|cancel|order|booking|ref)\b/i.test(raw)) {
-    return bare[1].toUpperCase();
+    const candidate = bare[1].toUpperCase();
+    if (!RESERVED_REF_WORDS.has(candidate)) return candidate;
   }
 
   // Bare ref reply while in tracking context (e.g. customer sends "F921EB" after prompt).

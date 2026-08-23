@@ -64,7 +64,13 @@ const BROWSE_SIGNALS = [
 // Common noun-less "what should I get / what's good" style browsing asks
 // that don't contain any of the nouns above at all, including this
 // platform's Gambian/West-African pidgin customer base.
-const IMPLICIT_MENU_RE = /\b(what'?s good|whats good|what'?s popular|whats popular|best\s?sell(?:er|ers)?|any recommendations?|recommend something|suggest something|surprise me|what'?s on offer|whats on offer|what do you (?:have|sell|offer|serve|carry)|what (?:can|could|should) (?:i|we|they) (?:eat|order|get|have)|what to (?:eat|order|get)|wetin (?:una|you|unu|you all|yall) (?:get|dey sell|dey get|get for sell|get to sell|de sell)|una get wetin|wetin dey (?:for|inside|on) (?:menu|catalog|catalogue)|make (?:i|we|una) see (?:the |una )?(?:menu|catalog|catalogue|wetin (?:una|you) get)|show (?:me|us) wetin (?:una|you|unu) (?:get|dey sell))\b/;
+const IMPLICIT_MENU_RE = /\b(what'?s good|whats good|what'?s popular|whats popular|best\s?sell(?:er|ers)?|any recommendations?|recommend something|suggest something|surprise me|what'?s on offer|whats on offer|what do you (?:have|sell|offer|serve|carry)|what (?:can|could|should) (?:i|we|they) (?:eat|order|get|have)|what to (?:eat|order|get)|what do you have in (?:the |your )?menu|what(?:'s| is) (?:on|in) (?:the |your )?menu|wetin (?:una|you|unu|you all|yall) (?:get|dey sell|dey get|get for sell|get to sell|de sell)|una get wetin|wetin dey (?:for|inside|on) (?:menu|catalog|catalogue)|make (?:i|we|una) see (?:the |una )?(?:menu|catalog|catalogue|wetin (?:una|you) get)|show (?:me|us) wetin (?:una|you|unu) (?:get|dey sell))\b/;
+
+/** Broader menu/food browse phrasing used by Q&A classification. */
+export const MENU_BROWSE_RE = /\b(menu|what do you (have|serve|sell|offer)|today'?s menu|show menu|view menu|see menu|what('s| is) (on|in) (the |your )?menu|list (of )?(food|items|products|dishes|services)|price list|catalog|available (food|items|products|dishes|services)|what can i eat|what could i eat|what should i eat|what to eat|what else do you have|anything else (available|on the menu))\b/i;
+
+/** Generic "order food" with no named item — browse the catalog, not a direct SKU order. */
+const GENERIC_FOOD_ORDER_RE = /\b(i want|i d like|i'd like|want|need|like) to order (food|something|a meal|meals|takeaway|take away|take-out|takeout)\b/i;
 
 function containsToken(text, phrases) {
   return phrases.some((p) => new RegExp('\\b' + p.replace(/\s+/g, '\\s+') + '\\b').test(text));
@@ -89,4 +95,17 @@ export function isMenuBrowsingIntent(clean) {
   if (IMPLICIT_MENU_RE.test(clean)) return true;
 
   return false;
+}
+
+/**
+ * Whether a free-text message is asking to browse food/menu items (not a specific
+ * product order, status check, or cancel request).
+ */
+export function isCatalogBrowseRequest(message) {
+  const raw = String(message || '').trim();
+  if (!raw) return false;
+  const clean = raw.toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, ' ').replace(/\s+/g, ' ').trim();
+  if (isMenuBrowsingIntent(clean)) return true;
+  if (MENU_BROWSE_RE.test(raw)) return true;
+  return GENERIC_FOOD_ORDER_RE.test(raw);
 }

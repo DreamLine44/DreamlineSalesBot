@@ -266,6 +266,15 @@ export async function tryDatabaseAnswer({ message, business, session }) {
   }
 
   if (qType === 'MENU') {
+    const { shouldShowCatalogButton } = await import('../modules/catalog/waCatalogConfig.js');
+    if (shouldShowCatalogButton(business)) {
+      return {
+        handled: true,
+        showCatalog: true,
+        routingDecision: 'BROWSE_CATALOG',
+        context: { lastMessage: raw, lastTopic: 'MENU' },
+      };
+    }
     const menuText = formatMenuText(business);
     return {
       handled: true,
@@ -419,11 +428,41 @@ export async function processQuestionMessage({ session, message, business, tenan
   }
 
   const dbAnswer = await tryDatabaseAnswer({ message: raw, business, session });
-  if (dbAnswer.handled && dbAnswer.body) {
+  if (dbAnswer.handled) {
+    if (dbAnswer.showCatalog) {
+      const { tryShowCatalogForMenuRequest } = await import('../modules/catalog/waCatalogFlow.js');
+      const catalogResult = await tryShowCatalogForMenuRequest({
+        message: raw, session, business, tenant,
+      });
+      if (catalogResult?.handled) {
+        return {
+          type: 'catalog',
+          catalogDispatched: !catalogResult.reply,
+          ...(catalogResult.reply || {}),
+          context: mergeQuestionContext(session, dbAnswer.context || { lastMessage: raw }),
+        };
+      }
+    }
+    if (dbAnswer.body) {
+      return {
+        type: 'text',
+        body: dbAnswer.body,
+        context: mergeQuestionContext(session, dbAnswer.context || { lastMessage: raw }),
+      };
+    }
+  }
+
+  // Natural menu/food browse outside strict DB MENU classification.
+  const { tryShowCatalogForMenuRequest } = await import('../modules/catalog/waCatalogFlow.js');
+  const catalogResult = await tryShowCatalogForMenuRequest({
+    message: raw, session, business, tenant,
+  });
+  if (catalogResult?.handled) {
     return {
-      type: 'text',
-      body: dbAnswer.body,
-      context: mergeQuestionContext(session, dbAnswer.context || { lastMessage: raw }),
+      type: 'catalog',
+      catalogDispatched: !catalogResult.reply,
+      ...(catalogResult.reply || {}),
+      context: mergeQuestionContext(session, { lastMessage: raw, lastTopic: 'MENU' }),
     };
   }
 
@@ -475,6 +514,18 @@ export async function recordQuestionHistory(session, userMessage, botPayload) {
  * Unified Q&A handler for all mode-specific QUESTION flows and generic ENQUIRY.
  * DB-first status/menu/hours, then AI fallback. Returns WhatsApp payload.
  */
+export function toWhatsAppPayload(reply) {
+  if (!reply || reply.catalogDispatched) return null;
+  if (reply.type && reply.type !== 'text') {
+    const { context, catalogDispatched, ...payload } = reply;
+    return payload;
+  }
+  if (reply.body) {
+    return { type: reply.type || 'text', body: reply.body, buttons: reply.buttons };
+  }
+  return null;
+}
+
 export async function resolveQuestionReply({ session, message, business, tenant, intent = 'FAQ', initPayload = null }) {
   const raw = String(message || '').trim();
 

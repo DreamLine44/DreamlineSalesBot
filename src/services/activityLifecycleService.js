@@ -232,22 +232,95 @@ export async function cancelMostRecentActiveOrder({ customerPhone, tenantId }) {
       },
     },
     { sort: { createdAt: -1 } },
-  ).select('shortId status paymentStatus').lean().catch(() => null);
+  ).select('shortId status paymentStatus item').lean().catch(() => null);
 }
 
+export async function cancelMostRecentActiveBooking({ customerPhone, tenantId }) {
+  return Booking.findOneAndUpdate(
+    buildActiveBookingFilter(customerPhone, tenantId),
+    {
+      $set: {
+        status:          'cancelled',
+        cancelledBy:     'customer',
+        cancelledAt:     new Date(),
+        adminDeclinedAt: new Date(),
+        adminNote:       'Cancelled by customer',
+      },
+    },
+    { sort: { createdAt: -1 } },
+  ).select('shortId service date time staff').lean().catch(() => null);
+}
+
+const BARE_CANCEL_RE = /^(cancel|cancel\s+(my\s+)?(order|booking|it|this))(\s+please)?$/i;
+
 /**
- * Customer cancel by reference — e.g. "cancel #F93217".
- * Returns a WhatsApp payload or null when the message isn't a ref cancel.
+ * Customer cancel request — bare "cancel" cancels the most recent active activity;
+ * "cancel #F93217" / "cancel DSB-0823-4C7DB7" cancels by reference.
+ * Returns null when the message should fall through to normal routing (e.g. cancel all).
  */
-export async function tryCustomerCancelByReference({ message, customerPhone, tenantId, business, tenant }) {
+export async function tryCustomerCancelRequest({ message, customerPhone, tenantId, business, tenant }) {
   const raw = String(message || '').trim();
   if (!raw || !/\bcancel\b/i.test(raw)) return null;
 
-  const ref = extractShortId(raw);
-  if (!ref) return null;
+  const upper = raw.toUpperCase();
+  if (upper === 'CANCEL_ALL' || /^cancel\s+all(\s+of\s+(them|the\s+orders?))?$/i.test(raw)) {
+    return null;
+  }
 
+  const ref = extractShortId(raw);
+  if (ref) {
+    return _cancelActivityByReference({ ref, customerPhone, tenantId, business });
+  }
+
+  const isBareCancel = BARE_CANCEL_RE.test(raw)
+    || upper === 'CANCEL' || upper === 'CANCEL_ORDER' || upper === 'CANCEL_BOOKING';
+  if (!isBareCancel) return null;
+
+  return _cancelMostRecentActivity({ customerPhone, tenantId, business });
+}
+
+/** @deprecated Use tryCustomerCancelRequest */
+export async function tryCustomerCancelByReference(opts) {
+  return tryCustomerCancelRequest(opts);
+}
+
+async function _cancelMostRecentActivity({ customerPhone, tenantId, business }) {
   const cfg = getModeConfig(business);
 
+  const order = await cancelMostRecentActiveOrder({ customerPhone, tenantId });
+  if (order) {
+    await updateSession(customerPhone, tenantId, {
+      currentFlow: null, step: null, postFlowAck: 'ORDER_REJECTED',
+      postFlowData: { item: order.item, shortId: order.shortId },
+    }).catch(() => {});
+
+    return buildOptionsReply(cfg, `✅ Order *#${order.shortId}* has been cancelled.`, [
+      { id: 'ORDER', title: '🛒 Place New Order' },
+      { id: 'QUESTION', title: '❓ Ask a Question' },
+    ]);
+  }
+
+  const booking = await cancelMostRecentActiveBooking({ customerPhone, tenantId });
+  if (booking) {
+    await updateSession(customerPhone, tenantId, {
+      postFlowAck: 'BOOKING_DECLINED',
+      postFlowData: { service: booking.service, date: booking.date, staff: booking.staff || null },
+    }).catch(() => {});
+
+    return buildOptionsReply(cfg, `✅ Booking *#${booking.shortId}* has been cancelled.`, [
+      { id: 'BOOK', title: '📅 Book Again' },
+      { id: 'QUESTION', title: '❓ Ask a Question' },
+    ]);
+  }
+
+  return {
+    type: 'text',
+    body: `ℹ️ No active orders or bookings found to cancel.`,
+  };
+}
+
+async function _cancelActivityByReference({ ref, customerPhone, tenantId, business }) {
+  const cfg = getModeConfig(business);
   const order = await getOrderByShortId(ref, tenantId);
   if (order) {
     if (order.customerPhone && order.customerPhone !== customerPhone) {

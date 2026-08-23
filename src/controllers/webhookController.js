@@ -1757,10 +1757,10 @@ async function _handleIncomingMessageSerialized({ tenantId, tenantDoc, from, msg
       return;
     }
 
-    // Customer cancel by reference — e.g. "cancel #F93217"
+    // Customer cancel — bare "cancel" or "cancel #F93217"
     if (/\bcancel\b/i.test(messageText)) {
-      const { tryCustomerCancelByReference } = await import('../services/activityLifecycleService.js');
-      const cancelReply = await tryCustomerCancelByReference({
+      const { tryCustomerCancelRequest } = await import('../services/activityLifecycleService.js');
+      const cancelReply = await tryCustomerCancelRequest({
         message: messageText, customerPhone: from, tenantId, business, tenant: tenantDoc,
       }).catch(() => null);
       if (cancelReply) {
@@ -2201,7 +2201,20 @@ async function _handleIncomingMessageSerialized({ tenantId, tenantDoc, from, msg
       return;
     }
 
-    const { resolveQuestionReply, persistQuestionSession, recordQuestionHistory } = await import('../services/questionAnswerService.js');
+    const { resolveQuestionReply, persistQuestionSession, recordQuestionHistory, toWhatsAppPayload } = await import('../services/questionAnswerService.js');
+    const { tryShowCatalogForMenuRequest } = await import('../modules/catalog/waCatalogFlow.js');
+
+    // Menu/food browse requests open the native catalog immediately — no switch prompt.
+    const earlyCatalog = await tryShowCatalogForMenuRequest({
+      message: messageText, session, business, tenant: tenantDoc,
+    });
+    if (earlyCatalog?.handled) {
+      if (earlyCatalog.reply) await dispatchMessage(from, earlyCatalog.reply, tenantDoc);
+      await persistQuestionSession(session, tenantDoc, { lastMessage: messageText, lastTopic: 'MENU' });
+      await recordQuestionHistory(session, messageText, { type: 'text', body: '🛍 Menu' }).catch(() => {});
+      return;
+    }
+
     const { detectIntent } = await import('../core/intents/intentEngine.js');
 
     let intentResult = null;
@@ -2269,10 +2282,8 @@ async function _handleIncomingMessageSerialized({ tenantId, tenantDoc, from, msg
 
     await persistQuestionSession(session, tenantDoc, reply.context || { lastMessage: messageText });
     await recordQuestionHistory(session, messageText, reply);
-    await dispatchMessage(from, {
-      type: reply.type || 'text',
-      body: reply.body,
-    }, tenantDoc);
+    const payload = toWhatsAppPayload(reply);
+    if (payload) await dispatchMessage(from, payload, tenantDoc);
     return;
   }
 
@@ -3364,19 +3375,20 @@ async function _handleIncomingMessageSerialized({ tenantId, tenantDoc, from, msg
 
         // Use the DB-first question layer here too. It resolves contextual menu
         // references against the current catalog before falling back to Groq.
-        const { processQuestionMessage, recordQuestionHistory } = await import('../services/questionAnswerService.js');
+        const { processQuestionMessage, recordQuestionHistory, toWhatsAppPayload } = await import('../services/questionAnswerService.js');
         const questionReply = await processQuestionMessage({
           session: flowlessSession, message: messageText, business, tenant: tenantDoc, intent: 'QUESTION',
         }).catch(() => null);
-        const aiText = questionReply?.body || null;
         if (questionReply) {
           await recordQuestionHistory(flowlessSession, messageText, questionReply).catch(() => {});
         }
-
+        const mfqPayload = questionReply ? toWhatsAppPayload(questionReply) : null;
+        if (mfqPayload) await dispatchMessage(from, mfqPayload, tenantDoc);
         await dispatchMessage(from, {
           type:    'buttons',
-          body:    (aiText || 'Let me check that for you! 😊') +
-                    `\n\n_When you're done, tap below to continue where you left off._`,
+          body:    questionReply?.catalogDispatched
+            ? `_When you're done browsing, tap below to continue where you left off._`
+            : `${questionReply?.body || 'Let me check that for you! 😊'}\n\n_When you're done, tap below to continue where you left off._`,
           buttons: resumeButtons,
         }, tenantDoc);
         return;

@@ -64,7 +64,7 @@ export async function handleGeneralQuestion({ session, message, business, tenant
     };
   }
 
-  const { resolveQuestionReply, persistQuestionSession, recordQuestionHistory } = await import('../../../services/questionAnswerService.js');
+  const { resolveQuestionReply, persistQuestionSession, recordQuestionHistory, toWhatsAppPayload } = await import('../../../services/questionAnswerService.js');
   const reply = await resolveQuestionReply({
     session, message: raw, business, tenant, intent: 'FAQ',
     initPayload: {
@@ -75,12 +75,7 @@ export async function handleGeneralQuestion({ session, message, business, tenant
   await persistQuestionSession(session, tenant, reply.context || { lastMessage: raw });
   await recordQuestionHistory(session, raw, reply);
 
-  // Answer-only: stay in QUESTION mode and wait — no buttons. Switching activity
-  // is picked up upstream from the customer's own words, not from a tap target.
-  return {
-    type: reply.type || 'text',
-    body: reply.body,
-  };
+  return toWhatsAppPayload(reply) || { type: 'text', body: '' };
 }
 
 // ── About Handler ─────────────────────────────────────────────────────────────
