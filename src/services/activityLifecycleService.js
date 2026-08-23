@@ -258,7 +258,7 @@ const BARE_CANCEL_RE = /^(cancel|cancel\s+(my\s+)?(order|booking|it|this))(\s+pl
  * "cancel #F93217" / "cancel DSB-0823-4C7DB7" cancels by reference.
  * Returns null when the message should fall through to normal routing (e.g. cancel all).
  */
-export async function tryCustomerCancelRequest({ message, customerPhone, tenantId, business, tenant }) {
+export async function tryCustomerCancelRequest({ message, customerPhone, tenantId, business, tenant, session }) {
   const raw = String(message || '').trim();
   if (!raw || !/\bcancel\b/i.test(raw)) return null;
 
@@ -276,7 +276,7 @@ export async function tryCustomerCancelRequest({ message, customerPhone, tenantI
     || upper === 'CANCEL' || upper === 'CANCEL_ORDER' || upper === 'CANCEL_BOOKING';
   if (!isBareCancel) return null;
 
-  return _cancelMostRecentActivity({ customerPhone, tenantId, business });
+  return _cancelMostRecentActivity({ customerPhone, tenantId, business, session });
 }
 
 /** @deprecated Use tryCustomerCancelRequest */
@@ -284,7 +284,7 @@ export async function tryCustomerCancelByReference(opts) {
   return tryCustomerCancelRequest(opts);
 }
 
-async function _cancelMostRecentActivity({ customerPhone, tenantId, business }) {
+async function _cancelMostRecentActivity({ customerPhone, tenantId, business, session }) {
   const cfg = getModeConfig(business);
 
   const order = await cancelMostRecentActiveOrder({ customerPhone, tenantId });
@@ -312,6 +312,10 @@ async function _cancelMostRecentActivity({ customerPhone, tenantId, business }) 
       { id: 'QUESTION', title: '❓ Ask a Question' },
     ]);
   }
+
+  // Mid-flow cancel (cart review, booking steps, etc.) — no saved order yet.
+  // Fall through so flowEngine.cancelFlow() can reset the in-progress session.
+  if (session?.currentFlow) return null;
 
   return {
     type: 'text',

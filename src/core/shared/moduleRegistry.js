@@ -314,35 +314,6 @@ export async function registerAllModules() {
       if (session?.orderChannel === 'catalog' || explicitOrderTap) {
         return browseCatalogExplicit({ session, business, tenant });
       }
-      // [FIX-ORDER-BUTTON-FIRST] A typed generic-order message ("i want to
-      // order", "i want food") used to go straight into
-      // offerCatalogOnStartOrder(), which makes a live Graph API call to push
-      // the native WA Catalog product_list/catalog_message immediately. That
-      // makes the customer's very first reply depend on that network call
-      // succeeding — and on a message shaped exactly like this one, unlike
-      // BROWSE_CATALOG (moduleRouter.js's typed "what do you have in your
-      // menu" / VIEW_MENU path, see [FIX-VIEWMENU-BUTTON-FIRST] there), which
-      // never touches Graph API for its first reply: it shows a static
-      // "🛍 View Items" confirmation button and only calls the real catalog
-      // send once THAT tap comes back as isInteractive: true. That asymmetry
-      // is exactly why typed menu questions replied reliably while typed
-      // order requests occasionally went completely silent — same failure
-      // mode as [FIX-CATALOG-HEADER-1]/[Failure handling] above, just on a
-      // different entry point into the same underlying send.
-      // Mirror that same zero-I/O-first-reply pattern here: a typed (non-
-      // button) generic order request gets the identical confirmation button
-      // — no network call on this turn — and only attempts the live catalog
-      // send once the customer actually taps it (isInteractive: true reaches
-      // this same branch via explicitOrderTap/orderChannel==='catalog' above,
-      // or via the BROWSE_CATALOG action if they tap "🛍 View Items" itself).
-      if (!isInteractive) {
-        return {
-          type: 'buttons',
-          body: business?.customMessages?.viewMenuPrompt
-            || `🛍️ Here's how to see what we have — tap below!`,
-          buttons: [{ id: 'BROWSE_CATALOG', title: '🛍 View Items' }],
-        };
-      }
       const { offered } = await offerCatalogOnStartOrder({ session, business, tenant, intent: normalizedIntent }).catch(() => ({ offered: false }));
       if (offered) return null; // WA Catalog message already dispatched directly — nothing further to send
       return startFlow({ flowName: 'ORDER', session: { ...session, orderChannel: 'menu' }, business, tenant });

@@ -1761,7 +1761,7 @@ async function _handleIncomingMessageSerialized({ tenantId, tenantDoc, from, msg
     if (/\bcancel\b/i.test(messageText)) {
       const { tryCustomerCancelRequest } = await import('../services/activityLifecycleService.js');
       const cancelReply = await tryCustomerCancelRequest({
-        message: messageText, customerPhone: from, tenantId, business, tenant: tenantDoc,
+        message: messageText, customerPhone: from, tenantId, business, tenant: tenantDoc, session,
       }).catch(() => null);
       if (cancelReply) {
         await dispatchMessage(from, cancelReply, tenantDoc);

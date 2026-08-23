@@ -56,11 +56,21 @@ test('extractShortId does not treat bare "cancel" as a reference', () => {
   assert.equal(extractShortId('cancel all'), null);
 });
 
-test('tryCustomerCancelRequest cancels most recent activity for bare cancel', async () => {
+test('tryCustomerCancelRequest falls through during an active flow when nothing is saved yet', () => {
   const src = readSource('../services/activityLifecycleService.js');
-  assert.match(src, /tryCustomerCancelRequest/);
-  assert.match(src, /BARE_CANCEL_RE/);
-  assert.match(src, /_cancelMostRecentActivity/);
+  const block = src.slice(src.indexOf('async function _cancelMostRecentActivity'), src.indexOf('async function _cancelActivityByReference'));
+  assert.match(block, /session\?\.currentFlow/);
+  assert.match(block, /return null/);
+});
+
+test('tryCustomerCancelRequest defers to cancelFlow when mid-flow and no DB activity', () => {
+  const src = readSource('../services/activityLifecycleService.js');
+  const block = src.slice(
+    src.indexOf('async function _cancelMostRecentActivity'),
+    src.indexOf('async function _cancelActivityByReference'),
+  );
+  assert.match(block, /session\?\.currentFlow/);
+  assert.match(block, /return null/);
 });
 
 test('webhookController uses tryCustomerCancelRequest for customer cancel', () => {
