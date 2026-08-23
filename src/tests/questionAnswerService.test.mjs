@@ -16,7 +16,7 @@ import {
   tryDatabaseAnswer,
 } from '../services/questionAnswerService.js';
 import { resolveDirectOrderParse } from '../core/shared/cartEngine.js';
-import { isBusinessScopeQuestion } from '../services/questionModeHelper.js';
+import { isBusinessScopeQuestion, isInformationalActivityQuestion, isStayInQuestionMessage } from '../services/questionModeHelper.js';
 
 function readSource(relPath) {
   return fs.readFileSync(new URL(relPath, import.meta.url), 'utf8');
@@ -342,6 +342,39 @@ test('tryDatabaseAnswer returns configured contact details for phone questions',
 test('isBusinessScopeQuestion is mode-aware (not restaurant-only)', () => {
   assert.equal(isBusinessScopeQuestion('what services do you offer', { businessMode: 'SALON' }), true);
   assert.equal(isBusinessScopeQuestion('who is the president', { businessMode: 'RESTAURANT' }), false);
+});
+
+test('isInformationalActivityQuestion distinguishes asks from actions', () => {
+  assert.equal(isInformationalActivityQuestion('what can i book'), true);
+  assert.equal(isInformationalActivityQuestion('what i can o book'), true);
+  assert.equal(isInformationalActivityQuestion('what is this all about'), true);
+  assert.equal(isInformationalActivityQuestion('i want to book a table for tonight'), false);
+});
+
+test('isStayInQuestionMessage recognises keep-asking phrasing', () => {
+  assert.equal(isStayInQuestionMessage('am still asking'), true);
+  assert.equal(isStayInQuestionMessage('keep asking'), true);
+  assert.equal(isStayInQuestionMessage('what can i book'), false);
+});
+
+test('tryDatabaseAnswer explains what can be booked without switching flows', async () => {
+  const result = await tryDatabaseAnswer({
+    message: 'what can i book',
+    business,
+    session: {},
+  });
+  assert.equal(result.handled, true);
+  assert.match(result.body, /book/i);
+});
+
+test('tryDatabaseAnswer answers what is this all about from business description', async () => {
+  const result = await tryDatabaseAnswer({
+    message: 'what is this all about',
+    business: { ...business, description: 'A Gambian eatery serving benachin and domoda.' },
+    session: {},
+  });
+  assert.equal(result.handled, true);
+  assert.match(result.body, /benachin|domoda/i);
 });
 
 // ── Wiring source assertions ──────────────────────────────────────────────────

@@ -358,10 +358,11 @@ export async function detectIntent({ message, isInteractive = false, session, bu
   }
 
   if (!session?.currentFlow && !DIRECT_INTENT_EXCLUDE_RE.test(clean) && !QUESTION_LEADIN_RE.test(clean)) {
-    if (BOOKING_DIRECT_RE.test(clean)) {
+    const { isInformationalActivityQuestion } = await import('../../services/questionModeHelper.js');
+    if (!isInformationalActivityQuestion(raw) && BOOKING_DIRECT_RE.test(clean)) {
       return { action: 'START_BOOKING', intent: 'BOOKING', confidence: 'HIGH', source: 'direct-phrase' };
     }
-    if (ORDER_DIRECT_RE.test(clean)) {
+    if (!isInformationalActivityQuestion(raw) && ORDER_DIRECT_RE.test(clean)) {
       let nlu = null;
       try {
         const nluResult = await classifyWithAI({ message: raw, business, session });

@@ -134,6 +134,7 @@ import { INTENT_PATTERNS }                           from '../core/intents/patte
 // intentEngine.js's own pre-flow step 4.5 uses, reused here so the mid-flow
 // switch intercept below can never silently drift from the pre-flow behavior.
 import { ORDER_DIRECT_RE, BOOKING_DIRECT_RE, DIRECT_INTENT_EXCLUDE_RE, QUESTION_LEADIN_RE } from '../core/intents/intentEngine.js';
+import { isInformationalActivityQuestion, isStayInQuestionMessage } from '../services/questionModeHelper.js';
 import { findBestMatch }                             from '../utils/matchEngine.js';
 import { updateName as persistCustomerName }         from '../core/memory/customerMemory.js';
 import { advance, startFlow }                        from '../core/conversations/flowEngine.js';
@@ -1062,8 +1063,8 @@ function _detectMidFlowSwitchRequest(text, session, business, isInteractive = fa
   // "asking" framing and routes/keeps the customer in QUESTION instead.
   let targetFlow = null;
   if (QUESTION_LEADIN_RE.test(clean)) targetFlow = 'QUESTION';
-  else if (BOOKING_DIRECT_RE.test(clean)) targetFlow = 'BOOKING';
-  else if (ORDER_DIRECT_RE.test(clean)) targetFlow = 'ORDER';
+  else if (!isInformationalActivityQuestion(raw) && BOOKING_DIRECT_RE.test(clean)) targetFlow = 'BOOKING';
+  else if (!isInformationalActivityQuestion(raw) && ORDER_DIRECT_RE.test(clean)) targetFlow = 'ORDER';
   if (!targetFlow || targetFlow === flow) return null;
 
   // Item-name collision guard — only for ORDER/BOOKING switches.
@@ -1099,6 +1100,9 @@ function _isActiveQuestionMode(session) {
  * Returns { targetFlow, action, intent, suggestion?, nlu? } or null to stay in Q&A.
  */
 function _resolveQuestionModeSwitch({ messageText, session, business, isInteractive, intentResult = null }) {
+  if (isStayInQuestionMessage(messageText)) return null;
+  if (isInformationalActivityQuestion(messageText)) return null;
+
   const targetFlow = _detectMidFlowSwitchRequest(messageText, session, business, isInteractive);
   if (targetFlow === 'ORDER') {
     const id = String(messageText || '').trim().toUpperCase();
@@ -1112,6 +1116,7 @@ function _resolveQuestionModeSwitch({ messageText, session, business, isInteract
   }
 
   if (intentResult?.confidence === 'HIGH' && _QA_SWITCH_ACTIONS.has(intentResult.action)) {
+    if (isInformationalActivityQuestion(messageText)) return null;
     const action = intentResult.action;
     const flowByAction = {
       START_ORDER: 'ORDER', START_BOOKING: 'BOOKING', BROWSE_CATALOG: 'ORDER',
@@ -2212,6 +2217,15 @@ async function _handleIncomingMessageSerialized({ tenantId, tenantDoc, from, msg
       if (earlyCatalog.reply) await dispatchMessage(from, earlyCatalog.reply, tenantDoc);
       await persistQuestionSession(session, tenantDoc, { lastMessage: messageText, lastTopic: 'MENU' });
       await recordQuestionHistory(session, messageText, { type: 'text', body: '🛍 Menu' }).catch(() => {});
+      return;
+    }
+
+    if (!isInteractive && isStayInQuestionMessage(messageText)) {
+      await persistQuestionSession(session, tenantDoc, { lastMessage: messageText });
+      await dispatchMessage(from, {
+        type: 'text',
+        body: '👍 No problem! What else would you like to know?',
+      }, tenantDoc);
       return;
     }
 

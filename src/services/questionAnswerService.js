@@ -28,7 +28,9 @@ import {
   isBusinessScopeQuestion,
   mergeQuestionContext,
   buildQuestionContextBlock,
+  isInformationalActivityQuestion,
 } from './questionModeHelper.js';
+import { getModeConfig } from '../config/modes.js';
 
 // Includes conversational references to the menu just shown. Customers naturally
 // ask "are these the only ones you have?" instead of repeating the word "menu".
@@ -57,6 +59,8 @@ const CONTACT_RE = /\b(phone|phone number|telephone|call|contact number|whatsapp
 // matched because the old pattern required the bare words "payment"/"pay"/
 // "wave"/"cash"/"mobile money" — "accept ... card" phrasing fell through.
 const PAYMENT_RE = /\b(payment|pay|wave|cash|mobile money|how (can|do) i pay|accept (cards?|visa|mastercard|credit|debit)|credit card|debit card|card payment)\b/i;
+const BOOKING_INFO_RE = /\b(what (?:can|could|do|should) (?:i|we) (?:book|reserve)|what (?:do you|can you) offer (?:for )?(?:booking|reservation)|what (?:services?|tables?) (?:can|do) (?:i|you) book|how does booking work)\b/i;
+const ABOUT_RE = /\b(what is this (?:all )?about|what are you|who are you|tell me about (?:you|your business|this place))\b/i;
 
 function formatHourDecimal(h) {
   if (h == null || h === '') return null;
@@ -135,6 +139,62 @@ export function formatHoursText(business) {
   return `🕐 *Opening Hours*\n\n${lines.join('\n')}`;
 }
 
+/** Explain what the customer can book/reserve at this business. */
+export function formatBookingInfoText(business) {
+  const cfg = getModeConfig(business);
+  const hasBooking = (cfg?.flows || []).includes('BOOKING');
+  const currency = business?.payment?.currency || 'GMD';
+  const services = (business?.services || []).filter(s => s.available !== false);
+
+  if (!hasBooking) {
+    return "We don't take advance bookings online — but you can place an order anytime! Ask me about our menu or hours.";
+  }
+
+  if (services.length) {
+    const lines = services.slice(0, 20).map(s => {
+      const priceStr = s.price != null ? ` — ${currency}${formatMoney(s.price)}` : '';
+      return `• *${s.name}*${priceStr}`;
+    });
+    let body = `📅 *What you can book:*\n\n${lines.join('\n')}`;
+    if (services.length > 20) body += `\n\n_...and ${services.length - 20} more._`;
+    body += `\n\nWhen you're ready, say *book a table* or tap *📅 Book a Table* from the menu.`;
+    return body;
+  }
+
+  const mode = (business?.businessMode || 'RESTAURANT').toUpperCase();
+  if (mode === 'RESTAURANT' || mode === 'BAKERY' || mode === 'DELIVERY') {
+    return '📅 You can *book a table* with us — pick your date, time, and party size.\n\nWhen you\'re ready, tap *📅 Book a Table* from the menu.';
+  }
+  if (mode === 'SALON' || mode === 'BARBERSHOP') {
+    return formatMenuText(business, { heading: '💇 Services you can book', maxItems: 20 });
+  }
+  return '📅 You can make a booking with us. Tap *📅 Book* from the menu when you\'re ready.';
+}
+
+function formatAboutText(business) {
+  const name = business?.name || 'Our business';
+  const desc = String(business?.description || '').trim();
+  const mode = (business?.businessMode || 'RETAIL').toUpperCase();
+  const cfg = getModeConfig(business);
+  const flows = cfg?.flows || [];
+
+  const offers = [];
+  if (flows.includes('ORDER')) offers.push('order food/products');
+  if (flows.includes('BOOKING')) offers.push('book a table or appointment');
+  if (flows.includes('ENQUIRY') || flows.includes('QUESTION')) offers.push('ask questions');
+
+  let body = desc
+    ? `*${name}*\n\n${desc}`
+    : `*${name}* is a ${mode.toLowerCase().replace(/_/g, ' ')} business here on WhatsApp.`;
+
+  if (offers.length) {
+    body += `\n\nI can help you ${offers.join(', ')}. What would you like to know?`;
+  } else {
+    body += '\n\nWhat would you like to know?';
+  }
+  return body;
+}
+
 function tryFaqMatch(message, business) {
   const raw = String(message || '').trim().toLowerCase();
   const faqs = business?.faq || [];
@@ -156,6 +216,10 @@ function classifyQuestion(message, session, business) {
     return 'STATUS';
   }
   if (CONTACT_RE.test(raw)) return 'CONTACT';
+  if (ABOUT_RE.test(raw)) return 'ABOUT';
+  if (BOOKING_INFO_RE.test(raw) || (/\bwhat\b/i.test(raw) && /\bbook\b/i.test(raw) && isInformationalActivityQuestion(raw))) {
+    return 'BOOKING_INFO';
+  }
   if (AVAILABILITY_RE.test(raw) && !MENU_RE.test(raw)) return 'AVAILABILITY';
   if (MENU_RE.test(raw)) return 'MENU';
   if (HOURS_RE.test(raw)) return 'HOURS';
@@ -263,6 +327,24 @@ export async function tryDatabaseAnswer({ message, business, session }) {
         };
       }
     } catch { /* fall through to AI */ }
+  }
+
+  if (qType === 'ABOUT') {
+    return {
+      handled: true,
+      body: formatAboutText(business),
+      routingDecision: 'QUESTION',
+      context: { lastMessage: raw, lastTopic: 'ABOUT' },
+    };
+  }
+
+  if (qType === 'BOOKING_INFO') {
+    return {
+      handled: true,
+      body: formatBookingInfoText(business),
+      routingDecision: 'QUESTION',
+      context: { lastMessage: raw, lastTopic: 'BOOKING' },
+    };
   }
 
   if (qType === 'MENU') {

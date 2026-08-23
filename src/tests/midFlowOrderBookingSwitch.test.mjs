@@ -35,6 +35,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { ORDER_DIRECT_RE, BOOKING_DIRECT_RE, DIRECT_INTENT_EXCLUDE_RE, QUESTION_LEADIN_RE, normalise } from '../core/intents/intentEngine.js';
+import { isInformationalActivityQuestion } from '../services/questionModeHelper.js';
 
 function read(relPath) {
   return fs.readFileSync(new URL(relPath, import.meta.url), 'utf8');
@@ -112,7 +113,7 @@ function loadRealDetectMidFlowSwitchRequest() {
   // eslint-disable-next-line no-new-func
   const factory = new Function(
     'ORDER_DIRECT_RE', 'BOOKING_DIRECT_RE', 'DIRECT_INTENT_EXCLUDE_RE', 'QUESTION_LEADIN_RE', 'normaliseFsi',
-    'findBestMatch', 'getModeConfig',
+    'findBestMatch', 'getModeConfig', 'isInformationalActivityQuestion',
     `
     ${freeTextMatch[0]}
     ${dateTimeMatch[0]}
@@ -122,7 +123,7 @@ function loadRealDetectMidFlowSwitchRequest() {
   );
   return factory(
     ORDER_DIRECT_RE, BOOKING_DIRECT_RE, DIRECT_INTENT_EXCLUDE_RE, QUESTION_LEADIN_RE, normalise,
-    stubFindBestMatch, stubGetModeConfig
+    stubFindBestMatch, stubGetModeConfig, isInformationalActivityQuestion
   );
 }
 
@@ -437,4 +438,15 @@ test('_detectMidFlowSwitchRequest: genuine order/booking phrases containing "i w
   const questionSession = { currentFlow: 'QUESTION', step: 'AWAITING_QUESTION', data: {} };
   assert.equal(detectMidFlowSwitchRequest('i want to order two burgers', questionSession, RESTAURANT_BIZ), 'ORDER');
   assert.equal(detectMidFlowSwitchRequest('i want to book a table for tonight', questionSession, RESTAURANT_BIZ), 'BOOKING');
+});
+
+test('_detectMidFlowSwitchRequest: informational "what can I book?" stays in Q&A — no switch prompt', () => {
+  const questionSession = { currentFlow: 'QUESTION', step: 'AWAITING_QUESTION', data: {} };
+  for (const message of ['what can i book', 'what i can o book', 'what do you offer for booking']) {
+    assert.equal(
+      detectMidFlowSwitchRequest(message, questionSession, RESTAURANT_BIZ),
+      null,
+      `"${message}" should be answered in Q&A, not trigger a booking switch`
+    );
+  }
 });
