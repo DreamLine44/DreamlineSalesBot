@@ -609,14 +609,30 @@ export async function recordQuestionHistory(session, userMessage, botPayload) {
  */
 export function toWhatsAppPayload(reply) {
   if (!reply || reply.catalogDispatched) return null;
+  if (reply.type === 'welcome_sequence') return null;
   if (reply.type && reply.type !== 'text') {
-    const { context, catalogDispatched, ...payload } = reply;
+    const { context, catalogDispatched, exitQuestionMode, sequence, ...payload } = reply;
     return payload;
   }
   if (reply.body) {
     return { type: reply.type || 'text', body: reply.body, buttons: reply.buttons };
   }
   return null;
+}
+
+/**
+ * Normalize a resolveQuestionReply result for flow handlers.
+ * Returns a single payload, an array (welcome menu), or null (catalog already sent).
+ */
+export async function finalizeQuestionHandlerReply({ session, tenant, reply }) {
+  if (reply?.type === 'welcome_sequence' && Array.isArray(reply.sequence)) {
+    const { updateSession } = await import('../core/sessions/sessionService.js');
+    await updateSession(session.customerPhone, session.tenantId, {
+      currentFlow: null, step: null, postFlowAck: null, postFlowData: null,
+    }).catch(() => {});
+    return reply.sequence;
+  }
+  return toWhatsAppPayload(reply) || { type: 'text', body: '' };
 }
 
 export async function resolveQuestionReply({ session, message, business, tenant, intent = 'FAQ', initPayload = null }) {

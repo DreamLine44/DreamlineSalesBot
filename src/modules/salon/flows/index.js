@@ -1275,20 +1275,22 @@ export async function handleSalonQuestion({ session, message, business, tenant }
       ? (isBarbershop ? 'BARBERSHOP_QUESTION' : 'SALON_CONSULTATION')
       : (isBarbershop ? 'BARBERSHOP_QUESTION' : 'SALON_QUESTION');
 
-  const { resolveQuestionReply, persistQuestionSession, recordQuestionHistory, toWhatsAppPayload } = await import('../../../services/questionAnswerService.js');
+  const { resolveQuestionReply, persistQuestionSession, recordQuestionHistory, finalizeQuestionHandlerReply } = await import('../../../services/questionAnswerService.js');
   const reply = await resolveQuestionReply({ session, message: raw, business, tenant, intent });
+  if (reply?.type === 'welcome_sequence') {
+    await recordQuestionHistory(session, raw, reply.sequence?.[0] || reply).catch(() => {});
+    return finalizeQuestionHandlerReply({ session, tenant, reply });
+  }
   await persistQuestionSession(session, tenant, reply.context || { lastMessage: raw });
   await recordQuestionHistory(session, raw, reply);
 
-  const questionResponse = toWhatsAppPayload(reply) || {
-    type: reply.type || 'text',
-    body: reply.body || `Great question! For detailed information please contact us directly.`,
-  };
+  const questionResponse = await finalizeQuestionHandlerReply({ session, tenant, reply });
+  if (reply?.type === 'welcome_sequence' || Array.isArray(questionResponse)) return questionResponse;
 
   // [text type ignores the footer field — fold the same hint into the body]
-  if (isAftercare && reply.body) {
+  if (isAftercare && reply.body && questionResponse?.body) {
     questionResponse.body += `\n\n_We hope to see you again soon! 🙏_`;
-  } else if (isConsultation && reply.body) {
+  } else if (isConsultation && reply.body && questionResponse?.body) {
     questionResponse.body += `\n\n_Just say the word when you're ready to book that service._`;
   }
 

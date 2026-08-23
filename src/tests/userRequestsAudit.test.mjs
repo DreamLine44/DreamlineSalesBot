@@ -10,6 +10,7 @@ import {
   isInformationalActivityQuestion,
   isBookingInfoQuestion,
   isStayInQuestionMessage,
+  isGreetingMessage,
 } from '../services/questionModeHelper.js';
 import { isCatalogBrowseRequest } from '../core/intents/menuIntentDetector.js';
 import { tryDatabaseAnswer } from '../services/questionAnswerService.js';
@@ -118,6 +119,13 @@ test('audit: bare hi/hello in Q&A routes to welcome menu with options', () => {
   assert.match(block, /isGreetingMessage\(messageText\)/);
   assert.match(block, /action: 'GREET'/);
   assert.match(src, /welcome_sequence/);
+});
+
+test('audit: greeting helper and handler finalizer exist', () => {
+  assert.ok(isGreetingMessage('hello'));
+  const qas = readSource('../services/questionAnswerService.js');
+  assert.match(qas, /finalizeQuestionHandlerReply/);
+  assert.match(qas, /welcome_sequence/);
 });
 
 test('audit: Question Mode answers before switch prompt', () => {

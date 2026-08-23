@@ -64,7 +64,7 @@ export async function handleGeneralQuestion({ session, message, business, tenant
     };
   }
 
-  const { resolveQuestionReply, persistQuestionSession, recordQuestionHistory, toWhatsAppPayload } = await import('../../../services/questionAnswerService.js');
+  const { resolveQuestionReply, persistQuestionSession, recordQuestionHistory, finalizeQuestionHandlerReply } = await import('../../../services/questionAnswerService.js');
   const reply = await resolveQuestionReply({
     session, message: raw, business, tenant, intent: 'FAQ',
     initPayload: {
@@ -72,10 +72,14 @@ export async function handleGeneralQuestion({ session, message, business, tenant
       body: '❓ What would you like to know? Feel free to type your question.',
     },
   });
+  if (reply?.type === 'welcome_sequence') {
+    await recordQuestionHistory(session, raw, reply.sequence?.[0] || reply).catch(() => {});
+    return finalizeQuestionHandlerReply({ session, tenant, reply });
+  }
   await persistQuestionSession(session, tenant, reply.context || { lastMessage: raw });
   await recordQuestionHistory(session, raw, reply);
 
-  return toWhatsAppPayload(reply) || { type: 'text', body: '' };
+  return finalizeQuestionHandlerReply({ session, tenant, reply });
 }
 
 // ── About Handler ─────────────────────────────────────────────────────────────

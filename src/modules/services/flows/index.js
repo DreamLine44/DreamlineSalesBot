@@ -335,7 +335,7 @@ export async function handleQuoteFollowUp({ session, message, business, tenant }
 
 export async function handleServicesQuestion({ session, message, business, tenant }) {
   const raw = String(message || '').trim();
-  const { resolveQuestionReply, persistQuestionSession, recordQuestionHistory, toWhatsAppPayload } = await import('../../../services/questionAnswerService.js');
+  const { resolveQuestionReply, persistQuestionSession, recordQuestionHistory, finalizeQuestionHandlerReply } = await import('../../../services/questionAnswerService.js');
   const reply = await resolveQuestionReply({
     session, message: raw, business, tenant, intent: 'SERVICES_QUESTION',
     initPayload: {
@@ -343,10 +343,14 @@ export async function handleServicesQuestion({ session, message, business, tenan
       body: '❓ What would you like to know about our services?',
     },
   });
+  if (reply?.type === 'welcome_sequence') {
+    await recordQuestionHistory(session, raw, reply.sequence?.[0] || reply).catch(() => {});
+    return finalizeQuestionHandlerReply({ session, tenant, reply });
+  }
   await persistQuestionSession(session, tenant, reply.context || { lastMessage: raw });
   await recordQuestionHistory(session, raw, reply);
 
-  return toWhatsAppPayload(reply) || { type: 'text', body: '' };
+  return finalizeQuestionHandlerReply({ session, tenant, reply });
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
