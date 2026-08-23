@@ -65,7 +65,8 @@ import { isCatalogEnabled } from '../../catalog/waCatalogConfig.js';
 import { formatMoney }      from '../../../utils/formatCurrency.js';
 import { formatPhoneDisplay } from '../../../utils/formatPhone.js';
 import {
-  parseMultiItemMessage, parseNaturalOrderMessage, mergeCartLines, enforceCartLimit,
+  parseMultiItemMessage, parseNaturalOrderMessage, resolveDirectOrderParse,
+  mergeCartLines, enforceCartLimit,
   cartTotal, cartToOrderItems, formatCartSummary, buildUnmatchedNote,
   removeCartLine, incrementCartLine, decrementCartLine, clearCart,
   cartItemCount, formatNumberedCartSummary,
@@ -199,7 +200,7 @@ export async function handleOrderFlow({ session, message, business, tenant, isIn
       const isDirectOrderText = directProductText.length >= 3 && !isFillerOnlyLeftover &&
         /\b(?:order|want|need|give|get|buy|purchase|would like)\b/i.test(raw);
       if (isDirectOrderText) {
-        const directOrder = parseMultiItemMessage(menu, raw) || parseNaturalOrderMessage(menu, raw);
+        const directOrder = resolveDirectOrderParse(menu, raw);
         if (directOrder?.lines?.length) {
           const mergedCart = mergeCartLines(cartAtSelect, directOrder.lines);
           const { cart: cappedCart, overflowCount } = enforceCartLimit(mergedCart, business);

@@ -15,6 +15,7 @@ import {
   formatHoursText,
   tryDatabaseAnswer,
 } from '../services/questionAnswerService.js';
+import { resolveDirectOrderParse } from '../core/shared/cartEngine.js';
 import { isBusinessScopeQuestion } from '../services/questionModeHelper.js';
 
 function readSource(relPath) {
@@ -340,10 +341,33 @@ test('webhook ENQUIRY path uses resolveQuestionReply and recordQuestionHistory',
   assert.match(src, /recordQuestionHistory/);
 });
 
-test('webhook Question Mode switches activities instantly without FSI confirmation', () => {
+test('resolveDirectOrderParse resolves "two plates of Domoda" in one call', () => {
+  const menu = [
+    { _id: 'domoda', name: 'Domoda', price: 200, available: true },
+    { _id: 'benachin', name: 'Benachin', price: 180, available: true },
+  ];
+  const parsed = resolveDirectOrderParse(menu, 'I want to order two plates of Domoda');
+  assert.ok(parsed?.lines?.length);
+  assert.equal(parsed.lines[0].quantity, 2);
+  assert.match(parsed.lines[0].item.name, /Domoda/i);
+});
+
+test('webhook has no-flow direct order shortcut before active-flow handling', () => {
+  const src = readSource('../controllers/webhookController.js');
+  assert.match(src, /14\.7\. Direct natural-language order/);
+  assert.match(src, /_dispatchDirectOrderRoute/);
+  assert.match(src, /resolveDirectOrderParse/);
+});
+
+test('webhook Question Mode requires confirmation before switching activities', () => {
   const src = readSource('../controllers/webhookController.js');
   assert.match(src, /_isActiveQuestionMode/);
   assert.match(src, /_resolveQuestionModeSwitch/);
-  assert.match(src, /From Q&A mode: switch immediately/);
-  assert.match(src, /_QUESTION_MODE_FLOWS\.has\(srcFlow\)/);
+  assert.match(src, /confirm first — never yank them out of Q&A without consent/);
+  assert.match(src, /FSI_SWITCH_YES/);
+  assert.match(src, /Keep Asking/);
+  assert.doesNotMatch(
+    src.slice(src.indexOf('_isActiveQuestionMode'), src.indexOf('_detectMidFlowQuestion')),
+    /switch immediately/
+  );
 });

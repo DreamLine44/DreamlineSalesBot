@@ -356,7 +356,7 @@ export async function registerAllModules() {
     const nluProducts = session?.data?._nluPending?.products;
     const {
       mergeCartLines, parseMultiItemMessage, parseNaturalOrderMessage,
-      parseCartModification, applyCartModification,
+      parseCartModification, applyCartModification, resolveDirectOrderParse,
     } = await import('../shared/cartEngine.js');
     const menu = (business?.menuItems || []).filter(item => item.available !== false);
     const existingCart = Array.isArray(session?.data?.cart) ? session.data.cart : [];
@@ -374,7 +374,7 @@ export async function registerAllModules() {
         message: null, business, tenant,
       });
     }
-    const parsedDirect = parseMultiItemMessage(menu, message) || parseNaturalOrderMessage(menu, message);
+    const parsedDirect = resolveDirectOrderParse(menu, message) || null;
     if (parsedDirect?.ambiguous && parsedDirect.candidates?.length) {
       const pendingData = {
         ...(session.data || {}),

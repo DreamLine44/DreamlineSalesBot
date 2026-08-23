@@ -141,7 +141,7 @@ import { route }                                     from '../core/conversations
 import { dispatchMessage }                           from '../core/whatsapp/dispatcher.js';
 import { getModeConfig }                             from '../config/modes.js';
 import { buildOptionsReply }                         from '../core/shared/uiOptionsHelper.js';
-import { parseNaturalOrderMessage }                  from '../core/shared/cartEngine.js';
+import { parseNaturalOrderMessage, resolveDirectOrderParse } from '../core/shared/cartEngine.js';
 // [AUDIT-FIX-XZ-REMOVE-2] Static import — used synchronously in the hot-path
 // _detectMidFlowQuestion() helper on every typed mid-flow message, so this
 // mirrors the dynamic-import usage elsewhere in this file without paying an
@@ -1085,7 +1085,7 @@ function _detectMidFlowSwitchRequest(text, session, business, isInteractive = fa
 
 const _QUESTION_MODE_FLOWS  = new Set(['QUESTION', 'ENQUIRY', 'SPEC_REQUEST']);
 const _QUESTION_MODE_STEPS  = new Set(['AWAITING_QUESTION', 'SPEC_QUESTION']);
-const _QA_INSTANT_ACTIONS   = new Set(['START_ORDER', 'START_BOOKING', 'CANCEL', 'CANCEL_ALL', 'BROWSE_CATALOG', 'WALKIN']);
+const _QA_SWITCH_ACTIONS    = new Set(['START_ORDER', 'START_BOOKING', 'CANCEL', 'CANCEL_ALL', 'BROWSE_CATALOG', 'WALKIN']);
 
 /** True when the customer is inside dedicated Ask-a-Question mode. */
 function _isActiveQuestionMode(session) {
@@ -1096,30 +1096,82 @@ function _isActiveQuestionMode(session) {
 
 /**
  * Detect a clear activity-switch request while in Q&A mode.
- * Returns { action, intent, suggestion?, nlu? } or null to stay in Q&A.
+ * Returns { targetFlow, action, intent, suggestion?, nlu? } or null to stay in Q&A.
  */
 function _resolveQuestionModeSwitch({ messageText, session, business, isInteractive, intentResult = null }) {
   const targetFlow = _detectMidFlowSwitchRequest(messageText, session, business, isInteractive);
   if (targetFlow === 'ORDER') {
     const id = String(messageText || '').trim().toUpperCase();
     if (isInteractive && id === 'BROWSE_CATALOG') {
-      return { action: 'BROWSE_CATALOG', intent: 'BROWSE_CATALOG' };
+      return { targetFlow: 'ORDER', action: 'BROWSE_CATALOG', intent: 'BROWSE_CATALOG' };
     }
-    return { action: 'START_ORDER', intent: 'ORDER' };
+    return { targetFlow: 'ORDER', action: 'START_ORDER', intent: 'ORDER' };
   }
   if (targetFlow === 'BOOKING') {
-    return { action: 'START_BOOKING', intent: 'BOOKING' };
+    return { targetFlow: 'BOOKING', action: 'START_BOOKING', intent: 'BOOKING' };
   }
 
-  if (intentResult?.confidence === 'HIGH' && _QA_INSTANT_ACTIONS.has(intentResult.action)) {
+  if (intentResult?.confidence === 'HIGH' && _QA_SWITCH_ACTIONS.has(intentResult.action)) {
+    const action = intentResult.action;
+    const flowByAction = {
+      START_ORDER: 'ORDER', START_BOOKING: 'BOOKING', BROWSE_CATALOG: 'ORDER',
+      WALKIN: 'BOOKING', CANCEL: null, CANCEL_ALL: null,
+    };
     return {
-      action:     intentResult.action,
+      targetFlow: flowByAction[action] || 'ORDER',
+      action,
       intent:     intentResult.intent,
       suggestion: intentResult.suggestion,
       nlu:        intentResult.nlu,
     };
   }
   return null;
+}
+
+/** Build mode-aware label for a Q&A → activity switch confirmation prompt. */
+function _questionModeSwitchLabel(business, targetFlow, action) {
+  const cfg = getModeConfig(business);
+  if (action === 'BROWSE_CATALOG') return '📋 Browse Catalog';
+  if (action === 'CANCEL' || action === 'CANCEL_ALL') return '❌ Cancel';
+  const targetBtnId = targetFlow === 'BOOKING' ? 'BOOK'
+    : targetFlow === 'QUESTION' ? 'QUESTION' : 'ORDER';
+  const targetBtn = (cfg.ui?.welcomeButtons || []).find(b => b.id === targetBtnId);
+  return targetBtn?.title || (
+    targetFlow === 'BOOKING' ? '📅 Book'
+      : targetFlow === 'QUESTION' ? '❓ Ask Questions'
+        : '🛍 Order'
+  );
+}
+
+function _looksLikeDirectOrderMessage(messageText) {
+  const clean = normalise(messageText);
+  return clean.length >= 4
+    && !DIRECT_INTENT_EXCLUDE_RE.test(clean)
+    && !QUESTION_LEADIN_RE.test(clean)
+    && ORDER_DIRECT_RE.test(clean);
+}
+
+function _hasResolvableDirectOrder(messageText, business) {
+  const liveMenu = (business?.menuItems || []).filter(i => i.available !== false);
+  const parsed = resolveDirectOrderParse(liveMenu, messageText);
+  return Boolean(parsed?.lines?.length || parsed?.ambiguous);
+}
+
+async function _dispatchDirectOrderRoute({ from, tenantId, session, messageText, business, tenantDoc, isInteractive = false }) {
+  const { route } = await import('../core/conversations/moduleRouter.js');
+  const reply = await route({
+    action: 'START_ORDER',
+    intent: 'ORDER',
+    session,
+    message: messageText,
+    business,
+    tenant: tenantDoc,
+    isInteractive,
+  });
+  if (!reply) return false;
+  const payloads = Array.isArray(reply) ? reply : [reply];
+  for (const payload of payloads) await dispatchMessage(from, payload, tenantDoc);
+  return true;
 }
 
 function _detectMidFlowQuestion(text, session, business) {
@@ -2074,8 +2126,71 @@ async function _handleIncomingMessageSerialized({ tenantId, tenantDoc, from, msg
 
   // ── 13. Question Mode (ENQUIRY / QUESTION / SPEC_REQUEST) ───────────────
   // Answer-only while the customer asks questions. When they clearly want another
-  // activity (order, book, browse menu), switch instantly — no confirmation step.
+  // activity, confirm first — never yank them out of Q&A without consent.
   if (_isActiveQuestionMode(session)) {
+    const qaUpperMsg = (messageText || '').trim().toUpperCase();
+
+    // Handle switch-confirmation button taps (step 13 runs before the step-15 FSI block).
+    if (isInteractive && qaUpperMsg === 'FSI_SWITCH_YES') {
+      const switchAction = session.data?._fsiTargetAction || null;
+      const switchIntent = session.data?._fsiTargetIntent || switchAction;
+      const switchMessage = session.data?._fsiSwitchMessage || messageText;
+      const targetFlow = session.data?._fsiTargetFlow || null;
+
+      await updateSession(from, tenantId, {
+        currentFlow: null, step: null, data: {}, postFlowAck: null, postFlowData: null,
+      }).catch(() => {});
+
+      let switchReply = null;
+      if (switchAction) {
+        const { route } = await import('../core/conversations/moduleRouter.js');
+        switchReply = await route({
+          action: switchAction,
+          intent: switchIntent || switchAction,
+          session: { ...session, currentFlow: null, step: null, data: {} },
+          message: switchMessage, business, tenant: tenantDoc,
+          isInteractive: false,
+          suggestion: session.data?._fsiSuggestion,
+          nlu: session.data?._fsiNlu,
+        });
+      } else if (targetFlow) {
+        const freshSess = await getSession(from, tenantId) || session;
+        switchReply = await startFlow({
+          flowName: targetFlow, session: freshSess, business, tenant: tenantDoc,
+        });
+      }
+
+      if (switchReply) {
+        const payloads = Array.isArray(switchReply) ? switchReply : [switchReply];
+        for (const payload of payloads) await dispatchMessage(from, payload, tenantDoc);
+      }
+      return;
+    }
+
+    if (isInteractive && qaUpperMsg === 'FSI_SWITCH_NO') {
+      const resumeFlow = session.data?._fsiResumeFlow || session.currentFlow;
+      const resumeStep = session.data?._fsiResumeStep || session.step;
+      const resumeData = { ...(session.data?._fsiResumeData || session.data || {}) };
+      delete resumeData._fsiTargetFlow;
+      delete resumeData._fsiTargetAction;
+      delete resumeData._fsiTargetIntent;
+      delete resumeData._fsiSwitchMessage;
+      delete resumeData._fsiSuggestion;
+      delete resumeData._fsiNlu;
+      delete resumeData._fsiResumeFlow;
+      delete resumeData._fsiResumeStep;
+      delete resumeData._fsiResumeData;
+
+      await updateSession(from, tenantId, {
+        currentFlow: resumeFlow, step: resumeStep, data: resumeData,
+      });
+      await dispatchMessage(from, {
+        type: 'text',
+        body: '👍 No problem! What else would you like to know?',
+      }, tenantDoc);
+      return;
+    }
+
     const { resolveQuestionReply, persistQuestionSession, recordQuestionHistory } = await import('../services/questionAnswerService.js');
     const { detectIntent } = await import('../core/intents/intentEngine.js');
 
@@ -2091,19 +2206,46 @@ async function _handleIncomingMessageSerialized({ tenantId, tenantDoc, from, msg
     });
 
     if (switchReq) {
-      await updateSession(from, tenantId, { currentFlow: null, step: null, data: {}, postFlowAck: null, postFlowData: null }).catch(() => {});
-      const { route } = await import('../core/conversations/moduleRouter.js');
-      const switchReply = await route({
-        action: switchReq.action,
-        intent: switchReq.intent || switchReq.action,
-        session: { ...session, currentFlow: null, step: null, data: {} },
-        message: messageText, business, tenant: tenantDoc,
-        isInteractive, suggestion: switchReq.suggestion, nlu: switchReq.nlu,
-      });
-      if (switchReply) {
-        const payloads = Array.isArray(switchReply) ? switchReply : [switchReply];
-        for (const payload of payloads) await dispatchMessage(from, payload, tenantDoc);
+      const targetLabel = _questionModeSwitchLabel(business, switchReq.targetFlow, switchReq.action);
+      let switchBody =
+        `👋 It looks like you'd like to *${targetLabel}*.\n\n` +
+        `Would you like to switch now, or keep asking questions?`;
+      let confirmLabel = `✅ ${targetLabel}`;
+
+      if (switchReq.action === 'START_ORDER' || switchReq.targetFlow === 'ORDER') {
+        const { formatCartSummary } = await import('../core/shared/cartEngine.js');
+        const liveMenu = (business?.menuItems || []).filter(i => i.available !== false);
+        const parsed = resolveDirectOrderParse(liveMenu, messageText);
+        if (parsed?.lines?.length) {
+          switchBody =
+            `👋 *Order preview:*\n\n${formatCartSummary(parsed.lines, business)}\n\n` +
+            `Would you like to confirm this order, or keep asking questions?`;
+          confirmLabel = '✅ Confirm Order';
+        }
       }
+
+      await updateSession(from, tenantId, {
+        data: {
+          ...(session.data || {}),
+          _fsiTargetFlow:    switchReq.targetFlow,
+          _fsiTargetAction:  switchReq.action,
+          _fsiTargetIntent:  switchReq.intent,
+          _fsiSwitchMessage: messageText,
+          _fsiSuggestion:    switchReq.suggestion || null,
+          _fsiNlu:           switchReq.nlu || null,
+          _fsiResumeFlow:    session.currentFlow,
+          _fsiResumeStep:    session.step,
+          _fsiResumeData:    { ...(session.data || {}) },
+        },
+      });
+      await dispatchMessage(from, {
+        type:    'buttons',
+        body:    switchBody,
+        buttons: [
+          { id: 'FSI_SWITCH_YES', title: confirmLabel },
+          { id: 'FSI_SWITCH_NO',  title: '❓ Keep Asking'   },
+        ],
+      }, tenantDoc);
       return;
     }
 
@@ -2401,6 +2543,17 @@ async function _handleIncomingMessageSerialized({ tenantId, tenantDoc, from, msg
       return;
     } catch (err) {
       logger.debug('[Webhook] STATUS command lookup failed (non-fatal)', { err: err.message });
+    }
+  }
+
+  // ── 14.7. Direct natural-language order — skip menu/qty when fully resolved ─
+  // e.g. "I want to order two plates of Domoda" → Order Summary / CONFIRM.
+  if (!session.currentFlow && !isInteractive && messageText?.trim().length >= 4) {
+    if (_looksLikeDirectOrderMessage(messageText) && _hasResolvableDirectOrder(messageText, business)) {
+      const handled = await _dispatchDirectOrderRoute({
+        from, tenantId, session, messageText, business, tenantDoc, isInteractive: false,
+      });
+      if (handled) return;
     }
   }
 
@@ -3109,28 +3262,11 @@ async function _handleIncomingMessageSerialized({ tenantId, tenantDoc, from, msg
     // shared parser, cart merge, pricing, and confirmation summary remain the
     // single implementation for both fresh and mid-flow orders.
     if (!isInteractive && session.currentFlow && messageText.length >= 4) {
-      const cleanDirectOrder = normalise(messageText);
-      if (!DIRECT_INTENT_EXCLUDE_RE.test(cleanDirectOrder) && !QUESTION_LEADIN_RE.test(cleanDirectOrder) && ORDER_DIRECT_RE.test(cleanDirectOrder)) {
-        const { parseMultiItemMessage, parseNaturalOrderMessage } = await import('../core/shared/cartEngine.js');
-        const liveMenu = (business?.menuItems || []).filter(item => item.available !== false);
-        const parsedDirectOrder = parseMultiItemMessage(liveMenu, messageText)
-          || parseNaturalOrderMessage(liveMenu, messageText);
-        if (parsedDirectOrder?.lines?.length || parsedDirectOrder?.ambiguous) {
-          const directReply = await route({
-            action: 'START_ORDER',
-            intent: 'ORDER',
-            session: freshSession,
-            message: messageText,
-            business,
-            tenant: tenantDoc,
-            isInteractive: false,
-          });
-          if (directReply) {
-            const directPayloads = Array.isArray(directReply) ? directReply : [directReply];
-            for (const directPayload of directPayloads) await dispatchMessage(from, directPayload, tenantDoc);
-          }
-          return;
-        }
+      if (_looksLikeDirectOrderMessage(messageText) && _hasResolvableDirectOrder(messageText, business)) {
+        const handled = await _dispatchDirectOrderRoute({
+          from, tenantId, session: freshSession, messageText, business, tenantDoc, isInteractive: false,
+        });
+        if (handled) return;
       }
     }
 
@@ -3295,24 +3431,6 @@ async function _handleIncomingMessageSerialized({ tenantId, tenantDoc, from, msg
         messageText, session, business, isInteractive,
       );
       if (_fsiTargetFlow) {
-        const srcFlow = (session.currentFlow || '').toUpperCase();
-
-        // From Q&A mode: switch immediately — the customer already stated their intent.
-        if (_QUESTION_MODE_FLOWS.has(srcFlow)) {
-          await updateSession(from, tenantId, {
-            currentFlow: null, step: null, data: {}, postFlowAck: null, postFlowData: null,
-          }).catch(() => {});
-          const freshSessQa = await getSession(from, tenantId) || session;
-          const qaSwitchReply = await startFlow({
-            flowName: _fsiTargetFlow, session: freshSessQa, business, tenant: tenantDoc,
-          });
-          if (qaSwitchReply) {
-            const qaPayloads = Array.isArray(qaSwitchReply) ? qaSwitchReply : [qaSwitchReply];
-            for (const payload of qaPayloads) await dispatchMessage(from, payload, tenantDoc);
-          }
-          return;
-        }
-
         const stepLabelFsi = _mfqStepLabel(session.currentFlow, session.step);
         const fsiSwitchFlow = session.currentFlow;
         const fsiSwitchStep = session.step;
