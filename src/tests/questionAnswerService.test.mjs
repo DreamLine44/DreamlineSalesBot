@@ -339,3 +339,11 @@ test('webhook ENQUIRY path uses resolveQuestionReply and recordQuestionHistory',
   assert.match(src, /persistQuestionSession/);
   assert.match(src, /recordQuestionHistory/);
 });
+
+test('webhook Question Mode switches activities instantly without FSI confirmation', () => {
+  const src = readSource('../controllers/webhookController.js');
+  assert.match(src, /_isActiveQuestionMode/);
+  assert.match(src, /_resolveQuestionModeSwitch/);
+  assert.match(src, /From Q&A mode: switch immediately/);
+  assert.match(src, /_QUESTION_MODE_FLOWS\.has\(srcFlow\)/);
+});

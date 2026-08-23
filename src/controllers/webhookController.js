@@ -1016,6 +1016,7 @@ function _detectMidFlowSwitchRequest(text, session, business, isInteractive = fa
     if (questionFlows.has(flow)) {
       if (id === 'ORDER') return 'ORDER';
       if (id === 'BOOK' || id === 'BOOK_NOW') return 'BOOKING';
+      if (['VIEW_MENU', 'SHOW_MENU', 'MENU', 'BROWSE_CATALOG'].includes(id)) return 'ORDER';
     }
     if ((flow === 'ORDER' || flow === 'BOOKING') && id === 'QUESTION') return 'QUESTION';
     if (flow === 'ORDER' && (id === 'BOOK' || id === 'BOOK_NOW')) return 'BOOKING';
@@ -1080,6 +1081,45 @@ function _detectMidFlowSwitchRequest(text, session, business, isInteractive = fa
   if (!supportedFlows.includes(targetFlow)) return null;
 
   return targetFlow;
+}
+
+const _QUESTION_MODE_FLOWS  = new Set(['QUESTION', 'ENQUIRY', 'SPEC_REQUEST']);
+const _QUESTION_MODE_STEPS  = new Set(['AWAITING_QUESTION', 'SPEC_QUESTION']);
+const _QA_INSTANT_ACTIONS   = new Set(['START_ORDER', 'START_BOOKING', 'CANCEL', 'CANCEL_ALL', 'BROWSE_CATALOG', 'WALKIN']);
+
+/** True when the customer is inside dedicated Ask-a-Question mode. */
+function _isActiveQuestionMode(session) {
+  const flow = (session.currentFlow || '').toUpperCase();
+  const step = (session.step || '').toUpperCase();
+  return _QUESTION_MODE_FLOWS.has(flow) && _QUESTION_MODE_STEPS.has(step);
+}
+
+/**
+ * Detect a clear activity-switch request while in Q&A mode.
+ * Returns { action, intent, suggestion?, nlu? } or null to stay in Q&A.
+ */
+function _resolveQuestionModeSwitch({ messageText, session, business, isInteractive, intentResult = null }) {
+  const targetFlow = _detectMidFlowSwitchRequest(messageText, session, business, isInteractive);
+  if (targetFlow === 'ORDER') {
+    const id = String(messageText || '').trim().toUpperCase();
+    if (isInteractive && id === 'BROWSE_CATALOG') {
+      return { action: 'BROWSE_CATALOG', intent: 'BROWSE_CATALOG' };
+    }
+    return { action: 'START_ORDER', intent: 'ORDER' };
+  }
+  if (targetFlow === 'BOOKING') {
+    return { action: 'START_BOOKING', intent: 'BOOKING' };
+  }
+
+  if (intentResult?.confidence === 'HIGH' && _QA_INSTANT_ACTIONS.has(intentResult.action)) {
+    return {
+      action:     intentResult.action,
+      intent:     intentResult.intent,
+      suggestion: intentResult.suggestion,
+      nlu:        intentResult.nlu,
+    };
+  }
+  return null;
 }
 
 function _detectMidFlowQuestion(text, session, business) {
@@ -2032,32 +2072,33 @@ async function _handleIncomingMessageSerialized({ tenantId, tenantDoc, from, msg
     return;
   }
 
-  // ── 13. ENQUIRY active flow (Question Mode) ───────────────────────────────
-  if (session.currentFlow === 'ENQUIRY' && session.step === 'AWAITING_QUESTION') {
+  // ── 13. Question Mode (ENQUIRY / QUESTION / SPEC_REQUEST) ───────────────
+  // Answer-only while the customer asks questions. When they clearly want another
+  // activity (order, book, browse menu), switch instantly — no confirmation step.
+  if (_isActiveQuestionMode(session)) {
     const { resolveQuestionReply, persistQuestionSession, recordQuestionHistory } = await import('../services/questionAnswerService.js');
     const { detectIntent } = await import('../core/intents/intentEngine.js');
 
-    let switchIntent = null;
+    let intentResult = null;
     try {
-      const intentResult = await detectIntent({ message: messageText, isInteractive: false, session: { ...session, currentFlow: null }, business });
-      if (
-        intentResult.confidence === 'HIGH' &&
-        ['START_ORDER', 'START_BOOKING', 'CANCEL', 'CANCEL_ALL'].includes(intentResult.action)
-      ) {
-        // [ENHANCED-QA-SWITCH] Only HIGH confidence — same bar as TRACK_ORDER escape —
-        // so a vague message never yanks the customer out of Q&A.
-        switchIntent = intentResult;
-      }
+      intentResult = await detectIntent({
+        message: messageText, isInteractive, session: { ...session, currentFlow: null }, business,
+      });
     } catch (_) { /* non-fatal */ }
 
-    if (switchIntent) {
-      await updateSession(from, tenantId, { currentFlow: null, step: null }).catch(() => {});
+    const switchReq = _resolveQuestionModeSwitch({
+      messageText, session, business, isInteractive, intentResult,
+    });
+
+    if (switchReq) {
+      await updateSession(from, tenantId, { currentFlow: null, step: null, data: {}, postFlowAck: null, postFlowData: null }).catch(() => {});
       const { route } = await import('../core/conversations/moduleRouter.js');
       const switchReply = await route({
-        action: switchIntent.action, intent: switchIntent.intent,
-        session: { ...session, currentFlow: null, step: null },
+        action: switchReq.action,
+        intent: switchReq.intent || switchReq.action,
+        session: { ...session, currentFlow: null, step: null, data: {} },
         message: messageText, business, tenant: tenantDoc,
-        isInteractive: false, suggestion: switchIntent.suggestion, nlu: switchIntent.nlu,
+        isInteractive, suggestion: switchReq.suggestion, nlu: switchReq.nlu,
       });
       if (switchReply) {
         const payloads = Array.isArray(switchReply) ? switchReply : [switchReply];
@@ -2076,7 +2117,6 @@ async function _handleIncomingMessageSerialized({ tenantId, tenantDoc, from, msg
 
     await persistQuestionSession(session, tenantDoc, reply.context || { lastMessage: messageText });
     await recordQuestionHistory(session, messageText, reply);
-    // Answer-only: stay in Question Mode — switching handled above via switchIntent.
     await dispatchMessage(from, {
       type: reply.type || 'text',
       body: reply.body,
@@ -3255,6 +3295,24 @@ async function _handleIncomingMessageSerialized({ tenantId, tenantDoc, from, msg
         messageText, session, business, isInteractive,
       );
       if (_fsiTargetFlow) {
+        const srcFlow = (session.currentFlow || '').toUpperCase();
+
+        // From Q&A mode: switch immediately — the customer already stated their intent.
+        if (_QUESTION_MODE_FLOWS.has(srcFlow)) {
+          await updateSession(from, tenantId, {
+            currentFlow: null, step: null, data: {}, postFlowAck: null, postFlowData: null,
+          }).catch(() => {});
+          const freshSessQa = await getSession(from, tenantId) || session;
+          const qaSwitchReply = await startFlow({
+            flowName: _fsiTargetFlow, session: freshSessQa, business, tenant: tenantDoc,
+          });
+          if (qaSwitchReply) {
+            const qaPayloads = Array.isArray(qaSwitchReply) ? qaSwitchReply : [qaSwitchReply];
+            for (const payload of qaPayloads) await dispatchMessage(from, payload, tenantDoc);
+          }
+          return;
+        }
+
         const stepLabelFsi = _mfqStepLabel(session.currentFlow, session.step);
         const fsiSwitchFlow = session.currentFlow;
         const fsiSwitchStep = session.step;
