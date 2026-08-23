@@ -44,15 +44,16 @@ export async function getBookingByShortId(shortId, tenantId) {
 // confirmation or already confirmed — completed/cancelled bookings are history, not
 // something to surface as "you have an active booking".
 export async function getActiveBooking(customerPhone, tenantId) {
-  return Booking.findOne({
-    customerPhone, tenantId,
-    status: { $in: ['pending', 'confirmed'] },
-  }).sort({ createdAt: -1 }).lean();
+  const { buildActiveBookingFilter } = await import('./activityLifecycleService.js');
+  return Booking.findOne(buildActiveBookingFilter(customerPhone, tenantId))
+    .sort({ createdAt: -1 })
+    .lean();
 }
 
 export async function getActiveBookings(customerPhone, tenantId, limit = 10) {
-  return Booking.find({
-    customerPhone, tenantId,
-    status: { $in: ['pending', 'confirmed'] },
-  }).sort({ createdAt: -1 }).limit(limit).lean();
+  const { buildActiveBookingFilter } = await import('./activityLifecycleService.js');
+  return Booking.find(buildActiveBookingFilter(customerPhone, tenantId))
+    .sort({ createdAt: -1 })
+    .limit(limit)
+    .lean();
 }

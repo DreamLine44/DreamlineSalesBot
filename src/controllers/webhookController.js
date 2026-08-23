@@ -1559,6 +1559,9 @@ async function _handleIncomingMessageSerialized({ tenantId, tenantDoc, from, msg
     phoneNumberId: phoneNumberId || session.phoneNumberId,
   }, { messageCount: 1 }).catch(err => logger.warn('[Webhook] Non-critical session update failed', { err: err.message, from }));
 
+  const { expireStaleActivities } = await import('../services/activityLifecycleService.js');
+  await expireStaleActivities(from, tenantId).catch(() => {});
+
   // ── 4.6 [CATALOG-ORDER-WIRE] WA Catalog checkout ("order" message) ─────────
   // Meta sends msg.type === 'order' with an `order` payload
   // ({ catalog_id, product_items: [...] }) when a customer completes checkout
@@ -1626,11 +1629,8 @@ async function _handleIncomingMessageSerialized({ tenantId, tenantDoc, from, msg
     // [PFH-3 / BIZ-HOURS] Exempt customers with active confirmed orders from the closed gate.
     // A customer who just paid and is waiting for their order must not receive "we're closed"
     // — it's confusing, alarming, and wrong. We let their message through to postFlowAck.
-    const hasActiveOrder = await Order.exists({
-      customerPhone: from, tenantId,
-      status:        { $in: ['confirmed', 'pending', 'ready'] },
-      paymentStatus: { $nin: ['cancelled', 'rejected'] },
-    }).catch(() => false);
+    const { hasVisibleActiveOrder } = await import('../services/activityLifecycleService.js');
+    const hasActiveOrder = await hasVisibleActiveOrder(from, tenantId);
 
     if (!hasActiveOrder) {
       const closedMsg = business?.customMessages?.closed
@@ -1755,6 +1755,18 @@ async function _handleIncomingMessageSerialized({ tenantId, tenantDoc, from, msg
         body: "Sorry, that action isn't available. How can I help you? 😊",
       }, tenantDoc);
       return;
+    }
+
+    // Customer cancel by reference — e.g. "cancel #F93217"
+    if (/\bcancel\b/i.test(messageText)) {
+      const { tryCustomerCancelByReference } = await import('../services/activityLifecycleService.js');
+      const cancelReply = await tryCustomerCancelByReference({
+        message: messageText, customerPhone: from, tenantId, business, tenant: tenantDoc,
+      }).catch(() => null);
+      if (cancelReply) {
+        await dispatchMessage(from, cancelReply, tenantDoc);
+        return;
+      }
     }
   }
 
@@ -2009,12 +2021,10 @@ async function _handleIncomingMessageSerialized({ tenantId, tenantDoc, from, msg
     const isSuppPOL = upperPOL === 'SUPPORT';
 
     // [FIX-IMPORT-2] Order now a top-level import — removed redundant dynamic import
-    const pendingOrder = await Order.findOne({
-      customerPhone: from,
-      tenantId,
-      paymentStatus: { $in: ['proof_received', 'unpaid', 'self_confirmed'] },
-      status:        { $nin: ['cancelled', 'confirmed', 'completed'] },
-    }).select('_id item quantity shortId paymentStatus').sort({ createdAt: -1 }).lean().catch(() => null);
+    const { buildPendingOrderLockFilter } = await import('../services/activityLifecycleService.js');
+    const pendingOrder = await Order.findOne(
+      buildPendingOrderLockFilter(from, tenantId),
+    ).select('_id item quantity shortId paymentStatus').sort({ createdAt: -1 }).lean().catch(() => null);
 
     if (pendingOrder) {
       // ── Cancel escape ────────────────────────────────────────────────────

@@ -58,6 +58,17 @@ test('resolveActiveOrder: query includes a clause matching admin-rejected orders
   });
 });
 
+test('resolveActiveOrder: in-progress orders are bounded to 24 hours', async () => {
+  await withCapturedFilter([], async (getFilter) => {
+    await resolveActiveOrder('2207000000', 'tenant1', null, null);
+    const filter = getFilter();
+    const inProgress = filter.$or.find(clause =>
+      clause.status?.$in?.includes('confirmed') && clause.createdAt?.$gte
+    );
+    assert.ok(inProgress, 'confirmed/preparing/ready orders must age out after 24h');
+  });
+});
+
 test('resolveActiveOrder: an admin-rejected order older than 24h still resolves to PAYMENT_REJECTED end-to-end', async () => {
   // Simulates the real Mongo query actually matching and returning this order —
   // unlike activeOrderRejection.test.mjs's stub, which hands _resolveState the
