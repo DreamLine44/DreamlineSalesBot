@@ -342,15 +342,19 @@ test('webhookController.js: mid-flow switch intercept is wired in after the MFQ 
   );
 });
 
-test('webhookController.js: FSI_SWITCH_YES starts the target flow fresh via startFlow()', () => {
+test('webhookController.js: FSI_SWITCH_YES routes via action or starts target flow fresh', () => {
   const src = read('../controllers/webhookController.js');
-  // Target the actual handler block (`if (upperMsg === 'FSI_SWITCH_YES') {`), not
-  // the earlier bypass-condition list mention or the button-definition mention.
   const idx = src.indexOf("if (upperMsg === 'FSI_SWITCH_YES') {");
   assert.ok(idx > -1, 'FSI_SWITCH_YES handler not found');
-  const slice = src.slice(idx, idx + 1200);
-  assert.ok(slice.includes('startFlow({'), 'FSI_SWITCH_YES should hand off to startFlow(), the same entry point START_ORDER/START_BOOKING use');
-  assert.ok(slice.includes('_fsiTargetFlow'), 'FSI_SWITCH_YES should read the target flow captured at intercept time');
+  const slice = src.slice(idx, idx + 1400);
+  assert.ok(
+    slice.includes('route({') && slice.includes('_fsiTargetAction'),
+    'FSI_SWITCH_YES should route through _fsiTargetAction when a direct order/booking was parsed'
+  );
+  assert.ok(
+    slice.includes('startFlow({') && slice.includes('_fsiTargetFlow'),
+    'FSI_SWITCH_YES should fall back to startFlow() when only a target flow was captured'
+  );
 });
 
 test('webhookController.js: FSI_SWITCH_NO restores the original flow and re-sends the current step', () => {

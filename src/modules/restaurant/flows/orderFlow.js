@@ -1183,12 +1183,8 @@ export async function handleRestaurantQuestion({ session, message, business, ten
   const reply = await resolveQuestionReply({
     session, message: raw, business, tenant, intent: 'FAQ',
     initPayload: {
-      type: 'buttons',
+      type: 'text',
       body: '❓ What would you like to know? Ask about our menu, hours, allergens, or anything else!',
-      buttons: [
-        { id: 'ORDER',     title: '🍔 Order Food'  },
-        { id: 'VIEW_MENU', title: '📋 View Menu'   },
-      ],
     },
   });
 

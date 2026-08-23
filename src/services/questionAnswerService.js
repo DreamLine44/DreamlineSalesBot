@@ -269,7 +269,7 @@ export async function tryDatabaseAnswer({ message, business, session }) {
     const menuText = formatMenuText(business);
     return {
       handled: true,
-      body: `${menuText}\n\n_Would you like to view the full catalog or order something?_`,
+      body: menuText,
       routingDecision: 'VIEW_MENU',
       context: { lastMessage: raw, lastTopic: 'MENU' },
     };
@@ -480,9 +480,8 @@ export async function resolveQuestionReply({ session, message, business, tenant,
 
   if (!raw || raw.length < 2) {
     return initPayload || {
-      type: 'buttons',
+      type: 'text',
       body: '❓ What would you like to know? Ask about our menu, hours, orders, or bookings.',
-      buttons: buildQuestionButtons(business),
     };
   }
 

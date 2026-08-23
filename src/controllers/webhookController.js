@@ -3354,11 +3354,14 @@ async function _handleIncomingMessageSerialized({ tenantId, tenantDoc, from, msg
 
         // Use the DB-first question layer here too. It resolves contextual menu
         // references against the current catalog before falling back to Groq.
-        const { processQuestionMessage } = await import('../services/questionAnswerService.js');
+        const { processQuestionMessage, recordQuestionHistory } = await import('../services/questionAnswerService.js');
         const questionReply = await processQuestionMessage({
           session: flowlessSession, message: messageText, business, tenant: tenantDoc, intent: 'QUESTION',
         }).catch(() => null);
         const aiText = questionReply?.body || null;
+        if (questionReply) {
+          await recordQuestionHistory(flowlessSession, messageText, questionReply).catch(() => {});
+        }
 
         await dispatchMessage(from, {
           type:    'buttons',
@@ -3373,21 +3376,39 @@ async function _handleIncomingMessageSerialized({ tenantId, tenantDoc, from, msg
     // ── 15.1d: Handle FSI switch-prompt button responses ────────────────────
     if (isInteractive) {
       if (upperMsg === 'FSI_SWITCH_YES') {
-        // Customer confirmed — abandon the current flow and start the requested one fresh.
+        const switchAction = session.data?._fsiTargetAction || null;
+        const switchIntent = session.data?._fsiTargetIntent || switchAction;
+        const switchMessage = session.data?._fsiSwitchMessage || messageText;
         const _fsiTargetFlow = session.data?._fsiTargetFlow || null;
+
         await updateSession(from, tenantId, {
           currentFlow: null, step: null, data: {}, postFlowAck: null, postFlowData: null,
         });
-        if (_fsiTargetFlow) {
+
+        let switchReply = null;
+        if (switchAction) {
           const freshSessFsi = await getSession(from, tenantId) || session;
-          const switchReply = await startFlow({
+          switchReply = await route({
+            action: switchAction,
+            intent: switchIntent || switchAction,
+            session: { ...freshSessFsi, currentFlow: null, step: null, data: {} },
+            message: switchMessage,
+            business,
+            tenant: tenantDoc,
+            isInteractive: false,
+            suggestion: session.data?._fsiSuggestion,
+            nlu: session.data?._fsiNlu,
+          });
+        } else if (_fsiTargetFlow) {
+          const freshSessFsi = await getSession(from, tenantId) || session;
+          switchReply = await startFlow({
             flowName: _fsiTargetFlow, session: freshSessFsi, business, tenant: tenantDoc,
           });
-          if (switchReply) {
-            const switchPayloads = Array.isArray(switchReply) ? switchReply : [switchReply];
-            for (const payload of switchPayloads) await dispatchMessage(from, payload, tenantDoc);
-            return;
-          }
+        }
+        if (switchReply) {
+          const switchPayloads = Array.isArray(switchReply) ? switchReply : [switchReply];
+          for (const payload of switchPayloads) await dispatchMessage(from, payload, tenantDoc);
+          return;
         }
         const cfgFsiYes = getModeConfig(business);
         await dispatchMessage(from, buildOptionsReply(cfgFsiYes, '👇 What would you like to do?'), tenantDoc);
@@ -3437,11 +3458,15 @@ async function _handleIncomingMessageSerialized({ tenantId, tenantDoc, from, msg
         const fsiSwitchData = { ...(session.data || {}) };
         const { snapshotActivityData } = await import('../services/questionModeHelper.js');
         const activitySnapshot = snapshotActivityData(session, session.currentFlow);
+        const fsiActionByFlow = { ORDER: 'START_ORDER', BOOKING: 'START_BOOKING', QUESTION: 'QUESTION' };
 
         await updateSession(from, tenantId, {
           data: {
             ...fsiSwitchData,
             _fsiTargetFlow,
+            _fsiTargetAction: fsiActionByFlow[_fsiTargetFlow] || null,
+            _fsiTargetIntent: _fsiTargetFlow === 'BOOKING' ? 'BOOKING' : _fsiTargetFlow === 'QUESTION' ? 'QUESTION' : 'ORDER',
+            _fsiSwitchMessage: messageText,
             _fsiResumeFlow: fsiSwitchFlow,
             _fsiResumeStep: fsiSwitchStep,
             _fsiResumeData: { ...fsiSwitchData, _activitySnapshot: activitySnapshot },

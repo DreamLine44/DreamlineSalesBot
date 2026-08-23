@@ -48,9 +48,10 @@ async function handleQuestionAction({ session, message, business, tenant, isInte
     // Answer the real question right now instead of waiting for the next
     // message — mirrors the AWAITING_QUESTION handling webhookController
     // runs for the *following* message, so the first one isn't wasted.
-    const { processQuestionMessage, persistQuestionSession } = await import('../../services/questionAnswerService.js');
+    const { processQuestionMessage, persistQuestionSession, recordQuestionHistory } = await import('../../services/questionAnswerService.js');
     const reply = await processQuestionMessage({ session, message: typedQuestion, business, tenant, intent: 'FAQ' });
     await persistQuestionSession(session, tenant, reply.context || { lastMessage: typedQuestion });
+    await recordQuestionHistory(session, typedQuestion, reply);
     return { type: reply.type, body: reply.body };
   }
   return {

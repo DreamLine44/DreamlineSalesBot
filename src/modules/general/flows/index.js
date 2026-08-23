@@ -68,12 +68,8 @@ export async function handleGeneralQuestion({ session, message, business, tenant
   const reply = await resolveQuestionReply({
     session, message: raw, business, tenant, intent: 'FAQ',
     initPayload: {
-      type: 'buttons',
+      type: 'text',
       body: '❓ What would you like to know? Feel free to type your question.',
-      buttons: [
-        { id: 'ENQUIRY',   title: '📬 Send Enquiry' },
-        { id: 'SHOW_MENU', title: '🔄 Start Over'   },
-      ],
     },
   });
   await persistQuestionSession(session, tenant, reply.context || { lastMessage: raw });

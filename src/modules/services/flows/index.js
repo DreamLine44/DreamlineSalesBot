@@ -339,12 +339,8 @@ export async function handleServicesQuestion({ session, message, business, tenan
   const reply = await resolveQuestionReply({
     session, message: raw, business, tenant, intent: 'SERVICES_QUESTION',
     initPayload: {
-      type: 'buttons',
+      type: 'text',
       body: '❓ What would you like to know about our services?',
-      buttons: [
-        { id: 'ENQUIRY', title: '📋 Get a Quote'       },
-        { id: 'BOOK',    title: '📅 Book Consultation' },
-      ],
     },
   });
   await persistQuestionSession(session, tenant, reply.context || { lastMessage: raw });

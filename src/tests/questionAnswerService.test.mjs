@@ -88,6 +88,13 @@ test('formatHoursText renders structured opening hours', () => {
   assert.match(text, /Closed/i);
 });
 
+test('tryDatabaseAnswer STATUS without ref delegates to buildStatusReply', () => {
+  const src = readSource('../services/questionAnswerService.js');
+  const statusBlock = src.slice(src.indexOf("if (qType === 'STATUS')"), src.indexOf("if (qType === 'MENU')"));
+  assert.match(statusBlock, /buildStatusReply/);
+  assert.match(statusBlock, /answerStatusQuestion/);
+});
+
 test('tryDatabaseAnswer returns menu from database for menu questions', async () => {
   const result = await tryDatabaseAnswer({
     message: 'What do you have on your menu today?',
@@ -357,6 +364,18 @@ test('webhook has no-flow direct order shortcut before active-flow handling', ()
   assert.match(src, /14\.7\. Direct natural-language order/);
   assert.match(src, /_dispatchDirectOrderRoute/);
   assert.match(src, /resolveDirectOrderParse/);
+});
+
+test('generic Q&A fallback uses recordQuestionHistory', () => {
+  const src = readSource('../core/shared/moduleRegistry.js');
+  const block = src.slice(src.indexOf('handleQuestionAction'), src.indexOf('async function parseDirectBookingRequest'));
+  assert.match(block, /recordQuestionHistory/);
+});
+
+test('mid-flow MFQ answers record question history', () => {
+  const src = readSource('../controllers/webhookController.js');
+  const block = src.slice(src.indexOf('15.1c: Detect question intent'), src.indexOf('15.1d: Handle FSI'));
+  assert.match(block, /recordQuestionHistory/);
 });
 
 test('webhook Question Mode requires confirmation before switching activities', () => {
