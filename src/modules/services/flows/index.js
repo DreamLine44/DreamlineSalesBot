@@ -335,9 +335,20 @@ export async function handleQuoteFollowUp({ session, message, business, tenant }
 
 export async function handleServicesQuestion({ session, message, business, tenant }) {
   const raw = String(message || '').trim();
-  const { processQuestionMessage, persistQuestionSession } = await import('../../../services/questionAnswerService.js');
-  const reply = await processQuestionMessage({ session, message: raw, business, tenant, intent: 'SERVICES_QUESTION' });
+  const { resolveQuestionReply, persistQuestionSession, recordQuestionHistory } = await import('../../../services/questionAnswerService.js');
+  const reply = await resolveQuestionReply({
+    session, message: raw, business, tenant, intent: 'SERVICES_QUESTION',
+    initPayload: {
+      type: 'buttons',
+      body: '❓ What would you like to know about our services?',
+      buttons: [
+        { id: 'ENQUIRY', title: '📋 Get a Quote'       },
+        { id: 'BOOK',    title: '📅 Book Consultation' },
+      ],
+    },
+  });
   await persistQuestionSession(session, tenant, reply.context || { lastMessage: raw });
+  await recordQuestionHistory(session, raw, reply);
 
   // Answer-only: stay in QUESTION mode and wait — no buttons. Switching activity
   // (e.g. asking for a quote, booking a consultation) is picked up upstream from

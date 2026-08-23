@@ -53,6 +53,12 @@ test('extractShortId parses #F921EB and order #F921EB forms', () => {
   assert.equal(extractShortId('hello'), null);
 });
 
+test('extractShortId accepts bare ref in tracking context', () => {
+  const session = { data: { _questionCtx: { lastTopic: 'ORDER_TRACKING' } } };
+  assert.equal(extractShortId('F921EB', session), 'F921EB');
+  assert.equal(extractShortId('F921EB', {}), null);
+});
+
 test('isValidShortIdFormat validates reference tokens', () => {
   assert.equal(isValidShortIdFormat('F921EB'), true);
   assert.equal(isValidShortIdFormat('AB'), false);
@@ -286,12 +292,18 @@ test('adminCommandService supports CANCEL ORDER/BOOKING by reference', () => {
   assert.match(src, /CANCEL\\s\+ORDER/);
 });
 
-test('question handlers use processQuestionMessage', () => {
+test('question handlers use resolveQuestionReply', () => {
   const restaurant = readSource('../modules/restaurant/flows/orderFlow.js');
   const general = readSource('../modules/general/flows/index.js');
-  assert.match(restaurant, /processQuestionMessage/);
-  assert.match(general, /processQuestionMessage/);
+  assert.match(restaurant, /resolveQuestionReply/);
+  assert.match(general, /resolveQuestionReply/);
   assert.match(general, /persistQuestionSession/);
+  assert.match(general, /recordQuestionHistory/);
+});
+
+test('persistQuestionSession preserves ENQUIRY flow', () => {
+  const src = readSource('../services/questionAnswerService.js');
+  assert.match(src, /currentFlow === 'ENQUIRY' \? 'ENQUIRY' : 'QUESTION'/);
 });
 
 test('activityStatusService uses reference-first lookup', () => {
@@ -321,8 +333,9 @@ test('processQuestionMessage handles general messages without throwing', async (
   assert.equal(reply.buttons, undefined);
 });
 
-test('webhook ENQUIRY path uses DB-first questionAnswerService', () => {
+test('webhook ENQUIRY path uses resolveQuestionReply and recordQuestionHistory', () => {
   const src = readSource('../controllers/webhookController.js');
-  assert.match(src, /processQuestionMessage/);
+  assert.match(src, /resolveQuestionReply/);
   assert.match(src, /persistQuestionSession/);
+  assert.match(src, /recordQuestionHistory/);
 });

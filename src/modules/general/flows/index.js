@@ -64,9 +64,20 @@ export async function handleGeneralQuestion({ session, message, business, tenant
     };
   }
 
-  const { processQuestionMessage, persistQuestionSession } = await import('../../../services/questionAnswerService.js');
-  const reply = await processQuestionMessage({ session, message: raw, business, tenant, intent: 'FAQ' });
+  const { resolveQuestionReply, persistQuestionSession, recordQuestionHistory } = await import('../../../services/questionAnswerService.js');
+  const reply = await resolveQuestionReply({
+    session, message: raw, business, tenant, intent: 'FAQ',
+    initPayload: {
+      type: 'buttons',
+      body: '❓ What would you like to know? Feel free to type your question.',
+      buttons: [
+        { id: 'ENQUIRY',   title: '📬 Send Enquiry' },
+        { id: 'SHOW_MENU', title: '🔄 Start Over'   },
+      ],
+    },
+  });
   await persistQuestionSession(session, tenant, reply.context || { lastMessage: raw });
+  await recordQuestionHistory(session, raw, reply);
 
   // Answer-only: stay in QUESTION mode and wait — no buttons. Switching activity
   // is picked up upstream from the customer's own words, not from a tap target.

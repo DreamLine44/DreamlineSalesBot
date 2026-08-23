@@ -34,6 +34,7 @@ import { getAIReply } from '../ai/providers/aiRouter.js';
 import { analyzeMessage } from './negationGuard.js';
 import { isMenuBrowsingIntent } from './menuIntentDetector.js';
 import { getModeConfig } from '../../config/modes.js';
+import { sanitiseNluMessage } from '../nlu/nluContext.js';
 import logger from '../../config/logger.js';
 
 // ── Normalise ─────────────────────────────────────────────────────────────────
@@ -512,14 +513,6 @@ async function classifyWithAI({ message, business, session }) {
     logger.warn('[IntentEngine] classifyWithAI failed', { err: err.message });
     return { intent: 'UNKNOWN', confidence: 'LOW', entities: { products: [], questions: [] }, source: 'legacy-fallback' };
   }
-}
-
-function sanitiseNluMessage(message, maxLen = 200) {
-  return String(message || '')
-    .slice(0, maxLen)
-    .replace(/[\r\n\t]/g, ' ')
-    .replace(/[<>]/g, '')
-    .trim();
 }
 
 function getValidIntents(mode) {

@@ -13,7 +13,7 @@ import { getActiveBookings, getBookingByShortId } from './bookingService.js';
 const SHORT_ID_RE = /#?([A-Z0-9]{4,24})\b/i;
 
 /** Extract a shortId from customer or admin text (#F921EB or F921EB). */
-export function extractShortId(message) {
+export function extractShortId(message, session = null) {
   const raw = String(message || '').trim();
   if (!raw) return null;
 
@@ -33,6 +33,12 @@ export function extractShortId(message) {
   const bare = raw.match(SHORT_ID_RE);
   if (bare && /\b(track|status|cancel|order|booking|ref)\b/i.test(raw)) {
     return bare[1].toUpperCase();
+  }
+
+  // Bare ref reply while in tracking context (e.g. customer sends "F921EB" after prompt).
+  const ctx = session?.data?._questionCtx;
+  if (ctx?.lastTopic?.includes('TRACKING') && /^[A-Z0-9]{4,24}$/i.test(raw)) {
+    return raw.toUpperCase();
   }
 
   return null;
@@ -122,7 +128,6 @@ export async function recoverRecentActivities({ customerPhone, tenantId, scope =
         .lean()
         .catch(() => []);
       if (recent.length) checks.push(`recent orders (${recent.length})`);
-      return { orderResolution, recentOrders: recent, bookings, checks };
     }
   }
 

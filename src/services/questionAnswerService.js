@@ -22,6 +22,7 @@ import {
   formatOrderStatusCard,
   formatBookingStatusCard,
   detectStatusScope,
+  buildStatusReply,
 } from './activityStatusService.js';
 import {
   isBusinessScopeQuestion,
@@ -150,7 +151,7 @@ function classifyQuestion(message, session, business) {
   const raw = String(message || '').trim();
   const ctx = session?.data?._questionCtx || {};
 
-  if (extractShortId(raw) || STATUS_RE.test(raw)) return 'STATUS';
+  if (extractShortId(raw, session) || STATUS_RE.test(raw)) return 'STATUS';
   if (ctx.lastTopic === 'ORDER_TRACKING' && /\b(deleted|removed|cancelled|canceled|missing|gone|lost|where|what happened)\b/i.test(raw)) {
     return 'STATUS';
   }
@@ -170,11 +171,11 @@ async function answerStatusQuestion({ message, business, session }) {
   const tenantId = session.tenantId;
   const scope = detectStatusScope(message);
   const ctx = session?.data?._questionCtx || {};
-  const ref = extractShortId(message) || ctx.lastReference || null;
+  const ref = extractShortId(message, session) || ctx.lastReference || null;
   const adminPhone = business?.adminPhone;
 
   if (ref && isValidShortIdFormat(ref)) {
-    const { order, booking } = await lookupActivityByReference({
+    const { order, booking, checks } = await lookupActivityByReference({
       shortId: ref,
       tenantId,
       customerPhone: phone,
@@ -207,11 +208,11 @@ async function answerStatusQuestion({ message, business, session }) {
       };
     }
 
-    const { checks } = await lookupActivityByReference({ shortId: ref, tenantId, customerPhone: phone, scope });
-    await recoverRecentActivities({ customerPhone: phone, tenantId, scope });
+    const recovery = await recoverRecentActivities({ customerPhone: phone, tenantId, scope });
+    const allChecks = [...checks, ...recovery.checks];
     return {
-      body: formatLookupFailureMessage({ shortId: ref, checks, adminPhone }),
-      context: { lastReference: ref, lastTopic: 'ORDER_TRACKING', lastMessage: message },
+      body: formatLookupFailureMessage({ shortId: ref, checks: allChecks, adminPhone }),
+      context: { lastTopic: 'ORDER_TRACKING', lastMessage: message },
       stayOnTopic: true,
     };
   }
@@ -248,6 +249,20 @@ export async function tryDatabaseAnswer({ message, business, session }) {
     if (statusAnswer) {
       return { handled: true, routingDecision: 'TRACK_ORDER', ...statusAnswer };
     }
+    // Ref-less status ("where is my order") — delegate to phone-scoped DB lookup.
+    try {
+      const statusReply = await buildStatusReply({ session, business, message: raw });
+      const body = typeof statusReply === 'string' ? statusReply : statusReply?.body;
+      if (body) {
+        return {
+          handled: true,
+          routingDecision: 'TRACK_ORDER',
+          body,
+          context: { lastMessage: raw, lastTopic: 'ORDER_TRACKING' },
+          stayOnTopic: true,
+        };
+      }
+    } catch { /* fall through to AI */ }
   }
 
   if (qType === 'MENU') {
@@ -429,17 +444,47 @@ export async function processQuestionMessage({ session, message, business, tenan
   };
 }
 
-/** Persist question-mode session state (stay in Q&A). */
+/** Persist question-mode session state (stay in Q&A). Preserves ENQUIRY vs QUESTION flow. */
 export async function persistQuestionSession(session, tenant, context = {}) {
   const { updateSession } = await import('../core/sessions/sessionService.js');
+  const flow = session?.currentFlow === 'ENQUIRY' ? 'ENQUIRY' : 'QUESTION';
   const data = {
     ...(session.data || {}),
     _questionCtx: mergeQuestionContext(session, context),
   };
   await updateSession(session.customerPhone, session.tenantId, {
-    currentFlow: 'QUESTION',
+    currentFlow: flow,
     step: 'AWAITING_QUESTION',
     data,
   });
-  return { ...session, currentFlow: 'QUESTION', step: 'AWAITING_QUESTION', data };
+  return { ...session, currentFlow: flow, step: 'AWAITING_QUESTION', data };
+}
+
+/** Append user/bot turns to aiHistory for Q&A paths (mirrors webhook step 17). */
+export async function recordQuestionHistory(session, userMessage, botPayload) {
+  const { updateSession } = await import('../core/sessions/sessionService.js');
+  const { appendAiHistoryTurn, extractReplyText } = await import('../core/nlu/nluContext.js');
+  let aiHistory = appendAiHistoryTurn(session, 'user', userMessage);
+  const botText = extractReplyText(botPayload);
+  if (botText) aiHistory = appendAiHistoryTurn({ aiHistory }, 'assistant', botText);
+  await updateSession(session.customerPhone, session.tenantId, { aiHistory }).catch(() => {});
+  return { ...session, aiHistory };
+}
+
+/**
+ * Unified Q&A handler for all mode-specific QUESTION flows and generic ENQUIRY.
+ * DB-first status/menu/hours, then AI fallback. Returns WhatsApp payload.
+ */
+export async function resolveQuestionReply({ session, message, business, tenant, intent = 'FAQ', initPayload = null }) {
+  const raw = String(message || '').trim();
+
+  if (!raw || raw.length < 2) {
+    return initPayload || {
+      type: 'buttons',
+      body: '❓ What would you like to know? Ask about our menu, hours, orders, or bookings.',
+      buttons: buildQuestionButtons(business),
+    };
+  }
+
+  return processQuestionMessage({ session, message: raw, business, tenant, intent });
 }

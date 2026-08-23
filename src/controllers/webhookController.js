@@ -2033,68 +2033,55 @@ async function _handleIncomingMessageSerialized({ tenantId, tenantDoc, from, msg
   }
 
   // ── 13. ENQUIRY active flow (Question Mode) ───────────────────────────────
-  if (session.currentFlow === 'ENQUIRY') {
-    if (session.step === 'AWAITING_QUESTION') {
-      const { processQuestionMessage, persistQuestionSession } = await import('../services/questionAnswerService.js');
-      const { detectIntent } = await import('../core/intents/intentEngine.js');
-      const { buildStatusReply } = await import('../services/activityStatusService.js');
+  if (session.currentFlow === 'ENQUIRY' && session.step === 'AWAITING_QUESTION') {
+    const { resolveQuestionReply, persistQuestionSession, recordQuestionHistory } = await import('../services/questionAnswerService.js');
+    const { detectIntent } = await import('../core/intents/intentEngine.js');
 
-      let statusReply = null;
-      let switchIntent = null;
-      try {
-        const intentResult = await detectIntent({ message: messageText, isInteractive: false, session: { ...session, currentFlow: null }, business });
-        if (intentResult.action === 'TRACK_ORDER' && intentResult.confidence === 'HIGH') {
-          statusReply = await buildStatusReply({ session, business, message: messageText });
-        } else if (
-          intentResult.confidence === 'HIGH' &&
-          ['START_ORDER', 'START_BOOKING', 'CANCEL', 'CANCEL_ALL'].includes(intentResult.action)
-        ) {
-          // [ENHANCED-QA-SWITCH] Spec: "should not automatically push the customer
-          // into ordering or other workflows unless the customer's intent clearly
-          // changes." Only HIGH confidence — same bar the TRACK_ORDER escape above
-          // already uses — so a vague message never yanks the customer out of Q&A.
-          // Handled locally (route() called directly, same as buildStatusReply
-          // above) rather than falling through the rest of the webhook pipeline,
-          // so nothing else about message handling (postFlowAck, active-order
-          // resolver, etc.) is touched by this change.
-          switchIntent = intentResult;
-        }
-      } catch (_) { /* non-fatal */ }
-
-      if (statusReply) {
-        await persistQuestionSession(session, tenantDoc, { lastMessage: messageText, lastTopic: 'ORDER_TRACKING' });
-        await dispatchMessage(from, statusReply, tenantDoc);
-        return;
+    let switchIntent = null;
+    try {
+      const intentResult = await detectIntent({ message: messageText, isInteractive: false, session: { ...session, currentFlow: null }, business });
+      if (
+        intentResult.confidence === 'HIGH' &&
+        ['START_ORDER', 'START_BOOKING', 'CANCEL', 'CANCEL_ALL'].includes(intentResult.action)
+      ) {
+        // [ENHANCED-QA-SWITCH] Only HIGH confidence — same bar as TRACK_ORDER escape —
+        // so a vague message never yanks the customer out of Q&A.
+        switchIntent = intentResult;
       }
+    } catch (_) { /* non-fatal */ }
 
-      if (switchIntent) {
-        await updateSession(from, tenantId, { currentFlow: null, step: null }).catch(() => {});
-        const { route } = await import('../core/conversations/moduleRouter.js');
-        const switchReply = await route({
-          action: switchIntent.action, intent: switchIntent.intent,
-          session: { ...session, currentFlow: null, step: null },
-          message: messageText, business, tenant: tenantDoc,
-          isInteractive: false, suggestion: switchIntent.suggestion, nlu: switchIntent.nlu,
-        });
-        if (switchReply) {
-          const payloads = Array.isArray(switchReply) ? switchReply : [switchReply];
-          for (const payload of payloads) await dispatchMessage(from, payload, tenantDoc);
-        }
-        return;
+    if (switchIntent) {
+      await updateSession(from, tenantId, { currentFlow: null, step: null }).catch(() => {});
+      const { route } = await import('../core/conversations/moduleRouter.js');
+      const switchReply = await route({
+        action: switchIntent.action, intent: switchIntent.intent,
+        session: { ...session, currentFlow: null, step: null },
+        message: messageText, business, tenant: tenantDoc,
+        isInteractive: false, suggestion: switchIntent.suggestion, nlu: switchIntent.nlu,
+      });
+      if (switchReply) {
+        const payloads = Array.isArray(switchReply) ? switchReply : [switchReply];
+        for (const payload of payloads) await dispatchMessage(from, payload, tenantDoc);
       }
-
-      // Answer-only: stay in Question Mode and wait — no buttons. Switching to
-      // another activity is already detected above (switchIntent) from the
-      // customer's own words, not offered as a tap target on every answer.
-      const reply = await processQuestionMessage({ session, message: messageText, business, tenant: tenantDoc, intent: 'FAQ' });
-      await persistQuestionSession(session, tenantDoc, reply.context || { lastMessage: messageText });
-      await dispatchMessage(from, {
-        type: reply.type || 'text',
-        body: reply.body,
-      }, tenantDoc);
       return;
     }
-    await updateSession(from, tenantId, { currentFlow: null, step: null });
+
+    const reply = await resolveQuestionReply({
+      session, message: messageText, business, tenant: tenantDoc, intent: 'FAQ',
+      initPayload: {
+        type: 'text',
+        body: '❓ What would you like to know? Ask about our menu, hours, orders, or bookings.',
+      },
+    });
+
+    await persistQuestionSession(session, tenantDoc, reply.context || { lastMessage: messageText });
+    await recordQuestionHistory(session, messageText, reply);
+    // Answer-only: stay in Question Mode — switching handled above via switchIntent.
+    await dispatchMessage(from, {
+      type: reply.type || 'text',
+      body: reply.body,
+    }, tenantDoc);
+    return;
   }
 
   // ── 14. Post-flow acknowledgement — context-aware + customer-aware ───────────

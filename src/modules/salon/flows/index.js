@@ -1275,9 +1275,10 @@ export async function handleSalonQuestion({ session, message, business, tenant }
       ? (isBarbershop ? 'BARBERSHOP_QUESTION' : 'SALON_CONSULTATION')
       : (isBarbershop ? 'BARBERSHOP_QUESTION' : 'SALON_QUESTION');
 
-  const { processQuestionMessage, persistQuestionSession } = await import('../../../services/questionAnswerService.js');
-  const reply = await processQuestionMessage({ session, message: raw, business, tenant, intent });
+  const { resolveQuestionReply, persistQuestionSession, recordQuestionHistory } = await import('../../../services/questionAnswerService.js');
+  const reply = await resolveQuestionReply({ session, message: raw, business, tenant, intent });
   await persistQuestionSession(session, tenant, reply.context || { lastMessage: raw });
+  await recordQuestionHistory(session, raw, reply);
 
   // Answer-only: stay in QUESTION mode and wait — no buttons. Switching activity
   // is picked up upstream from the customer's own words, not from a tap target.

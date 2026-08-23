@@ -1177,27 +1177,22 @@ export async function handleRestaurantQuestion({ session, message, business, ten
     };
   }
 
-  const { processQuestionMessage, persistQuestionSession } = await import('../../../services/questionAnswerService.js');
-  const { detectIntent } = await import('../../../core/intents/intentEngine.js');
-  const { buildStatusReply } = await import('../../../services/activityStatusService.js');
+  const { resolveQuestionReply, persistQuestionSession, recordQuestionHistory } = await import('../../../services/questionAnswerService.js');
 
-  try {
-    const intentResult = await detectIntent({
-      message: raw, isInteractive: false,
-      session: { ...session, currentFlow: null },
-      business,
-    });
-    if (intentResult.action === 'TRACK_ORDER' && intentResult.confidence === 'HIGH') {
-      const statusReply = await buildStatusReply({ session, business, message: raw });
-      await persistQuestionSession(session, tenant, { lastMessage: raw, lastTopic: 'ORDER_TRACKING' });
-      return statusReply;
-    }
-  } catch (_) { /* fall through */ }
+  const reply = await resolveQuestionReply({
+    session, message: raw, business, tenant, intent: 'FAQ',
+    initPayload: {
+      type: 'buttons',
+      body: '❓ What would you like to know? Ask about our menu, hours, allergens, or anything else!',
+      buttons: [
+        { id: 'ORDER',     title: '🍔 Order Food'  },
+        { id: 'VIEW_MENU', title: '📋 View Menu'   },
+      ],
+    },
+  });
 
-  // Answer-only: stay in QUESTION mode and wait for the next message. Switching
-  // to another activity is handled upstream (webhookController's mid-flow switch
-  // detector) from the customer's own words, not from buttons on this reply.
-  const reply = await processQuestionMessage({ session, message: raw, business, tenant, intent: 'FAQ' });
   await persistQuestionSession(session, tenant, reply.context || { lastMessage: raw });
+  await recordQuestionHistory(session, raw, reply);
+  // Answer-only: stay in QUESTION mode — switching handled upstream.
   return { type: reply.type, body: reply.body };
 }
