@@ -148,17 +148,22 @@ test('postFlowHandler.js: status commands during post-flow fall through to TRACK
 
 test('postFlowHandler.js: flow-start phrases during post-flow fall through to intent routing', () => {
   assert.match(pfhSrc, /isPostFlowFlowStartIntent\(msg, business/);
+  assert.match(pfhSrc, /isPostFlowBookingInput\(msg/);
   assert.match(pfhSrc, /\[PFH-FLOW-START\]/);
+  assert.match(pfhSrc, /\[PFH-BOOKING-INPUT\]/);
 });
 
 test('isPostFlowFlowStartIntent: book/order after order collection', async () => {
-  const { isPostFlowFlowStartIntent } = await import('../services/postFlowHandler.js');
+  const { isPostFlowFlowStartIntent, isPostFlowBookingInput } = await import('../services/postFlowHandler.js');
   const restaurant = { businessMode: 'RESTAURANT' };
   assert.equal(isPostFlowFlowStartIntent('book a table', restaurant), true);
   assert.equal(isPostFlowFlowStartIntent('I want to order food', restaurant), true);
   assert.equal(isPostFlowFlowStartIntent('BOOK', restaurant, { isInteractive: true }), true);
   assert.equal(isPostFlowFlowStartIntent('what can I book', restaurant), false);
   assert.equal(isPostFlowFlowStartIntent('thank you', restaurant), false);
+  assert.equal(isPostFlowBookingInput('today', restaurant), true);
+  assert.equal(isPostFlowBookingInput('DATE_D_20260824', restaurant, { isInteractive: true }), true);
+  assert.equal(isPostFlowBookingInput('thank you', restaurant), false);
 });
 
 test('postFlowHandler.js: ORDER_COLLECTED uses smart expression replies, not hardcoded loop text', () => {

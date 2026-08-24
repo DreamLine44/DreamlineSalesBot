@@ -489,7 +489,7 @@ export async function handleBookingFlow({ session, message, business, tenant, is
       }
 
       if (!looksLikeTime(resolvedTime) && !resolveBookingTimeInput(raw, { context: data.date || '' })) {
-        return _buildTimePickerUI(`Please enter a valid time ⏰\n\n(e.g. *8*, *2pm*, *7 tonight*, *noon*)`, { tz, bookingDate: bookingParsedDate, business });
+        return _buildTimePickerUI(`Please enter a valid time ⏰\n\nInclude *AM* or *PM* (e.g. *7 PM*, *9:30 AM*).\n\nOr tap a time from the list below.`, { tz, bookingDate: bookingParsedDate, business });
       }
 
       const timeValidation = validateTime(resolvedTime, bookingParsedDate, tz);
@@ -976,8 +976,8 @@ function _buildTimePickerUI(headingOrError = null, { tz = 'UTC', bookingDate = n
   }
 
   const body = headingOrError
-    ? `${headingOrError}\n\nPlease select your preferred time.`
-    : `What time works for you? ⏰\n\nPlease select your preferred time.`;
+    ? `${headingOrError}\n\nChoose a time below, or type a time with *AM* or *PM* (e.g. *7 PM*).`
+    : `What time works for you? ⏰\n\nChoose a time below, or type a time with *AM* or *PM* (e.g. *7 PM*).`;
 
   if (!sections.length) {
     return {
@@ -992,6 +992,7 @@ function _buildTimePickerUI(headingOrError = null, { tz = 'UTC', bookingDate = n
     body,
     button: 'Choose a time',
     sections,
+    footer: 'Type a time with AM or PM — e.g. 7 PM, 9:30 AM, noon.',
   };
 }
 

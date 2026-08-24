@@ -36,13 +36,29 @@ import {
   ORDER_DIRECT_RE, BOOKING_DIRECT_RE, DIRECT_INTENT_EXCLUDE_RE, QUESTION_LEADIN_RE,
 } from '../core/intents/intentEngine.js';
 import { isMenuBrowsingIntent } from '../core/intents/menuIntentDetector.js';
+import { looksLikeDate } from './bookingDateParser.js';
+import { isBookingPassthroughRecoveryId } from '../core/conversations/flowPassthroughRecovery.js';
 import logger from '../config/logger.js';
 import { formatMoney } from '../utils/formatCurrency.js';
 
 const POST_FLOW_FLOW_START_BUTTONS = new Set([
   'ORDER', 'START_ORDER', 'BOOK', 'START_BOOKING', 'QUESTION', 'ENQUIRY',
   'BROWSE_CATALOG', 'WALKIN', 'VIEW_MENU', 'ASK_A_QUESTION',
+  'RESCHEDULE', 'CANCEL_BOOKING',
 ]);
+
+/** Date/time/party picks or reschedule taps after a booking request — not generic acks. */
+export function isPostFlowBookingInput(msg, { isInteractive = false, isFlowReply = false } = {}) {
+  const raw = String(msg || '').trim();
+  if (!raw) return false;
+
+  const upper = raw.toUpperCase();
+  if (isInteractive && (upper.startsWith('DATE_') || isBookingPassthroughRecoveryId(upper))) return true;
+  if (isInteractive && ['RESCHEDULE', 'CANCEL_BOOKING'].includes(upper)) return true;
+  if (isFlowReply && /^\d{4}-\d{2}-\d{2}$/.test(raw)) return true;
+  if (/^today$/i.test(raw) || /^tomorrow$/i.test(raw) || /^tonight$/i.test(raw)) return true;
+  return looksLikeDate(raw);
+}
 
 /** Typed phrases or menu buttons that should start a new flow after post-flow ack. */
 export function isPostFlowFlowStartIntent(msg, business, { isInteractive = false } = {}) {
@@ -356,6 +372,7 @@ async function getPostFlowAIReply({ customerMessage, business, session, intent, 
 export async function handlePostFlowMessage({
   ackCtx, flowData, session, messageText, isInteractive,
   business, tenantDoc, from, tenantId, custCtx,
+  isFlowReply = false,
 }) {
   const cfg       = getModeConfig(business);
   const bizName   = business?.name || 'us';
@@ -394,6 +411,13 @@ export async function handlePostFlowMessage({
   // immediately start a new flow ("book a table", "order food"). Those must
   // fall through to intent routing — not be swallowed by the generic post-flow menu.
   if (isPostFlowFlowStartIntent(msg, business, { isInteractive })) {
+    await updateSession(from, tenantId, { postFlowAck: null, postFlowData: null });
+    return false;
+  }
+
+  // [PFH-BOOKING-INPUT] Date picks / "today" / reschedule while waiting for admin
+  // must reach the booking flow — not a generic "Thank you!" expression reply.
+  if (isPostFlowBookingInput(msg, { isInteractive, isFlowReply })) {
     await updateSession(from, tenantId, { postFlowAck: null, postFlowData: null });
     return false;
   }
@@ -868,10 +892,14 @@ export async function handlePostFlowMessage({
         await finishExpressionTurn({ from, tenantId, ackCtx, flowData });
         return true;
       }
-      await sendPostFlowExpression({
-        from, tenantId, ackCtx, flowData, msg, sentiment, business, session,
-        custName, bizName, tenantDoc,
-      });
+      await dispatchMessage(from, {
+        type:    'buttons',
+        body:    `Your booking request is being reviewed ⏳\n\nTo change the date or time, tap *Reschedule* below.`,
+        buttons: [
+          { id: 'RESCHEDULE',     title: '📅 Reschedule'     },
+          { id: 'CANCEL_BOOKING', title: '❌ Cancel Booking' },
+        ],
+      }, tenantDoc);
       return true;
     }
 

@@ -29,19 +29,23 @@ test('parsePartySizeFromText: relational and natural phrases', () => {
   assert.equal(parsePartySizeFromText('table for 8 people next Friday'), 8);
 });
 
-test('parseBookingTime: natural time phrases', () => {
+test('parseBookingTime: requires AM/PM or clear context', () => {
   assert.equal(parseBookingTimeToMinutes('noon'), 12 * 60);
   assert.equal(parseBookingTimeToMinutes('8pm'), 20 * 60);
-  assert.equal(parseBookingTimeToMinutes('8', { context: 'dinner tonight' }), 20 * 60);
+  assert.equal(parseBookingTimeToMinutes('8'), null);
   assert.equal(parseBookingTimeToMinutes('7 tonight', { context: 'book tomorrow' }), 19 * 60);
   assert.equal(parseBookingTimeToMinutes('2 in the afternoon'), 14 * 60);
-  assert.ok(looksLikeBookingTime('around 8'));
-  const resolved = resolveBookingTimeInput('make it 8', { context: 'dinner' });
+  assert.equal(parseBookingTimeToMinutes('7:30 PM'), 19 * 60 + 30);
+  assert.equal(parseBookingTimeToMinutes('7:30'), null);
+  assert.equal(looksLikeBookingTime('8pm'), true);
+  assert.equal(looksLikeBookingTime('8'), false);
+  assert.equal(looksLikeBookingTime('around 8pm'), true);
+  const resolved = resolveBookingTimeInput('make it 8pm', { context: 'dinner' });
   assert.equal(resolved.minutes, 20 * 60);
 });
 
 test('extractBookingTimeFromText pulls time from full sentence', () => {
-  const t = extractBookingTimeFromText('table for 8 next Friday around 7');
+  const t = extractBookingTimeFromText('table for 8 next Friday around 7pm');
   assert.ok(t);
   assert.equal(t.minutes, 19 * 60);
 });
@@ -61,7 +65,7 @@ test('extractBookingDatePhraseFromText finds date in sentence', () => {
 
 test('parseDirectBookingRequest: rich NL restaurant booking', async () => {
   const result = await parseDirectBookingRequest(
-    'Can I book a table for 8 people next Friday around 7?',
+    'Can I book a table for 8 people next Friday around 7pm?',
     RESTAURANT,
   );
   assert.equal(result.partySize, 8);

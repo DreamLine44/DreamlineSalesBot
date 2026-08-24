@@ -2395,6 +2395,7 @@ async function _handleIncomingMessageSerialized({ tenantId, tenantDoc, from, msg
       session,
       messageText,
       isInteractive,
+      isFlowReply,
       business,
       tenantDoc,
       from,
@@ -2653,15 +2654,32 @@ async function _handleIncomingMessageSerialized({ tenantId, tenantDoc, from, msg
   // When session.currentFlow was cleared but the customer taps PARTY_*/TIME_*/DATE_*
   // from a booking prompt still visible in chat, route() would map to CONTINUE_FLOW
   // and show the welcome menu — the exact "how many guests?" → "Welcome!" bug.
-  if (!session.currentFlow && isInteractive && messageText) {
-    const { recoverLostBookingPassthrough } = await import('../core/conversations/flowPassthroughRecovery.js');
-    const recovered = await recoverLostBookingPassthrough({
-      from, tenantId, session, messageText, business, tenant: tenantDoc, isInteractive,
-    }).catch(() => null);
-    if (recovered) {
-      const payloads = Array.isArray(recovered) ? recovered : [recovered];
-      for (const payload of payloads) await dispatchMessage(from, payload, tenantDoc);
-      return;
+  if (!session.currentFlow && messageText) {
+    const { recoverLostBookingPassthrough, isBookingPassthroughRecoveryId } = await import('../core/conversations/flowPassthroughRecovery.js');
+    const upperRecovery = messageText.trim().toUpperCase();
+    let shouldRecover = isInteractive && isBookingPassthroughRecoveryId(upperRecovery);
+    if (!shouldRecover && !isInteractive) {
+      const { looksLikeDate } = await import('../services/bookingDateParser.js');
+      if (looksLikeDate(messageText.trim())) {
+        const { default: Booking } = await import('../models/Booking.js');
+        const active = await Booking.findOne({
+          customerPhone: from,
+          tenantId,
+          status:        { $in: ['pending', 'confirmed'] },
+          bookingType:   { $ne: 'walkin' },
+        }).sort({ createdAt: -1 }).lean().catch(() => null);
+        shouldRecover = !!active;
+      }
+    }
+    if (shouldRecover) {
+      const recovered = await recoverLostBookingPassthrough({
+        from, tenantId, session, messageText, business, tenant: tenantDoc, isInteractive,
+      }).catch(() => null);
+      if (recovered) {
+        const payloads = Array.isArray(recovered) ? recovered : [recovered];
+        for (const payload of payloads) await dispatchMessage(from, payload, tenantDoc);
+        return;
+      }
     }
   }
 
