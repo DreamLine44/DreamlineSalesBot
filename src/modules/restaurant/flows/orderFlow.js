@@ -623,6 +623,7 @@ export async function handleOrderFlow({ session, message, business, tenant, isIn
       // of being swept up as a confirm/decline guess.
       const { isAffirmative: _isAffirmativeConfirm } = await import('../../../core/shared/confirmationMatcher.js');
       const isConfirm = /^(yes|y|yeah|yep|confirm|ok|okay|sure|place|confirmed)$/i.test(clean) ||
+        raw.toUpperCase() === 'CONFIRM' ||
         _isAffirmativeConfirm(raw);
       if (isConfirm) {
         // [MULTICART-v40-EDIT] One consolidated save — _checkoutCart already

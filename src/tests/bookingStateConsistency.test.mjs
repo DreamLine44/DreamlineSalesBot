@@ -46,6 +46,12 @@ test('normalizeCustomerPhone: digits-only canonical form', () => {
   assert.deepEqual(customerPhoneQueryVariants('+2203532423'), ['2203532423', '+2203532423']);
 });
 
+test('sessionKey: always uses normalized phone', async () => {
+  const { sessionKey } = await import('../core/sessions/sessionService.js');
+  assert.equal(sessionKey('+2203532423', 't1'), '2203532423_t1');
+  assert.equal(sessionKey('2203532423', 't1'), '2203532423_t1');
+});
+
 test('buildActiveBookingFilter: phone variant lookup', () => {
   const filter = buildActiveBookingFilter('+2203532423', 'tenant1');
   assert.deepEqual(filter.customerPhone.$in, ['2203532423', '+2203532423']);

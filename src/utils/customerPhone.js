@@ -16,3 +16,9 @@ export function customerPhoneQueryVariants(phone) {
   const variants = new Set([norm, `+${norm}`]);
   return [...variants];
 }
+
+/** Canonical phone for session read/write — matches webhook `from` when normalized. */
+export function resolveSessionPhone(session, fallbackPhone) {
+  const raw = session?.customerPhone || session?.phone?.split('_')?.[0] || fallbackPhone;
+  return normalizeCustomerPhone(raw);
+}

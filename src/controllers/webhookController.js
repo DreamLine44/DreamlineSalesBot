@@ -123,6 +123,7 @@
  */
 
 import { getSession, createSession, updateSession } from '../core/sessions/sessionService.js';
+import { normalizeCustomerPhone } from '../utils/customerPhone.js';
 import { detectIntent, extractCustomerName, normalise } from '../core/intents/intentEngine.js';
 // [FIX-MENU-COVERAGE] Replaces the old VIEW_MENU_DIRECT_RE single-regex import —
 // this mid-flow "menu" re-render check must use the same token-based detector
@@ -1178,6 +1179,9 @@ async function _dispatchDirectOrderRoute({ from, tenantId, session, messageText,
   if (!reply) return false;
   const payloads = Array.isArray(reply) ? reply : [reply];
   for (const payload of payloads) await dispatchMessage(from, payload, tenantDoc);
+  const lastPayload = payloads[payloads.length - 1];
+  const body = typeof lastPayload === 'string' ? lastPayload : lastPayload?.body;
+  if (body) updateSession(from, tenantId, { lastBotMessage: body }).catch(() => {});
   return true;
 }
 
@@ -1429,12 +1433,13 @@ function _runSerialized(key, task) {
 }
 
 export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj, phoneNumberId }) {
-  const _lockKey = `${tenantId}:${from}`;
+  const _lockKey = `${tenantId}:${normalizeCustomerPhone(from)}`;
   return _runSerialized(_lockKey, () =>
     _handleIncomingMessageSerialized({ tenantId, tenantDoc, from, msgObj, phoneNumberId }));
 }
 
 async function _handleIncomingMessageSerialized({ tenantId, tenantDoc, from, msgObj, phoneNumberId }) {
+  from = normalizeCustomerPhone(from);
   const { text: messageText, imageUrl, isInteractive, isListReply, isFlowReply, flowReply } = extractMessage(msgObj);
   const wamid = msgObj?.id;
 
@@ -2654,22 +2659,41 @@ async function _handleIncomingMessageSerialized({ tenantId, tenantDoc, from, msg
     }
   }
 
-  // ── 14.75. Recover lost booking session on flow-internal list/button taps ───
-  // When session.currentFlow was cleared but the customer taps PARTY_*/TIME_*/DATE_*
-  // from a booking prompt still visible in chat, route() would map to CONTINUE_FLOW
-  // and show the welcome menu — the exact "how many guests?" → "Welcome!" bug.
+  // ── 14.75. Recover lost booking/order session on flow-internal taps ─────────
+  // When session.currentFlow was cleared but the customer taps a button from a
+  // prompt still visible in chat, route() would map to CONFIRM/CONTINUE_FLOW and
+  // show the welcome menu mid-flow.
   if (!session.currentFlow && messageText) {
-    const { recoverLostBookingPassthrough, shouldRecoverLostBookingPassthrough } =
-      await import('../core/conversations/flowPassthroughRecovery.js');
+    const {
+      recoverLostBookingPassthrough,
+      shouldRecoverLostBookingPassthrough,
+      recoverLostOrderPassthrough,
+      shouldRecoverLostOrderPassthrough,
+    } = await import('../core/conversations/flowPassthroughRecovery.js');
+
+    const recoveryArgs = {
+      from, tenantId, session, messageText, business, tenant: tenantDoc, isInteractive,
+    };
+
     if (shouldRecoverLostBookingPassthrough({
       messageText, session, business, isInteractive,
     })) {
-      const recovered = await recoverLostBookingPassthrough({
-        from, tenantId, session, messageText, business, tenant: tenantDoc, isInteractive,
-      }).catch(() => null);
+      const recovered = await recoverLostBookingPassthrough(recoveryArgs).catch(() => null);
       if (recovered) {
         const payloads = Array.isArray(recovered) ? recovered : [recovered];
         for (const payload of payloads) await dispatchMessage(from, payload, tenantDoc);
+        return;
+      }
+    }
+
+    if (shouldRecoverLostOrderPassthrough({ messageText, session, isInteractive })) {
+      const recovered = await recoverLostOrderPassthrough(recoveryArgs).catch(() => null);
+      if (recovered) {
+        const payloads = Array.isArray(recovered) ? recovered : [recovered];
+        for (const payload of payloads) await dispatchMessage(from, payload, tenantDoc);
+        const lastPayload = payloads[payloads.length - 1];
+        const body = typeof lastPayload === 'string' ? lastPayload : lastPayload?.body;
+        if (body) updateSession(from, tenantId, { lastBotMessage: body }).catch(() => {});
         return;
       }
     }
@@ -3774,7 +3798,11 @@ async function _handleIncomingMessageSerialized({ tenantId, tenantDoc, from, msg
   }
 
   let reply = await route({
-    action: effectiveAction, intent: effectiveIntent, session,
+    action: effectiveAction, intent: effectiveIntent, session: {
+      ...session,
+      customerPhone: normalizeCustomerPhone(from),
+      tenantId,
+    },
     message: messageText, business,
     tenant: tenantDoc, isInteractive, suggestion, nlu,
   });

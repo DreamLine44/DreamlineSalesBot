@@ -210,6 +210,52 @@ test('webhook skips direct-order shortcut during active BOOKING', async () => {
   assert.match(src, /activeFlow !== 'BOOKING'/);
 });
 
+test('isBookingButtonRecoveryInput: CONFIRM after date confirm prompt', async () => {
+  const { isBookingButtonRecoveryInput } = await import('../core/conversations/flowPassthroughRecovery.js');
+  const session = {
+    lastBotMessage: 'Just to confirm — did you mean *Tuesday, 1 September 2026*? 📅',
+    data: { partySize: 2, date: 'Tuesday, 1 September 2026', bookingDateIso: '2026-09-01' },
+  };
+  assert.equal(isBookingButtonRecoveryInput('CONFIRM', session, RESTAURANT), true);
+});
+
+test('shouldRecoverLostBookingPassthrough: interactive CONFIRM mid-booking', () => {
+  const session = {
+    lastBotMessage: 'Just to confirm — did you mean *Tuesday, 1 September 2026*? 📅',
+    data: { partySize: 2, date: 'Tuesday, 1 September 2026', bookingDateIso: '2026-09-01' },
+  };
+  assert.equal(shouldRecoverLostBookingPassthrough({
+    messageText: 'CONFIRM',
+    session,
+    business: RESTAURANT,
+    isInteractive: true,
+  }), true);
+});
+
+test('isOrderButtonRecoveryInput: CONFIRM after order summary', async () => {
+  const { isOrderButtonRecoveryInput, shouldRecoverLostOrderPassthrough } =
+    await import('../core/conversations/flowPassthroughRecovery.js');
+  const session = {
+    lastBotMessage: '🧾 *Order Summary*\n\n🍽 *2× Domoda (Beef)*\n\nWould you like to confirm this order?',
+    data: { cart: [{ item: { name: 'Domoda (Beef)', price: 200 }, quantity: 2 }] },
+  };
+  assert.equal(isOrderButtonRecoveryInput('CONFIRM', session), true);
+  assert.equal(shouldRecoverLostOrderPassthrough({
+    messageText: 'CONFIRM',
+    session,
+    isInteractive: true,
+  }), true);
+});
+
+test('isBookingButtonRecoveryInput: CONFIRM rejected when order summary showing', async () => {
+  const { isBookingButtonRecoveryInput } = await import('../core/conversations/flowPassthroughRecovery.js');
+  const session = {
+    lastBotMessage: 'Would you like to confirm this order?',
+    data: { cart: [{ item: { name: 'Domoda' }, quantity: 2 }] },
+  };
+  assert.equal(isBookingButtonRecoveryInput('CONFIRM', session, RESTAURANT), false);
+});
+
 test('webhook MFQ excludes CONFIRM and PARTY_SIZE steps', async () => {
   const src = (await import('node:fs')).readFileSync(
     new URL('../controllers/webhookController.js', import.meta.url),

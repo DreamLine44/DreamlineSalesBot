@@ -57,7 +57,7 @@ import {
   bookingSnapshotFromSaved,
   bookingDateIsoFromParsed,
 } from '../../services/bookingState.js';
-import { normalizeCustomerPhone } from '../../utils/customerPhone.js';
+import { normalizeCustomerPhone, resolveSessionPhone } from '../../utils/customerPhone.js';
 
 import {
   parseBookingTimeToMinutes,
@@ -98,6 +98,7 @@ async function _confirmBookingDate(session, data, resolved, { business, tenant, 
   });
 
   await updateSession(session.customerPhone, session.tenantId, {
+    currentFlow: 'BOOKING',
     step: 'DATE_CONFIRM',
     data: mergedData,
   });
@@ -164,6 +165,8 @@ function validateTime(timeInput, parsedBookingDate, tz) {
 
 // ── Booking flow handler ───────────────────────────────────────────────────────
 export async function handleBookingFlow({ session, message, business, tenant, isInteractive, flowReply = null }) {
+  const phone = resolveSessionPhone(session);
+  session = { ...session, customerPhone: phone, tenantId: session.tenantId };
   const raw      = String(message || '').trim();
   const clean    = raw.toLowerCase().trim();
   const step     = session.step;
@@ -488,7 +491,7 @@ export async function handleBookingFlow({ session, message, business, tenant, is
     }
 
     case 'DATE_CONFIRM': {
-      if (clean === 'confirm' || /^(yes|y|yep|yeah)$/i.test(clean)) {
+      if (clean === 'confirm' || raw.toUpperCase() === 'CONFIRM' || /^(yes|y|yep|yeah)$/i.test(clean)) {
         const bookingParsedDate = coerceBookingParsedDate(data, tz);
         const confirmedData = bookingParsedDate
           ? enrichBookingSessionData(data, {

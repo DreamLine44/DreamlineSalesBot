@@ -298,6 +298,9 @@ export async function registerAllModules() {
     const { startFlow } = await import('../conversations/flowEngine.js');
     const { advance } = await import('../conversations/flowEngine.js');
     const { updateSession } = await import('../sessions/sessionService.js');
+    const { resolveSessionPhone } = await import('../../utils/customerPhone.js');
+    const orderPhone = resolveSessionPhone(session);
+    session = { ...session, customerPhone: orderPhone };
     const normalizedIntent = intent === 'START_ORDER' ? 'ORDER' : (intent || 'ORDER');
     const msgUpper = String(message || '').trim().toUpperCase();
     const explicitOrderTap = msgUpper === 'ORDER' || msgUpper === 'NEW_ORDER';
@@ -522,6 +525,7 @@ export async function registerAllModules() {
     // "updateSession is not defined" instead of confirming the booking.
     const { updateSession } = await import('../sessions/sessionService.js');
     const { bookingDateIsoFromParsed } = await import('../../services/bookingState.js');
+    const { resolveSessionPhone } = await import('../../utils/customerPhone.js');
     const directBooking = await parseDirectBookingRequest(message, business).catch(() => null);
     const isRestaurant = (business?.businessMode || '').toUpperCase() === 'RESTAURANT';
     const noServices = !(business?.services || []).length;
@@ -541,7 +545,7 @@ export async function registerAllModules() {
           } : {}),
           ...(time ? { time } : {}),
         };
-        const phone = session.customerPhone || session.phone?.split('_')?.[0];
+        const phone = resolveSessionPhone(session);
         const updated = await updateSession(phone, session.tenantId, {
           currentFlow: 'BOOKING',
           step,
@@ -549,11 +553,13 @@ export async function registerAllModules() {
         });
         return advance({
           session: {
-            ...session,
-            ...updated,
-            currentFlow: 'BOOKING',
+            ...(typeof session.toObject === 'function' ? session.toObject() : session),
+            ...(updated && typeof updated.toObject === 'function' ? updated.toObject() : updated),
+            customerPhone: phone,
+            tenantId:      session.tenantId,
+            currentFlow:   'BOOKING',
             step,
-            data: mergedData,
+            data:          mergedData,
           },
           message: null,
           business,

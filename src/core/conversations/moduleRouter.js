@@ -298,6 +298,46 @@ export async function route({ action, intent, session, message, business, tenant
       return buildOptionsReply(cfg, business?.customMessages?.welcomeMessage || cfg.messages?.welcome || '👋 How can I help you today?');
     }
 
+    case 'CONFIRM': {
+      // Booking / order confirm buttons with a lost session must not fall through
+      // to the generic welcome fallback.
+      {
+        const {
+          shouldRecoverLostBookingPassthrough,
+          recoverLostBookingPassthrough,
+          shouldRecoverLostOrderPassthrough,
+          recoverLostOrderPassthrough,
+        } = await import('./flowPassthroughRecovery.js');
+
+        const recoveryFrom = session.customerPhone || session.phone?.split('_')?.[0];
+        const recoveryArgs = {
+          from:           recoveryFrom,
+          tenantId:       session.tenantId,
+          session,
+          messageText:    message,
+          business,
+          tenant,
+          isInteractive:  !!isInteractive,
+        };
+
+        if (message && shouldRecoverLostBookingPassthrough({
+          messageText: message, session, business, isInteractive: !!isInteractive,
+        })) {
+          const recovered = await recoverLostBookingPassthrough(recoveryArgs).catch(() => null);
+          if (recovered) return recovered;
+        }
+
+        if (message && shouldRecoverLostOrderPassthrough({
+          messageText: message, session, isInteractive: !!isInteractive,
+        })) {
+          const recovered = await recoverLostOrderPassthrough(recoveryArgs).catch(() => null);
+          if (recovered) return recovered;
+        }
+      }
+      const cfgConfirm = getModeConfig(business);
+      return buildOptionsReply(cfgConfirm, cfgConfirm.messages?.fallback || 'How can I help you today?');
+    }
+
     case 'GREET': {
       // ── [SPEC-RULE-1] GREETING GATE — runs on EVERY message, not just first ──────
       // Before sending any greeting, check for active order or booking context.
