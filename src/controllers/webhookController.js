@@ -2383,7 +2383,7 @@ async function _handleIncomingMessageSerialized({ tenantId, tenantDoc, from, msg
     _step14UpperMsg === 'MFQ_SWITCH_YES'  ||
     _step14UpperMsg === 'MFQ_SWITCH_NO'
   );
-  if (session.postFlowAck && messageText && !_isMfqButtonTap) {
+  if (session.postFlowAck && !session.currentFlow && messageText && !_isMfqButtonTap) {
     const { getCustomerContext } = await import('../core/memory/customerMemory.js');
     const custCtxPFA = await getCustomerContext(from, tenantId).catch(() => ({
       name: null, topItem: null, lastItem: null, lastOrderAt: null, orderCount: 0, isReturning: false,
@@ -2659,16 +2659,21 @@ async function _handleIncomingMessageSerialized({ tenantId, tenantDoc, from, msg
     const upperRecovery = messageText.trim().toUpperCase();
     let shouldRecover = isInteractive && isBookingPassthroughRecoveryId(upperRecovery);
     if (!shouldRecover && !isInteractive) {
-      const { looksLikeDate } = await import('../services/bookingDateParser.js');
-      if (looksLikeDate(messageText.trim())) {
-        const { default: Booking } = await import('../models/Booking.js');
-        const active = await Booking.findOne({
-          customerPhone: from,
-          tenantId,
-          status:        { $in: ['pending', 'confirmed'] },
-          bookingType:   { $ne: 'walkin' },
-        }).sort({ createdAt: -1 }).lean().catch(() => null);
-        shouldRecover = !!active;
+      const { isTypedPartySizeRecoveryInput } = await import('../core/conversations/flowPassthroughRecovery.js');
+      if (isTypedPartySizeRecoveryInput(messageText.trim(), session, business)) {
+        shouldRecover = true;
+      } else {
+        const { looksLikeDate } = await import('../services/bookingDateParser.js');
+        if (looksLikeDate(messageText.trim())) {
+          const { default: Booking } = await import('../models/Booking.js');
+          const active = await Booking.findOne({
+            customerPhone: from,
+            tenantId,
+            status:        { $in: ['pending', 'confirmed'] },
+            bookingType:   { $ne: 'walkin' },
+          }).sort({ createdAt: -1 }).lean().catch(() => null);
+          shouldRecover = !!active;
+        }
       }
     }
     if (shouldRecover) {

@@ -37,7 +37,7 @@ import {
 } from '../core/intents/intentEngine.js';
 import { isMenuBrowsingIntent } from '../core/intents/menuIntentDetector.js';
 import { looksLikeDate } from './bookingDateParser.js';
-import { isBookingPassthroughRecoveryId } from '../core/conversations/flowPassthroughRecovery.js';
+import { isBookingPassthroughRecoveryId, isTypedPartySizeRecoveryInput } from '../core/conversations/flowPassthroughRecovery.js';
 import logger from '../config/logger.js';
 import { formatMoney } from '../utils/formatCurrency.js';
 
@@ -48,7 +48,7 @@ const POST_FLOW_FLOW_START_BUTTONS = new Set([
 ]);
 
 /** Date/time/party picks or reschedule taps after a booking request — not generic acks. */
-export function isPostFlowBookingInput(msg, { isInteractive = false, isFlowReply = false } = {}) {
+export function isPostFlowBookingInput(msg, { isInteractive = false, isFlowReply = false, session = null, business = null } = {}) {
   const raw = String(msg || '').trim();
   if (!raw) return false;
 
@@ -57,7 +57,9 @@ export function isPostFlowBookingInput(msg, { isInteractive = false, isFlowReply
   if (isInteractive && ['RESCHEDULE', 'CANCEL_BOOKING'].includes(upper)) return true;
   if (isFlowReply && /^\d{4}-\d{2}-\d{2}$/.test(raw)) return true;
   if (/^today$/i.test(raw) || /^tomorrow$/i.test(raw) || /^tonight$/i.test(raw)) return true;
-  return looksLikeDate(raw);
+  if (looksLikeDate(raw)) return true;
+  if (!isInteractive && session && business && isTypedPartySizeRecoveryInput(raw, session, business)) return true;
+  return false;
 }
 
 /** Typed phrases or menu buttons that should start a new flow after post-flow ack. */
@@ -417,7 +419,7 @@ export async function handlePostFlowMessage({
 
   // [PFH-BOOKING-INPUT] Date picks / "today" / reschedule while waiting for admin
   // must reach the booking flow — not a generic "Thank you!" expression reply.
-  if (isPostFlowBookingInput(msg, { isInteractive, isFlowReply })) {
+  if (isPostFlowBookingInput(msg, { isInteractive, isFlowReply, session, business })) {
     await updateSession(from, tenantId, { postFlowAck: null, postFlowData: null });
     return false;
   }

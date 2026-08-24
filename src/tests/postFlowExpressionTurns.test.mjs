@@ -161,9 +161,13 @@ test('isPostFlowFlowStartIntent: book/order after order collection', async () =>
   assert.equal(isPostFlowFlowStartIntent('BOOK', restaurant, { isInteractive: true }), true);
   assert.equal(isPostFlowFlowStartIntent('what can I book', restaurant), false);
   assert.equal(isPostFlowFlowStartIntent('thank you', restaurant), false);
-  assert.equal(isPostFlowBookingInput('today', restaurant), true);
-  assert.equal(isPostFlowBookingInput('DATE_D_20260824', restaurant, { isInteractive: true }), true);
-  assert.equal(isPostFlowBookingInput('thank you', restaurant), false);
+  assert.equal(isPostFlowBookingInput('today', { business: restaurant }), true);
+  assert.equal(isPostFlowBookingInput('DATE_D_20260824', { isInteractive: true }), true);
+  assert.equal(isPostFlowBookingInput('5', {
+    session: { lastBotMessage: 'How many guests will be dining?' },
+    business: restaurant,
+  }), true);
+  assert.equal(isPostFlowBookingInput('thank you', { business: restaurant }), false);
 });
 
 test('postFlowHandler.js: ORDER_COLLECTED uses smart expression replies, not hardcoded loop text', () => {

@@ -2,8 +2,11 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   isBookingPassthroughRecoveryId,
+  isTypedPartySizeRecoveryInput,
   recoverLostBookingPassthrough,
 } from '../core/conversations/flowPassthroughRecovery.js';
+
+const RESTAURANT = { businessMode: 'RESTAURANT' };
 
 test('isBookingPassthroughRecoveryId recognises booking list/button ids', () => {
   assert.equal(isBookingPassthroughRecoveryId('PARTY_10'), true);
@@ -12,6 +15,17 @@ test('isBookingPassthroughRecoveryId recognises booking list/button ids', () => 
   assert.equal(isBookingPassthroughRecoveryId('DATE_TODAY'), true);
   assert.equal(isBookingPassthroughRecoveryId('ORDER'), false);
   assert.equal(isBookingPassthroughRecoveryId('BOOK'), false);
+});
+
+test('isTypedPartySizeRecoveryInput: typed guest count after party-size prompt', () => {
+  const session = {
+    lastBotMessage: 'How many guests will be dining? 👥\n\nChoose an option below, or type the number of guests.',
+  };
+  assert.equal(isTypedPartySizeRecoveryInput('5', session, RESTAURANT), true);
+  assert.equal(isTypedPartySizeRecoveryInput('5', { step: 'PARTY_SIZE' }, RESTAURANT), true);
+  assert.equal(isTypedPartySizeRecoveryInput('5', {}, RESTAURANT), false);
+  assert.equal(isTypedPartySizeRecoveryInput('5', session, { businessMode: 'RETAIL' }), false);
+  assert.equal(isTypedPartySizeRecoveryInput('hello', session, RESTAURANT), false);
 });
 
 test('recoverLostBookingPassthrough resumes PARTY_SIZE and advances to date picker', async () => {
@@ -36,7 +50,7 @@ test('recoverLostBookingPassthrough resumes PARTY_SIZE and advances to date pick
       new URL('../core/conversations/moduleRouter.js', import.meta.url),
       'utf8',
     ),
-    /recoverLostBookingPassthrough/,
+    /isTypedPartySizeRecoveryInput/,
   );
 
   void updates;

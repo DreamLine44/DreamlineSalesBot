@@ -155,11 +155,22 @@ export async function startFlow({ flowName, session, business, tenant, message =
     upsellSent:  false,
     menuViewed:  false,
     lastAorInterceptAt: null,  // [FIX-AOR-5] Reset throttle so next order confirms show fresh card
+    postFlowAck:  null,
+    postFlowData: null,
   };
   if (flowUpper === 'ORDER') {
     sessionPatch.orderChannel = session?.orderChannel === 'catalog' || orderViaCatalog
       ? 'catalog'
       : 'menu';
+  }
+  if (flowUpper === 'BOOKING') {
+    const hasServices = (business?.services || []).length > 0;
+    const isRestaurant = (business?.businessMode || '').toUpperCase() === 'RESTAURANT';
+    if (!hasServices && isRestaurant) {
+      sessionPatch.step = 'PARTY_SIZE';
+    } else if (!hasServices) {
+      sessionPatch.step = 'DATE';
+    }
   }
 
   const updated = await updateSession(session.customerPhone, session.tenantId, sessionPatch);

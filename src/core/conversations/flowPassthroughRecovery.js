@@ -7,19 +7,41 @@
 
 import { advance } from './flowEngine.js';
 import { getSession, updateSession } from '../sessions/sessionService.js';
+import { parsePartySizeFromText } from '../../utils/parsePartySize.js';
 
 const BOOKING_PARTY_RE = /^PARTY_\d+$/;
 const BOOKING_TIME_RE  = /^TIME_(M_\d+|\d+(AM|PM))$/;
 const BOOKING_DATE_RE  = /^DATE_/;
+
+const PARTY_SIZE_PROMPT_RE = /\b(how many guests|number of guests|guests will be dining)\b/i;
 
 export function isBookingPassthroughRecoveryId(id) {
   const upper = String(id || '').trim().toUpperCase();
   return BOOKING_PARTY_RE.test(upper) || BOOKING_TIME_RE.test(upper) || BOOKING_DATE_RE.test(upper);
 }
 
+/** Typed guest count after a party-size prompt (or orphaned PARTY_SIZE step). */
+export function isTypedPartySizeRecoveryInput(messageText, session, business) {
+  const raw = String(messageText || '').trim();
+  if (!raw || !/^\d+$/.test(raw)) return false;
+
+  const mode = (business?.businessMode || '').toUpperCase();
+  if (mode !== 'RESTAURANT') return false;
+
+  const partySize = parsePartySizeFromText(raw);
+  if (!partySize || partySize < 1 || partySize > 50) return false;
+
+  if ((session?.step || '').toUpperCase() === 'PARTY_SIZE') return true;
+
+  const lastBot = String(session?.lastBotMessage || '');
+  if (PARTY_SIZE_PROMPT_RE.test(lastBot)) return true;
+
+  return false;
+}
+
 async function cancelLatestBookingForReschedule(customerPhone, tenantId) {
   try {
-    const { default: Booking } = await import('../models/Booking.js');
+    const { default: Booking } = await import('../../models/Booking.js');
     return Booking.findOneAndUpdate(
       {
         customerPhone,
@@ -43,29 +65,36 @@ export async function recoverLostBookingPassthrough({
   const isPassthroughId = isBookingPassthroughRecoveryId(upper);
 
   let isTypedDate = false;
+  let isTypedPartySize = false;
   if (!isPassthroughId && !isInteractive && raw) {
-    const { looksLikeDate } = await import('../services/bookingDateParser.js');
-    if (looksLikeDate(raw)) {
-      const { default: Booking } = await import('../models/Booking.js');
-      const active = await Booking.findOne({
-        customerPhone: from,
-        tenantId,
-        status:        { $in: ['pending', 'confirmed'] },
-        bookingType:   { $ne: 'walkin' },
-      }).sort({ createdAt: -1 }).lean().catch(() => null);
-      isTypedDate = !!active;
+    if (isTypedPartySizeRecoveryInput(raw, session, business)) {
+      isTypedPartySize = true;
+    } else {
+      const { looksLikeDate } = await import('../services/bookingDateParser.js');
+      if (looksLikeDate(raw)) {
+        const { default: Booking } = await import('../../models/Booking.js');
+        const active = await Booking.findOne({
+          customerPhone: from,
+          tenantId,
+          status:        { $in: ['pending', 'confirmed'] },
+          bookingType:   { $ne: 'walkin' },
+        }).sort({ createdAt: -1 }).lean().catch(() => null);
+        isTypedDate = !!active;
+      }
     }
   }
 
-  if (!isPassthroughId && !isTypedDate) return null;
+  if (!isPassthroughId && !isTypedDate && !isTypedPartySize) return null;
 
-  const { default: Booking } = await import('../models/Booking.js');
-  const activeBooking = await Booking.findOne({
-    customerPhone: from,
-    tenantId,
-    status:        { $in: ['pending', 'confirmed'] },
-    bookingType:   { $ne: 'walkin' },
-  }).sort({ createdAt: -1 }).lean().catch(() => null);
+  const { default: Booking } = await import('../../models/Booking.js');
+  const activeBooking = isTypedPartySize
+    ? null
+    : await Booking.findOne({
+      customerPhone: from,
+      tenantId,
+      status:        { $in: ['pending', 'confirmed'] },
+      bookingType:   { $ne: 'walkin' },
+    }).sort({ createdAt: -1 }).lean().catch(() => null);
   if (activeBooking) await cancelLatestBookingForReschedule(from, tenantId);
 
   const data = {
@@ -76,7 +105,7 @@ export async function recoverLostBookingPassthrough({
   };
   let step = 'DATE';
 
-  if (BOOKING_PARTY_RE.test(upper)) {
+  if (BOOKING_PARTY_RE.test(upper) || isTypedPartySize) {
     step = 'PARTY_SIZE';
   } else if (BOOKING_TIME_RE.test(upper)) {
     step = (data.date || data.parsedDate) ? 'TIME' : 'DATE';
