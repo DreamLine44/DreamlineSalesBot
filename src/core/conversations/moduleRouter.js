@@ -272,13 +272,11 @@ export async function route({ action, intent, session, message, business, tenant
       // Flow-internal taps (PARTY_*, TIME_*, DATE_*) or typed guest counts with
       // no active session — recover booking instead of resetting to welcome menu.
       {
-        const { isBookingPassthroughRecoveryId, isTypedPartySizeRecoveryInput, recoverLostBookingPassthrough } =
+        const { shouldRecoverLostBookingPassthrough, recoverLostBookingPassthrough } =
           await import('./flowPassthroughRecovery.js');
-        const shouldRecoverBooking = message && (
-          (isInteractive && isBookingPassthroughRecoveryId(message))
-          || (!isInteractive && isTypedPartySizeRecoveryInput(message, session, business))
-        );
-        if (shouldRecoverBooking) {
+        if (message && shouldRecoverLostBookingPassthrough({
+          messageText: message, session, business, isInteractive: !!isInteractive,
+        })) {
           const recovered = await recoverLostBookingPassthrough({
             from:           session.customerPhone,
             tenantId:       session.tenantId,

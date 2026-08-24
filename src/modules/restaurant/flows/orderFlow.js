@@ -631,6 +631,12 @@ export async function handleOrderFlow({ session, message, business, tenant, isIn
         return await _checkoutCart(cart, session, business, tenant);
       }
 
+      // Same completion phrases as ITEM_ADDED — "done"/"that's all" should checkout.
+      const wantsCheckout = /^(done|finish|finished|that'?s all|thats all|i'?m done|finish order)$/i.test(clean);
+      if (wantsCheckout) {
+        return await _checkoutCart(cart, session, business, tenant);
+      }
+
       // [SIMPLE-CART-CONFIRM] Primary action on the final review screen —
       // matches the requested button set (Confirm / Add More Items / Cancel)
       // exactly. Goes straight back to the catalog; the cart is untouched.

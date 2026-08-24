@@ -776,6 +776,7 @@ function extractMessage(msgObj) {
 const MFQ_ORDER_INPUT_STEPS = new Set([
   'QUANTITY', 'ITEM_ADDED', 'SUGGESTION_CONFIRM', 'UPSELL',
   'EDIT_CART_MENU', 'EDIT_CART_PICK',
+  'CONFIRM', // order summary — confirm/done/cart edits must reach orderFlow
 ]);
 
 // Steps that accept ANY free text as a valid answer — must NEVER be intercepted.
@@ -1187,6 +1188,9 @@ function _detectMidFlowQuestion(text, session, business) {
 
   // 1. Free-text steps — never intercept (these accept any text as the expected answer)
   if (MFQ_FREE_TEXT_STEPS.has(step)) return false;
+
+  // Party-size step accepts typed counts and relational NL — not a question intercept.
+  if (step === 'PARTY_SIZE') return false;
 
   // 2. Date/time steps — never intercept (customer is typing a date/time, not a question)
   if (MFQ_DATE_TIME_STEPS.has(step)) return false;
@@ -2655,28 +2659,11 @@ async function _handleIncomingMessageSerialized({ tenantId, tenantDoc, from, msg
   // from a booking prompt still visible in chat, route() would map to CONTINUE_FLOW
   // and show the welcome menu — the exact "how many guests?" → "Welcome!" bug.
   if (!session.currentFlow && messageText) {
-    const { recoverLostBookingPassthrough, isBookingPassthroughRecoveryId } = await import('../core/conversations/flowPassthroughRecovery.js');
-    const upperRecovery = messageText.trim().toUpperCase();
-    let shouldRecover = isInteractive && isBookingPassthroughRecoveryId(upperRecovery);
-    if (!shouldRecover && !isInteractive) {
-      const { isTypedPartySizeRecoveryInput } = await import('../core/conversations/flowPassthroughRecovery.js');
-      if (isTypedPartySizeRecoveryInput(messageText.trim(), session, business)) {
-        shouldRecover = true;
-      } else {
-        const { looksLikeDate } = await import('../services/bookingDateParser.js');
-        if (looksLikeDate(messageText.trim())) {
-          const { default: Booking } = await import('../models/Booking.js');
-          const active = await Booking.findOne({
-            customerPhone: from,
-            tenantId,
-            status:        { $in: ['pending', 'confirmed'] },
-            bookingType:   { $ne: 'walkin' },
-          }).sort({ createdAt: -1 }).lean().catch(() => null);
-          shouldRecover = !!active;
-        }
-      }
-    }
-    if (shouldRecover) {
+    const { recoverLostBookingPassthrough, shouldRecoverLostBookingPassthrough } =
+      await import('../core/conversations/flowPassthroughRecovery.js');
+    if (shouldRecoverLostBookingPassthrough({
+      messageText, session, business, isInteractive,
+    })) {
       const recovered = await recoverLostBookingPassthrough({
         from, tenantId, session, messageText, business, tenant: tenantDoc, isInteractive,
       }).catch(() => null);
@@ -3396,15 +3383,17 @@ async function _handleIncomingMessageSerialized({ tenantId, tenantDoc, from, msg
     }
 
     // [DIRECT-ORDER-SHORTCUT] A resolved natural-language order is a stronger
-    // signal than the active flow's current prompt. Reuse START_ORDER so the
-    // shared parser, cart merge, pricing, and confirmation summary remain the
-    // single implementation for both fresh and mid-flow orders.
+    // signal than the active flow's current prompt — except mid-BOOKING, where
+    // FSI must offer switch/continue instead of silently wiping booking state.
     if (!isInteractive && session.currentFlow && messageText.length >= 4) {
-      if (_looksLikeDirectOrderMessage(messageText) && _hasResolvableDirectOrder(messageText, business)) {
-        const handled = await _dispatchDirectOrderRoute({
-          from, tenantId, session: freshSession, messageText, business, tenantDoc, isInteractive: false,
-        });
-        if (handled) return;
+      const activeFlow = (session.currentFlow || '').toUpperCase();
+      if (activeFlow !== 'BOOKING') {
+        if (_looksLikeDirectOrderMessage(messageText) && _hasResolvableDirectOrder(messageText, business)) {
+          const handled = await _dispatchDirectOrderRoute({
+            from, tenantId, session: freshSession, messageText, business, tenantDoc, isInteractive: false,
+          });
+          if (handled) return;
+        }
       }
     }
 

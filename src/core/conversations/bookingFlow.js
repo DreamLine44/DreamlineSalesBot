@@ -236,7 +236,7 @@ export async function handleBookingFlow({ session, message, business, tenant, is
     } = await import('../../services/bookingInterpretation.js');
 
     if (!isBookingSystemAction(raw)) {
-      const { merged, changed } = await interpretBookingMessage(raw, business, data);
+      const { merged, changed, changedFields } = await interpretBookingMessage(raw, business, data);
       if (changed) {
         data = merged;
         const skipReply = await continueFromMergedBookingData({
@@ -246,6 +246,8 @@ export async function handleBookingFlow({ session, message, business, tenant, is
           business,
           tenant,
           tz,
+          changed,
+          changedFields,
           confirmBookingDateFn: _confirmBookingDate,
           buildBookingSummaryFn: _buildBookingSummaryUI,
           buildTimePickerFn: _buildTimePickerUI,
@@ -721,12 +723,11 @@ export async function handleBookingFlow({ session, message, business, tenant, is
       if ((isSalonMode || isRestaurantMode) && date) {
         try {
           const { default: _BookingModel } = await import('../../models/Booking.js');
+          const { buildActiveBookingFilter } = await import('../../services/activityLifecycleService.js');
           const sameDayBookings = await _BookingModel.find({
-            customerPhone: session.customerPhone,
-            tenantId:      session.tenantId,
+            ...buildActiveBookingFilter(session.customerPhone, session.tenantId),
             date,
-            status:        { $in: ['pending', 'confirmed'] },
-            bookingType:   { $ne: 'walkin' },
+            bookingType: { $ne: 'walkin' },
           }).lean().catch(() => []);
 
           const newMinutes = parseTimeToMinutes(time);

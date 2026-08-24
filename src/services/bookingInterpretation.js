@@ -83,32 +83,45 @@ export function guardMergedBookingData(data, business, tz, {
 export async function interpretBookingMessage(message, business, existingData = {}) {
   const raw = String(message || '').trim();
   if (!raw || isBookingSystemAction(raw)) {
-    return { extracted: null, merged: { ...existingData }, changed: false };
+    return { extracted: null, merged: { ...existingData }, changed: false, changedFields: { partySize: false, date: false, time: false } };
   }
 
   const extracted = await parseDirectBookingRequest(raw, business);
   if (!extracted) {
-    return { extracted: null, merged: { ...existingData }, changed: false };
+    return { extracted: null, merged: { ...existingData }, changed: false, changedFields: { partySize: false, date: false, time: false } };
   }
 
   const merged = { ...(existingData || {}) };
   let changed = false;
+  const changedFields = { partySize: false, date: false, time: false };
 
   if (extracted.partySize) {
     if (extracted.partySize <= MAX_PARTY_SIZE) {
-      if (merged.partySize !== extracted.partySize) changed = true;
+      if (merged.partySize !== extracted.partySize) {
+        changed = true;
+        changedFields.partySize = true;
+      }
       merged.partySize = extracted.partySize;
     }
   }
   if (extracted.parsedDate && extracted.date) {
-    if (merged.parsedDate !== extracted.parsedDate || merged.date !== extracted.date) changed = true;
+    const newIso = isoFromParsed(extracted.parsedDate);
+    const oldIso = merged.bookingDateIso || isoFromParsed(merged.parsedDate);
+    if (newIso !== oldIso || merged.date !== extracted.date) {
+      changed = true;
+      changedFields.date = true;
+    }
     merged.date = extracted.date;
     merged.parsedDate = extracted.parsedDate;
     merged.dateRaw = extracted.dateRaw || extracted.date;
-    merged.bookingDateIso = isoFromParsed(extracted.parsedDate);
+    merged.bookingDateIso = newIso;
+    if (changedFields.date) delete merged.time;
   }
   if (extracted.time) {
-    if (merged.time !== extracted.time) changed = true;
+    if (merged.time !== extracted.time) {
+      changed = true;
+      changedFields.time = true;
+    }
     merged.time = extracted.time;
   }
 
@@ -120,9 +133,10 @@ export async function interpretBookingMessage(message, business, existingData = 
     normalizedDate: isoFromParsed(extracted.parsedDate || merged.parsedDate),
     time: extracted.time ?? merged.time ?? null,
     changed,
+    changedFields,
   });
 
-  return { extracted, merged, changed };
+  return { extracted, merged, changed, changedFields };
 }
 
 /** Where the booking should resume given merged field values. */
@@ -142,7 +156,8 @@ export function resolveBookingResumeStep(data, business) {
  * fall through to the normal step handler.
  */
 export async function continueFromMergedBookingData({
-  session, data, step, business, tenant, tz,
+  session, data, step, business, tenant, tz, changed = false,
+  changedFields = { partySize: false, date: false, time: false },
   confirmBookingDateFn,
   buildBookingSummaryFn,
   buildTimePickerFn,
@@ -151,7 +166,10 @@ export async function continueFromMergedBookingData({
   validateTimeFn,
 }) {
   const resumeStep = resolveBookingResumeStep(data, business);
-  if (!resumeStep) return null;
+  if (!resumeStep) {
+    if (changed) await updateSessionFromInterpretation(session, data, step);
+    return null;
+  }
 
   const guardUi = guardMergedBookingData(data, business, tz, {
     buildPartySizeErrorFn,
@@ -159,26 +177,75 @@ export async function continueFromMergedBookingData({
     buildTimePickerFn,
     validateTimeFn,
   });
-  if (guardUi) return guardUi;
+  if (guardUi) {
+    if (changed) await updateSessionFromInterpretation(session, data, step);
+    return guardUi;
+  }
 
   const STEP_RANK = {
     SELECT_SERVICE: 0, PARTY_SIZE: 1, DATE: 2, DATE_CONFIRM: 3,
     TIME: 4, TIME_CONFIRM: 5, BOOKING_CONFIRM: 6,
   };
   const currentRank = STEP_RANK[step] ?? 0;
-  const targetRank = STEP_RANK[resumeStep] ?? 0;
+  let effectiveResumeStep = resumeStep;
 
-  if (resumeStep === step) {
+  // Date corrections must re-confirm before time/summary — clear stale time.
+  if (changedFields.date && ['DATE_CONFIRM', 'TIME', 'TIME_CONFIRM', 'BOOKING_CONFIRM'].includes(step)) {
+    delete data.time;
+    effectiveResumeStep = 'DATE_CONFIRM';
+  }
+
+  // At DATE_CONFIRM, never skip the date confirmation button — store extras only.
+  if (step === 'DATE_CONFIRM' && STEP_RANK[effectiveResumeStep] > STEP_RANK.DATE_CONFIRM) {
+    effectiveResumeStep = 'DATE_CONFIRM';
+  }
+
+  const targetRank = STEP_RANK[effectiveResumeStep] ?? 0;
+
+  if (effectiveResumeStep === step) {
     await updateSessionFromInterpretation(session, data, step);
-    if (resumeStep === 'BOOKING_CONFIRM') return buildBookingSummaryFn(data, business);
+    if (effectiveResumeStep === 'BOOKING_CONFIRM') return buildBookingSummaryFn(data, business);
+    if (effectiveResumeStep === 'DATE_CONFIRM' && data.parsedDate && data.date) {
+      return confirmBookingDateFn(session, data, {
+        ok: true,
+        parsed: coerceParsedDate(data, tz),
+        label: data.date,
+        raw: data.dateRaw || data.date,
+      }, { business, tenant, tz });
+    }
     return null;
   }
 
-  if (targetRank <= currentRank) return null;
+  if (targetRank <= currentRank) {
+    if (!changed) return null;
+    if (step === 'BOOKING_CONFIRM') {
+      await updateSessionFromInterpretation(session, data, step);
+      return buildBookingSummaryFn(data, business);
+    }
+    if (effectiveResumeStep === 'DATE_CONFIRM' && data.parsedDate && data.date) {
+      await updateSessionFromInterpretation(session, data, 'DATE_CONFIRM');
+      return confirmBookingDateFn(session, data, {
+        ok: true,
+        parsed: coerceParsedDate(data, tz),
+        label: data.date,
+        raw: data.dateRaw || data.date,
+      }, { business, tenant, tz });
+    }
+    if (effectiveResumeStep === 'TIME_CONFIRM' && data.time) {
+      await updateSessionFromInterpretation(session, data, 'TIME_CONFIRM');
+      return {
+        type:    'buttons',
+        body:    `Confirm time: *${data.time}*? ⏰`,
+        buttons: [{ id: 'CONFIRM', title: '✅ Yes, that time' }, { id: 'TIME_BACK', title: '❌ No, re-enter' }],
+      };
+    }
+    await updateSessionFromInterpretation(session, data, step);
+    return null;
+  }
 
-  await updateSessionFromInterpretation(session, data, resumeStep);
+  await updateSessionFromInterpretation(session, data, effectiveResumeStep);
 
-  if (resumeStep === 'DATE_CONFIRM' && data.parsedDate && data.date) {
+  if (effectiveResumeStep === 'DATE_CONFIRM' && data.parsedDate && data.date) {
     return confirmBookingDateFn(session, data, {
       ok: true,
       parsed: coerceParsedDate(data, tz),
@@ -186,24 +253,24 @@ export async function continueFromMergedBookingData({
       raw: data.dateRaw || data.date,
     }, { business, tenant, tz });
   }
-  if (resumeStep === 'TIME' && data.parsedDate) {
+  if (effectiveResumeStep === 'TIME' && data.parsedDate) {
     const bookingParsedDate = coerceParsedDate(data, tz);
     const heading = data.partySize && data.date
       ? `*${data.partySize} guest${data.partySize > 1 ? 's' : ''}* on *${data.date}* 👥\n\nWhat time works for you? ⏰`
       : null;
     return buildTimePickerFn(heading, { tz, bookingDate: bookingParsedDate, business });
   }
-  if (resumeStep === 'TIME_CONFIRM' && data.time) {
+  if (effectiveResumeStep === 'TIME_CONFIRM' && data.time) {
     return {
       type:    'buttons',
       body:    `Confirm time: *${data.time}*? ⏰`,
       buttons: [{ id: 'CONFIRM', title: '✅ Yes, that time' }, { id: 'TIME_BACK', title: '❌ No, re-enter' }],
     };
   }
-  if (resumeStep === 'BOOKING_CONFIRM') {
+  if (effectiveResumeStep === 'BOOKING_CONFIRM') {
     return buildBookingSummaryFn(data, business);
   }
-  if (resumeStep === 'DATE' && data.partySize && !data.parsedDate) {
+  if (effectiveResumeStep === 'DATE' && data.partySize && !data.parsedDate) {
     return null; // fall through — PARTY_SIZE handler will set heading
   }
 

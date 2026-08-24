@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 import {
   isBookingPassthroughRecoveryId,
   isTypedPartySizeRecoveryInput,
+  isTypedBookingDateRecoveryInput,
+  shouldRecoverLostBookingPassthrough,
   recoverLostBookingPassthrough,
 } from '../core/conversations/flowPassthroughRecovery.js';
 
@@ -50,7 +52,7 @@ test('recoverLostBookingPassthrough resumes PARTY_SIZE and advances to date pick
       new URL('../core/conversations/moduleRouter.js', import.meta.url),
       'utf8',
     ),
-    /isTypedPartySizeRecoveryInput/,
+    /shouldRecoverLostBookingPassthrough/,
   );
 
   void updates;
