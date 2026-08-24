@@ -391,6 +391,7 @@ function isFlowPassthroughId(id) {
     // of the order details the customer tapped to see.
     /^ORDER_STATUS_[A-Z0-9]+$/.test(upper) || // multiple-order picker (ORDER_STATUS_<shortId>)
     /^BOOKING_STATUS_[A-Z0-9]+$/.test(upper) || // multiple-booking picker (BOOKING_STATUS_<shortId>)
+    /^TIME_M_\d+$/.test(upper)       ||  // hours-aware booking slots (TIME_M_<minutes>)
     /^DATE_D_\d{8}$/.test(upper) ||              // booking month/day picker (DATE_D_YYYYMMDD)
     /^DATE_M_\d{6}$/.test(upper) ||              // booking month picker (DATE_M_YYYYMM)
     /^DATE_DAY_MORE_\d{6}_\d+$/.test(upper) ||  // booking day list pagination
@@ -405,7 +406,7 @@ function isFlowPassthroughId(id) {
 const FLOW_PASSTHROUGH_IDS = new Set([
   // ── Time slots (booking + delivery scheduled) ─────────────────────────────
   'TIME_9AM','TIME_10AM','TIME_11AM','TIME_12PM',
-  'TIME_1PM','TIME_2PM','TIME_3PM','TIME_4PM','TIME_5PM','TIME_6PM','TIME_7PM',
+  'TIME_1PM','TIME_2PM','TIME_3PM','TIME_4PM','TIME_5PM','TIME_6PM','TIME_7PM','TIME_8PM','TIME_9PM',
   // ── Quantity quick-picks ──────────────────────────────────────────────────
   'QTY_1','QTY_2','QTY_3','QTY_4','QTY_5',
   // ── Service selection — SVC_0..SVC_99; isFlowPassthroughId() regex covers ≥100 ──
@@ -428,7 +429,7 @@ const FLOW_PASSTHROUGH_IDS = new Set([
   ...Array.from({ length: 10 }, (_, i) => `DATE_PICK_${i}`),
   'DATE_BACK','TIME_BACK',
   // ── Booking: party size ───────────────────────────────────────────────────
-  'PARTY_2','PARTY_4','PARTY_6',
+  'PARTY_2','PARTY_4','PARTY_6','PARTY_8','PARTY_10',
   // ── Upsell ───────────────────────────────────────────────────────────────
   'UPSELL_YES','UPSELL_NO',
   // ── Delivery slots ────────────────────────────────────────────────────────

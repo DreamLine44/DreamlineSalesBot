@@ -171,6 +171,8 @@ export const BUTTON_ID_MAP = {
   'PARTY_2':            'CONTINUE_FLOW',
   'PARTY_4':            'CONTINUE_FLOW',
   'PARTY_6':            'CONTINUE_FLOW',
+  'PARTY_8':            'CONTINUE_FLOW',
+  'PARTY_10':           'CONTINUE_FLOW',
 };
 
 // ── Emoji → Intent map ────────────────────────────────────────────────────────

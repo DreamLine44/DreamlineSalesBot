@@ -90,28 +90,52 @@ async function startFlowOrAnswerQuestion({ flowName, session, message, business,
   return handleQuestionAction({ session, message, business, tenant, isInteractive });
 }
 
-async function parseDirectBookingRequest(message, business) {
+export async function parseDirectBookingRequest(message, business) {
   const raw = String(message || '').trim();
   const partyMatch = raw.match(/\b(?:table|party)\s*(?:for|of)?\s*(\d{1,2})\b/i)
-    || raw.match(/\bfor\s+(\d{1,2})\b/i);
-  const timeMatch = raw.match(/\b(\d{1,2}(?::\d{2})?\s*(?:am|pm))\b/i);
+    || raw.match(/\bfor\s+(\d{1,2})\b/i)
+    || raw.match(/\b(\d{1,2})\s*(?:people|guests|persons|pax)\b/i);
+  const timeMatch = raw.match(/\b(?:at\s+)?(\d{1,2}(?::\d{2})?\s*(?:am|pm))\b/i)
+    || raw.match(/\b(?:at\s+)?(\d{1,2}:\d{2})\b/i);
   const dateMatch = raw.match(/\b(?:today|tomorrow|next\s+(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday))\b/i)
     || raw.match(/\b\d{1,2}(?:st|nd|rd|th)?\s+(?:of\s+)?(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)(?:\s+\d{4})?\b/i);
-  if (!partyMatch || !timeMatch || !dateMatch) return null;
 
-  const { resolveBookingDateInput } = await import('../../services/bookingDateParser.js');
-  const tz = business?.hours?.timezone || 'UTC';
-  const resolved = await resolveBookingDateInput(dateMatch[0], tz);
-  if (!resolved.ok) return null;
+  const partySize = partyMatch ? Number(partyMatch[1]) : null;
+  let date = null;
+  let parsedDate = null;
+  let dateRaw = null;
+  let time = null;
 
-  const time = timeMatch[1].replace(/\s+/g, ' ').trim();
-  return {
-    partySize: Number(partyMatch[1]),
-    date: resolved.label,
-    parsedDate: resolved.parsed,
-    dateRaw: resolved.raw,
-    time,
-  };
+  if (dateMatch) {
+    const { resolveBookingDateInput } = await import('../../services/bookingDateParser.js');
+    const tz = business?.hours?.timezone || 'UTC';
+    const resolved = await resolveBookingDateInput(dateMatch[0], tz);
+    if (!resolved.ok) return null;
+    date = resolved.label;
+    parsedDate = resolved.parsed;
+    dateRaw = resolved.raw;
+  }
+
+  if (timeMatch) {
+    time = timeMatch[1].replace(/\s+/g, ' ').trim();
+  }
+
+  if (!partySize && !date && !time) return null;
+
+  return { partySize, date, parsedDate, dateRaw, time };
+}
+
+export function resolveDirectBookingStep({ partySize, date, time, isRestaurant }) {
+  if (partySize && date && time) return 'BOOKING_CONFIRM';
+  if (!isRestaurant) {
+    return (date && time) ? 'BOOKING_CONFIRM' : null;
+  }
+  if (partySize && date) return 'TIME';
+  if (partySize && time) return 'DATE';
+  if (date && time) return 'PARTY_SIZE';
+  if (partySize) return 'DATE';
+  if (date || time) return 'PARTY_SIZE';
+  return null;
 }
 
 function directOrderHandoff(mode, lines) {
@@ -500,18 +524,37 @@ export async function registerAllModules() {
     // "updateSession is not defined" instead of confirming the booking.
     const { updateSession } = await import('../sessions/sessionService.js');
     const directBooking = await parseDirectBookingRequest(message, business).catch(() => null);
-    if (directBooking && !(business?.services || []).length) {
-      const updated = await updateSession(session.customerPhone, session.tenantId, {
-        currentFlow: 'BOOKING',
-        step: 'BOOKING_CONFIRM',
-        data: { ...(session.data || {}), ...directBooking },
-      });
-      return advance({
-        session: { ...session, ...updated, currentFlow: 'BOOKING', step: 'BOOKING_CONFIRM', data: { ...(session.data || {}), ...directBooking } },
-        message: null,
-        business,
-        tenant,
-      });
+    const isRestaurant = (business?.businessMode || '').toUpperCase() === 'RESTAURANT';
+    const noServices = !(business?.services || []).length;
+
+    if (directBooking && (isRestaurant || noServices)) {
+      const { partySize, date, parsedDate, dateRaw, time } = directBooking;
+      const step = resolveDirectBookingStep({ partySize, date, time, isRestaurant });
+      if (step) {
+        const mergedData = {
+          ...(session.data || {}),
+          ...(partySize ? { partySize } : {}),
+          ...(date ? { date, parsedDate, dateRaw } : {}),
+          ...(time ? { time } : {}),
+        };
+        const updated = await updateSession(session.customerPhone, session.tenantId, {
+          currentFlow: 'BOOKING',
+          step,
+          data: mergedData,
+        });
+        return advance({
+          session: {
+            ...session,
+            ...updated,
+            currentFlow: 'BOOKING',
+            step,
+            data: mergedData,
+          },
+          message: null,
+          business,
+          tenant,
+        });
+      }
     }
     return startFlow({ flowName: 'BOOKING', session, business, tenant });
   });
