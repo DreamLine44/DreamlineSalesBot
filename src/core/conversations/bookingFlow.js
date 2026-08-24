@@ -212,6 +212,34 @@ export async function handleBookingFlow({ session, message, business, tenant, is
     return _buildDatePickerUI(null, tz, { business, tenant, customerPhone: session.customerPhone });
   }
 
+  // ── NL interpretation — extract all fields regardless of current step ─────
+  if (message !== null && raw && !isInteractive && !flowReply) {
+    const {
+      isBookingSystemAction,
+      interpretBookingMessage,
+      continueFromMergedBookingData,
+    } = await import('../../services/bookingInterpretation.js');
+
+    if (!isBookingSystemAction(raw)) {
+      const { merged, changed } = await interpretBookingMessage(raw, business, data);
+      if (changed) {
+        data = merged;
+        const skipReply = await continueFromMergedBookingData({
+          session,
+          data,
+          step,
+          business,
+          tenant,
+          tz,
+          confirmBookingDateFn: _confirmBookingDate,
+          buildBookingSummaryFn: _buildBookingSummaryUI,
+          buildTimePickerFn: _buildTimePickerUI,
+        });
+        if (skipReply) return skipReply;
+      }
+    }
+  }
+
   switch (step) {
 
     case 'SELECT_SERVICE': {
@@ -921,6 +949,14 @@ function _renderBookingStepEntry({ step, data, business, tenant, tz, session }) 
           : null;
       return _buildDatePickerUI(heading, tz, { business, tenant, customerPhone });
     }
+    case 'DATE_CONFIRM':
+      return {
+        type:    'buttons',
+        body:    data.date
+          ? `Just to confirm — did you mean *${data.date}*? 📅`
+          : `Please confirm your date:`,
+        buttons: [{ id: 'CONFIRM', title: '✅ Yes, that date' }, { id: 'DATE_BACK', title: '❌ No, re-enter' }],
+      };
     case 'TIME': {
       const bookingParsedDate = data.parsedDate
         ? (data.parsedDate instanceof Date ? data.parsedDate : new Date(data.parsedDate))

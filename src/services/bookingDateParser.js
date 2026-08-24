@@ -169,11 +169,34 @@ function parseRelativeMonthDay(lower, now) {
   if (/^next\s+months?\s+(?:first|1st)(?:\s+day)?$/.test(s)) {
     return toUtcMidnight(now.getUTCFullYear(), now.getUTCMonth() + 1, 1);
   }
-  if (/^(?:the\s+)?(?:first|1st)\s+day\s+of\s+next\s+month$/.test(s)) {
+  // "first day of next month" OR "first of next month" / "the first of next month"
+  if (/^(?:the\s+)?(?:first|1st)(?:\s+day)?\s+of\s+next\s+month$/.test(s)) {
     return toUtcMidnight(now.getUTCFullYear(), now.getUTCMonth() + 1, 1);
   }
   if (/^next\s+month(?:'?s)?\s+(?:first|1st)(?:\s+day)?$/.test(s)) {
     return toUtcMidnight(now.getUTCFullYear(), now.getUTCMonth() + 1, 1);
+  }
+  // last day of next month
+  if (/^(?:the\s+)?last\s+day\s+of\s+next\s+month$/.test(s)) {
+    return toUtcMidnight(now.getUTCFullYear(), now.getUTCMonth() + 2, 0);
+  }
+  // end of (this) month
+  if (/^end\s+of\s+(?:this\s+)?month$/.test(s)) {
+    return toUtcMidnight(now.getUTCFullYear(), now.getUTCMonth() + 1, 0);
+  }
+  // first of September / the first of September 2026
+  const firstOfNamedMonth = s.match(/^(?:the\s+)?(?:first|1st)\s+of\s+([a-z]+)(?:\s+(\d{4}))?$/);
+  if (firstOfNamedMonth) {
+    const month = resolveMonthToken(firstOfNamedMonth[1]);
+    const year = firstOfNamedMonth[2] ? parseInt(firstOfNamedMonth[2], 10) : null;
+    if (month !== null) return parseDayOfMonthInMonth(1, month, year, now);
+  }
+  // September first / September the first
+  const namedMonthFirst = s.match(/^([a-z]+)\s+(?:the\s+)?(?:first|1st)(?:\s+(\d{4}))?$/);
+  if (namedMonthFirst) {
+    const month = resolveMonthToken(namedMonthFirst[1]);
+    const year = namedMonthFirst[2] ? parseInt(namedMonthFirst[2], 10) : null;
+    if (month !== null) return parseDayOfMonthInMonth(1, month, year, now);
   }
   return null;
 }
@@ -192,6 +215,7 @@ export function tryParseDate(dateStr, tz) {
     if (lower === 'today' || lower === 'tonight') return toUtcMidnight(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
     if (lower === 'yesterday') return addLocalDays(now, -1);
     if (lower === 'tomorrow') return addLocalDays(now, 1);
+    if (lower === 'day after tomorrow' || lower === 'the day after tomorrow') return addLocalDays(now, 2);
 
     const offsetDays = parseRelativeOffsetDays(lower, now);
     if (offsetDays) return offsetDays;
@@ -256,6 +280,7 @@ export function looksLikeDate(input) {
   if (!input || input.length < 2) return false;
   const s = input.toLowerCase().trim();
   if (['today', 'tomorrow', 'yesterday', 'tonight'].includes(s)) return true;
+  if (/^day after tomorrow$/i.test(s)) return true;
   if (/^in\s+(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)\s+(?:days?|weeks?)$/i.test(s)) return true;
   if (/^(this\s+)?(monday|tuesday|wednesday|thursday|friday|saturday|sunday)$/i.test(s)) return true;
   if (/^on\s+(?:the\s+)?(monday|tuesday|wednesday|thursday|friday|saturday|sunday)$/i.test(s)) return true;
@@ -278,6 +303,10 @@ const DATE_PHRASE_RES = [
   /\b(?:this|next)\s+(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/i,
   /\b(?:on\s+)?next\s+(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/i,
   /\b(?:the\s+)?(?:first|1st)(?:\s+(?:day\s+of|of))?\s+next\s+month\b/i,
+  /\b(?:the\s+)?last\s+day\s+of\s+next\s+month\b/i,
+  /\bend\s+of\s+(?:this\s+)?month\b/i,
+  /\bday after tomorrow\b/i,
+  /\b(?:the\s+)?(?:first|1st)\s+of\s+(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\b/i,
   /\bnext\s+month(?:'?s)?\s+(?:first|1st)(?:\s+day)?\b/i,
   /\b\d{1,2}(?:st|nd|rd|th)?\s+(?:of\s+)?(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)(?:\s+\d{4})?\b/i,
   /\b(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\s+\d{1,2}(?:st|nd|rd|th)?(?:\s+\d{4})?\b/i,

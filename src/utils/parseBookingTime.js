@@ -73,6 +73,15 @@ export function parseBookingTimeToMinutes(timeStr, { context = '' } = {}) {
     return applyMeridiem(h, meridiem);
   }
 
+  // Bare hour only when caller supplied booking/time context (e.g. "around 8" in a sentence).
+  const bareHour = s.match(/^(\d{1,2})$/);
+  if (bareHour && String(context || '').trim()) {
+    const h = parseInt(bareHour[1], 10);
+    const meridiem = inferMeridiemFromContext(h, ctx)
+      || (/\b(around|about|at|book|table|reserve|dinner|lunch|tonight|time)\b/i.test(ctx) && h >= 1 && h <= 11 ? 'pm' : null);
+    if (meridiem) return applyMeridiem(h, meridiem);
+  }
+
   return null;
 }
 
@@ -104,6 +113,7 @@ export function extractBookingTimeFromText(text) {
     /\b(at\s+|around\s+|about\s+)?(\d{1,2})\s*o'?clock\s*(?:in the )?(morning|afternoon|evening|night|tonight)?\b/i,
     /\b(at\s+|around\s+|about\s+)?(\d{1,2})\s+(?:in the )?(morning|afternoon|evening|night|tonight)\b/i,
     /\b(at\s+|around\s+|about\s+)?(\d{1,2}:\d{2}\s*(?:am|pm))\b/i,
+    /\b(?:at|around|about)\s+(\d{1,2})(?!\s*(?:am|pm|:|\d))\b/i,
     /\b(at\s+|around\s+|about\s+)?(noon|midday|midnight)\b/i,
   ];
 

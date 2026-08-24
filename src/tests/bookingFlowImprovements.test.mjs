@@ -69,7 +69,7 @@ test('resolveDirectBookingStep routes partial restaurant requests', () => {
   );
   assert.equal(
     resolveDirectBookingStep({ partySize: 4, date: '25 August', time: null, isRestaurant: true }),
-    'TIME',
+    'DATE_CONFIRM',
   );
   assert.equal(
     resolveDirectBookingStep({ partySize: null, date: '25 August', time: '7:00 PM', isRestaurant: true }),

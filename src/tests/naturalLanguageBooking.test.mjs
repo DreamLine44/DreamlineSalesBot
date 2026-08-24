@@ -12,7 +12,7 @@ import {
   extractBookingDatePhraseFromText,
   resolveBookingDateInput,
 } from '../services/bookingDateParser.js';
-import { parseDirectBookingRequest } from '../core/shared/moduleRegistry.js';
+import { parseDirectBookingRequest, resolveDirectBookingStep } from '../core/shared/moduleRegistry.js';
 
 const TZ = 'Africa/Banjul';
 const RESTAURANT = { businessMode: 'RESTAURANT', hours: { timezone: TZ } };
@@ -82,4 +82,62 @@ test('parseDirectBookingRequest: relational guest count', async () => {
 test('resolveBookingDateInput strips correction prefix', async () => {
   const resolved = await resolveBookingDateInput('no, Friday', TZ);
   assert.ok(resolved.ok || resolved.error === 'unparseable');
+});
+
+test('Test A: full NL booking — 2 guests, first of next month', async () => {
+  const msg = 'Hello I want book a table for 2 people on the first of next month';
+  const result = await parseDirectBookingRequest(msg, RESTAURANT);
+  assert.equal(result.partySize, 2);
+  assert.ok(result.date, 'date label should be set');
+  assert.ok(result.parsedDate, 'parsedDate should be normalized');
+  const iso = `${result.parsedDate.getUTCFullYear()}-${String(result.parsedDate.getUTCMonth() + 1).padStart(2, '0')}-${String(result.parsedDate.getUTCDate()).padStart(2, '0')}`;
+  // Relative to run date — first of next month from Aug 2026 is Sep 1
+  assert.ok(/^\d{4}-\d{2}-01$/.test(iso), `expected first-of-month ISO, got ${iso}`);
+  assert.equal(result.time, null);
+  assert.equal(
+    resolveDirectBookingStep({ partySize: result.partySize, date: result.date, time: result.time, isRestaurant: true }),
+    'DATE_CONFIRM',
+  );
+});
+
+test('Test B: guests + next Friday + 7pm', async () => {
+  const result = await parseDirectBookingRequest('Can I book for 8 next Friday at 7pm?', RESTAURANT);
+  assert.equal(result.partySize, 8);
+  assert.ok(result.date);
+  assert.match(result.time, /7:00 PM/i);
+});
+
+test('Test C: 12 of us tomorrow', async () => {
+  const result = await parseDirectBookingRequest('There are 12 of us. We\'d like to come tomorrow.', RESTAURANT);
+  assert.equal(result.partySize, 12);
+  assert.ok(result.date);
+});
+
+test('Test D: me and two friends next Saturday around 8', async () => {
+  const result = await parseDirectBookingRequest('Me and two friends next Saturday around 8.', RESTAURANT);
+  assert.equal(result.partySize, 3);
+  assert.ok(result.date);
+  assert.ok(result.time, 'time should be inferred from evening context');
+});
+
+test('Test E: first of next month phrase parses', async () => {
+  const resolved = await resolveBookingDateInput('first of next month', TZ);
+  assert.equal(resolved.ok, true, resolved.error || 'should parse');
+  assert.match(resolved.label, /1/i);
+});
+
+test('Test F: CONFIRM is a system action not a date', async () => {
+  const { isBookingSystemAction } = await import('../services/bookingInterpretation.js');
+  assert.equal(isBookingSystemAction('CONFIRM'), true);
+  const resolved = await resolveBookingDateInput('CONFIRM', TZ);
+  assert.equal(resolved.ok, false);
+});
+
+test('Test G: correction updates guest count', async () => {
+  const { interpretBookingMessage } = await import('../services/bookingInterpretation.js');
+  const first = await interpretBookingMessage('Book for 4 tomorrow.', RESTAURANT, {});
+  assert.equal(first.merged.partySize, 4);
+  const corrected = await interpretBookingMessage('Actually make it 10.', RESTAURANT, first.merged);
+  assert.equal(corrected.merged.partySize, 10);
+  assert.ok(corrected.merged.date, 'date should be preserved from prior turn');
 });

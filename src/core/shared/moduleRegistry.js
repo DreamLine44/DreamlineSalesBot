@@ -126,7 +126,8 @@ export function resolveDirectBookingStep({ partySize, date, time, isRestaurant }
   if (!isRestaurant) {
     return (date && time) ? 'BOOKING_CONFIRM' : null;
   }
-  if (partySize && date) return 'TIME';
+  // NL-provided dates go through DATE_CONFIRM (same as typing a date in the DATE step).
+  if (partySize && date) return 'DATE_CONFIRM';
   if (partySize && time) return 'DATE';
   if (date && time) return 'PARTY_SIZE';
   if (partySize) return 'DATE';
