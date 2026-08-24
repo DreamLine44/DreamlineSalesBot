@@ -8,7 +8,7 @@
 import {
   getLocalNow,
   formatBookingDateLabel,
-  resolveBookingDateInput,
+  validateBookingDate,
   MAX_BOOKING_MONTHS_AHEAD,
 } from './bookingDateParser.js';
 
@@ -254,9 +254,13 @@ export function buildMonthDayList({ year, month, tz, page = 0, heading = null })
 export async function resolveDayPick(raw, tz) {
   const parsed = parseDayId(raw);
   if (!parsed) return null;
-  const resolved = await resolveBookingDateInput(
-    `${parsed.getUTCDate()} ${MONTH_NAMES[parsed.getUTCMonth()]} ${parsed.getUTCFullYear()}`,
-    tz,
-  );
-  return resolved.ok ? resolved : null;
+  // List row ids (DATE_D_YYYYMMDD) are already normalized — do not re-parse via NL.
+  const validation = validateBookingDate(parsed, tz);
+  if (validation.error || !validation.parsed) return null;
+  return {
+    ok:    true,
+    raw,
+    parsed: validation.parsed,
+    label: formatBookingDateLabel(validation.parsed, tz),
+  };
 }

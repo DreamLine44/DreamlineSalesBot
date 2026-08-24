@@ -113,7 +113,7 @@ function looksLikeNativeDateFragment(s) {
 }
 
 function parseOrdinalDayPhrase(lower, now) {
-  const m = lower.match(/(?:on\s+the\s+|the\s+)?(\d{1,2})(?:st|nd|rd|th)?(?:\s+of\s+(?:this\s+)?month)?$/);
+  const m = lower.match(/^(?:on\s+the\s+|the\s+)?(\d{1,2})(?:st|nd|rd|th)?(?:\s+of\s+(?:this\s+)?month)?$/);
   if (!m) return null;
 
   const day = parseInt(m[1], 10);

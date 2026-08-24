@@ -65,3 +65,13 @@ test('parseDayId and parseMonthId round-trip', () => {
   const month = parseMonthId('DATE_M_202608');
   assert.deepEqual(month, { year: 2026, month: 7 });
 });
+
+test('resolveDayPick: DATE_D list id returns exact day without re-parse drift', async () => {
+  const { resolveDayPick } = await import('../services/bookingDatePickerUI.js');
+  const { tryParseDate } = await import('../services/bookingDateParser.js');
+  const pick = await resolveDayPick('DATE_D_20260824', TZ);
+  assert.equal(pick.ok, true);
+  assert.match(pick.label, /24 August 2026/);
+  assert.match(pick.label, /Monday/i);
+  assert.equal(tryParseDate('24 August 2026', TZ).getUTCDate(), 24);
+});
