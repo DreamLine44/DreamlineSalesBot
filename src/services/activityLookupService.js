@@ -9,6 +9,7 @@ import Order from '../models/Order.js';
 import Booking from '../models/Booking.js';
 import { resolveActiveOrder } from './activeOrderResolver.js';
 import { getActiveBookings, getBookingByShortId } from './bookingService.js';
+import { customerPhoneQueryVariants } from '../utils/customerPhone.js';
 
 const SHORT_ID_RE = /#?([A-Z0-9]{4,24})\b/i;
 
@@ -102,8 +103,12 @@ export async function lookupActivityByReference({
   }
 
   if (customerPhone && !booking && (scope === 'BOOKING' || scope === 'BOTH')) {
+    const variants = customerPhoneQueryVariants(customerPhone);
+    const phoneClause = variants.length > 1
+      ? { customerPhone: { $in: variants } }
+      : { customerPhone: variants[0] || customerPhone };
     const phoneBooking = await Booking.findOne({
-      customerPhone,
+      ...phoneClause,
       tenantId,
       shortId: ref,
     }).lean().catch(() => null);

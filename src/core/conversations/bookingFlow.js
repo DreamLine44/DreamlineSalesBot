@@ -51,6 +51,13 @@ import {
   formatClosedDayMessage,
   buildBookingTimeSlotDefs,
 } from '../../utils/businessHoursUtils.js';
+import {
+  coerceBookingParsedDate,
+  enrichBookingSessionData,
+  bookingSnapshotFromSaved,
+  bookingDateIsoFromParsed,
+} from '../../services/bookingState.js';
+import { normalizeCustomerPhone } from '../../utils/customerPhone.js';
 
 import {
   parseBookingTimeToMinutes,
@@ -77,14 +84,22 @@ async function _confirmBookingDate(session, data, resolved, { business, tenant, 
     }
   }
 
+  const mergedData = enrichBookingSessionData(data, {
+    parsed: resolved.parsed,
+    label:  resolved.label,
+    raw:    resolved.raw,
+    tz,
+  });
+
+  logger.debug('[BookingFlow] Date confirmed into session', {
+    bookingDateIso: mergedData.bookingDateIso,
+    label: mergedData.date,
+    partySize: mergedData.partySize ?? null,
+  });
+
   await updateSession(session.customerPhone, session.tenantId, {
     step: 'DATE_CONFIRM',
-    data: {
-      ...data,
-      date: resolved.label,
-      dateRaw: resolved.raw,
-      parsedDate: resolved.parsed,
-    },
+    data: mergedData,
   });
   return {
     type:    'buttons',
@@ -472,10 +487,19 @@ export async function handleBookingFlow({ session, message, business, tenant, is
 
     case 'DATE_CONFIRM': {
       if (clean === 'confirm' || /^(yes|y|yep|yeah)$/i.test(clean)) {
-        await updateSession(session.customerPhone, session.tenantId, { step: 'TIME' });
-        const bookingParsedDate = data.parsedDate
-          ? (data.parsedDate instanceof Date ? data.parsedDate : new Date(data.parsedDate))
-          : tryParseDate(data.date, tz);
+        const bookingParsedDate = coerceBookingParsedDate(data, tz);
+        const confirmedData = bookingParsedDate
+          ? enrichBookingSessionData(data, {
+            parsed: bookingParsedDate,
+            label:  data.date,
+            raw:    data.dateRaw || data.date,
+            tz,
+          })
+          : data;
+        await updateSession(session.customerPhone, session.tenantId, {
+          step: 'TIME',
+          data: confirmedData,
+        });
         return _buildTimePickerUI(null, { tz, bookingDate: bookingParsedDate, business });
       }
       if (clean === 'date_back' || /^(no|n|re-enter|change|back)$/i.test(clean)) {
@@ -514,9 +538,7 @@ export async function handleBookingFlow({ session, message, business, tenant, is
         'TIME_9PM':  '9:00 PM',
       };
 
-      const bookingParsedDate = data.parsedDate
-        ? (data.parsedDate instanceof Date ? data.parsedDate : new Date(data.parsedDate))
-        : tryParseDate(data.date, tz);
+      const bookingParsedDate = coerceBookingParsedDate(data, tz);
 
       let resolvedTime = TIME_SHORTCUTS[raw.toUpperCase()] || null;
       const dynamicMatch = raw.toUpperCase().match(/^TIME_M_(\d+)$/);
@@ -572,15 +594,11 @@ export async function handleBookingFlow({ session, message, business, tenant, is
       }
       if (clean === 'time_back' || /^(no|n|back|change)$/i.test(clean)) {
         await updateSession(session.customerPhone, session.tenantId, { step: 'TIME' });
-        const bpdBack = data.parsedDate
-          ? (data.parsedDate instanceof Date ? data.parsedDate : new Date(data.parsedDate))
-          : tryParseDate(data.date, tz);
+        const bpdBack = coerceBookingParsedDate(data, tz);
         return _buildTimePickerUI(null, { tz, bookingDate: bpdBack, business });
       }
       if (looksLikeTime(raw) || resolveBookingTimeInput(raw, { context: data.date || '' })) {
-        const bpd = data.parsedDate
-          ? (data.parsedDate instanceof Date ? data.parsedDate : new Date(data.parsedDate))
-          : tryParseDate(data.date, tz);
+        const bpd = coerceBookingParsedDate(data, tz);
         const typed = resolveBookingTimeInput(raw, { context: `${data.date || ''} ${raw}` });
         const timeLabel = typed?.label || raw;
         const tv2 = validateTime(timeLabel, bpd, tz);
@@ -682,9 +700,7 @@ export async function handleBookingFlow({ session, message, business, tenant, is
       }
 
       const rawParsedDateForSave = data.parsedDate;
-      const parsedDateForSave = rawParsedDateForSave
-        ? (rawParsedDateForSave instanceof Date ? rawParsedDateForSave : new Date(rawParsedDateForSave))
-        : tryParseDate(date, tz);
+      const parsedDateForSave = coerceBookingParsedDate(data, tz);
       if (parsedDateForSave && business?.hours?.enabled && isBookingDateClosed(parsedDateForSave, business.hours, tz)) {
         const msg = formatClosedDayMessage(date, business.hours, tz, parsedDateForSave);
         return _buildDatePickerUI(msg, tz, { business, tenant, customerPhone: session.customerPhone });
@@ -749,13 +765,26 @@ export async function handleBookingFlow({ session, message, business, tenant, is
       // session.data (lean MongoDB read) as an ISO string. Coerce explicitly
       // so saveBooking always receives a real Date or null — never a string.
       const parsedDate = parsedDateForSave;
+      const savePhone = normalizeCustomerPhone(session.customerPhone);
+      const saveDate = data.date;
+      const saveTime = time;
+
+      logger.debug('[BookingFlow] Saving booking', {
+        bookingDateIso: data.bookingDateIso || bookingDateIsoFromParsed(parsedDate),
+        date: saveDate,
+        time: saveTime,
+        partySize,
+        phone: savePhone,
+      });
 
       let savedBooking = null;
       try {
         savedBooking = await saveBooking({
-          customerPhone: session.customerPhone,
+          customerPhone: savePhone,
           customerName,
-          date, time, service,
+          date:         saveDate,
+          time:         saveTime,
+          service,
           partySize:    partySize || null,
           parsedDate,
           // [FIX-SALON-1] Persist stylist in dedicated staff field
@@ -826,8 +855,14 @@ export async function handleBookingFlow({ session, message, business, tenant, is
         logger.warn('[BookingFlow] Admin notification failed (non-fatal)', { err: err.message });
       }
 
-      const _lcRb = await completeFlow(session, 'BOOKING', business, tenant);
+      const _lcRb = await completeFlow(session, 'BOOKING', business, tenant, {
+        postFlowSnapshot: bookingSnapshotFromSaved(savedBooking),
+      });
       if (_lcRb) return _lcRb;
+
+      const confirmDate  = savedBooking?.date || saveDate;
+      const confirmTime  = savedBooking?.time || saveTime;
+      const confirmParty = savedBooking?.partySize ?? partySize;
 
       // [FIX-BC-1] CRITICAL: isBarbershopConfirm and shortIdLine were used below
       // but never declared anywhere in this function — this was a ReferenceError crash
@@ -853,9 +888,9 @@ export async function handleBookingFlow({ session, message, business, tenant, is
         `📅 *Booking Request Received!* ✨\n\n` +
         (service     ? `${isBarbershopConfirm ? '✂️' : '💇'}  Service: *${service}*\n`   : '') +
         (staffToSave ? `👤  ${isBarbershopConfirm ? 'Barber' : 'Stylist'}: *${staffToSave}*\n` : '') +
-        (date        ? `📅  Date: *${date}*\n`          : '') +
-        (time        ? `⏰  Time: *${time}*\n`          : '') +
-        (partySize   ? `👥  Party size: *${partySize} guest${partySize > 1 ? 's' : ''}*\n` : '') +
+        (confirmDate  ? `📅  Date: *${confirmDate}*\n`          : '') +
+        (confirmTime  ? `⏰  Time: *${confirmTime}*\n`          : '') +
+        (confirmParty ? `👥  Party size: *${confirmParty} guest${confirmParty > 1 ? 's' : ''}*\n` : '') +
         shortIdLine +
         prepLine +
         (isRestaurantConfirm && savedBooking?.shortId
@@ -1008,9 +1043,7 @@ function _renderBookingStepEntry({ step, data, business, tenant, tz, session }) 
         buttons: [{ id: 'CONFIRM', title: '✅ Yes, that date' }, { id: 'DATE_BACK', title: '❌ No, re-enter' }],
       };
     case 'TIME': {
-      const bookingParsedDate = data.parsedDate
-        ? (data.parsedDate instanceof Date ? data.parsedDate : new Date(data.parsedDate))
-        : tryParseDate(data.date, tz);
+      const bookingParsedDate = coerceBookingParsedDate(data, tz);
       const heading = data.partySize && data.date
         ? `*${data.partySize} guest${data.partySize > 1 ? 's' : ''}* on *${data.date}* 👥\n\nWhat time works for you? ⏰`
         : null;

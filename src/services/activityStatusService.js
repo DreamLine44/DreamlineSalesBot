@@ -16,6 +16,7 @@ import {
   recoverRecentActivities,
   formatLookupFailureMessage,
 } from './activityLookupService.js';
+import { normalizeCustomerPhone } from '../utils/customerPhone.js';
 
 const ORDER_STATUS_LABELS = {
   pending:                      '⏳ Waiting for our team to confirm',
@@ -174,7 +175,7 @@ function _multipleBookingsList(bookings) {
  */
 export async function buildStatusReply({ session, business, message }) {
   const scope = detectStatusScope(message);
-  const phone = session.customerPhone;
+  const phone = normalizeCustomerPhone(session.customerPhone);
   const tenantId = session.tenantId;
   const adminPhone = business?.adminPhone;
   const ref = extractShortId(message, session) || session?.data?._questionCtx?.lastReference || null;

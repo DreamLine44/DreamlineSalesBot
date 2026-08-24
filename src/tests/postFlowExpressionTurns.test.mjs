@@ -97,7 +97,7 @@ test('postFlowHandler.js: ORDER_CONFIRMED expression paths consume turns without
 });
 
 test('flowEngine.completeFlow seeds postFlowData._exprTurnsLeft', () => {
-  assert.match(flowSrc, /postFlowData:\s*\{\s*_exprTurnsLeft:\s*EXPRESSION_TURN_BUDGET\s*\}/);
+  assert.match(flowSrc, /postFlowData:\s*\{[\s\S]*_exprTurnsLeft:\s*EXPRESSION_TURN_BUDGET/);
 });
 
 test('detectExpressionSubType: loyalty vs praise vs thanks', () => {

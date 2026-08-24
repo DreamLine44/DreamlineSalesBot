@@ -12,6 +12,7 @@ import {
 } from '../core/shared/moduleRegistry.js';
 import { MAX_PARTY_SIZE } from '../utils/parsePartySize.js';
 import { isBookingDateClosed, formatClosedDayMessage } from '../utils/businessHoursUtils.js';
+import { coerceBookingParsedDate } from './bookingState.js';
 
 const SYSTEM_ACTIONS = new Set([
   'CONFIRM', 'CANCEL', 'CANCEL_BOOKING', 'CANCEL_ORDER',
@@ -33,9 +34,8 @@ function isoFromParsed(parsed) {
   return `${y}-${m}-${day}`;
 }
 
-function coerceParsedDate(data) {
-  if (!data?.parsedDate) return null;
-  return data.parsedDate instanceof Date ? data.parsedDate : new Date(data.parsedDate);
+function coerceParsedDate(data, tz) {
+  return coerceBookingParsedDate(data, tz);
 }
 
 /** Button / list ids — never treat as NL date/time/guest input. */
@@ -62,7 +62,7 @@ export function guardMergedBookingData(data, business, tz, {
     return buildPartySizeErrorFn?.() || null;
   }
 
-  const parsedDate = coerceParsedDate(data);
+  const parsedDate = coerceParsedDate(data, tz);
   if (parsedDate && business?.hours?.enabled && isBookingDateClosed(parsedDate, business.hours, tz)) {
     const msg = formatClosedDayMessage(data.date, business.hours, tz, parsedDate);
     return buildDatePickerFn?.(msg) || null;
@@ -105,6 +105,7 @@ export async function interpretBookingMessage(message, business, existingData = 
     merged.date = extracted.date;
     merged.parsedDate = extracted.parsedDate;
     merged.dateRaw = extracted.dateRaw || extracted.date;
+    merged.bookingDateIso = isoFromParsed(extracted.parsedDate);
   }
   if (extracted.time) {
     if (merged.time !== extracted.time) changed = true;
@@ -180,13 +181,13 @@ export async function continueFromMergedBookingData({
   if (resumeStep === 'DATE_CONFIRM' && data.parsedDate && data.date) {
     return confirmBookingDateFn(session, data, {
       ok: true,
-      parsed: coerceParsedDate(data),
+      parsed: coerceParsedDate(data, tz),
       label: data.date,
       raw: data.dateRaw || data.date,
     }, { business, tenant, tz });
   }
   if (resumeStep === 'TIME' && data.parsedDate) {
-    const bookingParsedDate = coerceParsedDate(data);
+    const bookingParsedDate = coerceParsedDate(data, tz);
     const heading = data.partySize && data.date
       ? `*${data.partySize} guest${data.partySize > 1 ? 's' : ''}* on *${data.date}* 👥\n\nWhat time works for you? ⏰`
       : null;

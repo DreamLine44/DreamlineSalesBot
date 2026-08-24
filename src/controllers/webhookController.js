@@ -2956,7 +2956,11 @@ async function _handleIncomingMessageSerialized({ tenantId, tenantDoc, from, msg
     // the isInteractive block, so the final advance() call (outside that block)
     // hit a ReferenceError on every non-passthrough, non-escape in-flow tap,
     // causing the bot to go completely silent for typed messages inside active flows.
-    const freshSession = await getSession(from, tenantId) || session;
+    const freshSession = {
+      ...(await getSession(from, tenantId) || session),
+      customerPhone: from,
+      tenantId,
+    };
 
     if (isInteractive && upperMsg === 'BROWSE_CATALOG') {
       const { route } = await import('../core/conversations/moduleRouter.js');

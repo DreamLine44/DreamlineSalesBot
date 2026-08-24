@@ -521,6 +521,7 @@ export async function registerAllModules() {
     // every direct-booking request for a service-less business threw
     // "updateSession is not defined" instead of confirming the booking.
     const { updateSession } = await import('../sessions/sessionService.js');
+    const { bookingDateIsoFromParsed } = await import('../../services/bookingState.js');
     const directBooking = await parseDirectBookingRequest(message, business).catch(() => null);
     const isRestaurant = (business?.businessMode || '').toUpperCase() === 'RESTAURANT';
     const noServices = !(business?.services || []).length;
@@ -532,10 +533,16 @@ export async function registerAllModules() {
         const mergedData = {
           ...(session.data || {}),
           ...(partySize ? { partySize } : {}),
-          ...(date ? { date, parsedDate, dateRaw } : {}),
+          ...(date ? {
+            date,
+            parsedDate,
+            dateRaw,
+            bookingDateIso: bookingDateIsoFromParsed(parsedDate),
+          } : {}),
           ...(time ? { time } : {}),
         };
-        const updated = await updateSession(session.customerPhone, session.tenantId, {
+        const phone = session.customerPhone || session.phone?.split('_')?.[0];
+        const updated = await updateSession(phone, session.tenantId, {
           currentFlow: 'BOOKING',
           step,
           data: mergedData,

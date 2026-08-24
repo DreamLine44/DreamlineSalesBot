@@ -7,10 +7,12 @@
 import Booking from '../models/Booking.js';
 import { recordBooking } from '../core/memory/customerMemory.js';
 import logger from '../config/logger.js';
+import { normalizeCustomerPhone } from '../utils/customerPhone.js';
 
 export async function saveBooking({ customerPhone, customerName, date, time, service, partySize, parsedDate, tenantId, businessId, staff, bookingType, notes }) {
+  const phone = normalizeCustomerPhone(customerPhone);
   const booking = await Booking.create({
-    customerPhone,
+    customerPhone: phone,
     customerName:  customerName || null,
     date, time,
     service:       service      || null,
@@ -26,7 +28,7 @@ export async function saveBooking({ customerPhone, customerName, date, time, ser
   });
 
   // [FIX-BUG5] Update customer memory — fire-and-forget
-  recordBooking(customerPhone, String(tenantId)).catch(err =>
+  recordBooking(phone, String(tenantId)).catch(err =>
     logger.debug('[BookingService] recordBooking failed (non-fatal)', { err: err.message })
   );
 

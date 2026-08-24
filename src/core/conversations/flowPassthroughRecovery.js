@@ -39,24 +39,6 @@ export function isTypedPartySizeRecoveryInput(messageText, session, business) {
   return false;
 }
 
-async function cancelLatestBookingForReschedule(customerPhone, tenantId) {
-  try {
-    const { default: Booking } = await import('../../models/Booking.js');
-    return Booking.findOneAndUpdate(
-      {
-        customerPhone,
-        tenantId,
-        status:      { $in: ['pending', 'confirmed'] },
-        bookingType: { $ne: 'walkin' },
-      },
-      { $set: { status: 'cancelled', cancelledBy: 'customer', cancelledAt: new Date() } },
-      { sort: { createdAt: -1 } },
-    ).catch(() => null);
-  } catch {
-    return null;
-  }
-}
-
 export async function recoverLostBookingPassthrough({
   from, tenantId, session, messageText, business, tenant, isInteractive,
 }) {
@@ -95,7 +77,8 @@ export async function recoverLostBookingPassthrough({
       status:        { $in: ['pending', 'confirmed'] },
       bookingType:   { $ne: 'walkin' },
     }).sort({ createdAt: -1 }).lean().catch(() => null);
-  if (activeBooking) await cancelLatestBookingForReschedule(from, tenantId);
+  // Do not auto-cancel an active booking here — recovery only restores UI state.
+  // Explicit RESCHEDULE / cancel handlers own booking cancellation.
 
   const data = {
     ...(session?.data || {}),

@@ -262,13 +262,16 @@ export async function cancelFlow(session, business) {
  * gets a warm reply instead of the full welcome menu.
  * When business is provided, checks if lead capture should fire.
  */
-export async function completeFlow(session, completedFlow, business = null, tenant = null) {
+export async function completeFlow(session, completedFlow, business = null, tenant = null, { postFlowSnapshot = null } = {}) {
   await updateSession(session.customerPhone, session.tenantId, {
     currentFlow:  null,
     step:         null,
     data:         {},
     postFlowAck:  completedFlow.toUpperCase(),
-    postFlowData: { _exprTurnsLeft: EXPRESSION_TURN_BUDGET },
+    postFlowData: {
+      ...(postFlowSnapshot || {}),
+      _exprTurnsLeft: EXPRESSION_TURN_BUDGET,
+    },
   });
 
   // Lead capture trigger — fire after ORDER or BOOKING if configured.

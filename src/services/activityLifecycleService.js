@@ -13,6 +13,7 @@ import { getBookingByShortId } from './bookingService.js';
 import { buildOptionsReply } from '../core/shared/uiOptionsHelper.js';
 import { getModeConfig } from '../config/modes.js';
 import { updateSession } from '../core/sessions/sessionService.js';
+import { customerPhoneQueryVariants } from '../utils/customerPhone.js';
 
 export const ACTIVITY_ACTIVE_WINDOW_MS = 24 * 60 * 60 * 1000;
 
@@ -83,8 +84,12 @@ export function buildCustomerCancellableOrderFilter(customerPhone, tenantId) {
 }
 
 export function buildActiveBookingFilter(customerPhone, tenantId) {
+  const variants = customerPhoneQueryVariants(customerPhone);
+  const phoneClause = variants.length > 1
+    ? { customerPhone: { $in: variants } }
+    : { customerPhone: variants[0] || customerPhone };
   return {
-    customerPhone,
+    ...phoneClause,
     tenantId,
     status: { $in: ['pending', 'confirmed'] },
     createdAt: { $gte: activityActiveCutoff() },
