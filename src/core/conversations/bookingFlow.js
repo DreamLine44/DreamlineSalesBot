@@ -52,48 +52,21 @@ import {
   buildBookingTimeSlotDefs,
 } from '../../utils/businessHoursUtils.js';
 
+import {
+  parseBookingTimeToMinutes,
+  looksLikeBookingTime,
+  resolveBookingTimeInput,
+} from '../../utils/parseBookingTime.js';
+
 // Re-export for backward compatibility (bakery/delivery flows import from here).
 export { tryParseDate } from '../../services/bookingDateParser.js';
 
 function looksLikeTime(input) {
-  if (!input) return false;
-  return /^(\d{1,2})(:\d{2})?\s*(am|pm)?$/i.test(input.trim()) ||
-    /^([01]?\d|2[0-3]):[0-5]\d$/.test(input.trim());
+  return looksLikeBookingTime(input);
 }
 
-/**
- * parseTimeToMinutes — converts a human time string to minutes-since-midnight.
- * Returns null if unparseable.
- * Examples: "2pm" → 840, "14:30" → 870, "9:00 AM" → 540, "9AM" → 540
- */
-function parseTimeToMinutes(timeStr) {
-  if (!timeStr) return null;
-  const s = String(timeStr).trim();
-
-  // HH:MM [am/pm]
-  const hhmm = s.match(/^(\d{1,2}):(\d{2})\s*(am|pm)?$/i);
-  if (hhmm) {
-    let h = parseInt(hhmm[1], 10);
-    const m = parseInt(hhmm[2], 10);
-    const meridiem = (hhmm[3] || '').toLowerCase();
-    if (meridiem === 'pm' && h < 12) h += 12;
-    if (meridiem === 'am' && h === 12) h = 0;
-    if (h > 23 || m > 59) return null;
-    return h * 60 + m;
-  }
-
-  // H [am/pm]  (no minutes)
-  const ham = s.match(/^(\d{1,2})\s*(am|pm)$/i);
-  if (ham) {
-    let h = parseInt(ham[1], 10);
-    const meridiem = ham[2].toLowerCase();
-    if (meridiem === 'pm' && h < 12) h += 12;
-    if (meridiem === 'am' && h === 12) h = 0;
-    if (h > 23) return null;
-    return h * 60;
-  }
-
-  return null;
+function parseTimeToMinutes(timeStr, context = '') {
+  return parseBookingTimeToMinutes(timeStr, { context });
 }
 
 async function _confirmBookingDate(session, data, resolved, { business, tenant, tz } = {}) {
@@ -138,7 +111,7 @@ async function _confirmBookingDate(session, data, resolved, { business, tenant, 
  *   ok    → { minutes: number } (minutes since midnight, for reference)
  */
 function validateTime(timeInput, parsedBookingDate, tz) {
-  const minutes = parseTimeToMinutes(timeInput);
+  const minutes = parseTimeToMinutes(timeInput, parsedBookingDate ? 'evening' : '');
   if (minutes === null) return null; // unparseable — don't block here
 
   const localNow = getLocalNow(tz);
@@ -313,13 +286,13 @@ export async function handleBookingFlow({ session, message, business, tenant, is
 
       // Support quick-pick buttons (PARTY_2, PARTY_4, PARTY_6) as well as typed numbers
       const PARTY_SHORTCUTS = { 'PARTY_2': 2, 'PARTY_4': 4, 'PARTY_6': 6, 'PARTY_8': 8, 'PARTY_10': 10 };
-      const { parseQuantity } = await import('../../utils/parseQuantity.js');
-      const partySize = PARTY_SHORTCUTS[raw.toUpperCase()] ?? parseQuantity(raw);
+      const { parsePartySizeFromText } = await import('../../utils/parsePartySize.js');
+      const partySize = PARTY_SHORTCUTS[raw.toUpperCase()] ?? parsePartySizeFromText(raw);
       if (!partySize || partySize < 1) {
         const triedCancel = _isCancelIntent(clean, raw);
         if (triedCancel) return cancelFlow(session, business);
         return _buildPartySizeUI(
-          `How many guests will be dining? 👥\n\n_Type *cancel* anytime to stop._`,
+          `How many guests will be dining? 👥\n\nChoose an option below, or type the number of guests.\n\n_Type *cancel* anytime to stop._`,
         );
       }
       if (partySize > 50) {
@@ -502,7 +475,7 @@ export async function handleBookingFlow({ session, message, business, tenant, is
         ? (data.parsedDate instanceof Date ? data.parsedDate : new Date(data.parsedDate))
         : tryParseDate(data.date, tz);
 
-      let resolvedTime = TIME_SHORTCUTS[raw.toUpperCase()] || raw;
+      let resolvedTime = TIME_SHORTCUTS[raw.toUpperCase()] || null;
       const dynamicMatch = raw.toUpperCase().match(/^TIME_M_(\d+)$/);
       if (dynamicMatch) {
         const mins = parseInt(dynamicMatch[1], 10);
@@ -510,9 +483,13 @@ export async function handleBookingFlow({ session, message, business, tenant, is
         const slot = slotDefs.find(s => s.minutes === mins);
         if (slot) resolvedTime = slot.title;
       }
+      if (!resolvedTime) {
+        const typed = resolveBookingTimeInput(raw, { context: `${data.date || ''} ${raw}` });
+        resolvedTime = typed?.label || raw;
+      }
 
-      if (!looksLikeTime(resolvedTime)) {
-        return _buildTimePickerUI(`Please enter a valid time ⏰\n\n(e.g. *10:00*, *2pm*, *14:30*)`, { tz, bookingDate: bookingParsedDate, business });
+      if (!looksLikeTime(resolvedTime) && !resolveBookingTimeInput(raw, { context: data.date || '' })) {
+        return _buildTimePickerUI(`Please enter a valid time ⏰\n\n(e.g. *8*, *2pm*, *7 tonight*, *noon*)`, { tz, bookingDate: bookingParsedDate, business });
       }
 
       const timeValidation = validateTime(resolvedTime, bookingParsedDate, tz);
@@ -557,18 +534,20 @@ export async function handleBookingFlow({ session, message, business, tenant, is
           : tryParseDate(data.date, tz);
         return _buildTimePickerUI(null, { tz, bookingDate: bpdBack, business });
       }
-      if (looksLikeTime(raw)) {
+      if (looksLikeTime(raw) || resolveBookingTimeInput(raw, { context: data.date || '' })) {
         const bpd = data.parsedDate
           ? (data.parsedDate instanceof Date ? data.parsedDate : new Date(data.parsedDate))
           : tryParseDate(data.date, tz);
-        const tv2 = validateTime(raw, bpd, tz);
+        const typed = resolveBookingTimeInput(raw, { context: `${data.date || ''} ${raw}` });
+        const timeLabel = typed?.label || raw;
+        const tv2 = validateTime(timeLabel, bpd, tz);
         if (tv2?.error) return _buildTimePickerUI(tv2.error, { tz, bookingDate: bpd, business });
         await updateSession(session.customerPhone, session.tenantId, {
-          step: 'TIME_CONFIRM', data: { ...data, time: raw },
+          step: 'TIME_CONFIRM', data: { ...data, time: timeLabel },
         });
         return {
           type:    'buttons',
-          body:    `Confirm time: *${raw}*? ⏰`,
+          body:    `Confirm time: *${timeLabel}*? ⏰`,
           buttons: [{ id: 'CONFIRM', title: '✅ Yes' }, { id: 'TIME_BACK', title: '❌ Re-enter' }],
         };
       }
@@ -877,12 +856,15 @@ const ALL_TIME_SLOTS = [
 ];
 
 function _buildPartySizeUI(body) {
+  const text = body.includes('Choose an option below')
+    ? body
+    : `${body}\n\nChoose an option below, or type the number of guests.`;
   return {
     type:   'list',
-    body,
+    body:   text,
     button: 'Choose guests',
     sections: [{
-      title: 'Party size',
+      title: 'Quick picks (any size welcome)',
       rows: [
         { id: 'PARTY_2',  title: '2 guests',  description: 'Table for two' },
         { id: 'PARTY_4',  title: '4 guests',  description: 'Small group'   },
@@ -891,7 +873,7 @@ function _buildPartySizeUI(body) {
         { id: 'PARTY_10', title: '10 guests', description: 'Large group'   },
       ],
     }],
-    footer: 'Or type any number (e.g. 12). Type *cancel* to stop.',
+    footer: 'Type any number or phrase (e.g. *12*, *me and two friends*). Type *cancel* to stop.',
   };
 }
 

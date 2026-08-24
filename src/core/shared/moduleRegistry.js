@@ -92,33 +92,29 @@ async function startFlowOrAnswerQuestion({ flowName, session, message, business,
 
 export async function parseDirectBookingRequest(message, business) {
   const raw = String(message || '').trim();
-  const partyMatch = raw.match(/\b(?:table|party)\s*(?:for|of)?\s*(\d{1,2})\b/i)
-    || raw.match(/\bfor\s+(\d{1,2})\b/i)
-    || raw.match(/\b(\d{1,2})\s*(?:people|guests|persons|pax)\b/i);
-  const timeMatch = raw.match(/\b(?:at\s+)?(\d{1,2}(?::\d{2})?\s*(?:am|pm))\b/i)
-    || raw.match(/\b(?:at\s+)?(\d{1,2}:\d{2})\b/i);
-  const dateMatch = raw.match(/\b(?:today|tomorrow|next\s+(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday))\b/i)
-    || raw.match(/\b\d{1,2}(?:st|nd|rd|th)?\s+(?:of\s+)?(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)(?:\s+\d{4})?\b/i);
+  const { parsePartySizeFromText } = await import('../../utils/parsePartySize.js');
+  const { extractBookingTimeFromText } = await import('../../utils/parseBookingTime.js');
+  const { resolveBookingDateInput, extractBookingDatePhraseFromText } = await import('../../services/bookingDateParser.js');
 
-  const partySize = partyMatch ? Number(partyMatch[1]) : null;
+  const partySize = parsePartySizeFromText(raw);
+  const tz = business?.hours?.timezone || 'UTC';
+
   let date = null;
   let parsedDate = null;
   let dateRaw = null;
-  let time = null;
 
-  if (dateMatch) {
-    const { resolveBookingDateInput } = await import('../../services/bookingDateParser.js');
-    const tz = business?.hours?.timezone || 'UTC';
-    const resolved = await resolveBookingDateInput(dateMatch[0], tz);
-    if (!resolved.ok) return null;
-    date = resolved.label;
-    parsedDate = resolved.parsed;
-    dateRaw = resolved.raw;
+  const datePhrase = extractBookingDatePhraseFromText(raw);
+  if (datePhrase) {
+    const resolved = await resolveBookingDateInput(datePhrase, tz);
+    if (resolved.ok) {
+      date = resolved.label;
+      parsedDate = resolved.parsed;
+      dateRaw = resolved.raw;
+    }
   }
 
-  if (timeMatch) {
-    time = timeMatch[1].replace(/\s+/g, ' ').trim();
-  }
+  const timeResolved = extractBookingTimeFromText(raw);
+  const time = timeResolved?.label || null;
 
   if (!partySize && !date && !time) return null;
 
