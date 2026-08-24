@@ -31,8 +31,38 @@ import { getModeConfig }  from '../config/modes.js';
 import { dispatchMessage } from '../core/whatsapp/dispatcher.js';
 import { buildOptionsReply } from '../core/shared/uiOptionsHelper.js';
 import { isStatusCommand } from './activityStatusService.js';
+import { isInformationalActivityQuestion } from './questionModeHelper.js';
+import {
+  ORDER_DIRECT_RE, BOOKING_DIRECT_RE, DIRECT_INTENT_EXCLUDE_RE, QUESTION_LEADIN_RE,
+} from '../core/intents/intentEngine.js';
+import { isMenuBrowsingIntent } from '../core/intents/menuIntentDetector.js';
 import logger from '../config/logger.js';
 import { formatMoney } from '../utils/formatCurrency.js';
+
+const POST_FLOW_FLOW_START_BUTTONS = new Set([
+  'ORDER', 'START_ORDER', 'BOOK', 'START_BOOKING', 'QUESTION', 'ENQUIRY',
+  'BROWSE_CATALOG', 'WALKIN', 'VIEW_MENU', 'ASK_A_QUESTION',
+]);
+
+/** Typed phrases or menu buttons that should start a new flow after post-flow ack. */
+export function isPostFlowFlowStartIntent(msg, business, { isInteractive = false } = {}) {
+  const raw = String(msg || '').trim();
+  if (!raw) return false;
+
+  const upper = raw.toUpperCase();
+  if (isInteractive && POST_FLOW_FLOW_START_BUTTONS.has(upper)) return true;
+
+  const clean = raw.toLowerCase();
+  if (DIRECT_INTENT_EXCLUDE_RE.test(clean)) return false;
+  if (QUESTION_LEADIN_RE.test(clean)) return false;
+  if (isInformationalActivityQuestion(raw)) return false;
+
+  const flows = getModeConfig(business).flows || [];
+  if (flows.includes('ORDER') && isMenuBrowsingIntent(clean)) return true;
+  if (flows.includes('BOOKING') && BOOKING_DIRECT_RE.test(clean)) return true;
+  if (flows.includes('ORDER') && ORDER_DIRECT_RE.test(clean)) return true;
+  return false;
+}
 
 // ── Name validation (duplicated from webhookController — avoids circular import) ──
 function isValidName(n) {
@@ -356,6 +386,14 @@ export async function handlePostFlowMessage({
   // [PFH-STATUS] "Track my order/booking" during post-flow must reach the real
   // status lookup — not the generic "What would you like to do next?" menu.
   if (!isInteractive && isStatusCommand(msg)) {
+    await updateSession(from, tenantId, { postFlowAck: null, postFlowData: null });
+    return false;
+  }
+
+  // [PFH-FLOW-START] After order collection/booking completion, customers often
+  // immediately start a new flow ("book a table", "order food"). Those must
+  // fall through to intent routing — not be swallowed by the generic post-flow menu.
+  if (isPostFlowFlowStartIntent(msg, business, { isInteractive })) {
     await updateSession(from, tenantId, { postFlowAck: null, postFlowData: null });
     return false;
   }
