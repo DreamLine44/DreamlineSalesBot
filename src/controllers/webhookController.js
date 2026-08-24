@@ -1873,8 +1873,9 @@ async function _handleIncomingMessageSerialized({ tenantId, tenantDoc, from, msg
         body:    '📸 *Please send a screenshot image* of your payment confirmation.\n\n' +
                  'Open your Wave (or payment) app, take a screenshot of the successful transfer, and send the image here.',
         buttons: [
-          { id: 'SUPPORT', title: '❓ Need Help'    },
-          { id: 'CANCEL',  title: '❌ Cancel Order' },
+          { id: 'REQUEST_CASH', title: '💵 Request Cash'  },
+          { id: 'SUPPORT',      title: '❓ Need Help'     },
+          { id: 'CANCEL',       title: '❌ Cancel Order'  },
         ],
       }, tenantDoc);
       return;
@@ -1904,15 +1905,21 @@ async function _handleIncomingMessageSerialized({ tenantId, tenantDoc, from, msg
     }
 
     // [FIX-SUPPORT-PROOF] Allow SUPPORT escape from PAYMENT_PROOF step.
-    // Previously step 10.5 intercepted ALL text including SUPPORT, showing "awaiting
-    // screenshot" in response to the customer tapping the "❓ Need Help" button — which
-    // is shown on the payment instructions card. The customer was stuck: they couldn't
-    // escalate to a human without cancelling. Now SUPPORT falls through to intent
-    // detection which routes to the SUPPORT case in moduleRouter → human handoff.
     if (upper === 'SUPPORT') {
       // Don't return — fall through to intent detection at step 16
-      // (no session currentFlow clear needed; the SUPPORT case in moduleRouter does it)
+    } else if (upper === 'REQUEST_CASH') {
+      const { requestCashPayment } = await import('../services/paymentService.js');
+      const reply = await requestCashPayment(from, tenantId, tenantDoc, business).catch(() => null);
+      if (reply) await dispatchMessage(from, { type: 'text', body: reply }, tenantDoc);
+      return;
     } else {
+      const { isCashPaymentRequestText, requestCashPayment } = await import('../services/paymentService.js');
+      if (!isInteractive && isCashPaymentRequestText(messageText)) {
+        const reply = await requestCashPayment(from, tenantId, tenantDoc, business).catch(() => null);
+        if (reply) await dispatchMessage(from, { type: 'text', body: reply }, tenantDoc);
+        return;
+      }
+
       // [FIX-PROOF-ACK] If the customer has a pending ORDER_REJECTED postFlowAck
       // (set by adminCommandService.rejectPayment for the payment retry window), an
       // acknowledgement message like "ok", "thanks" would be caught here and shown
@@ -2841,7 +2848,7 @@ async function _handleIncomingMessageSerialized({ tenantId, tenantDoc, from, msg
       CONFIRM:              new Set(['CONFIRM', 'CANCEL', 'ADD_MORE_ITEMS', 'ADD_ANOTHER_ITEM', 'EDIT_CART']),
       EDIT_CART_MENU:       new Set(['EDIT_ADD', 'EDIT_REMOVE', 'EDIT_INCREASE', 'EDIT_DECREASE', 'EDIT_CLEAR', 'EDIT_BACK']),
       EDIT_CART_PICK:       new Set([]), // expects free text (line number) or "back"
-      PAYMENT_PROOF:        new Set(['DONE', 'SUPPORT', 'CANCEL', 'CANCEL_ORDER']),
+      PAYMENT_PROOF:        new Set(['DONE', 'REQUEST_CASH', 'SUPPORT', 'CANCEL', 'CANCEL_ORDER']),
       AWAIT_ADMIN_CONFIRM:  new Set(['CANCEL', 'CANCEL_ORDER']),
       // ── Electronics-specific steps ─────────────────────────────────────────
       // Steps with no entry are NOT validated — any button passes through to the
