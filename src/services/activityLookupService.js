@@ -9,17 +9,11 @@ import Order from '../models/Order.js';
 import Booking from '../models/Booking.js';
 import { resolveActiveOrder } from './activeOrderResolver.js';
 import { getActiveBookings, getBookingByShortId } from './bookingService.js';
-import { customerPhoneQueryVariants } from '../utils/customerPhone.js';
 
 const SHORT_ID_RE = /#?([A-Z0-9]{4,24})\b/i;
 
-/** Words that must never be parsed as activity reference IDs. */
-const RESERVED_REF_WORDS = new Set([
-  'CANCEL', 'ORDER', 'BOOKING', 'BOOK', 'STATUS', 'TRACK', 'REF', 'ACTIVITY', 'ALL',
-]);
-
 /** Extract a shortId from customer or admin text (#F921EB or F921EB). */
-export function extractShortId(message, session = null) {
+export function extractShortId(message) {
   const raw = String(message || '').trim();
   if (!raw) return null;
 
@@ -38,14 +32,7 @@ export function extractShortId(message, session = null) {
 
   const bare = raw.match(SHORT_ID_RE);
   if (bare && /\b(track|status|cancel|order|booking|ref)\b/i.test(raw)) {
-    const candidate = bare[1].toUpperCase();
-    if (!RESERVED_REF_WORDS.has(candidate)) return candidate;
-  }
-
-  // Bare ref reply while in tracking context (e.g. customer sends "F921EB" after prompt).
-  const ctx = session?.data?._questionCtx;
-  if (ctx?.lastTopic?.includes('TRACKING') && /^[A-Z0-9]{4,24}$/i.test(raw)) {
-    return raw.toUpperCase();
+    return bare[1].toUpperCase();
   }
 
   return null;
@@ -103,12 +90,8 @@ export async function lookupActivityByReference({
   }
 
   if (customerPhone && !booking && (scope === 'BOOKING' || scope === 'BOTH')) {
-    const variants = customerPhoneQueryVariants(customerPhone);
-    const phoneClause = variants.length > 1
-      ? { customerPhone: { $in: variants } }
-      : { customerPhone: variants[0] || customerPhone };
     const phoneBooking = await Booking.findOne({
-      ...phoneClause,
+      customerPhone,
       tenantId,
       shortId: ref,
     }).lean().catch(() => null);
@@ -139,6 +122,7 @@ export async function recoverRecentActivities({ customerPhone, tenantId, scope =
         .lean()
         .catch(() => []);
       if (recent.length) checks.push(`recent orders (${recent.length})`);
+      return { orderResolution, recentOrders: recent, bookings, checks };
     }
   }
 

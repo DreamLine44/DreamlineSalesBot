@@ -155,22 +155,11 @@ export async function startFlow({ flowName, session, business, tenant, message =
     upsellSent:  false,
     menuViewed:  false,
     lastAorInterceptAt: null,  // [FIX-AOR-5] Reset throttle so next order confirms show fresh card
-    postFlowAck:  null,
-    postFlowData: null,
   };
   if (flowUpper === 'ORDER') {
     sessionPatch.orderChannel = session?.orderChannel === 'catalog' || orderViaCatalog
       ? 'catalog'
       : 'menu';
-  }
-  if (flowUpper === 'BOOKING') {
-    const hasServices = (business?.services || []).length > 0;
-    const isRestaurant = (business?.businessMode || '').toUpperCase() === 'RESTAURANT';
-    if (!hasServices && isRestaurant) {
-      sessionPatch.step = 'PARTY_SIZE';
-    } else if (!hasServices) {
-      sessionPatch.step = 'DATE';
-    }
   }
 
   const updated = await updateSession(session.customerPhone, session.tenantId, sessionPatch);
@@ -223,9 +212,8 @@ export async function cancelFlow(session, business) {
   // failure should never block the session reset / reply to the customer.
   try {
     const { default: Booking } = await import('../../models/Booking.js');
-    const { buildActiveBookingFilter } = await import('../../services/activityLifecycleService.js');
     await Booking.findOneAndUpdate(
-      buildActiveBookingFilter(session.customerPhone, session.tenantId),
+      { customerPhone: session.customerPhone, tenantId: session.tenantId, status: { $in: ['pending', 'confirmed'] } },
       { $set: { status: 'cancelled', cancelledBy: 'customer', cancelledAt: new Date() } },
       { sort: { createdAt: -1 } }
     );
@@ -262,16 +250,13 @@ export async function cancelFlow(session, business) {
  * gets a warm reply instead of the full welcome menu.
  * When business is provided, checks if lead capture should fire.
  */
-export async function completeFlow(session, completedFlow, business = null, tenant = null, { postFlowSnapshot = null } = {}) {
+export async function completeFlow(session, completedFlow, business = null, tenant = null) {
   await updateSession(session.customerPhone, session.tenantId, {
     currentFlow:  null,
     step:         null,
     data:         {},
     postFlowAck:  completedFlow.toUpperCase(),
-    postFlowData: {
-      ...(postFlowSnapshot || {}),
-      _exprTurnsLeft: EXPRESSION_TURN_BUDGET,
-    },
+    postFlowData: { _exprTurnsLeft: EXPRESSION_TURN_BUDGET },
   });
 
   // Lead capture trigger — fire after ORDER or BOOKING if configured.

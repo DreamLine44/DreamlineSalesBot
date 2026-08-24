@@ -50,7 +50,7 @@ test('START_BOOKING has a direct all-in-one booking path for party, date, and ti
   const end = src.indexOf("registerAction('WALKIN'", start);
   const block = src.slice(start, end);
   assert.match(block, /parseDirectBookingRequest/);
-  assert.match(block, /resolveDirectBookingStep/);
+  assert.match(block, /step: 'BOOKING_CONFIRM'/);
   assert.match(block, /advance\(/);
 });
 

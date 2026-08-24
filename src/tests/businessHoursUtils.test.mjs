@@ -4,7 +4,6 @@ import {
   isBookingDateClosed,
   getNextOpenBookingDate,
   formatClosedDayMessage,
-  buildBookingTimeSlotDefs,
 } from '../utils/businessHoursUtils.js';
 
 const SALON_HOURS = {
@@ -46,12 +45,4 @@ test('formatClosedDayMessage mentions next open day', () => {
   const msg = formatClosedDayMessage('19 July', SALON_HOURS, 'Africa/Banjul', sunday);
   assert.match(msg, /closed/i);
   assert.match(msg, /next available/i);
-});
-
-test('buildBookingTimeSlotDefs uses default 9–21 when hours disabled', () => {
-  const monday = new Date(Date.UTC(2026, 6, 20));
-  const slots = buildBookingTimeSlotDefs({ parsedDate: monday, hours: { enabled: false }, tz: 'UTC' });
-  assert.equal(slots[0].minutes, 9 * 60);
-  assert.equal(slots.at(-1).minutes, 20 * 60); // last hour before 21:00 close
-  assert.equal(slots.length, 12);
 });

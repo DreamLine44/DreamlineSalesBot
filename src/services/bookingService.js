@@ -7,12 +7,10 @@
 import Booking from '../models/Booking.js';
 import { recordBooking } from '../core/memory/customerMemory.js';
 import logger from '../config/logger.js';
-import { normalizeCustomerPhone } from '../utils/customerPhone.js';
 
 export async function saveBooking({ customerPhone, customerName, date, time, service, partySize, parsedDate, tenantId, businessId, staff, bookingType, notes }) {
-  const phone = normalizeCustomerPhone(customerPhone);
   const booking = await Booking.create({
-    customerPhone: phone,
+    customerPhone,
     customerName:  customerName || null,
     date, time,
     service:       service      || null,
@@ -28,7 +26,7 @@ export async function saveBooking({ customerPhone, customerName, date, time, ser
   });
 
   // [FIX-BUG5] Update customer memory — fire-and-forget
-  recordBooking(phone, String(tenantId)).catch(err =>
+  recordBooking(customerPhone, String(tenantId)).catch(err =>
     logger.debug('[BookingService] recordBooking failed (non-fatal)', { err: err.message })
   );
 
@@ -46,16 +44,15 @@ export async function getBookingByShortId(shortId, tenantId) {
 // confirmation or already confirmed — completed/cancelled bookings are history, not
 // something to surface as "you have an active booking".
 export async function getActiveBooking(customerPhone, tenantId) {
-  const { buildActiveBookingFilter } = await import('./activityLifecycleService.js');
-  return Booking.findOne(buildActiveBookingFilter(customerPhone, tenantId))
-    .sort({ createdAt: -1 })
-    .lean();
+  return Booking.findOne({
+    customerPhone, tenantId,
+    status: { $in: ['pending', 'confirmed'] },
+  }).sort({ createdAt: -1 }).lean();
 }
 
 export async function getActiveBookings(customerPhone, tenantId, limit = 10) {
-  const { buildActiveBookingFilter } = await import('./activityLifecycleService.js');
-  return Booking.find(buildActiveBookingFilter(customerPhone, tenantId))
-    .sort({ createdAt: -1 })
-    .limit(limit)
-    .lean();
+  return Booking.find({
+    customerPhone, tenantId,
+    status: { $in: ['pending', 'confirmed'] },
+  }).sort({ createdAt: -1 }).limit(limit).lean();
 }

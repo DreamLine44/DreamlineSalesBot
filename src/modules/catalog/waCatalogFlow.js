@@ -187,49 +187,6 @@ export async function browseCatalogExplicit({ session, business, tenant }) {
 }
 
 /**
- * Show the native WA Catalog ("View items") when the customer asks about menu/food
- * in natural language — e.g. "what do you have on your menu", "what can I eat",
- * "I want to order food" (without naming a specific item).
- *
- * Returns { handled: true, reply: null } when the catalog message was dispatched,
- * { handled: true, reply: UIResponse } when falling back to text/list menu,
- * or null when this message is not a menu-browse request or catalog isn't ready.
- */
-export async function tryShowCatalogForMenuRequest({ message, session, business, tenant }) {
-  const { shouldShowCatalogButton } = await import('./waCatalogConfig.js');
-  if (!shouldShowCatalogButton(business)) return null;
-
-  const {
-    normalise, DIRECT_INTENT_EXCLUDE_RE, ORDER_DIRECT_RE, QUESTION_LEADIN_RE,
-  } = await import('../../core/intents/intentEngine.js');
-  const { isCatalogBrowseRequest } = await import('../../core/intents/menuIntentDetector.js');
-  const { isBookingInfoQuestion } = await import('../../services/questionModeHelper.js');
-  const { resolveDirectOrderParse } = await import('../../core/shared/cartEngine.js');
-
-  const raw = String(message || '').trim();
-  const clean = normalise(raw);
-  if (!clean || DIRECT_INTENT_EXCLUDE_RE.test(clean)) return null;
-  if (isBookingInfoQuestion(raw)) return null;
-
-  const { isHumanHandoffRequest } = await import('../../services/questionModeHelper.js');
-  if (isHumanHandoffRequest(raw)) return null;
-
-  let shouldShow = isCatalogBrowseRequest(raw);
-
-  // Generic "I want to order food" with no specific item → open catalog, not text menu.
-  if (!shouldShow && ORDER_DIRECT_RE.test(clean) && !QUESTION_LEADIN_RE.test(clean)) {
-    const menu = (business?.menuItems || []).filter(i => i.available !== false);
-    const parsed = resolveDirectOrderParse(menu, raw);
-    if (!parsed?.lines?.length && !parsed?.ambiguous) shouldShow = true;
-  }
-
-  if (!shouldShow) return null;
-
-  const reply = await browseCatalogExplicit({ session, business, tenant });
-  return { handled: true, reply };
-}
-
-/**
  * tryResumeCatalogShopping({ session, business, tenant })
  * → null | UIResponse | false
  *

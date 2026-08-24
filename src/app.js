@@ -32,7 +32,7 @@ const __dirname  = path.dirname(fileURLToPath(import.meta.url));
 const _require   = createRequire(import.meta.url);
 const { version } = (() => { try { return _require('./package.json'); } catch { return { version: '2.0.0' }; } })();
 
-import crypto            from 'crypto';
+import crypto                    from 'crypto';
 import { connectToDB }           from './config/database.js';
 import logger                    from './config/logger.js';
 import { CLOUDINARY_ENABLED }    from './config/cloudinary.js'; // initialise at boot, not on first request

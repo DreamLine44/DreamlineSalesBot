@@ -1275,22 +1275,21 @@ export async function handleSalonQuestion({ session, message, business, tenant }
       ? (isBarbershop ? 'BARBERSHOP_QUESTION' : 'SALON_CONSULTATION')
       : (isBarbershop ? 'BARBERSHOP_QUESTION' : 'SALON_QUESTION');
 
-  const { resolveQuestionReply, persistQuestionSession, recordQuestionHistory, finalizeQuestionHandlerReply } = await import('../../../services/questionAnswerService.js');
-  const reply = await resolveQuestionReply({ session, message: raw, business, tenant, intent });
-  if (reply?.type === 'welcome_sequence') {
-    await recordQuestionHistory(session, raw, reply.sequence?.[0] || reply).catch(() => {});
-    return finalizeQuestionHandlerReply({ session, tenant, reply });
-  }
+  const { processQuestionMessage, persistQuestionSession } = await import('../../../services/questionAnswerService.js');
+  const reply = await processQuestionMessage({ session, message: raw, business, tenant, intent });
   await persistQuestionSession(session, tenant, reply.context || { lastMessage: raw });
-  await recordQuestionHistory(session, raw, reply);
 
-  const questionResponse = await finalizeQuestionHandlerReply({ session, tenant, reply });
-  if (reply?.type === 'welcome_sequence' || Array.isArray(questionResponse)) return questionResponse;
+  // Answer-only: stay in QUESTION mode and wait — no buttons. Switching activity
+  // is picked up upstream from the customer's own words, not from a tap target.
+  const questionResponse = {
+    type: reply.type || 'text',
+    body: reply.body || `Great question! For detailed information please contact us directly.`,
+  };
 
   // [text type ignores the footer field — fold the same hint into the body]
-  if (isAftercare && reply.body && questionResponse?.body) {
+  if (isAftercare && reply.body) {
     questionResponse.body += `\n\n_We hope to see you again soon! 🙏_`;
-  } else if (isConsultation && reply.body && questionResponse?.body) {
+  } else if (isConsultation && reply.body) {
     questionResponse.body += `\n\n_Just say the word when you're ready to book that service._`;
   }
 

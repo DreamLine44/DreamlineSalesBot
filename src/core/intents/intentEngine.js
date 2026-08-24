@@ -34,7 +34,6 @@ import { getAIReply } from '../ai/providers/aiRouter.js';
 import { analyzeMessage } from './negationGuard.js';
 import { isMenuBrowsingIntent } from './menuIntentDetector.js';
 import { getModeConfig } from '../../config/modes.js';
-import { sanitiseNluMessage } from '../nlu/nluContext.js';
 import logger from '../../config/logger.js';
 
 // ── Normalise ─────────────────────────────────────────────────────────────────
@@ -358,11 +357,10 @@ export async function detectIntent({ message, isInteractive = false, session, bu
   }
 
   if (!session?.currentFlow && !DIRECT_INTENT_EXCLUDE_RE.test(clean) && !QUESTION_LEADIN_RE.test(clean)) {
-    const { isInformationalActivityQuestion } = await import('../../services/questionModeHelper.js');
-    if (!isInformationalActivityQuestion(raw) && BOOKING_DIRECT_RE.test(clean)) {
+    if (BOOKING_DIRECT_RE.test(clean)) {
       return { action: 'START_BOOKING', intent: 'BOOKING', confidence: 'HIGH', source: 'direct-phrase' };
     }
-    if (!isInformationalActivityQuestion(raw) && ORDER_DIRECT_RE.test(clean)) {
+    if (ORDER_DIRECT_RE.test(clean)) {
       let nlu = null;
       try {
         const nluResult = await classifyWithAI({ message: raw, business, session });
@@ -514,6 +512,14 @@ async function classifyWithAI({ message, business, session }) {
     logger.warn('[IntentEngine] classifyWithAI failed', { err: err.message });
     return { intent: 'UNKNOWN', confidence: 'LOW', entities: { products: [], questions: [] }, source: 'legacy-fallback' };
   }
+}
+
+function sanitiseNluMessage(message, maxLen = 200) {
+  return String(message || '')
+    .slice(0, maxLen)
+    .replace(/[\r\n\t]/g, ' ')
+    .replace(/[<>]/g, '')
+    .trim();
 }
 
 function getValidIntents(mode) {

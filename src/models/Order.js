@@ -209,18 +209,6 @@ const orderSchema = new mongoose.Schema({
   cancelledBy: { type: String, default: null }, // 'customer' | admin phone
   cancelledAt: { type: Date,   default: null },
 
-  // Customer-initiated cash payment request (PAYMENT_PROOF step, requireProof=true).
-  // cashRequestStatus tracks admin review; paymentStatus stays 'unpaid' until
-  // payment is actually received (admin APPROVE_ on AWAIT_ADMIN_CONFIRM).
-  cashRequestStatus: {
-    type: String,
-    enum: ['pending', 'approved', 'rejected', null],
-    default: null,
-  },
-  cashRequestRequestedAt: { type: Date, default: null },
-  cashRequestReviewedBy:  { type: String, default: null },
-  cashRequestReviewedAt:  { type: Date, default: null },
-
   shortId: { type: String, index: true, default: null },
 
 }, { timestamps: true });

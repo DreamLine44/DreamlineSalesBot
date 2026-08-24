@@ -362,20 +362,6 @@ export function parseMultiItemMessage(menu = [], text = '') {
   return { lines, unmatchedSegments };
 }
 
-/**
- * resolveDirectOrderParse(menu, text)
- * → parseMultiItemMessage / parseNaturalOrderMessage result | null
- *
- * Single entry for complete natural-language orders such as
- * "I want to order two plates of Domoda". When this returns lines,
- * callers can skip SELECT_ITEM / QUANTITY and land on CONFIRM.
- */
-export function resolveDirectOrderParse(menu = [], text = '') {
-  const raw = String(text || '').trim();
-  if (!raw || !Array.isArray(menu) || !menu.length) return null;
-  return parseMultiItemMessage(menu, raw) || parseNaturalOrderMessage(menu, raw) || null;
-}
-
 // [CART-AI-MODIFY] Phrasing customers use to remove or resize a line already
 // in the cart while reviewing it — "remove the coke", "no fries please",
 // "take out 1 burger", "make it 3 burgers", "change fries to 2". Captured as

@@ -65,8 +65,7 @@ import { isCatalogEnabled } from '../../catalog/waCatalogConfig.js';
 import { formatMoney }      from '../../../utils/formatCurrency.js';
 import { formatPhoneDisplay } from '../../../utils/formatPhone.js';
 import {
-  parseMultiItemMessage, parseNaturalOrderMessage, resolveDirectOrderParse,
-  mergeCartLines, enforceCartLimit,
+  parseMultiItemMessage, parseNaturalOrderMessage, mergeCartLines, enforceCartLimit,
   cartTotal, cartToOrderItems, formatCartSummary, buildUnmatchedNote,
   removeCartLine, incrementCartLine, decrementCartLine, clearCart,
   cartItemCount, formatNumberedCartSummary,
@@ -200,7 +199,7 @@ export async function handleOrderFlow({ session, message, business, tenant, isIn
       const isDirectOrderText = directProductText.length >= 3 && !isFillerOnlyLeftover &&
         /\b(?:order|want|need|give|get|buy|purchase|would like)\b/i.test(raw);
       if (isDirectOrderText) {
-        const directOrder = resolveDirectOrderParse(menu, raw);
+        const directOrder = parseMultiItemMessage(menu, raw) || parseNaturalOrderMessage(menu, raw);
         if (directOrder?.lines?.length) {
           const mergedCart = mergeCartLines(cartAtSelect, directOrder.lines);
           const { cart: cappedCart, overflowCount } = enforceCartLimit(mergedCart, business);
@@ -623,18 +622,11 @@ export async function handleOrderFlow({ session, message, business, tenant, isIn
       // of being swept up as a confirm/decline guess.
       const { isAffirmative: _isAffirmativeConfirm } = await import('../../../core/shared/confirmationMatcher.js');
       const isConfirm = /^(yes|y|yeah|yep|confirm|ok|okay|sure|place|confirmed)$/i.test(clean) ||
-        raw.toUpperCase() === 'CONFIRM' ||
         _isAffirmativeConfirm(raw);
       if (isConfirm) {
         // [MULTICART-v40-EDIT] One consolidated save — _checkoutCart already
         // handles items[] persistence, payment-vs-cash branching, and admin
         // notification for a cart of any size (1 line or many).
-        return await _checkoutCart(cart, session, business, tenant);
-      }
-
-      // Same completion phrases as ITEM_ADDED — "done"/"that's all" should checkout.
-      const wantsCheckout = /^(done|finish|finished|that'?s all|thats all|i'?m done|finish order)$/i.test(clean);
-      if (wantsCheckout) {
         return await _checkoutCart(cart, session, business, tenant);
       }
 
@@ -1185,22 +1177,27 @@ export async function handleRestaurantQuestion({ session, message, business, ten
     };
   }
 
-  const { resolveQuestionReply, persistQuestionSession, recordQuestionHistory, finalizeQuestionHandlerReply } = await import('../../../services/questionAnswerService.js');
+  const { processQuestionMessage, persistQuestionSession } = await import('../../../services/questionAnswerService.js');
+  const { detectIntent } = await import('../../../core/intents/intentEngine.js');
+  const { buildStatusReply } = await import('../../../services/activityStatusService.js');
 
-  const reply = await resolveQuestionReply({
-    session, message: raw, business, tenant, intent: 'FAQ',
-    initPayload: {
-      type: 'text',
-      body: '❓ What would you like to know? Ask about our menu, hours, allergens, or anything else!',
-    },
-  });
+  try {
+    const intentResult = await detectIntent({
+      message: raw, isInteractive: false,
+      session: { ...session, currentFlow: null },
+      business,
+    });
+    if (intentResult.action === 'TRACK_ORDER' && intentResult.confidence === 'HIGH') {
+      const statusReply = await buildStatusReply({ session, business, message: raw });
+      await persistQuestionSession(session, tenant, { lastMessage: raw, lastTopic: 'ORDER_TRACKING' });
+      return statusReply;
+    }
+  } catch (_) { /* fall through */ }
 
-  if (reply?.type === 'welcome_sequence') {
-    await recordQuestionHistory(session, raw, reply.sequence?.[0] || reply).catch(() => {});
-    return finalizeQuestionHandlerReply({ session, tenant, reply });
-  }
-
+  // Answer-only: stay in QUESTION mode and wait for the next message. Switching
+  // to another activity is handled upstream (webhookController's mid-flow switch
+  // detector) from the customer's own words, not from buttons on this reply.
+  const reply = await processQuestionMessage({ session, message: raw, business, tenant, intent: 'FAQ' });
   await persistQuestionSession(session, tenant, reply.context || { lastMessage: raw });
-  await recordQuestionHistory(session, raw, reply);
-  return finalizeQuestionHandlerReply({ session, tenant, reply });
+  return { type: reply.type, body: reply.body };
 }

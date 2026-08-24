@@ -22,16 +22,12 @@ import {
   formatOrderStatusCard,
   formatBookingStatusCard,
   detectStatusScope,
-  buildStatusReply,
 } from './activityStatusService.js';
 import {
   isBusinessScopeQuestion,
   mergeQuestionContext,
   buildQuestionContextBlock,
-  isInformationalActivityQuestion,
-  isGreetingMessage,
 } from './questionModeHelper.js';
-import { getModeConfig } from '../config/modes.js';
 
 // Includes conversational references to the menu just shown. Customers naturally
 // ask "are these the only ones you have?" instead of repeating the word "menu".
@@ -60,8 +56,6 @@ const CONTACT_RE = /\b(phone|phone number|telephone|call|contact number|whatsapp
 // matched because the old pattern required the bare words "payment"/"pay"/
 // "wave"/"cash"/"mobile money" — "accept ... card" phrasing fell through.
 const PAYMENT_RE = /\b(payment|pay|wave|cash|mobile money|how (can|do) i pay|accept (cards?|visa|mastercard|credit|debit)|credit card|debit card|card payment)\b/i;
-const BOOKING_INFO_RE = /\b(what (?:can|could|do|should) (?:i|we) (?:book|reserve)|what (?:do you|can you) offer (?:for )?(?:booking|reservation)|what (?:services?|tables?) (?:can|do) (?:i|you) book|how does booking work)\b/i;
-const ABOUT_RE = /\b(what is this (?:all )?about|what are you|who are you|tell me about (?:you|your business|this place))\b/i;
 
 function formatHourDecimal(h) {
   if (h == null || h === '') return null;
@@ -140,62 +134,6 @@ export function formatHoursText(business) {
   return `🕐 *Opening Hours*\n\n${lines.join('\n')}`;
 }
 
-/** Explain what the customer can book/reserve at this business. */
-export function formatBookingInfoText(business) {
-  const cfg = getModeConfig(business);
-  const hasBooking = (cfg?.flows || []).includes('BOOKING');
-  const currency = business?.payment?.currency || 'GMD';
-  const services = (business?.services || []).filter(s => s.available !== false);
-
-  if (!hasBooking) {
-    return "We don't take advance bookings online — but you can place an order anytime! Ask me about our menu or hours.";
-  }
-
-  if (services.length) {
-    const lines = services.slice(0, 20).map(s => {
-      const priceStr = s.price != null ? ` — ${currency}${formatMoney(s.price)}` : '';
-      return `• *${s.name}*${priceStr}`;
-    });
-    let body = `📅 *What you can book:*\n\n${lines.join('\n')}`;
-    if (services.length > 20) body += `\n\n_...and ${services.length - 20} more._`;
-    body += `\n\nWhen you're ready, say *book a table* or tap *📅 Book a Table* from the menu.`;
-    return body;
-  }
-
-  const mode = (business?.businessMode || 'RESTAURANT').toUpperCase();
-  if (mode === 'RESTAURANT' || mode === 'BAKERY' || mode === 'DELIVERY') {
-    return '📅 You can *book a table* with us — pick your date, time, and party size.\n\nWhen you\'re ready, tap *📅 Book a Table* from the menu.';
-  }
-  if (mode === 'SALON' || mode === 'BARBERSHOP') {
-    return formatMenuText(business, { heading: '💇 Services you can book', maxItems: 20 });
-  }
-  return '📅 You can make a booking with us. Tap *📅 Book* from the menu when you\'re ready.';
-}
-
-function formatAboutText(business) {
-  const name = business?.name || 'Our business';
-  const desc = String(business?.description || '').trim();
-  const mode = (business?.businessMode || 'RETAIL').toUpperCase();
-  const cfg = getModeConfig(business);
-  const flows = cfg?.flows || [];
-
-  const offers = [];
-  if (flows.includes('ORDER')) offers.push('order food/products');
-  if (flows.includes('BOOKING')) offers.push('book a table or appointment');
-  if (flows.includes('ENQUIRY') || flows.includes('QUESTION')) offers.push('ask questions');
-
-  let body = desc
-    ? `*${name}*\n\n${desc}`
-    : `*${name}* is a ${mode.toLowerCase().replace(/_/g, ' ')} business here on WhatsApp.`;
-
-  if (offers.length) {
-    body += `\n\nI can help you ${offers.join(', ')}. What would you like to know?`;
-  } else {
-    body += '\n\nWhat would you like to know?';
-  }
-  return body;
-}
-
 function tryFaqMatch(message, business) {
   const raw = String(message || '').trim().toLowerCase();
   const faqs = business?.faq || [];
@@ -212,15 +150,11 @@ function classifyQuestion(message, session, business) {
   const raw = String(message || '').trim();
   const ctx = session?.data?._questionCtx || {};
 
-  if (extractShortId(raw, session) || STATUS_RE.test(raw)) return 'STATUS';
+  if (extractShortId(raw) || STATUS_RE.test(raw)) return 'STATUS';
   if (ctx.lastTopic === 'ORDER_TRACKING' && /\b(deleted|removed|cancelled|canceled|missing|gone|lost|where|what happened)\b/i.test(raw)) {
     return 'STATUS';
   }
   if (CONTACT_RE.test(raw)) return 'CONTACT';
-  if (ABOUT_RE.test(raw)) return 'ABOUT';
-  if (BOOKING_INFO_RE.test(raw) || (/\bwhat\b/i.test(raw) && /\bbook\b/i.test(raw) && isInformationalActivityQuestion(raw))) {
-    return 'BOOKING_INFO';
-  }
   if (AVAILABILITY_RE.test(raw) && !MENU_RE.test(raw)) return 'AVAILABILITY';
   if (MENU_RE.test(raw)) return 'MENU';
   if (HOURS_RE.test(raw)) return 'HOURS';
@@ -236,11 +170,11 @@ async function answerStatusQuestion({ message, business, session }) {
   const tenantId = session.tenantId;
   const scope = detectStatusScope(message);
   const ctx = session?.data?._questionCtx || {};
-  const ref = extractShortId(message, session) || ctx.lastReference || null;
+  const ref = extractShortId(message) || ctx.lastReference || null;
   const adminPhone = business?.adminPhone;
 
   if (ref && isValidShortIdFormat(ref)) {
-    const { order, booking, checks } = await lookupActivityByReference({
+    const { order, booking } = await lookupActivityByReference({
       shortId: ref,
       tenantId,
       customerPhone: phone,
@@ -273,11 +207,11 @@ async function answerStatusQuestion({ message, business, session }) {
       };
     }
 
-    const recovery = await recoverRecentActivities({ customerPhone: phone, tenantId, scope });
-    const allChecks = [...checks, ...recovery.checks];
+    const { checks } = await lookupActivityByReference({ shortId: ref, tenantId, customerPhone: phone, scope });
+    await recoverRecentActivities({ customerPhone: phone, tenantId, scope });
     return {
-      body: formatLookupFailureMessage({ shortId: ref, checks: allChecks, adminPhone }),
-      context: { lastTopic: 'ORDER_TRACKING', lastMessage: message },
+      body: formatLookupFailureMessage({ shortId: ref, checks, adminPhone }),
+      context: { lastReference: ref, lastTopic: 'ORDER_TRACKING', lastMessage: message },
       stayOnTopic: true,
     };
   }
@@ -314,54 +248,13 @@ export async function tryDatabaseAnswer({ message, business, session }) {
     if (statusAnswer) {
       return { handled: true, routingDecision: 'TRACK_ORDER', ...statusAnswer };
     }
-    // Ref-less status ("where is my order") — delegate to phone-scoped DB lookup.
-    try {
-      const statusReply = await buildStatusReply({ session, business, message: raw });
-      const body = typeof statusReply === 'string' ? statusReply : statusReply?.body;
-      if (body) {
-        return {
-          handled: true,
-          routingDecision: 'TRACK_ORDER',
-          body,
-          context: { lastMessage: raw, lastTopic: 'ORDER_TRACKING' },
-          stayOnTopic: true,
-        };
-      }
-    } catch { /* fall through to AI */ }
-  }
-
-  if (qType === 'ABOUT') {
-    return {
-      handled: true,
-      body: formatAboutText(business),
-      routingDecision: 'QUESTION',
-      context: { lastMessage: raw, lastTopic: 'ABOUT' },
-    };
-  }
-
-  if (qType === 'BOOKING_INFO') {
-    return {
-      handled: true,
-      body: formatBookingInfoText(business),
-      routingDecision: 'QUESTION',
-      context: { lastMessage: raw, lastTopic: 'BOOKING' },
-    };
   }
 
   if (qType === 'MENU') {
-    const { shouldShowCatalogButton } = await import('../modules/catalog/waCatalogConfig.js');
-    if (shouldShowCatalogButton(business)) {
-      return {
-        handled: true,
-        showCatalog: true,
-        routingDecision: 'BROWSE_CATALOG',
-        context: { lastMessage: raw, lastTopic: 'MENU' },
-      };
-    }
     const menuText = formatMenuText(business);
     return {
       handled: true,
-      body: menuText,
+      body: `${menuText}\n\n_Would you like to view the full catalog or order something?_`,
       routingDecision: 'VIEW_MENU',
       context: { lastMessage: raw, lastTopic: 'MENU' },
     };
@@ -502,16 +395,6 @@ export async function tryDatabaseAnswer({ message, business, session }) {
 export async function processQuestionMessage({ session, message, business, tenant, intent = 'FAQ' }) {
   const raw = String(message || '').trim();
 
-  if (isGreetingMessage(raw)) {
-    const cfg = getModeConfig(business);
-    const { buildWelcomeSequence } = await import('../core/conversations/moduleRouter.js');
-    return {
-      type: 'welcome_sequence',
-      sequence: buildWelcomeSequence(business, cfg),
-      exitQuestionMode: true,
-    };
-  }
-
   if (!isBusinessScopeQuestion(raw, business)) {
     return {
       type: 'text',
@@ -521,41 +404,11 @@ export async function processQuestionMessage({ session, message, business, tenan
   }
 
   const dbAnswer = await tryDatabaseAnswer({ message: raw, business, session });
-  if (dbAnswer.handled) {
-    if (dbAnswer.showCatalog) {
-      const { tryShowCatalogForMenuRequest } = await import('../modules/catalog/waCatalogFlow.js');
-      const catalogResult = await tryShowCatalogForMenuRequest({
-        message: raw, session, business, tenant,
-      });
-      if (catalogResult?.handled) {
-        return {
-          type: 'catalog',
-          catalogDispatched: !catalogResult.reply,
-          ...(catalogResult.reply || {}),
-          context: mergeQuestionContext(session, dbAnswer.context || { lastMessage: raw }),
-        };
-      }
-    }
-    if (dbAnswer.body) {
-      return {
-        type: 'text',
-        body: dbAnswer.body,
-        context: mergeQuestionContext(session, dbAnswer.context || { lastMessage: raw }),
-      };
-    }
-  }
-
-  // Natural menu/food browse outside strict DB MENU classification.
-  const { tryShowCatalogForMenuRequest } = await import('../modules/catalog/waCatalogFlow.js');
-  const catalogResult = await tryShowCatalogForMenuRequest({
-    message: raw, session, business, tenant,
-  });
-  if (catalogResult?.handled) {
+  if (dbAnswer.handled && dbAnswer.body) {
     return {
-      type: 'catalog',
-      catalogDispatched: !catalogResult.reply,
-      ...(catalogResult.reply || {}),
-      context: mergeQuestionContext(session, { lastMessage: raw, lastTopic: 'MENU' }),
+      type: 'text',
+      body: dbAnswer.body,
+      context: mergeQuestionContext(session, dbAnswer.context || { lastMessage: raw }),
     };
   }
 
@@ -576,74 +429,17 @@ export async function processQuestionMessage({ session, message, business, tenan
   };
 }
 
-/** Persist question-mode session state (stay in Q&A). Preserves ENQUIRY vs QUESTION flow. */
+/** Persist question-mode session state (stay in Q&A). */
 export async function persistQuestionSession(session, tenant, context = {}) {
   const { updateSession } = await import('../core/sessions/sessionService.js');
-  const flow = session?.currentFlow === 'ENQUIRY' ? 'ENQUIRY' : 'QUESTION';
   const data = {
     ...(session.data || {}),
     _questionCtx: mergeQuestionContext(session, context),
   };
   await updateSession(session.customerPhone, session.tenantId, {
-    currentFlow: flow,
+    currentFlow: 'QUESTION',
     step: 'AWAITING_QUESTION',
     data,
   });
-  return { ...session, currentFlow: flow, step: 'AWAITING_QUESTION', data };
-}
-
-/** Append user/bot turns to aiHistory for Q&A paths (mirrors webhook step 17). */
-export async function recordQuestionHistory(session, userMessage, botPayload) {
-  const { updateSession } = await import('../core/sessions/sessionService.js');
-  const { appendAiHistoryTurn, extractReplyText } = await import('../core/nlu/nluContext.js');
-  let aiHistory = appendAiHistoryTurn(session, 'user', userMessage);
-  const botText = extractReplyText(botPayload);
-  if (botText) aiHistory = appendAiHistoryTurn({ aiHistory }, 'assistant', botText);
-  await updateSession(session.customerPhone, session.tenantId, { aiHistory }).catch(() => {});
-  return { ...session, aiHistory };
-}
-
-/**
- * Unified Q&A handler for all mode-specific QUESTION flows and generic ENQUIRY.
- * DB-first status/menu/hours, then AI fallback. Returns WhatsApp payload.
- */
-export function toWhatsAppPayload(reply) {
-  if (!reply || reply.catalogDispatched) return null;
-  if (reply.type === 'welcome_sequence') return null;
-  if (reply.type && reply.type !== 'text') {
-    const { context, catalogDispatched, exitQuestionMode, sequence, ...payload } = reply;
-    return payload;
-  }
-  if (reply.body) {
-    return { type: reply.type || 'text', body: reply.body, buttons: reply.buttons };
-  }
-  return null;
-}
-
-/**
- * Normalize a resolveQuestionReply result for flow handlers.
- * Returns a single payload, an array (welcome menu), or null (catalog already sent).
- */
-export async function finalizeQuestionHandlerReply({ session, tenant, reply }) {
-  if (reply?.type === 'welcome_sequence' && Array.isArray(reply.sequence)) {
-    const { updateSession } = await import('../core/sessions/sessionService.js');
-    await updateSession(session.customerPhone, session.tenantId, {
-      currentFlow: null, step: null, postFlowAck: null, postFlowData: null,
-    }).catch(() => {});
-    return reply.sequence;
-  }
-  return toWhatsAppPayload(reply) || { type: 'text', body: '' };
-}
-
-export async function resolveQuestionReply({ session, message, business, tenant, intent = 'FAQ', initPayload = null }) {
-  const raw = String(message || '').trim();
-
-  if (!raw || raw.length < 2) {
-    return initPayload || {
-      type: 'text',
-      body: '❓ What would you like to know? Ask about our menu, hours, orders, or bookings.',
-    };
-  }
-
-  return processQuestionMessage({ session, message: raw, business, tenant, intent });
+  return { ...session, currentFlow: 'QUESTION', step: 'AWAITING_QUESTION', data };
 }
