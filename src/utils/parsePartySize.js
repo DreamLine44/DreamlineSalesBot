@@ -5,7 +5,19 @@
 
 import { parseQuantity } from './parseQuantity.js';
 
+export const MAX_PARTY_SIZE = 50;
+
 const CORRECTION_PREFIX_RE = /^(?:actually|make it|change(?: it)? to|i meant|instead|no,?)\s+/i;
+
+const MONTH_AFTER_FOR_RE = /\b(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\b/i;
+
+/** True when "for N …" is introducing a calendar day before a month name. */
+function isForPhraseFollowedByMonthDay(lower, forMatch) {
+  const afterFor = lower.slice(lower.indexOf(forMatch[0]) + forMatch[0].length);
+  if (!MONTH_AFTER_FOR_RE.test(afterFor)) return false;
+  const n = parseQuantity(forMatch[1]);
+  return n >= 1 && n <= 31;
+}
 
 function stripCorrectionPrefix(input) {
   let s = String(input || '').trim();
@@ -39,14 +51,22 @@ export function parsePartySizeFromText(input) {
 
   const tableFor = lower.match(/\b(?:table|party|reserve(?:d)?)\s+(?:for|of)\s+(\d+|\w+)\b/);
   if (tableFor) {
-    const n = parseQuantity(tableFor[1]);
-    if (n) return n;
+    const after = lower.slice(lower.indexOf(tableFor[0]) + tableFor[0].length);
+    const dayN = parseQuantity(tableFor[1]);
+    const looksLikeMonthDay = dayN >= 1 && dayN <= 31 && MONTH_AFTER_FOR_RE.test(after);
+    if (!looksLikeMonthDay) {
+      if (dayN) return dayN;
+    }
   }
 
   const groupOf = lower.match(/\b(?:group|party|table)\s+of\s+(\d+|\w+)\b/);
   if (groupOf) {
-    const n = parseQuantity(groupOf[1]);
-    if (n) return n;
+    const after = lower.slice(lower.indexOf(groupOf[0]) + groupOf[0].length);
+    const dayN = parseQuantity(groupOf[1]);
+    const looksLikeMonthDay = dayN >= 1 && dayN <= 31 && MONTH_AFTER_FOR_RE.test(after);
+    if (!looksLikeMonthDay) {
+      if (dayN) return dayN;
+    }
   }
 
   const weAre = lower.match(/\b(?:we(?:'re| are| will be|'ll be)|there (?:are|will be)|it(?:'s| is))\s+(?:about\s+|around\s+|approximately\s+)?(\d+|\w+)\b/);
@@ -68,7 +88,7 @@ export function parsePartySizeFromText(input) {
   }
 
   const forN = lower.match(/\bfor\s+(\d+|\w+)\b/);
-  if (forN) {
+  if (forN && !isForPhraseFollowedByMonthDay(lower, forN)) {
     const n = parseQuantity(forN[1]);
     if (n) return n;
   }
@@ -79,10 +99,12 @@ export function parsePartySizeFromText(input) {
     if (n) return n;
   }
 
-  // Bare quantity — avoid treating clock times ("7pm", "at 8") as guest counts.
+  // Bare quantity — avoid treating clock times ("7pm", "at 8") or calendar
+  // days ("table for 25 June") as guest counts.
   const timeish = /\b(?:at|around|about)\s*\d|\d\s*(?:am|pm)\b|(?:noon|midnight)\b/i.test(lower);
   const guestish = /\b(?:guest|people|person|pax|table|party|group|diners|dining|covers)\b|\bof us\b/i.test(lower);
-  if (!timeish || guestish) {
+  const calendarDayMonth = /\b(?:for|on)\s+\d{1,2}\s+(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\b/i.test(lower);
+  if ((!timeish || guestish) && !calendarDayMonth) {
     const q = parseQuantity(s);
     if (q) return q;
   }

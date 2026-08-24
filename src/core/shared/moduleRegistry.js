@@ -122,9 +122,10 @@ export async function parseDirectBookingRequest(message, business) {
 }
 
 export function resolveDirectBookingStep({ partySize, date, time, isRestaurant }) {
-  if (partySize && date && time) return 'BOOKING_CONFIRM';
+  // Full NL input still passes through TIME_CONFIRM so closed-day and past-time checks run.
+  if (partySize && date && time) return 'TIME_CONFIRM';
   if (!isRestaurant) {
-    return (date && time) ? 'BOOKING_CONFIRM' : null;
+    return (date && time) ? 'TIME_CONFIRM' : null;
   }
   // NL-provided dates go through DATE_CONFIRM (same as typing a date in the DATE step).
   if (partySize && date) return 'DATE_CONFIRM';

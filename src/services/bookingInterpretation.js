@@ -10,6 +10,8 @@ import {
   parseDirectBookingRequest,
   resolveDirectBookingStep,
 } from '../core/shared/moduleRegistry.js';
+import { MAX_PARTY_SIZE } from '../utils/parsePartySize.js';
+import { isBookingDateClosed, formatClosedDayMessage } from '../utils/businessHoursUtils.js';
 
 const SYSTEM_ACTIONS = new Set([
   'CONFIRM', 'CANCEL', 'CANCEL_BOOKING', 'CANCEL_ORDER',
@@ -31,6 +33,11 @@ function isoFromParsed(parsed) {
   return `${y}-${m}-${day}`;
 }
 
+function coerceParsedDate(data) {
+  if (!data?.parsedDate) return null;
+  return data.parsedDate instanceof Date ? data.parsedDate : new Date(data.parsedDate);
+}
+
 /** Button / list ids — never treat as NL date/time/guest input. */
 export function isBookingSystemAction(raw) {
   const upper = String(raw || '').trim().toUpperCase();
@@ -39,6 +46,34 @@ export function isBookingSystemAction(raw) {
   if (SYSTEM_ACTION_RE.test(upper)) return true;
   if (upper === 'CONFIRM' || upper === 'DATE_BACK' || upper === 'TIME_BACK') return true;
   return false;
+}
+
+/**
+ * Guard merged NL data before skipping ahead — same rules as the stepped flow.
+ * Returns a UI payload to show, or null when safe to continue.
+ */
+export function guardMergedBookingData(data, business, tz, {
+  buildPartySizeErrorFn,
+  buildDatePickerFn,
+  buildTimePickerFn,
+  validateTimeFn,
+} = {}) {
+  if (data.partySize && data.partySize > MAX_PARTY_SIZE) {
+    return buildPartySizeErrorFn?.() || null;
+  }
+
+  const parsedDate = coerceParsedDate(data);
+  if (parsedDate && business?.hours?.enabled && isBookingDateClosed(parsedDate, business.hours, tz)) {
+    const msg = formatClosedDayMessage(data.date, business.hours, tz, parsedDate);
+    return buildDatePickerFn?.(msg) || null;
+  }
+
+  if (parsedDate && data.time && validateTimeFn) {
+    const tv = validateTimeFn(data.time, parsedDate, tz);
+    if (tv?.error) return buildTimePickerFn?.(tv.error, { tz, bookingDate: parsedDate, business }) || null;
+  }
+
+  return null;
 }
 
 /**
@@ -60,8 +95,10 @@ export async function interpretBookingMessage(message, business, existingData = 
   let changed = false;
 
   if (extracted.partySize) {
-    if (merged.partySize !== extracted.partySize) changed = true;
-    merged.partySize = extracted.partySize;
+    if (extracted.partySize <= MAX_PARTY_SIZE) {
+      if (merged.partySize !== extracted.partySize) changed = true;
+      merged.partySize = extracted.partySize;
+    }
   }
   if (extracted.parsedDate && extracted.date) {
     if (merged.parsedDate !== extracted.parsedDate || merged.date !== extracted.date) changed = true;
@@ -108,9 +145,20 @@ export async function continueFromMergedBookingData({
   confirmBookingDateFn,
   buildBookingSummaryFn,
   buildTimePickerFn,
+  buildPartySizeErrorFn,
+  buildDatePickerFn,
+  validateTimeFn,
 }) {
   const resumeStep = resolveBookingResumeStep(data, business);
   if (!resumeStep) return null;
+
+  const guardUi = guardMergedBookingData(data, business, tz, {
+    buildPartySizeErrorFn,
+    buildDatePickerFn,
+    buildTimePickerFn,
+    validateTimeFn,
+  });
+  if (guardUi) return guardUi;
 
   const STEP_RANK = {
     SELECT_SERVICE: 0, PARTY_SIZE: 1, DATE: 2, DATE_CONFIRM: 3,
@@ -132,17 +180,24 @@ export async function continueFromMergedBookingData({
   if (resumeStep === 'DATE_CONFIRM' && data.parsedDate && data.date) {
     return confirmBookingDateFn(session, data, {
       ok: true,
-      parsed: data.parsedDate instanceof Date ? data.parsedDate : new Date(data.parsedDate),
+      parsed: coerceParsedDate(data),
       label: data.date,
       raw: data.dateRaw || data.date,
     }, { business, tenant, tz });
   }
   if (resumeStep === 'TIME' && data.parsedDate) {
-    const bookingParsedDate = data.parsedDate instanceof Date ? data.parsedDate : new Date(data.parsedDate);
+    const bookingParsedDate = coerceParsedDate(data);
     const heading = data.partySize && data.date
       ? `*${data.partySize} guest${data.partySize > 1 ? 's' : ''}* on *${data.date}* 👥\n\nWhat time works for you? ⏰`
       : null;
     return buildTimePickerFn(heading, { tz, bookingDate: bookingParsedDate, business });
+  }
+  if (resumeStep === 'TIME_CONFIRM' && data.time) {
+    return {
+      type:    'buttons',
+      body:    `Confirm time: *${data.time}*? ⏰`,
+      buttons: [{ id: 'CONFIRM', title: '✅ Yes, that time' }, { id: 'TIME_BACK', title: '❌ No, re-enter' }],
+    };
   }
   if (resumeStep === 'BOOKING_CONFIRM') {
     return buildBookingSummaryFn(data, business);

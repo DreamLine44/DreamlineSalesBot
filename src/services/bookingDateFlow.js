@@ -8,7 +8,8 @@
 import crypto from 'crypto';
 import {
   getLocalNow,
-  resolveBookingDateInput,
+  parsedFromIso,
+  validateBookingDate,
   formatBookingDateLabel,
   MAX_BOOKING_MONTHS_AHEAD,
 } from './bookingDateParser.js';
@@ -103,13 +104,20 @@ export function parseBookingDateFlowReply(flowReply) {
  */
 export async function resolveFlowBookingDate(isoDate, tz = 'UTC') {
   const iso = String(isoDate || '').trim();
-  const m = iso.match(/^(\d{4})-(\d{2})-(\d{2})$/);
-  if (!m) {
+  const parsed = parsedFromIso(iso);
+  if (!parsed) {
     return { ok: false, error: 'invalid', message: `Invalid date from calendar: *${iso}*` };
   }
 
-  const parsed = new Date(Date.UTC(parseInt(m[1], 10), parseInt(m[2], 10) - 1, parseInt(m[3], 10)));
-  const human = `${parsed.getUTCDate()} ${parsed.toLocaleDateString('en-GB', { month: 'long', timeZone: 'UTC' })} ${parsed.getUTCFullYear()}`;
+  const validation = validateBookingDate(parsed, tz);
+  if (validation.error) {
+    return { ok: false, error: 'invalid', message: validation.error, parsed: null };
+  }
 
-  return resolveBookingDateInput(human, tz);
+  return {
+    ok: true,
+    raw: iso,
+    parsed: validation.parsed,
+    label: formatBookingDateLabel(validation.parsed, tz),
+  };
 }

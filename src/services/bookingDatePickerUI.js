@@ -63,8 +63,7 @@ export function buildSimpleDayList(tz, headingOrError = null) {
   const now = getLocalNow(tz);
   const today = localMidnight(now);
   const maxDate = maxBookableDate(now);
-  let cursor = today;
-  if (now.getUTCHours() >= 20) cursor = addDays(today, 1);
+  const cursor = today;
 
   const rows = [];
   for (let i = 0; rows.length < 10; i++) {
@@ -117,8 +116,7 @@ export function buildWeekDayList(weekOffset, tz, heading = null) {
   const now = getLocalNow(tz);
   const today = localMidnight(now);
   const maxDate = maxBookableDate(now);
-  let start = addDays(today, weekOffset * 7);
-  if (weekOffset === 0 && now.getUTCHours() >= 20) start = addDays(today, 1);
+  const start = addDays(today, weekOffset * 7);
 
   const rows = [];
   for (let i = 0; i < 7 && rows.length < 10; i++) {

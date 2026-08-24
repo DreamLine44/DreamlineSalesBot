@@ -212,6 +212,10 @@ export function tryParseDate(dateStr, tz) {
     let lower = raw.toLowerCase().trim();
     if (lower.startsWith('on next ')) lower = lower.replace(/^on\s+/, '');
 
+    // Labels from formatBookingDateLabel — e.g. "Friday, 25 June 2027"
+    const weekdayLabel = lower.match(/^(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday),?\s+(.+)$/);
+    if (weekdayLabel) lower = weekdayLabel[1].trim();
+
     if (lower === 'today' || lower === 'tonight') return toUtcMidnight(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
     if (lower === 'yesterday') return addLocalDays(now, -1);
     if (lower === 'tomorrow') return addLocalDays(now, 1);
@@ -371,7 +375,7 @@ function isoFromParsed(parsed) {
   return `${y}-${m}-${d}`;
 }
 
-function parsedFromIso(iso) {
+export function parsedFromIso(iso) {
   const m = String(iso || '').trim().match(/^(\d{4})-(\d{2})-(\d{2})$/);
   if (!m) return null;
   const d = toUtcMidnight(parseInt(m[1], 10), parseInt(m[2], 10) - 1, parseInt(m[3], 10));

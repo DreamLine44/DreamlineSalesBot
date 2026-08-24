@@ -29,6 +29,12 @@ test('parsePartySizeFromText: relational and natural phrases', () => {
   assert.equal(parsePartySizeFromText('table for 8 people next Friday'), 8);
 });
 
+test('parsePartySizeFromText: does not treat calendar day as guest count', () => {
+  assert.equal(parsePartySizeFromText('book for 25 June at 7pm'), null);
+  assert.equal(parsePartySizeFromText('table for 25 June'), null);
+  assert.equal(parsePartySizeFromText('Can I book for 8 next Friday at 7pm?'), 8);
+});
+
 test('parseBookingTime: requires AM/PM or clear context', () => {
   assert.equal(parseBookingTimeToMinutes('noon'), 12 * 60);
   assert.equal(parseBookingTimeToMinutes('8pm'), 20 * 60);
@@ -105,6 +111,10 @@ test('Test B: guests + next Friday + 7pm', async () => {
   assert.equal(result.partySize, 8);
   assert.ok(result.date);
   assert.match(result.time, /7:00 PM/i);
+  assert.equal(
+    resolveDirectBookingStep({ partySize: result.partySize, date: result.date, time: result.time, isRestaurant: true }),
+    'TIME_CONFIRM',
+  );
 });
 
 test('Test C: 12 of us tomorrow', async () => {
@@ -131,6 +141,20 @@ test('Test F: CONFIRM is a system action not a date', async () => {
   assert.equal(isBookingSystemAction('CONFIRM'), true);
   const resolved = await resolveBookingDateInput('CONFIRM', TZ);
   assert.equal(resolved.ok, false);
+});
+
+test('parseDirectBookingRequest: book for DD Month is date-only not guest count', async () => {
+  const result = await parseDirectBookingRequest('book for 25 June at 7pm', RESTAURANT);
+  assert.equal(result.partySize, null);
+  assert.ok(result.date);
+  assert.match(result.time, /7.*pm/i);
+});
+
+test('interpretBookingMessage: rejects oversized party via NL merge', async () => {
+  const { interpretBookingMessage } = await import('../services/bookingInterpretation.js');
+  const result = await interpretBookingMessage('party of 2026 on 25 June', RESTAURANT, {});
+  assert.equal(result.merged.partySize, undefined);
+  assert.ok(result.merged.date || result.extracted?.date);
 });
 
 test('Test G: correction updates guest count', async () => {
