@@ -2649,7 +2649,26 @@ async function _handleIncomingMessageSerialized({ tenantId, tenantDoc, from, msg
     }
   }
 
+  // ── 14.75. Recover lost booking session on flow-internal list/button taps ───
+  // When session.currentFlow was cleared but the customer taps PARTY_*/TIME_*/DATE_*
+  // from a booking prompt still visible in chat, route() would map to CONTINUE_FLOW
+  // and show the welcome menu — the exact "how many guests?" → "Welcome!" bug.
+  if (!session.currentFlow && isInteractive && messageText) {
+    const { recoverLostBookingPassthrough } = await import('../core/conversations/flowPassthroughRecovery.js');
+    const recovered = await recoverLostBookingPassthrough({
+      from, tenantId, session, messageText, business, tenant: tenantDoc, isInteractive,
+    }).catch(() => null);
+    if (recovered) {
+      const payloads = Array.isArray(recovered) ? recovered : [recovered];
+      for (const payload of payloads) await dispatchMessage(from, payload, tenantDoc);
+      return;
+    }
+  }
+
   // ── 15. Active flow ───────────────────────────────────────────────────────
+  // Re-read session — a prior message in this serialized queue may have just
+  // started BOOKING while this handler loaded a stale snapshot at step 1.
+  session = await getSession(from, tenantId) || session;
   if (session.currentFlow) {
     // Natural-order ambiguity continuation: the clarification buttons use the
     // live menu item's name as their ID. Consume that selection before any

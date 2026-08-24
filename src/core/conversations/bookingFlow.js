@@ -199,6 +199,11 @@ export async function handleBookingFlow({ session, message, business, tenant, is
       return _renderBookingStepEntry({ step, data, business, tenant, tz, session });
     }
 
+    // Ensure flow flag survives even if an outer handler cleared it.
+    if ((session.currentFlow || '').toUpperCase() !== 'BOOKING') {
+      await updateSession(session.customerPhone, session.tenantId, { currentFlow: 'BOOKING' });
+    }
+
     // Determine first step
     const firstStep = services.length ? 'SELECT_SERVICE' : 'DATE';
     await updateSession(session.customerPhone, session.tenantId, { step: firstStep, data: { ...data } });
@@ -301,6 +306,10 @@ export async function handleBookingFlow({ session, message, business, tenant, is
     // [FIX-7] PARTY_SIZE step — only reached for RESTAURANT mode
     case 'PARTY_SIZE': {
       if (_isCancelIntent(clean, raw)) return cancelFlow(session, business);
+
+      if ((session.currentFlow || '').toUpperCase() !== 'BOOKING') {
+        await updateSession(session.customerPhone, session.tenantId, { currentFlow: 'BOOKING' });
+      }
 
       // Support quick-pick buttons (PARTY_2, PARTY_4, PARTY_6) as well as typed numbers
       const PARTY_SHORTCUTS = { 'PARTY_2': 2, 'PARTY_4': 4, 'PARTY_6': 6, 'PARTY_8': 8, 'PARTY_10': 10 };

@@ -269,6 +269,24 @@ export async function route({ action, intent, session, message, business, tenant
     }
 
     case 'CONTINUE_FLOW': {
+      // Flow-internal taps (PARTY_*, TIME_*, DATE_*) with no active session —
+      // recover booking instead of resetting to the welcome menu.
+      if (isInteractive && message) {
+        const { isBookingPassthroughRecoveryId, recoverLostBookingPassthrough } =
+          await import('./flowPassthroughRecovery.js');
+        if (isBookingPassthroughRecoveryId(message)) {
+          const recovered = await recoverLostBookingPassthrough({
+            from:           session.customerPhone,
+            tenantId:       session.tenantId,
+            session,
+            messageText:    message,
+            business,
+            tenant,
+            isInteractive:  true,
+          }).catch(() => null);
+          if (recovered) return recovered;
+        }
+      }
       // CONTINUE_FLOW arrives when the customer sends a numeric, single-char, or unmapped
       // interactive message while there is NO active flow (the flow engine handles it when
       // a flow IS active, before reaching detectIntent). Without this case the router falls
