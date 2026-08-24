@@ -360,6 +360,8 @@ export const INTENT_PATTERNS = {
     'need the admin', 'need admin', 'talk to a human', 'talk to human',
     'talk to a person', 'talk to a real person', 'human please', 'human agent',
     'talk to owner', 'talk to the owner', 'speak to owner', 'speak to the owner',
+    'talk to boss', 'talk to the boss', 'speak to boss', 'speak to the boss',
+    'want to talk to boss', 'i want to talk to boss', 'want to talk to the boss',
     'talk to staff', 'talk to someone else',
   ],
 

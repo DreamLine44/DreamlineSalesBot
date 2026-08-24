@@ -11,6 +11,7 @@ import {
   isBookingInfoQuestion,
   isStayInQuestionMessage,
   isGreetingMessage,
+  isHumanHandoffRequest,
 } from '../services/questionModeHelper.js';
 import { isCatalogBrowseRequest } from '../core/intents/menuIntentDetector.js';
 import { tryDatabaseAnswer } from '../services/questionAnswerService.js';
@@ -138,4 +139,26 @@ test('audit: Question Mode answers before switch prompt', () => {
   assert.match(block, /isStayInQuestionMessage/);
   assert.match(block, /resolveQuestionReply/);
   assert.match(src, /function _resolveQuestionModeSwitch[\s\S]*isInformationalActivityQuestion/);
+});
+
+test('audit: human handoff in Q&A routes to SUPPORT — not catalog', () => {
+  for (const phrase of [
+    'i want to talk to human',
+    'i want to talk to boss',
+    'speak to someone',
+  ]) {
+    assert.ok(isHumanHandoffRequest(phrase), `"${phrase}" should escalate to human support`);
+  }
+  assert.equal(isHumanHandoffRequest('i want to order food'), false);
+
+  const catalogFlow = readSource('../modules/catalog/waCatalogFlow.js');
+  assert.match(catalogFlow, /isHumanHandoffRequest\(raw\)/);
+
+  const webhook = readSource('../controllers/webhookController.js');
+  const block = webhook.slice(
+    webhook.indexOf('// ── 13. Question Mode'),
+    webhook.indexOf('// ── 14. Post-flow acknowledgement'),
+  );
+  assert.match(block, /isHumanHandoffRequest\(messageText\)/);
+  assert.match(block, /action: 'SUPPORT'/);
 });

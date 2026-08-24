@@ -211,6 +211,9 @@ export async function tryShowCatalogForMenuRequest({ message, session, business,
   if (!clean || DIRECT_INTENT_EXCLUDE_RE.test(clean)) return null;
   if (isBookingInfoQuestion(raw)) return null;
 
+  const { isHumanHandoffRequest } = await import('../../services/questionModeHelper.js');
+  if (isHumanHandoffRequest(raw)) return null;
+
   let shouldShow = isCatalogBrowseRequest(raw);
 
   // Generic "I want to order food" with no specific item → open catalog, not text menu.

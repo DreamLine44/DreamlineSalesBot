@@ -4,7 +4,12 @@
  * Shared helpers for Question Mode (Prompt 3 + 7 + 8).
  */
 
+import { INTENT_PATTERNS } from '../core/intents/patterns.js';
+
 const OFF_TOPIC_RE = /\b(weather|forecast|temperature|president|election|politics|football\s*score|premier\s*league|bitcoin|crypto|stock\s*market|who\s+is\s+the\s+president|tell\s+me\s+a\s+joke|write\s+(me\s+)?a\s+(poem|story|essay)|homework|math\s+problem)\b/i;
+
+/** Free-form human-handoff phrasing that is not an exact SUPPORT keyword match. */
+const HUMAN_HANDOFF_RE = /\b(?:(?:talk|speak|connect\s*me)\s*(?:to|with)\s*(?:an?\s*)?(?:real\s*)?(?:human|person|agent|someone|manager|owner|boss|staff|admin|team|support)|(?:i\s*(?:want|need)\s*(?:to\s*)?(?:talk|speak)\s*(?:to|with)\s*(?:an?\s*)?(?:human|person|agent|someone|manager|owner|boss|staff|admin|the\s+boss|a\s+real\s+person))|human\s+please|real\s+person\s+please|customer\s+service)\b/i;
 
 /** Customer wants to stay in Q&A — not switch to order/booking. */
 const STAY_IN_QUESTION_RE = /\b(still asking|keep asking|am still asking|i'?m still asking|just asking|still have questions|more questions|continue asking|asking questions|not ready to (?:book|order)|don'?t want to (?:book|order) yet)\b/i;
@@ -76,6 +81,32 @@ export function isGreetingMessage(message) {
   const raw = String(message || '').trim();
   if (!raw) return false;
   return GREETING_ONLY_RE.test(raw);
+}
+
+/**
+ * True when the customer wants to speak to a human — must route to SUPPORT,
+ * never to catalog/order flows. "i want to talk to human" contains "i want"
+ * (ORDER_DIRECT_RE) so this guard must run before catalog/order intercepts.
+ */
+export function isHumanHandoffRequest(message) {
+  const raw = String(message || '').trim();
+  if (!raw || raw.length < 3) return false;
+
+  const clean = raw.toLowerCase().replace(/[^\w\s]/g, ' ').replace(/\s+/g, ' ').trim();
+  if (HUMAN_HANDOFF_RE.test(clean)) return true;
+
+  const words = clean.split(' ');
+  for (const kw of (INTENT_PATTERNS.SUPPORT || [])) {
+    if (kw.includes(' ')) {
+      if (clean === kw || clean.startsWith(kw + ' ') || clean.endsWith(' ' + kw)
+          || clean.includes(' ' + kw + ' ') || clean.includes(' ' + kw)) {
+        return true;
+      }
+    } else if (words.includes(kw)) {
+      return true;
+    }
+  }
+  return false;
 }
 
 /** Booking/reservation info ask — should be answered in Q&A, not open WA Catalog. */

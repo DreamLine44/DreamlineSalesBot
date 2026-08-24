@@ -134,7 +134,7 @@ import { INTENT_PATTERNS }                           from '../core/intents/patte
 // intentEngine.js's own pre-flow step 4.5 uses, reused here so the mid-flow
 // switch intercept below can never silently drift from the pre-flow behavior.
 import { ORDER_DIRECT_RE, BOOKING_DIRECT_RE, DIRECT_INTENT_EXCLUDE_RE, QUESTION_LEADIN_RE } from '../core/intents/intentEngine.js';
-import { isInformationalActivityQuestion, isStayInQuestionMessage, isGreetingMessage } from '../services/questionModeHelper.js';
+import { isInformationalActivityQuestion, isStayInQuestionMessage, isGreetingMessage, isHumanHandoffRequest } from '../services/questionModeHelper.js';
 import { findBestMatch }                             from '../utils/matchEngine.js';
 import { updateName as persistCustomerName }         from '../core/memory/customerMemory.js';
 import { advance, startFlow }                        from '../core/conversations/flowEngine.js';
@@ -2208,6 +2208,25 @@ async function _handleIncomingMessageSerialized({ tenantId, tenantDoc, from, msg
 
     const { resolveQuestionReply, persistQuestionSession, recordQuestionHistory, toWhatsAppPayload } = await import('../services/questionAnswerService.js');
     const { tryShowCatalogForMenuRequest } = await import('../modules/catalog/waCatalogFlow.js');
+
+    // Human-handoff requests must escalate immediately — "i want to talk to human"
+    // contains "i want" (ORDER_DIRECT_RE) and must not open the WA Catalog.
+    if (!isInteractive && isHumanHandoffRequest(messageText)) {
+      await updateSession(from, tenantId, {
+        currentFlow: null, step: null, postFlowAck: null, postFlowData: null,
+      }).catch(() => {});
+      const { route } = await import('../core/conversations/moduleRouter.js');
+      const supportReply = await route({
+        action: 'SUPPORT', intent: 'SUPPORT',
+        session: { ...session, currentFlow: null, step: null, data: {} },
+        message: messageText, business, tenant: tenantDoc, isInteractive: false,
+      });
+      if (supportReply) {
+        const payloads = Array.isArray(supportReply) ? supportReply : [supportReply];
+        for (const payload of payloads) await dispatchMessage(from, payload, tenantDoc);
+      }
+      return;
+    }
 
     // Menu/food browse requests open the native catalog immediately — no switch prompt.
     const earlyCatalog = await tryShowCatalogForMenuRequest({
