@@ -49,6 +49,10 @@ export function buildConversationContext({ session, business } = {}) {
     parts.push(`Customer name: ${session.customerName}`);
   }
 
+  const qCtx = session?.data?._questionCtx;
+  if (qCtx?.lastReference) parts.push(`Discussing activity #${qCtx.lastReference}`);
+  if (qCtx?.lastTopic) parts.push(`Q&A topic: ${qCtx.lastTopic}`);
+
   return parts.join('\n') || 'No active flow — fresh conversation.';
 }
 

@@ -16,6 +16,7 @@ import {
   recoverRecentActivities,
   formatLookupFailureMessage,
 } from './activityLookupService.js';
+import { normalizeCustomerPhone } from '../utils/customerPhone.js';
 
 const ORDER_STATUS_LABELS = {
   pending:                      '⏳ Waiting for our team to confirm',
@@ -174,10 +175,10 @@ function _multipleBookingsList(bookings) {
  */
 export async function buildStatusReply({ session, business, message }) {
   const scope = detectStatusScope(message);
-  const phone = session.customerPhone;
+  const phone = normalizeCustomerPhone(session.customerPhone);
   const tenantId = session.tenantId;
   const adminPhone = business?.adminPhone;
-  const ref = extractShortId(message) || session?.data?._questionCtx?.lastReference || null;
+  const ref = extractShortId(message, session) || session?.data?._questionCtx?.lastReference || null;
 
   // ── Reference-first lookup ─────────────────────────────────────────────────
   if (ref) {
@@ -253,8 +254,9 @@ export async function buildStatusReply({ session, business, message }) {
 
   if (scope === 'ORDER' || scope === 'BOTH') {
     if (multipleOrders && orderResolution?.orders?.length) {
+      const labels = _orderStatusLabels(business);
       const summary = orderResolution.orders.slice(0, 3).map(o =>
-        `• #${o.shortId || '???'} — ${formatOrderItemSummary(o)} (${ORDER_STATUS_LABELS[o.status] || o.status})`
+        `• #${o.shortId || '???'} — ${formatOrderItemSummary(o)} (${labels[o.status] || o.status})`
       ).join('\n');
       sections.push(`📦 *Active Orders (${orderResolution.orders.length})*\n\n${summary}\n\n_Tap below to pick one._`);
     } else if (activeOrder) {
