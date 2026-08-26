@@ -11,26 +11,28 @@ jobs:
     permissions:
       contents: read
       statuses: write
-    
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
       - name: Check RAILWAY_TOKEN
+        id: railway_token
         run: |
           if [ -z "$RAILWAY_TOKEN" ]; then
+            echo "has_token=false" >> "$GITHUB_OUTPUT"
             echo "⚠️  RAILWAY_TOKEN not configured. Skipping Railway deployment."
             echo "To enable auto-deploy:"
             echo "1. Get token from the Railway dashboard (Settings → Tokens)"
             echo "2. Add RAILWAY_TOKEN secret to GitHub repo (Settings → Secrets → New)"
             exit 0
           fi
+          echo "has_token=true" >> "$GITHUB_OUTPUT"
         env:
           RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
 
       - name: Deploy to Railway
-        id: deploy
-        if: secrets.RAILWAY_TOKEN != ''
+        if: steps.railway_token.outputs.has_token == 'true'
         run: |
           npm install -g @railway/cli
           railway up --service WhatSalesAgent --detach
@@ -38,7 +40,7 @@ jobs:
           RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
 
       - name: Report deployment status
-        if: success() && secrets.RAILWAY_TOKEN != ''
+        if: success() && steps.railway_token.outputs.has_token == 'true'
         uses: actions/github-script@v7
         with:
           script: |
@@ -53,7 +55,7 @@ jobs:
             })
 
       - name: Report deployment failure
-        if: failure() && secrets.RAILWAY_TOKEN != ''
+        if: failure() && steps.railway_token.outputs.has_token == 'true'
         uses: actions/github-script@v7
         with:
           script: |
