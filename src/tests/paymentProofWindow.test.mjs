@@ -92,3 +92,27 @@ test('receiveProof: reports no order found when neither createdAt nor paymentRev
     assert.ok(reply.includes("couldn't find a pending order"));
   });
 });
+
+test('receiveProof: customer ack lists every item in a multi-item cart', async () => {
+  const fakeOrder = {
+    _id: 'order3',
+    customerPhone: '2207000003',
+    tenantId: 'tenant1',
+    paymentStatus: 'unpaid',
+    createdAt: new Date(),
+    item: 'Superkanja',
+    quantity: 1,
+    items: [
+      { item: 'Superkanja', quantity: 1, unitPrice: 150 },
+      { item: 'Domoda (Beef)', quantity: 2, unitPrice: 200 },
+    ],
+    shortId: 'ORD125',
+  };
+
+  await withStubbedOrder(fakeOrder, async () => {
+    const reply = await receiveProof('2207000003', 'tenant1', 'IMG126', null);
+    assert.match(reply, /Superkanja/);
+    assert.match(reply, /Domoda \(Beef\)/);
+    assert.doesNotMatch(reply, /Superkanja.*is now awaiting verification/);
+  });
+});

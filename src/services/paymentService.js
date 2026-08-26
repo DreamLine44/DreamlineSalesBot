@@ -39,6 +39,7 @@ import BusinessConfig from '../models/BusinessConfig.js';
 import { decryptToken } from '../controllers/tenantController.js';
 import logger from '../config/logger.js';
 import { formatMoney } from '../utils/formatCurrency.js';
+import { formatOrderItemsForMessage, formatOrderItemSummary } from './orderService.js';
 
 const PROOF_WINDOW_HOURS = Number(process.env.PROOF_ELIGIBLE_HOURS || 4);
 
@@ -78,6 +79,7 @@ export async function receiveProof(customerPhone, tenantId, imageId, tenantDoc) 
   // Notify admin
   const business  = await BusinessConfig.findOne({ tenantId }).lean();
   const adminPhone = business?.adminPhone || tenantDoc?.adminPhone;
+  const itemsBlock = formatOrderItemsForMessage(order, business || { payment: { currency: 'D' } });
   if (adminPhone && tenantDoc) {
     const { dispatchMessage } = await import('../core/whatsapp/dispatcher.js');
     const currency = business?.payment?.currency || 'D';
@@ -143,7 +145,7 @@ export async function receiveProof(customerPhone, tenantId, imageId, tenantDoc) 
         `💳 *New Payment Submission*\n\n` +
         `🆔 Order: *#${order.shortId}*\n` +
         `👤 Customer: *${customerPhone}*\n` +
-        `🛒 Items: *${order.item}* × ${order.quantity}\n` +
+        `${itemsBlock}\n` +
         `💰 Amount: *${currency}${order.totalPrice ? formatMoney(order.totalPrice) : '—'}*\n\n` +
         (imageForwarded
           ? `Screenshot sent above ↑\nPlease approve or reject:`
@@ -157,7 +159,8 @@ export async function receiveProof(customerPhone, tenantId, imageId, tenantDoc) 
 
   return (
     `✅ *Payment proof received!*\n\n` +
-    `⏳ Your order *${order.item}* × ${order.quantity} is now awaiting verification.\n\n` +
+    `⏳ Your order is now awaiting verification:\n\n` +
+    `${itemsBlock}\n\n` +
     `We'll confirm shortly 🙏`
   );
 }
@@ -191,6 +194,7 @@ export async function handleDonePayment(customerPhone, tenantId, tenantDoc) {
     try {
       const business   = await BusinessConfig.findOne({ tenantId }).lean();
       const adminPhone = business?.adminPhone || tenantDoc?.adminPhone;
+      const itemsBlock = formatOrderItemsForMessage(order, business || { payment: { currency: 'D' } });
       if (adminPhone) {
         const { dispatchMessage } = await import('../core/whatsapp/dispatcher.js');
         const currency = business?.payment?.currency || 'D';
@@ -199,7 +203,7 @@ export async function handleDonePayment(customerPhone, tenantId, tenantDoc) {
           body:
             `✅ *Self-Confirmed Order*\n\n` +
             `👤 Customer: *${customerPhone}*\n` +
-            `🛒 Item: *${order.item}* × ${order.quantity}\n` +
+            `${itemsBlock}\n` +
             `💰 Total: *${currency}${order.totalPrice ? formatMoney(order.totalPrice) : '—'}*\n` +
             `🔖 Ref: \`${order.shortId}\`\n\n` +
             `Customer confirmed (cash/no-proof). Tap ✅ to confirm, then 🍽️ Mark Ready when done.`,
@@ -214,7 +218,7 @@ export async function handleDonePayment(customerPhone, tenantId, tenantDoc) {
     }
   }
 
-  return `✅ *Thank you!* Your order of *${order.item}* has been received.\n\nWe'll process it shortly. 🙏`;
+  return `✅ *Thank you!* Your order (${formatOrderItemSummary(order)}) has been received.\n\nWe'll process it shortly. 🙏`;
 }
 
 /**
