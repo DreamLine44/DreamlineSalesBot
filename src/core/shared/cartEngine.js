@@ -211,6 +211,7 @@ export function parseNaturalOrderMessage(menu = [], text = '') {
   if (!raw || !Array.isArray(menu) || !menu.length) return null;
 
   const withoutLead = collapseSlashQuantity(raw
+    .replace(/^(?:hi|hello|hey|hiya|good\s+(?:morning|afternoon|evening))\s+/i, '')
     .replace(/^(?:i\s+)?(?:want|need|would\s+like|like\s+to\s+order)\s+(?:to\s+order\s+)?/i, '')
     .replace(/^(?:can\s+i\s+)?(?:give|get|have|order|buy|purchase)\s+(?:me\s+)?/i, '')
     .trim());
