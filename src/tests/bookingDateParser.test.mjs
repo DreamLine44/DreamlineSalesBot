@@ -181,6 +181,15 @@ test('tryParseDate: ordinal suffixes are stripped correctly', () => {
   assert.equal(a.getTime(), b.getTime());
 });
 
+test('tryParseDate: natural-language ordinal next-month dates are supported', () => {
+  const parsed = tryParseDate('second of next month', TZ);
+  assert.ok(parsed);
+  const now = new Date();
+  const expected = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 2));
+  assert.equal(parsed.getUTCDate(), expected.getUTCDate());
+  assert.equal(parsed.getUTCMonth(), expected.getUTCMonth());
+});
+
 test('tryParseDate: "next <weekday>" resolves to a date strictly in the future', () => {
   const now = new Date();
   const next = tryParseDate('next monday', TZ);

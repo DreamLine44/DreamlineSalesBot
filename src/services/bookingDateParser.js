@@ -166,6 +166,17 @@ function parseRelativeOffsetDays(lower, now) {
 function parseRelativeMonthDay(lower, now) {
   const s = lower.replace(/['']/g, '').replace(/\s+/g, ' ').trim();
 
+  const ordinal = s.match(/^(?:on\s+)?(?:the\s+)?(first|1st|second|2nd|third|3rd|fourth|4th|fifth|5th|sixth|6th|seventh|7th|eighth|8th|ninth|9th|tenth|10th)\s+day?\s+of\s+next\s+month$/);
+  if (ordinal) {
+    const day = {
+      first: 1, '1st': 1, second: 2, '2nd': 2, third: 3, '3rd': 3,
+      fourth: 4, '4th': 4, fifth: 5, '5th': 5, sixth: 6, '6th': 6,
+      seventh: 7, '7th': 7, eighth: 8, '8th': 8, ninth: 9, '9th': 9,
+      tenth: 10, '10th': 10,
+    }[ordinal[1]];
+    return toUtcMidnight(now.getUTCFullYear(), now.getUTCMonth() + 1, day);
+  }
+
   if (/^next\s+months?\s+(?:first|1st)(?:\s+day)?$/.test(s)) {
     return toUtcMidnight(now.getUTCFullYear(), now.getUTCMonth() + 1, 1);
   }
@@ -306,7 +317,7 @@ const DATE_PHRASE_RES = [
   /\bin\s+(?:\d+|one|two|three|four)\s+weeks?\b/i,
   /\b(?:this|next)\s+(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/i,
   /\b(?:on\s+)?next\s+(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/i,
-  /\b(?:the\s+)?(?:first|1st)(?:\s+(?:day\s+of|of))?\s+next\s+month\b/i,
+  /\b(?:the\s+)?(?:first|1st|second|2nd|third|3rd|fourth|4th|fifth|5th|sixth|6th|seventh|7th|eighth|8th|ninth|9th|tenth|10th)(?:\s+(?:day\s+of|of))?\s+next\s+month\b/i,
   /\b(?:the\s+)?last\s+day\s+of\s+next\s+month\b/i,
   /\bend\s+of\s+(?:this\s+)?month\b/i,
   /\bday after tomorrow\b/i,
