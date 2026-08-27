@@ -209,13 +209,12 @@ export async function route({ action, intent, session, message, business, tenant
       // reaction emoji or acknowledgement word (Ahh, Ok) spams the same status message.
       // Instead show a soft "what would you like to do?" with contextual buttons.
       try {
-        const { default: _AckOrder } = await import('../../models/Order.js');
-        const ackOrder = await _AckOrder.findOne({
-          customerPhone: session.customerPhone,
-          tenantId:      session.tenantId,
-          status:        { $in: ['confirmed', 'pending', 'ready'] },
-          paymentStatus: { $nin: ['cancelled', 'rejected'] },
-        }).select('item quantity shortId status').sort({ createdAt: -1 }).lean().catch(() => null);
+        const { findVisibleActiveOrder } = await import('../../services/activityLifecycleService.js');
+        const ackOrder = await findVisibleActiveOrder(
+          session.customerPhone,
+          session.tenantId,
+          { select: 'item quantity shortId status' },
+        );
 
         if (ackOrder) {
           // Throttle: only send the status text once per 5-minute window.
@@ -270,6 +269,26 @@ export async function route({ action, intent, session, message, business, tenant
     }
 
     case 'CONTINUE_FLOW': {
+      // Flow-internal taps (PARTY_*, TIME_*, DATE_*) or typed guest counts with
+      // no active session — recover booking instead of resetting to welcome menu.
+      {
+        const { shouldRecoverLostBookingPassthrough, recoverLostBookingPassthrough } =
+          await import('./flowPassthroughRecovery.js');
+        if (message && shouldRecoverLostBookingPassthrough({
+          messageText: message, session, business, isInteractive: !!isInteractive,
+        })) {
+          const recovered = await recoverLostBookingPassthrough({
+            from:           session.customerPhone,
+            tenantId:       session.tenantId,
+            session,
+            messageText:    message,
+            business,
+            tenant,
+            isInteractive:  !!isInteractive,
+          }).catch(() => null);
+          if (recovered) return recovered;
+        }
+      }
       // CONTINUE_FLOW arrives when the customer sends a numeric, single-char, or unmapped
       // interactive message while there is NO active flow (the flow engine handles it when
       // a flow IS active, before reaching detectIntent). Without this case the router falls
@@ -277,6 +296,46 @@ export async function route({ action, intent, session, message, business, tenant
       // jarring for a customer who typed "5" from the main menu. Show the welcome menu instead.
       const cfg = getModeConfig(business);
       return buildOptionsReply(cfg, business?.customMessages?.welcomeMessage || cfg.messages?.welcome || '👋 How can I help you today?');
+    }
+
+    case 'CONFIRM': {
+      // Booking / order confirm buttons with a lost session must not fall through
+      // to the generic welcome fallback.
+      {
+        const {
+          shouldRecoverLostBookingPassthrough,
+          recoverLostBookingPassthrough,
+          shouldRecoverLostOrderPassthrough,
+          recoverLostOrderPassthrough,
+        } = await import('./flowPassthroughRecovery.js');
+
+        const recoveryFrom = session.customerPhone || session.phone?.split('_')?.[0];
+        const recoveryArgs = {
+          from:           recoveryFrom,
+          tenantId:       session.tenantId,
+          session,
+          messageText:    message,
+          business,
+          tenant,
+          isInteractive:  !!isInteractive,
+        };
+
+        if (message && shouldRecoverLostBookingPassthrough({
+          messageText: message, session, business, isInteractive: !!isInteractive,
+        })) {
+          const recovered = await recoverLostBookingPassthrough(recoveryArgs).catch(() => null);
+          if (recovered) return recovered;
+        }
+
+        if (message && shouldRecoverLostOrderPassthrough({
+          messageText: message, session, isInteractive: !!isInteractive,
+        })) {
+          const recovered = await recoverLostOrderPassthrough(recoveryArgs).catch(() => null);
+          if (recovered) return recovered;
+        }
+      }
+      const cfgConfirm = getModeConfig(business);
+      return buildOptionsReply(cfgConfirm, cfgConfirm.messages?.fallback || 'How can I help you today?');
     }
 
     case 'GREET': {
@@ -290,15 +349,14 @@ export async function route({ action, intent, session, message, business, tenant
       // triggered "Hello! Welcome to DreamLine Restaurant" — because GREET ran with
       // no awareness that the customer had just paid for an order.
       try {
-        const { default: _Order }   = await import('../../models/Order.js');
         const { default: _Booking } = await import('../../models/Booking.js');
+        const { findVisibleActiveOrder, buildActiveBookingFilter } = await import('../../services/activityLifecycleService.js');
 
-        const activeOrder = await _Order.findOne({
-          customerPhone: session.customerPhone,
-          tenantId:      session.tenantId,
-          status:        { $in: ['confirmed', 'pending'] },
-          paymentStatus: { $nin: ['cancelled', 'rejected'] },
-        }).select('item quantity shortId paymentStatus status').sort({ createdAt: -1 }).lean().catch(() => null);
+        const activeOrder = await findVisibleActiveOrder(
+          session.customerPhone,
+          session.tenantId,
+          { select: 'item quantity shortId paymentStatus status' },
+        );
 
         if (activeOrder) {
           const greetMode = (business?.businessMode || '').toUpperCase();
@@ -326,11 +384,9 @@ export async function route({ action, intent, session, message, business, tenant
           };
         }
 
-        const activeBooking = await _Booking.findOne({
-          customerPhone: session.customerPhone,
-          tenantId:      session.tenantId,
-          status:        { $in: ['pending', 'confirmed'] },
-        }).select('shortId date time partySize status service staff bookingType').sort({ createdAt: -1 }).lean().catch(() => null);
+        const activeBooking = await _Booking.findOne(
+          buildActiveBookingFilter(session.customerPhone, session.tenantId),
+        ).select('shortId date time partySize status service staff bookingType').sort({ createdAt: -1 }).lean().catch(() => null);
 
         if (activeBooking) {
           const greetMode       = (business?.businessMode || '').toUpperCase();
@@ -530,30 +586,9 @@ export async function route({ action, intent, session, message, business, tenant
     // already handles its own graceful fallback to the module's normal ORDER
     // flow when WA Catalog isn't configured/enabled for the tenant.
     case 'BROWSE_CATALOG': {
-      // [FIX-VIEWMENU-BUTTON-FIRST] A typed natural-language menu request
-      // (isInteractive: false — e.g. "what do you have in your menu",
-      // matched by VIEW_MENU_DIRECT_RE) previously jumped straight into
-      // browseCatalogExplicit(), silently dispatching the full native WA
-      // Catalog product list. That's inconsistent with every other entry
-      // point to this same action, which is always a deliberate tap on
-      // the "🛍 View Items"/"Browse Catalog" button — the customer asked
-      // a question, they didn't ask to have a Meta catalog UI pushed at
-      // them unprompted. Show that same button first; only send the
-      // actual catalog once THAT tap comes back through here as
-      // isInteractive: true. Only shown when shouldShowCatalogButton() is
-      // true (catalog enabled + has sellable products) — a tenant without
-      // WA Catalog configured skips straight to browseCatalogExplicit(),
-      // which already falls back to the text/list ORDER menu on its own,
-      // so gating the button here avoids a pointless extra round trip
-      // that would only end in that same fallback anyway.
-      if (!isInteractive && shouldShowCatalogButton(business)) {
-        return {
-          type: 'buttons',
-          body: business?.customMessages?.viewMenuPrompt
-            || `🍽️ Here's how to see what we have — tap below!`,
-          buttons: [{ id: 'BROWSE_CATALOG', title: '🛍 View Items' }],
-        };
-      }
+      // Typed menu/food browse ("what do you have on your menu", "what can I
+      // eat") and button taps both dispatch the native WA Catalog card
+      // immediately — same as case 'VIEW_MENU' above.
       const { browseCatalogExplicit } = await import('../../modules/catalog/waCatalogFlow.js');
       return browseCatalogExplicit({ session, business, tenant });
     }
@@ -604,27 +639,15 @@ export async function route({ action, intent, session, message, business, tenant
     }
 
     case 'CANCEL': {
-      // [FIX-CANCEL-1] CANCEL_BOOKING button maps here via patterns.js BUTTON_ID_MAP.
-      // cancelFlow() only clears the session — it never updates the Booking or Order
-      // document in the DB. This meant:
-      //   - Customer taps "❌ Cancel Booking" → session cleared, booking still 'pending'
-      //   - Next message → activeOrderResolver/BOOKING_CONFIRMED ack shows booking AGAIN
-      //   - Customer tap "❌ Cancel Order" → same issue for orders at non-flow states
-      // Fix: before calling cancelFlow(), cancel any active Booking and/or pending Order
-      // for this customer. Only cancel 'pending' bookings (not already confirmed ones
-      // which the admin controls), and only 'pending'/'confirmed' orders that haven't
-      // been paid and prepared yet.
       let _bookingCancelled = false;
       let _orderCancelled   = false;
+      let _uncancellableOrder = null;
 
       try {
         const { default: _CancelBooking } = await import('../../models/Booking.js');
+        const { buildActiveBookingFilter } = await import('../../services/activityLifecycleService.js');
         const _bookingResult = await _CancelBooking.findOneAndUpdate(
-          {
-            customerPhone: session.customerPhone,
-            tenantId:      session.tenantId,
-            status:        { $in: ['pending', 'confirmed'] },
-          },
+          buildActiveBookingFilter(session.customerPhone, session.tenantId),
           {
             $set: {
               status:      'cancelled',
@@ -637,79 +660,42 @@ export async function route({ action, intent, session, message, business, tenant
         _bookingCancelled = !!_bookingResult;
       } catch (_) { /* non-fatal */ }
 
-      // [FIX-CANCEL-FALSE-POSITIVE] Both findOneAndUpdate results below were
-      // previously discarded (.catch(() => {}) with no success check), and
-      // cancelFlow() ran unconditionally afterwards — always replying "✅ No
-      // problem!" regardless of whether anything was actually cancelled.
-      // The Order query intentionally excludes paymentStatus 'confirmed'/'paid'
-      // (protecting orders the customer has already paid for from accidental
-      // self-cancellation), but a customer can still reach this case by TYPING
-      // "cancel my order" / "cancel it" (patterns.js CANCEL_ORDER) even when
-      // their order is already paid and in 'preparing'/'ready' status — no
-      // CANCEL button is ever shown for those states, but typed cancel phrases
-      // aren't gated by what buttons are visible. The result: the order stays
-      // active in the kitchen while the customer is falsely told it was
-      // cancelled. Track whether the write actually matched a document so we
-      // can give an honest reply instead.
-      let _uncancellableOrder = null;
       try {
-        const { default: _CancelOrder } = await import('../../models/Order.js');
-        const _orderResult = await _CancelOrder.findOneAndUpdate(
-          {
-            customerPhone: session.customerPhone,
-            tenantId:      session.tenantId,
-            // [AUDIT-FIX-CANCEL-CONFIRMED-GUARD] status:'confirmed' is the
-            // authoritative "order accepted" signal in this codebase (see
-            // activeOrderResolver's [AUDIT-AOR-CONFIRMED]) — dashboardController's
-            // updateOrderStatus() and the cash-order AWAIT_ADMIN_CONFIRM path both
-            // set status:'confirmed' WITHOUT ever touching paymentStatus, so relying
-            // on paymentStatus alone let an already-accepted order slip through and
-            // be self-cancelled by the customer. Only truly 'pending' orders — never
-            // accepted by an admin — are self-cancellable here.
-            status:        'pending',
-            // [FIX-CANCEL-REJECTED] 'rejected' was previously in this $nin exclusion list,
-            // meaning a customer whose payment was rejected — the EXACT scenario where
-            // activeOrderResolver shows a "Payment Not Approved" card with a CANCEL button —
-            // could never actually cancel that order via this query. cancelFlow() would still
-            // reply "No problem!" (the DB write silently matched nothing), so the Order stayed
-            // status:'pending'/paymentStatus:'rejected' forever and activeOrderResolver kept
-            // re-intercepting every subsequent message with the same rejected-payment card.
-            // A rejected payment is precisely the state that SHOULD be cancellable — only
-            // already-confirmed/paid payments need protecting from accidental cancellation.
-            paymentStatus: { $nin: ['cancelled', 'confirmed', 'paid'] },
-          },
-          {
-            $set: {
-              status:        'cancelled',
-              paymentStatus: 'cancelled',
-              cancelledAt:   new Date(),
-              cancelledBy:   'customer',
-            },
-          },
-          { sort: { createdAt: -1 } }
-        ).catch(() => null);
+        const { cancelMostRecentActiveOrder } = await import('../../services/activityLifecycleService.js');
+        const _orderResult = await cancelMostRecentActiveOrder({
+          customerPhone: session.customerPhone,
+          tenantId:      session.tenantId,
+        });
         _orderCancelled = !!_orderResult;
 
-        // [FIX-CANCEL-FALSE-POSITIVE] Nothing was cancelled above — check whether
-        // there's an active order that simply couldn't be self-cancelled (already
-        // paid/confirmed/preparing/ready) so we can tell the customer the truth
-        // instead of a blanket "No problem!".
         if (!_orderCancelled) {
+          const { default: _CancelOrder } = await import('../../models/Order.js');
           _uncancellableOrder = await _CancelOrder.findOne({
             customerPhone: session.customerPhone,
             tenantId:      session.tenantId,
             status:        { $nin: ['cancelled', 'completed', 'rejected'] },
-          }).sort({ createdAt: -1 }).select('shortId status paymentStatus').lean().catch(() => null);
+          }).sort({ createdAt: -1 }).select('shortId status paymentStatus createdAt').lean().catch(() => null);
         }
       } catch (_) { /* non-fatal */ }
 
       if (!_bookingCancelled && !_orderCancelled && _uncancellableOrder) {
+        const { activityActiveCutoff } = await import('../../services/activityLifecycleService.js');
+        const expired = _uncancellableOrder.createdAt
+          && new Date(_uncancellableOrder.createdAt) < activityActiveCutoff();
+        if (expired) {
+          return cancelFlow(session, business);
+        }
+        // [RESTORE-CANCEL-CONFIRMED-GUARD] Give the honest, specific reason when the
+        // order can't be self-cancelled because an admin already accepted it, instead
+        // of a generic message that reads like a transient error and invites a
+        // pointless retry.
+        const _acceptedStatuses = ['confirmed', 'preparing', 'ready', 'out_for_delivery'];
+        const _uncancellableBody = _acceptedStatuses.includes(_uncancellableOrder.status)
+          ? `⚠️ Order *#${_uncancellableOrder.shortId}* has already been confirmed and is being prepared, so it can't be self-cancelled at this stage.\n\nPlease contact us directly if you still need to cancel.`
+          : `⚠️ Order *#${_uncancellableOrder.shortId}* couldn't be cancelled right now.\n\nPlease try *cancel #${_uncancellableOrder.shortId}* or contact us directly.`;
         return {
           type: 'buttons',
-          body:
-            `⚠️ Order *#${_uncancellableOrder.shortId}* has already been confirmed and is being prepared, ` +
-            `so it can't be self-cancelled at this stage.\n\n` +
-            `Please contact us directly if you still need to cancel.`,
+          body: _uncancellableBody,
           buttons: [{ id: 'SUPPORT', title: '💬 Contact Support' }],
         };
       }
@@ -718,47 +704,13 @@ export async function route({ action, intent, session, message, business, tenant
     }
 
     case 'CANCEL_ALL': {
-      // [FIX-CANCEL-ALL] Bulk-cancel all pending/confirmed orders for this customer.
-      // Triggered when the customer types "cancel all", "cancel all of them", etc.
-      // while in the MULTIPLE_ACTIVE_ORDERS context (or any time they want a clean slate).
       try {
-        const { default: _CancelAllOrder } = await import('../../models/Order.js');
-        const cancelResult = await _CancelAllOrder.updateMany(
-          {
-            customerPhone: session.customerPhone,
-            tenantId:      session.tenantId,
-            // [AUDIT-FIX-CANCEL-ALL-CONFIRMED-GUARD] Same guard as the single-order
-            // CANCEL case above — status:'confirmed'/'preparing' orders are already
-            // accepted by an admin and must not be bulk-cancellable by the customer.
-            status:        'pending',
-            // [FIX-CANCEL-REJECTED] Same fix as the single-order CANCEL case above —
-            // 'rejected' must not be excluded, or rejected-payment orders can never be
-            // bulk-cancelled either and keep re-appearing in the MULTIPLE_ACTIVE_ORDERS list.
-            // [AUDIT-FIX-CANCEL-ALL-CONFIRMED-GUARD] 'confirmed'/'paid' added — the old
-            // list only excluded 'cancelled'/'refunded', so an already-paid order could
-            // still be bulk-cancelled with a single "cancel all".
-            paymentStatus: { $nin: ['cancelled', 'refunded', 'confirmed', 'paid'] },
-          },
-          {
-            $set: {
-              status:        'cancelled',
-              paymentStatus: 'cancelled',
-              cancelledAt:   new Date(),
-              cancelledBy:   'customer',
-            },
-          }
-        );
-        const count = cancelResult.modifiedCount || 0;
-        await updateSession(session.customerPhone, session.tenantId, {
-          currentFlow: null, step: null, data: {}, postFlowAck: null,
+        const { cancelAllActiveForCustomer } = await import('../../services/activityLifecycleService.js');
+        return await cancelAllActiveForCustomer({
+          customerPhone: session.customerPhone,
+          tenantId:      session.tenantId,
+          business,
         });
-        const cfgCancelAll = getModeConfig(business);
-        return buildOptionsReply(
-          cfgCancelAll,
-          count > 0
-            ? `✅ Done — *${count} order${count !== 1 ? 's' : ''}* ${count !== 1 ? 'have' : 'has'} been cancelled. Sorry to see you go! 🙏`
-            : `ℹ️ No active orders found to cancel.`
-        );
       } catch (err) {
         logger.error('[Router] CANCEL_ALL failed', { err: err.message });
         const cfgCancelAllErr = getModeConfig(business);
@@ -970,11 +922,14 @@ export async function route({ action, intent, session, message, business, tenant
       // Otherwise show a gentle prompt to start a new order.
       try {
         const { default: _PayOrder } = await import('../../models/Order.js');
+        const { activityActiveCutoff } = await import('../../services/activityLifecycleService.js');
         const pendingPay = await _PayOrder.findOne({
           customerPhone: session.customerPhone,
           tenantId:      session.tenantId,
-          paymentStatus: { $in: ['unpaid'] },
-          status:        { $nin: ['cancelled', 'completed'] },
+          paymentStatus: 'unpaid',
+          status:        { $nin: ['cancelled', 'completed', 'confirmed'] },
+          createdAt:       { $gte: activityActiveCutoff() },
+          $or: [{ paymentReviewedAt: null }, { paymentReviewedAt: { $exists: false } }],
         }).select('_id item quantity totalPrice shortId').sort({ createdAt: -1 }).lean().catch(() => null);
 
         if (pendingPay) {

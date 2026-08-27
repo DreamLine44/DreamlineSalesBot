@@ -335,17 +335,22 @@ export async function handleQuoteFollowUp({ session, message, business, tenant }
 
 export async function handleServicesQuestion({ session, message, business, tenant }) {
   const raw = String(message || '').trim();
-  const { processQuestionMessage, persistQuestionSession } = await import('../../../services/questionAnswerService.js');
-  const reply = await processQuestionMessage({ session, message: raw, business, tenant, intent: 'SERVICES_QUESTION' });
+  const { resolveQuestionReply, persistQuestionSession, recordQuestionHistory, finalizeQuestionHandlerReply } = await import('../../../services/questionAnswerService.js');
+  const reply = await resolveQuestionReply({
+    session, message: raw, business, tenant, intent: 'SERVICES_QUESTION',
+    initPayload: {
+      type: 'text',
+      body: '❓ What would you like to know about our services?',
+    },
+  });
+  if (reply?.type === 'welcome_sequence') {
+    await recordQuestionHistory(session, raw, reply.sequence?.[0] || reply).catch(() => {});
+    return finalizeQuestionHandlerReply({ session, tenant, reply });
+  }
   await persistQuestionSession(session, tenant, reply.context || { lastMessage: raw });
+  await recordQuestionHistory(session, raw, reply);
 
-  // Answer-only: stay in QUESTION mode and wait — no buttons. Switching activity
-  // (e.g. asking for a quote, booking a consultation) is picked up upstream from
-  // the customer's own words, not from a tap target.
-  return {
-    type: reply.type || 'text',
-    body: reply.body,
-  };
+  return finalizeQuestionHandlerReply({ session, tenant, reply });
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────

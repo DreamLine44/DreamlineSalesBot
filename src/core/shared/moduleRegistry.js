@@ -48,10 +48,11 @@ async function handleQuestionAction({ session, message, business, tenant, isInte
     // Answer the real question right now instead of waiting for the next
     // message — mirrors the AWAITING_QUESTION handling webhookController
     // runs for the *following* message, so the first one isn't wasted.
-    const { processQuestionMessage, persistQuestionSession } = await import('../../services/questionAnswerService.js');
+    const { processQuestionMessage, persistQuestionSession, recordQuestionHistory, toWhatsAppPayload } = await import('../../services/questionAnswerService.js');
     const reply = await processQuestionMessage({ session, message: typedQuestion, business, tenant, intent: 'FAQ' });
     await persistQuestionSession(session, tenant, reply.context || { lastMessage: typedQuestion });
-    return { type: reply.type, body: reply.body };
+    await recordQuestionHistory(session, typedQuestion, reply);
+    return toWhatsAppPayload(reply) || { type: 'text', body: '' };
   }
   return {
     type: 'text',
@@ -89,28 +90,50 @@ async function startFlowOrAnswerQuestion({ flowName, session, message, business,
   return handleQuestionAction({ session, message, business, tenant, isInteractive });
 }
 
-async function parseDirectBookingRequest(message, business) {
+export async function parseDirectBookingRequest(message, business) {
   const raw = String(message || '').trim();
-  const partyMatch = raw.match(/\b(?:table|party)\s*(?:for|of)?\s*(\d{1,2})\b/i)
-    || raw.match(/\bfor\s+(\d{1,2})\b/i);
-  const timeMatch = raw.match(/\b(\d{1,2}(?::\d{2})?\s*(?:am|pm))\b/i);
-  const dateMatch = raw.match(/\b(?:today|tomorrow|next\s+(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday))\b/i)
-    || raw.match(/\b\d{1,2}(?:st|nd|rd|th)?\s+(?:of\s+)?(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)(?:\s+\d{4})?\b/i);
-  if (!partyMatch || !timeMatch || !dateMatch) return null;
+  const { parsePartySizeFromText } = await import('../../utils/parsePartySize.js');
+  const { extractBookingTimeFromText } = await import('../../utils/parseBookingTime.js');
+  const { resolveBookingDateInput, extractBookingDatePhraseFromText } = await import('../../services/bookingDateParser.js');
 
-  const { resolveBookingDateInput } = await import('../../services/bookingDateParser.js');
+  const partySize = parsePartySizeFromText(raw);
   const tz = business?.hours?.timezone || 'UTC';
-  const resolved = await resolveBookingDateInput(dateMatch[0], tz);
-  if (!resolved.ok) return null;
 
-  const time = timeMatch[1].replace(/\s+/g, ' ').trim();
-  return {
-    partySize: Number(partyMatch[1]),
-    date: resolved.label,
-    parsedDate: resolved.parsed,
-    dateRaw: resolved.raw,
-    time,
-  };
+  let date = null;
+  let parsedDate = null;
+  let dateRaw = null;
+
+  const datePhrase = extractBookingDatePhraseFromText(raw);
+  if (datePhrase) {
+    const resolved = await resolveBookingDateInput(datePhrase, tz);
+    if (resolved.ok) {
+      date = resolved.label;
+      parsedDate = resolved.parsed;
+      dateRaw = resolved.raw;
+    }
+  }
+
+  const timeResolved = extractBookingTimeFromText(raw);
+  const time = timeResolved?.label || null;
+
+  if (!partySize && !date && !time) return null;
+
+  return { partySize, date, parsedDate, dateRaw, time };
+}
+
+export function resolveDirectBookingStep({ partySize, date, time, isRestaurant }) {
+  // Full NL input still passes through TIME_CONFIRM so closed-day and past-time checks run.
+  if (partySize && date && time) return 'TIME_CONFIRM';
+  if (!isRestaurant) {
+    return (date && time) ? 'TIME_CONFIRM' : null;
+  }
+  // NL-provided dates go through DATE_CONFIRM (same as typing a date in the DATE step).
+  if (partySize && date) return 'DATE_CONFIRM';
+  if (partySize && time) return 'DATE';
+  if (date && time) return 'PARTY_SIZE';
+  if (partySize) return 'DATE';
+  if (date || time) return 'PARTY_SIZE';
+  return null;
 }
 
 function directOrderHandoff(mode, lines) {
@@ -275,6 +298,9 @@ export async function registerAllModules() {
     const { startFlow } = await import('../conversations/flowEngine.js');
     const { advance } = await import('../conversations/flowEngine.js');
     const { updateSession } = await import('../sessions/sessionService.js');
+    const { resolveSessionPhone } = await import('../../utils/customerPhone.js');
+    const orderPhone = resolveSessionPhone(session);
+    session = { ...session, customerPhone: orderPhone };
     const normalizedIntent = intent === 'START_ORDER' ? 'ORDER' : (intent || 'ORDER');
     const msgUpper = String(message || '').trim().toUpperCase();
     const explicitOrderTap = msgUpper === 'ORDER' || msgUpper === 'NEW_ORDER';
@@ -313,35 +339,6 @@ export async function registerAllModules() {
       if (session?.orderChannel === 'catalog' || explicitOrderTap) {
         return browseCatalogExplicit({ session, business, tenant });
       }
-      // [FIX-ORDER-BUTTON-FIRST] A typed generic-order message ("i want to
-      // order", "i want food") used to go straight into
-      // offerCatalogOnStartOrder(), which makes a live Graph API call to push
-      // the native WA Catalog product_list/catalog_message immediately. That
-      // makes the customer's very first reply depend on that network call
-      // succeeding — and on a message shaped exactly like this one, unlike
-      // BROWSE_CATALOG (moduleRouter.js's typed "what do you have in your
-      // menu" / VIEW_MENU path, see [FIX-VIEWMENU-BUTTON-FIRST] there), which
-      // never touches Graph API for its first reply: it shows a static
-      // "🛍 View Items" confirmation button and only calls the real catalog
-      // send once THAT tap comes back as isInteractive: true. That asymmetry
-      // is exactly why typed menu questions replied reliably while typed
-      // order requests occasionally went completely silent — same failure
-      // mode as [FIX-CATALOG-HEADER-1]/[Failure handling] above, just on a
-      // different entry point into the same underlying send.
-      // Mirror that same zero-I/O-first-reply pattern here: a typed (non-
-      // button) generic order request gets the identical confirmation button
-      // — no network call on this turn — and only attempts the live catalog
-      // send once the customer actually taps it (isInteractive: true reaches
-      // this same branch via explicitOrderTap/orderChannel==='catalog' above,
-      // or via the BROWSE_CATALOG action if they tap "🛍 View Items" itself).
-      if (!isInteractive) {
-        return {
-          type: 'buttons',
-          body: business?.customMessages?.viewMenuPrompt
-            || `🛍️ Here's how to see what we have — tap below!`,
-          buttons: [{ id: 'BROWSE_CATALOG', title: '🛍 View Items' }],
-        };
-      }
       const { offered } = await offerCatalogOnStartOrder({ session, business, tenant, intent: normalizedIntent }).catch(() => ({ offered: false }));
       if (offered) return null; // WA Catalog message already dispatched directly — nothing further to send
       return startFlow({ flowName: 'ORDER', session: { ...session, orderChannel: 'menu' }, business, tenant });
@@ -356,7 +353,7 @@ export async function registerAllModules() {
     const nluProducts = session?.data?._nluPending?.products;
     const {
       mergeCartLines, parseMultiItemMessage, parseNaturalOrderMessage,
-      parseCartModification, applyCartModification,
+      parseCartModification, applyCartModification, resolveDirectOrderParse,
     } = await import('../shared/cartEngine.js');
     const menu = (business?.menuItems || []).filter(item => item.available !== false);
     const existingCart = Array.isArray(session?.data?.cart) ? session.data.cart : [];
@@ -374,7 +371,7 @@ export async function registerAllModules() {
         message: null, business, tenant,
       });
     }
-    const parsedDirect = parseMultiItemMessage(menu, message) || parseNaturalOrderMessage(menu, message);
+    const parsedDirect = resolveDirectOrderParse(menu, message) || null;
     if (parsedDirect?.ambiguous && parsedDirect.candidates?.length) {
       const pendingData = {
         ...(session.data || {}),
@@ -527,19 +524,48 @@ export async function registerAllModules() {
     // every direct-booking request for a service-less business threw
     // "updateSession is not defined" instead of confirming the booking.
     const { updateSession } = await import('../sessions/sessionService.js');
+    const { bookingDateIsoFromParsed } = await import('../../services/bookingState.js');
+    const { resolveSessionPhone } = await import('../../utils/customerPhone.js');
     const directBooking = await parseDirectBookingRequest(message, business).catch(() => null);
-    if (directBooking && !(business?.services || []).length) {
-      const updated = await updateSession(session.customerPhone, session.tenantId, {
-        currentFlow: 'BOOKING',
-        step: 'BOOKING_CONFIRM',
-        data: { ...(session.data || {}), ...directBooking },
-      });
-      return advance({
-        session: { ...session, ...updated, currentFlow: 'BOOKING', step: 'BOOKING_CONFIRM', data: { ...(session.data || {}), ...directBooking } },
-        message: null,
-        business,
-        tenant,
-      });
+    const isRestaurant = (business?.businessMode || '').toUpperCase() === 'RESTAURANT';
+    const noServices = !(business?.services || []).length;
+
+    if (directBooking && (isRestaurant || noServices)) {
+      const { partySize, date, parsedDate, dateRaw, time } = directBooking;
+      const step = resolveDirectBookingStep({ partySize, date, time, isRestaurant });
+      if (step) {
+        const mergedData = {
+          ...(session.data || {}),
+          ...(partySize ? { partySize } : {}),
+          ...(date ? {
+            date,
+            parsedDate,
+            dateRaw,
+            bookingDateIso: bookingDateIsoFromParsed(parsedDate),
+          } : {}),
+          ...(time ? { time } : {}),
+        };
+        const phone = resolveSessionPhone(session);
+        const updated = await updateSession(phone, session.tenantId, {
+          currentFlow: 'BOOKING',
+          step,
+          data: mergedData,
+        });
+        return advance({
+          session: {
+            ...(typeof session.toObject === 'function' ? session.toObject() : session),
+            ...(updated && typeof updated.toObject === 'function' ? updated.toObject() : updated),
+            customerPhone: phone,
+            tenantId:      session.tenantId,
+            currentFlow:   'BOOKING',
+            step,
+            data:          mergedData,
+          },
+          message: null,
+          business,
+          tenant,
+        });
+      }
     }
     return startFlow({ flowName: 'BOOKING', session, business, tenant });
   });

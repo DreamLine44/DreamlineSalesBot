@@ -8,7 +8,7 @@
 import {
   getLocalNow,
   formatBookingDateLabel,
-  resolveBookingDateInput,
+  validateBookingDate,
   MAX_BOOKING_MONTHS_AHEAD,
 } from './bookingDateParser.js';
 
@@ -63,8 +63,7 @@ export function buildSimpleDayList(tz, headingOrError = null) {
   const now = getLocalNow(tz);
   const today = localMidnight(now);
   const maxDate = maxBookableDate(now);
-  let cursor = today;
-  if (now.getUTCHours() >= 20) cursor = addDays(today, 1);
+  const cursor = today;
 
   const rows = [];
   for (let i = 0; rows.length < 10; i++) {
@@ -117,8 +116,7 @@ export function buildWeekDayList(weekOffset, tz, heading = null) {
   const now = getLocalNow(tz);
   const today = localMidnight(now);
   const maxDate = maxBookableDate(now);
-  let start = addDays(today, weekOffset * 7);
-  if (weekOffset === 0 && now.getUTCHours() >= 20) start = addDays(today, 1);
+  const start = addDays(today, weekOffset * 7);
 
   const rows = [];
   for (let i = 0; i < 7 && rows.length < 10; i++) {
@@ -254,9 +252,13 @@ export function buildMonthDayList({ year, month, tz, page = 0, heading = null })
 export async function resolveDayPick(raw, tz) {
   const parsed = parseDayId(raw);
   if (!parsed) return null;
-  const resolved = await resolveBookingDateInput(
-    `${parsed.getUTCDate()} ${MONTH_NAMES[parsed.getUTCMonth()]} ${parsed.getUTCFullYear()}`,
-    tz,
-  );
-  return resolved.ok ? resolved : null;
+  // List row ids (DATE_D_YYYYMMDD) are already normalized — do not re-parse via NL.
+  const validation = validateBookingDate(parsed, tz);
+  if (validation.error || !validation.parsed) return null;
+  return {
+    ok:    true,
+    raw,
+    parsed: validation.parsed,
+    label: formatBookingDateLabel(validation.parsed, tz),
+  };
 }

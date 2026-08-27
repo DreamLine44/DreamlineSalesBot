@@ -65,3 +65,25 @@ test('parseDayId and parseMonthId round-trip', () => {
   const month = parseMonthId('DATE_M_202608');
   assert.deepEqual(month, { year: 2026, month: 7 });
 });
+
+test('resolveDayPick: DATE_D list id returns exact day without re-parse drift', async () => {
+  const { resolveDayPick } = await import('../services/bookingDatePickerUI.js');
+  const { tryParseDate } = await import('../services/bookingDateParser.js');
+
+  // Use a date relative to "now" (10 days out) instead of a hardcoded
+  // calendar date, so this test doesn't go stale and start failing once
+  // that fixed date is in the past.
+  const now = new Date();
+  const future = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 10));
+  const id = toDayId(future);
+  const day = future.getUTCDate();
+  const monthName = future.toLocaleDateString('en-GB', { month: 'long', timeZone: 'UTC' });
+  const weekdayName = future.toLocaleDateString('en-GB', { weekday: 'long', timeZone: 'UTC' });
+  const year = future.getUTCFullYear();
+
+  const pick = await resolveDayPick(id, TZ);
+  assert.equal(pick.ok, true);
+  assert.match(pick.label, new RegExp(`${day} ${monthName} ${year}`));
+  assert.match(pick.label, new RegExp(weekdayName, 'i'));
+  assert.equal(tryParseDate(`${day} ${monthName} ${year}`, TZ).getUTCDate(), day);
+});

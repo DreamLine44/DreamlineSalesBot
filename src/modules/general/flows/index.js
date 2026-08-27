@@ -64,16 +64,22 @@ export async function handleGeneralQuestion({ session, message, business, tenant
     };
   }
 
-  const { processQuestionMessage, persistQuestionSession } = await import('../../../services/questionAnswerService.js');
-  const reply = await processQuestionMessage({ session, message: raw, business, tenant, intent: 'FAQ' });
+  const { resolveQuestionReply, persistQuestionSession, recordQuestionHistory, finalizeQuestionHandlerReply } = await import('../../../services/questionAnswerService.js');
+  const reply = await resolveQuestionReply({
+    session, message: raw, business, tenant, intent: 'FAQ',
+    initPayload: {
+      type: 'text',
+      body: '❓ What would you like to know? Feel free to type your question.',
+    },
+  });
+  if (reply?.type === 'welcome_sequence') {
+    await recordQuestionHistory(session, raw, reply.sequence?.[0] || reply).catch(() => {});
+    return finalizeQuestionHandlerReply({ session, tenant, reply });
+  }
   await persistQuestionSession(session, tenant, reply.context || { lastMessage: raw });
+  await recordQuestionHistory(session, raw, reply);
 
-  // Answer-only: stay in QUESTION mode and wait — no buttons. Switching activity
-  // is picked up upstream from the customer's own words, not from a tap target.
-  return {
-    type: reply.type || 'text',
-    body: reply.body,
-  };
+  return finalizeQuestionHandlerReply({ session, tenant, reply });
 }
 
 // ── About Handler ─────────────────────────────────────────────────────────────
