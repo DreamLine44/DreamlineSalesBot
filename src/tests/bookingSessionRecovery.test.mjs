@@ -20,6 +20,14 @@ test('isBookingPassthroughRecoveryId recognises booking list/button ids', () => 
   assert.equal(isBookingPassthroughRecoveryId('BOOK'), false);
 });
 
+test('webhook passthrough recognises WhatsApp calendar ISO replies', async () => {
+  const src = (await import('node:fs')).readFileSync(
+    new URL('../controllers/webhookController.js', import.meta.url),
+    'utf8',
+  );
+  assert.match(src, /\\\d\{4\}-\\\d\{2\}-\\\d\{2\}/);
+});
+
 test('isTypedPartySizeRecoveryInput: typed guest count after party-size prompt', () => {
   const session = {
     lastBotMessage: 'How many guests will be dining? 👥\n\nChoose an option below, or type the number of guests.',

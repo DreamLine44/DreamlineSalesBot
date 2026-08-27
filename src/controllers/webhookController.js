@@ -395,6 +395,7 @@ function isFlowPassthroughId(id) {
     /^TIME_M_\d+$/.test(upper)       ||  // hours-aware booking slots (TIME_M_<minutes>)
     /^DATE_D_\d{8}$/.test(upper) ||              // booking month/day picker (DATE_D_YYYYMMDD)
     /^DATE_M_\d{6}$/.test(upper) ||              // booking month picker (DATE_M_YYYYMM)
+    /^\d{4}-\d{2}-\d{2}$/.test(upper) ||         // WhatsApp calendar reply (YYYY-MM-DD)
     /^DATE_DAY_MORE_\d{6}_\d+$/.test(upper) ||  // booking day list pagination
     // [FIX-RESUME-BTN-PT] RESUME_BOT_<phone> is an admin-facing button but must also be in
     // the passthrough set so that if the admin has an active flow when they tap it, the button
