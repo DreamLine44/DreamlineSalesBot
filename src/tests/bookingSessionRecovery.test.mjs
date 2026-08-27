@@ -25,7 +25,7 @@ test('webhook passthrough recognises WhatsApp calendar ISO replies', async () =>
     new URL('../controllers/webhookController.js', import.meta.url),
     'utf8',
   );
-  assert.match(src, /\\\d\{4\}-\\\d\{2\}-\\\d\{2\}/);
+    assert.match(src, /calendar reply \(YYYY-MM-DD\)/);
 });
 
 test('isTypedPartySizeRecoveryInput: typed guest count after party-size prompt', () => {

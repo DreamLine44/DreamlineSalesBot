@@ -166,7 +166,7 @@ function parseRelativeOffsetDays(lower, now) {
 function parseRelativeMonthDay(lower, now) {
   const s = lower.replace(/['']/g, '').replace(/\s+/g, ' ').trim();
 
-  const ordinal = s.match(/^(?:on\s+)?(?:the\s+)?(first|1st|second|2nd|third|3rd|fourth|4th|fifth|5th|sixth|6th|seventh|7th|eighth|8th|ninth|9th|tenth|10th)\s+day?\s+of\s+next\s+month$/);
+    const ordinal = s.match(/^(?:on\s+)?(?:the\s+)?(first|1st|second|2nd|third|3rd|fourth|4th|fifth|5th|sixth|6th|seventh|7th|eighth|8th|ninth|9th|tenth|10th)(?:\s+day)?\s+of\s+next\s+month$/);
   if (ordinal) {
     const day = {
       first: 1, '1st': 1, second: 2, '2nd': 2, third: 3, '3rd': 3,
