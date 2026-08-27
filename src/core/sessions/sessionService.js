@@ -292,7 +292,10 @@ export const updateSession = async (customerPhone, tenantId, updates = {}, inc =
         $set: patch,
         ...(inc && Object.keys(inc).length > 0 ? { $inc: inc } : {}),
       },
-      { new: true }
+      // A session can expire between getSession() and this transition write.
+      // Recreate it atomically so a flow prompt is never rendered from memory
+      // while the next customer reply sees no currentFlow in MongoDB.
+      { new: true, upsert: true, setDefaultsOnInsert: true }
     );
   } catch (error) {
     if (!handleMongoUnavailable('updateSession', error)) throw error;

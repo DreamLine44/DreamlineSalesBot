@@ -20,20 +20,23 @@ function withStubbedSession({ existingHumanMode }, run) {
 
   let findOneCalledWithProjection = null;
   let setPatchPassedToUpdate = null;
+  let updateOptions = null;
 
   Session.findOne = (filter, projection) => {
     findOneCalledWithProjection = projection;
     return { lean: () => Promise.resolve({ humanMode: existingHumanMode }) };
   };
 
-  Session.findOneAndUpdate = (filter, update) => {
+  Session.findOneAndUpdate = (filter, update, options) => {
     setPatchPassedToUpdate = update.$set;
+    updateOptions = options;
     return Promise.resolve({ ...filter, ...update.$set });
   };
 
   return run({
     getFindOneProjection: () => findOneCalledWithProjection,
     getSetPatch: () => setPatchPassedToUpdate,
+    getUpdateOptions: () => updateOptions,
   }).finally(() => {
     Session.findOne = originalFindOne;
     Session.findOneAndUpdate = originalFindOneAndUpdate;
@@ -54,6 +57,14 @@ test('updateSession: preserves 24h humanMode TTL when step changes without human
       `expected ~24h TTL preserved (humanMode was true in DB), got ${(ttlMs / 1000 / 60).toFixed(1)} minutes — ` +
       `this is the exact regression: admin confirming an order silently shrinking an active humanMode session's TTL`
     );
+  });
+});
+
+test('updateSession: recreates a missing session during a flow transition', async () => {
+  await withStubbedSession({ existingHumanMode: false }, async ({ getUpdateOptions }) => {
+    await updateSession('2207000000', 'tenant123', { currentFlow: 'BOOKING', step: 'PARTY_SIZE' });
+    assert.equal(getUpdateOptions().upsert, true);
+    assert.equal(getUpdateOptions().new, true);
   });
 });
 
