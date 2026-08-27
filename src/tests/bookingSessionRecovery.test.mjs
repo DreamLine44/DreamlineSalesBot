@@ -15,6 +15,7 @@ test('isBookingPassthroughRecoveryId recognises booking list/button ids', () => 
   assert.equal(isBookingPassthroughRecoveryId('TIME_7PM'), true);
   assert.equal(isBookingPassthroughRecoveryId('TIME_M_660'), true);
   assert.equal(isBookingPassthroughRecoveryId('DATE_TODAY'), true);
+  assert.equal(isBookingPassthroughRecoveryId('2026-09-02'), true);
   assert.equal(isBookingPassthroughRecoveryId('ORDER'), false);
   assert.equal(isBookingPassthroughRecoveryId('BOOK'), false);
 });
