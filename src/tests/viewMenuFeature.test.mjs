@@ -188,13 +188,13 @@ test('webhookController.js: SELECT_ITEM no longer advertises VIEW_MENU as an ord
 
 test('webhookController.js: active-flow direct orders route through the shared START_ORDER handoff', () => {
   const src = readSource('../controllers/webhookController.js');
-  const directBlock = src.match(/DIRECT-ORDER-SHORTCUT[\s\S]{0,1200}_dispatchDirectOrderRoute/);
+  const directBlock = src.match(/DIRECT-ORDER-SHORTCUT[\s\S]{0,1800}route\(\{[\s\S]*?action: 'START_ORDER'/);
   assert.ok(
     directBlock,
-    'Active-flow direct orders should route through _dispatchDirectOrderRoute → START_ORDER.'
+    'Active-flow direct orders should route through START_ORDER instead of the current menu step.'
   );
   assert.ok(
-    directBlock[0].includes('resolveDirectOrderParse') || src.includes('_hasResolvableDirectOrder'),
+    directBlock[0].includes('parseNaturalOrderMessage') && directBlock[0].includes('parseMultiItemMessage'),
     'The active-flow shortcut must resolve against the live menu before routing.'
   );
 });

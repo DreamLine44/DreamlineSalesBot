@@ -50,7 +50,6 @@
 
 import Session from '../../models/Session.js';
 import logger from '../../config/logger.js';
-import { normalizeCustomerPhone } from '../../utils/customerPhone.js';
 
 // Standard conversation TTL (30 min default, configurable)
 const SESSION_TTL_MS = (parseInt(process.env.SESSION_TTL_MINUTES, 10) || 30) * 60 * 1000;
@@ -68,20 +67,7 @@ const HUMAN_MODE_TTL_MS = (parseInt(process.env.HUMAN_MODE_SESSION_TTL_HOURS, 10
 
 /** Build the composite lookup key stored in Session.phone */
 export function sessionKey(customerPhone, tenantId) {
-  return `${normalizeCustomerPhone(customerPhone)}_${tenantId}`;
-}
-
-/** Legacy keys that may exist before phone normalization (e.g. +220… vs 220…). */
-function sessionLookupKeys(customerPhone, tenantId) {
-  const norm = normalizeCustomerPhone(customerPhone);
-  const tid = String(tenantId);
-  const keys = [];
-  const add = (k) => { if (k && !keys.includes(k)) keys.push(k); };
-  add(`${norm}_${tid}`);
-  const raw = String(customerPhone || '').trim();
-  if (raw && raw !== norm) add(`${raw}_${tid}`);
-  if (norm) add(`+${norm}_${tid}`);
-  return keys;
+  return `${customerPhone}_${tenantId}`;
 }
 
 /**
@@ -124,8 +110,7 @@ function handleMongoUnavailable(label, error) {
  *         flow to restore the name after a GREET reset without re-asking.
  */
 export const createSession = async (customerPhone, tenantId, data = {}) => {
-  const phone = normalizeCustomerPhone(customerPhone);
-  const key = sessionKey(phone, tenantId);
+  const key = sessionKey(customerPhone, tenantId);
   // [FIX-SES-4] Pass both step AND humanMode to resolveTTL so that a session created
   // directly into humanMode (e.g. after TTL restore in webhookController) gets the 24h TTL
   // instead of the default 30-minute one. Previously humanMode was always undefined here.
@@ -146,7 +131,7 @@ export const createSession = async (customerPhone, tenantId, data = {}) => {
       {
         $set: {
           phone:         key,
-          customerPhone: phone,
+          customerPhone,
           tenantId:      String(tenantId),
           phoneNumberId: data.phoneNumberId  || null,
           currentFlow:   data.currentFlow    || null,
@@ -208,15 +193,12 @@ export const createSession = async (customerPhone, tenantId, data = {}) => {
 
 // ─── GET ──────────────────────────────────────────────────────────────────────
 export const getSession = async (customerPhone, tenantId) => {
-  const tid = String(tenantId);
+  const key = sessionKey(customerPhone, tenantId);
   try {
-    for (const key of sessionLookupKeys(customerPhone, tenantId)) {
-      const doc = await Session.findOne({
-        phone: key, tenantId: tid, expiresAt: { $gt: new Date() },
-      });
-      if (doc) return doc;
-    }
-    return null;
+    // Include tenantId as an explicit filter guard in addition to the composite key.
+    // The composite key already encodes tenantId, but an explicit filter prevents
+    // cross-tenant matches if a phone number ever contains an underscore.
+    return await Session.findOne({ phone: key, tenantId: String(tenantId), expiresAt: { $gt: new Date() } });
   } catch (error) {
     if (!handleMongoUnavailable('getSession', error)) throw error;
     return null;
@@ -241,12 +223,8 @@ export const getSession = async (customerPhone, tenantId) => {
  *         Callers pass inc as a second argument: updateSession(phone, tid, set, inc).
  */
 export const updateSession = async (customerPhone, tenantId, updates = {}, inc = {}) => {
-  const phone = normalizeCustomerPhone(customerPhone);
-  const key   = sessionKey(phone, tenantId);
+  const key   = sessionKey(customerPhone, tenantId);
   const patch = { ...updates };
-
-  // Keep customerPhone canonical whenever we touch the session.
-  if (phone) patch.customerPhone = phone;
 
   try {
     // Remove internal hint before writing to DB
@@ -302,12 +280,12 @@ export const updateSession = async (customerPhone, tenantId, updates = {}, inc =
 
 // ─── CLEAR ────────────────────────────────────────────────────────────────────
 export const clearSession = async (customerPhone, tenantId) => {
-  const tid = String(tenantId);
+  const key = sessionKey(customerPhone, tenantId);
   try {
-    for (const key of sessionLookupKeys(customerPhone, tenantId)) {
-      await Session.deleteOne({ phone: key, tenantId: tid });
-    }
-    return { acknowledged: true };
+    // [FIX-SES-3] Include tenantId as an explicit filter to match createSession /
+    // updateSession / getSession. Without it, a composite-key collision (e.g. a phone
+    // number containing an underscore) could delete a session for the wrong tenant.
+    return await Session.deleteOne({ phone: key, tenantId: String(tenantId) });
   } catch (error) {
     if (!handleMongoUnavailable('clearSession', error)) throw error;
     return null;

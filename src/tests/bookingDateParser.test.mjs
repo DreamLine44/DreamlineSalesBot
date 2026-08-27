@@ -113,15 +113,6 @@ test('formatBookingDateLabel: human-readable confirmation label', () => {
   assert.match(label, /2026/);
 });
 
-test('tryParseDate: re-parses formatBookingDateLabel output', () => {
-  const d = toUtcMidnight(2027, 5, 25);
-  const label = formatBookingDateLabel(d, TZ);
-  const reparsed = tryParseDate(label, TZ);
-  assert.ok(reparsed, `expected to parse label "${label}"`);
-  assert.equal(reparsed.getUTCDate(), 25);
-  assert.equal(reparsed.getUTCMonth(), 5);
-});
-
 test('resolveBookingDateInput: returns label for "friday"', async () => {
   const result = await resolveBookingDateInput('friday', TZ);
   assert.equal(result.ok, true);

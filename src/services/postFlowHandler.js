@@ -31,56 +31,8 @@ import { getModeConfig }  from '../config/modes.js';
 import { dispatchMessage } from '../core/whatsapp/dispatcher.js';
 import { buildOptionsReply } from '../core/shared/uiOptionsHelper.js';
 import { isStatusCommand } from './activityStatusService.js';
-import { isInformationalActivityQuestion } from './questionModeHelper.js';
-import {
-  ORDER_DIRECT_RE, BOOKING_DIRECT_RE, DIRECT_INTENT_EXCLUDE_RE, QUESTION_LEADIN_RE,
-} from '../core/intents/intentEngine.js';
-import { isMenuBrowsingIntent } from '../core/intents/menuIntentDetector.js';
-import { looksLikeDate } from './bookingDateParser.js';
-import { isBookingPassthroughRecoveryId, isTypedPartySizeRecoveryInput } from '../core/conversations/flowPassthroughRecovery.js';
 import logger from '../config/logger.js';
 import { formatMoney } from '../utils/formatCurrency.js';
-
-const POST_FLOW_FLOW_START_BUTTONS = new Set([
-  'ORDER', 'START_ORDER', 'BOOK', 'START_BOOKING', 'QUESTION', 'ENQUIRY',
-  'BROWSE_CATALOG', 'WALKIN', 'VIEW_MENU', 'ASK_A_QUESTION',
-  'RESCHEDULE', 'CANCEL_BOOKING',
-]);
-
-/** Date/time/party picks or reschedule taps after a booking request — not generic acks. */
-export function isPostFlowBookingInput(msg, { isInteractive = false, isFlowReply = false, session = null, business = null } = {}) {
-  const raw = String(msg || '').trim();
-  if (!raw) return false;
-
-  const upper = raw.toUpperCase();
-  if (isInteractive && (upper.startsWith('DATE_') || isBookingPassthroughRecoveryId(upper))) return true;
-  if (isInteractive && ['RESCHEDULE', 'CANCEL_BOOKING'].includes(upper)) return true;
-  if (isFlowReply && /^\d{4}-\d{2}-\d{2}$/.test(raw)) return true;
-  if (/^today$/i.test(raw) || /^tomorrow$/i.test(raw) || /^tonight$/i.test(raw)) return true;
-  if (looksLikeDate(raw)) return true;
-  if (!isInteractive && session && business && isTypedPartySizeRecoveryInput(raw, session, business)) return true;
-  return false;
-}
-
-/** Typed phrases or menu buttons that should start a new flow after post-flow ack. */
-export function isPostFlowFlowStartIntent(msg, business, { isInteractive = false } = {}) {
-  const raw = String(msg || '').trim();
-  if (!raw) return false;
-
-  const upper = raw.toUpperCase();
-  if (isInteractive && POST_FLOW_FLOW_START_BUTTONS.has(upper)) return true;
-
-  const clean = raw.toLowerCase();
-  if (DIRECT_INTENT_EXCLUDE_RE.test(clean)) return false;
-  if (QUESTION_LEADIN_RE.test(clean)) return false;
-  if (isInformationalActivityQuestion(raw)) return false;
-
-  const flows = getModeConfig(business).flows || [];
-  if (flows.includes('ORDER') && isMenuBrowsingIntent(clean)) return true;
-  if (flows.includes('BOOKING') && BOOKING_DIRECT_RE.test(clean)) return true;
-  if (flows.includes('ORDER') && ORDER_DIRECT_RE.test(clean)) return true;
-  return false;
-}
 
 // ── Name validation (duplicated from webhookController — avoids circular import) ──
 function isValidName(n) {
@@ -374,7 +326,6 @@ async function getPostFlowAIReply({ customerMessage, business, session, intent, 
 export async function handlePostFlowMessage({
   ackCtx, flowData, session, messageText, isInteractive,
   business, tenantDoc, from, tenantId, custCtx,
-  isFlowReply = false,
 }) {
   const cfg       = getModeConfig(business);
   const bizName   = business?.name || 'us';
@@ -405,21 +356,6 @@ export async function handlePostFlowMessage({
   // [PFH-STATUS] "Track my order/booking" during post-flow must reach the real
   // status lookup — not the generic "What would you like to do next?" menu.
   if (!isInteractive && isStatusCommand(msg)) {
-    await updateSession(from, tenantId, { postFlowAck: null, postFlowData: null });
-    return false;
-  }
-
-  // [PFH-FLOW-START] After order collection/booking completion, customers often
-  // immediately start a new flow ("book a table", "order food"). Those must
-  // fall through to intent routing — not be swallowed by the generic post-flow menu.
-  if (isPostFlowFlowStartIntent(msg, business, { isInteractive })) {
-    await updateSession(from, tenantId, { postFlowAck: null, postFlowData: null });
-    return false;
-  }
-
-  // [PFH-BOOKING-INPUT] Date picks / "today" / reschedule while waiting for admin
-  // must reach the booking flow — not a generic "Thank you!" expression reply.
-  if (isPostFlowBookingInput(msg, { isInteractive, isFlowReply, session, business })) {
     await updateSession(from, tenantId, { postFlowAck: null, postFlowData: null });
     return false;
   }
@@ -894,14 +830,10 @@ export async function handlePostFlowMessage({
         await finishExpressionTurn({ from, tenantId, ackCtx, flowData });
         return true;
       }
-      await dispatchMessage(from, {
-        type:    'buttons',
-        body:    `Your booking request is being reviewed ⏳\n\nTo change the date or time, tap *Reschedule* below.`,
-        buttons: [
-          { id: 'RESCHEDULE',     title: '📅 Reschedule'     },
-          { id: 'CANCEL_BOOKING', title: '❌ Cancel Booking' },
-        ],
-      }, tenantDoc);
+      await sendPostFlowExpression({
+        from, tenantId, ackCtx, flowData, msg, sentiment, business, session,
+        custName, bizName, tenantDoc,
+      });
       return true;
     }
 
@@ -1073,10 +1005,11 @@ async function handleOrderConfirmed({
   // [SPEC-4H] Cancel intent — show confirmation prompt before doing anything
   const CANCEL_RE = /^(cancel|cancel\s*(my\s*)?order|stop|nevermind|never\s*mind|abort)$/i;
   if (CANCEL_RE.test(msg) || upper === 'CANCEL' || upper === 'CANCEL_ORDER') {
-    const { findVisibleActiveOrder } = await import('../services/activityLifecycleService.js');
-    const activeOrd = await findVisibleActiveOrder(from, tenantId, {
-      select: 'item quantity shortId',
-    });
+    const activeOrd = await Order.findOne({
+      customerPhone: from, tenantId,
+      status: { $in: ['confirmed', 'pending'] },
+      paymentStatus: { $nin: ['cancelled', 'rejected'] },
+    }).select('item quantity shortId').sort({ createdAt: -1 }).lean().catch(() => null);
 
     const itemLine  = activeOrd ? `\n\n📦  *${activeOrd.item}* × ${activeOrd.quantity} — _paid_` : '';
     const shortRef  = activeOrd?.shortId || flowData.shortId || '';
@@ -1129,10 +1062,10 @@ async function handleOrderConfirmed({
   // [SPEC-4G] "What did I order?" — show order summary
   const MY_ORDER_RE = /\b(what\s*(did\s*i|have\s*i)\s*order(ed)?|my\s*order|my\s*ref(erence)?|show\s*my\s*order|order\s*details?|what\s*am\s*i\s*(getting|having)|remind\s*me)\b/i;
   if (MY_ORDER_RE.test(msg)) {
-    const { findVisibleActiveOrder } = await import('../services/activityLifecycleService.js');
-    const ord = await findVisibleActiveOrder(from, tenantId, {
-      select: 'item quantity totalPrice shortId paymentStatus status',
-    });
+    const ord = await Order.findOne({
+      customerPhone: from, tenantId,
+      status: { $in: ['confirmed', 'pending'] },
+    }).select('item quantity totalPrice shortId paymentStatus status').sort({ createdAt: -1 }).lean().catch(() => null);
 
     const currency  = business?.payment?.currency || 'D';
     const ordItem   = ord?.item      || flowData.item     || '—';

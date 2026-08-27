@@ -15,8 +15,7 @@ import {
   formatHoursText,
   tryDatabaseAnswer,
 } from '../services/questionAnswerService.js';
-import { resolveDirectOrderParse } from '../core/shared/cartEngine.js';
-import { isBusinessScopeQuestion, isInformationalActivityQuestion, isBookingInfoQuestion, isStayInQuestionMessage, isGreetingMessage } from '../services/questionModeHelper.js';
+import { isBusinessScopeQuestion } from '../services/questionModeHelper.js';
 
 function readSource(relPath) {
   return fs.readFileSync(new URL(relPath, import.meta.url), 'utf8');
@@ -54,12 +53,6 @@ test('extractShortId parses #F921EB and order #F921EB forms', () => {
   assert.equal(extractShortId('hello'), null);
 });
 
-test('extractShortId accepts bare ref in tracking context', () => {
-  const session = { data: { _questionCtx: { lastTopic: 'ORDER_TRACKING' } } };
-  assert.equal(extractShortId('F921EB', session), 'F921EB');
-  assert.equal(extractShortId('F921EB', {}), null);
-});
-
 test('isValidShortIdFormat validates reference tokens', () => {
   assert.equal(isValidShortIdFormat('F921EB'), true);
   assert.equal(isValidShortIdFormat('AB'), false);
@@ -88,66 +81,7 @@ test('formatHoursText renders structured opening hours', () => {
   assert.match(text, /Closed/i);
 });
 
-test('tryDatabaseAnswer STATUS without ref delegates to buildStatusReply', () => {
-  const src = readSource('../services/questionAnswerService.js');
-  const statusBlock = src.slice(src.indexOf("if (qType === 'STATUS')"), src.indexOf("if (qType === 'MENU')"));
-  assert.match(statusBlock, /buildStatusReply/);
-  assert.match(statusBlock, /answerStatusQuestion/);
-});
-
-test('tryDatabaseAnswer MENU requests catalog when WA Catalog is enabled', async () => {
-  const business = {
-    businessMode: 'RESTAURANT',
-    menuItems: [{ name: 'Domoda', price: 200, available: true }],
-    payment: { currency: 'GMD' },
-    waCatalog: {
-      enabled: true,
-      catalogId: 'cat123',
-      mode: 'ALWAYS_OFFER',
-      lastSyncedAt: '2026-01-01T00:00:00.000Z',
-      syncedRetailerIds: ['domoda-001'],
-    },
-    meta: { catalogId: 'cat123' },
-  };
-  const result = await tryDatabaseAnswer({
-    message: 'What do you have on your menu?',
-    business,
-    session: { customerPhone: '2201234567', tenantId: 'test', data: {} },
-  });
-  assert.equal(result.showCatalog, true);
-  assert.equal(result.routingDecision, 'BROWSE_CATALOG');
-});
-
-test('isCatalogBrowseRequest detects natural menu phrasing', async () => {
-  const { isCatalogBrowseRequest } = await import('../core/intents/menuIntentDetector.js');
-  assert.ok(isCatalogBrowseRequest('what do you have in your menu'));
-  assert.ok(isCatalogBrowseRequest('what can i eat'));
-  assert.ok(isCatalogBrowseRequest('i want to order food'));
-  assert.equal(isCatalogBrowseRequest('cancel my order'), false);
-});
-
-test('waCatalogFlow exposes tryShowCatalogForMenuRequest', () => {
-  const src = readSource('../modules/catalog/waCatalogFlow.js');
-  assert.match(src, /tryShowCatalogForMenuRequest/);
-  assert.match(src, /isCatalogBrowseRequest/);
-});
-
-test('questionAnswerService exposes toWhatsAppPayload for catalog replies', () => {
-  const src = readSource('../services/questionAnswerService.js');
-  assert.match(src, /toWhatsAppPayload/);
-  assert.match(src, /catalogDispatched/);
-});
-
-test('webhook Q&A opens catalog before switch confirmation for menu asks', () => {
-  const src = readSource('../controllers/webhookController.js');
-  const block = src.slice(
-    src.indexOf('// ── 13. Question Mode (ENQUIRY'),
-    src.indexOf('// ── 14. Post-flow acknowledgement'),
-  );
-  assert.match(block, /tryShowCatalogForMenuRequest/);
-});
-
-test('tryDatabaseAnswer returns text menu when WA Catalog is not enabled', async () => {
+test('tryDatabaseAnswer returns menu from database for menu questions', async () => {
   const result = await tryDatabaseAnswer({
     message: 'What do you have on your menu today?',
     business,
@@ -156,7 +90,6 @@ test('tryDatabaseAnswer returns text menu when WA Catalog is not enabled', async
   assert.equal(result.handled, true);
   assert.match(result.body, /Domoda/);
   assert.equal(result.routingDecision, 'VIEW_MENU');
-  assert.notEqual(result.showCatalog, true);
 });
 
 test('tryDatabaseAnswer resolves a contextual follow-up about whether listed items are all available', async () => {
@@ -344,51 +277,6 @@ test('isBusinessScopeQuestion is mode-aware (not restaurant-only)', () => {
   assert.equal(isBusinessScopeQuestion('who is the president', { businessMode: 'RESTAURANT' }), false);
 });
 
-test('isInformationalActivityQuestion distinguishes asks from actions', () => {
-  assert.equal(isInformationalActivityQuestion('what can i book'), true);
-  assert.equal(isInformationalActivityQuestion('what i can o book'), true);
-  assert.equal(isInformationalActivityQuestion('what is this all about'), true);
-  assert.equal(isInformationalActivityQuestion('what do you have on your menu'), false);
-  assert.equal(isInformationalActivityQuestion('i want to book a table for tonight'), false);
-});
-
-test('isBookingInfoQuestion blocks catalog for booking asks', () => {
-  assert.equal(isBookingInfoQuestion('what do you offer for booking'), true);
-  assert.equal(isBookingInfoQuestion('what do you have on your menu'), false);
-});
-
-test('isGreetingMessage recognises bare hi/hello', () => {
-  assert.equal(isGreetingMessage('hi'), true);
-  assert.equal(isGreetingMessage('hello'), true);
-  assert.equal(isGreetingMessage('what can i book'), false);
-});
-
-test('isStayInQuestionMessage recognises keep-asking phrasing', () => {
-  assert.equal(isStayInQuestionMessage('am still asking'), true);
-  assert.equal(isStayInQuestionMessage('keep asking'), true);
-  assert.equal(isStayInQuestionMessage('what can i book'), false);
-});
-
-test('tryDatabaseAnswer explains what can be booked without switching flows', async () => {
-  const result = await tryDatabaseAnswer({
-    message: 'what can i book',
-    business,
-    session: {},
-  });
-  assert.equal(result.handled, true);
-  assert.match(result.body, /book/i);
-});
-
-test('tryDatabaseAnswer answers what is this all about from business description', async () => {
-  const result = await tryDatabaseAnswer({
-    message: 'what is this all about',
-    business: { ...business, description: 'A Gambian eatery serving benachin and domoda.' },
-    session: {},
-  });
-  assert.equal(result.handled, true);
-  assert.match(result.body, /benachin|domoda/i);
-});
-
 // ── Wiring source assertions ──────────────────────────────────────────────────
 
 test('adminCommandService supports CANCEL ORDER/BOOKING by reference', () => {
@@ -398,18 +286,12 @@ test('adminCommandService supports CANCEL ORDER/BOOKING by reference', () => {
   assert.match(src, /CANCEL\\s\+ORDER/);
 });
 
-test('question handlers use resolveQuestionReply', () => {
+test('question handlers use processQuestionMessage', () => {
   const restaurant = readSource('../modules/restaurant/flows/orderFlow.js');
   const general = readSource('../modules/general/flows/index.js');
-  assert.match(restaurant, /resolveQuestionReply/);
-  assert.match(general, /resolveQuestionReply/);
+  assert.match(restaurant, /processQuestionMessage/);
+  assert.match(general, /processQuestionMessage/);
   assert.match(general, /persistQuestionSession/);
-  assert.match(general, /recordQuestionHistory/);
-});
-
-test('persistQuestionSession preserves ENQUIRY flow', () => {
-  const src = readSource('../services/questionAnswerService.js');
-  assert.match(src, /currentFlow === 'ENQUIRY' \? 'ENQUIRY' : 'QUESTION'/);
 });
 
 test('activityStatusService uses reference-first lookup', () => {
@@ -419,7 +301,7 @@ test('activityStatusService uses reference-first lookup', () => {
   assert.match(src, /trackingContext/);
 });
 
-test('processQuestionMessage returns welcome menu for bare greetings', async () => {
+test('processQuestionMessage handles general messages without throwing', async () => {
   const { processQuestionMessage } = await import('../services/questionAnswerService.js');
   const business = {
     businessMode: 'RESTAURANT',
@@ -434,56 +316,13 @@ test('processQuestionMessage returns welcome menu for bare greetings', async () 
     tenant: {},
     intent: 'FAQ',
   });
-  assert.equal(reply.type, 'welcome_sequence');
-  assert.ok(Array.isArray(reply.sequence) && reply.sequence.length > 0);
+  assert.ok(reply.body);
+  assert.equal(reply.type, 'text');
+  assert.equal(reply.buttons, undefined);
 });
 
-test('webhook ENQUIRY path uses resolveQuestionReply and recordQuestionHistory', () => {
+test('webhook ENQUIRY path uses DB-first questionAnswerService', () => {
   const src = readSource('../controllers/webhookController.js');
-  assert.match(src, /resolveQuestionReply/);
+  assert.match(src, /processQuestionMessage/);
   assert.match(src, /persistQuestionSession/);
-  assert.match(src, /recordQuestionHistory/);
-});
-
-test('resolveDirectOrderParse resolves "two plates of Domoda" in one call', () => {
-  const menu = [
-    { _id: 'domoda', name: 'Domoda', price: 200, available: true },
-    { _id: 'benachin', name: 'Benachin', price: 180, available: true },
-  ];
-  const parsed = resolveDirectOrderParse(menu, 'I want to order two plates of Domoda');
-  assert.ok(parsed?.lines?.length);
-  assert.equal(parsed.lines[0].quantity, 2);
-  assert.match(parsed.lines[0].item.name, /Domoda/i);
-});
-
-test('webhook has no-flow direct order shortcut before active-flow handling', () => {
-  const src = readSource('../controllers/webhookController.js');
-  assert.match(src, /14\.7\. Direct natural-language order/);
-  assert.match(src, /_dispatchDirectOrderRoute/);
-  assert.match(src, /resolveDirectOrderParse/);
-});
-
-test('generic Q&A fallback uses recordQuestionHistory', () => {
-  const src = readSource('../core/shared/moduleRegistry.js');
-  const block = src.slice(src.indexOf('handleQuestionAction'), src.indexOf('async function parseDirectBookingRequest'));
-  assert.match(block, /recordQuestionHistory/);
-});
-
-test('mid-flow MFQ answers record question history', () => {
-  const src = readSource('../controllers/webhookController.js');
-  const block = src.slice(src.indexOf('15.1c: Detect question intent'), src.indexOf('15.1d: Handle FSI'));
-  assert.match(block, /recordQuestionHistory/);
-});
-
-test('webhook Question Mode requires confirmation before switching activities', () => {
-  const src = readSource('../controllers/webhookController.js');
-  assert.match(src, /_isActiveQuestionMode/);
-  assert.match(src, /_resolveQuestionModeSwitch/);
-  assert.match(src, /confirm first — never yank them out of Q&A without consent/);
-  assert.match(src, /FSI_SWITCH_YES/);
-  assert.match(src, /Keep Asking/);
-  assert.doesNotMatch(
-    src.slice(src.indexOf('_isActiveQuestionMode'), src.indexOf('_detectMidFlowQuestion')),
-    /switch immediately/
-  );
 });

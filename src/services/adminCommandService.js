@@ -155,8 +155,6 @@ export async function handleAdminButtonReply(buttonId, tenantId, adminPhone, ten
 
   const upper = String(buttonId).toUpperCase();
 
-  if (upper.startsWith('APPROVE_CASH_')) return approveCashRequest(upper.replace('APPROVE_CASH_', ''), tenantId, adminPhone, tenantDoc, business);
-  if (upper.startsWith('REJECT_CASH_'))  return rejectCashRequest(upper.replace('REJECT_CASH_', ''),  tenantId, adminPhone, tenantDoc, business);
   if (upper.startsWith('APPROVE_'))      return confirmPayment(upper.replace('APPROVE_', ''),      tenantId, adminPhone, tenantDoc, business);
   if (upper.startsWith('REJECT_'))       return rejectPayment(upper.replace('REJECT_', ''),        tenantId, adminPhone, tenantDoc, business);
   if (upper.startsWith('CONFIRM_BOOK_')) return confirmBooking(upper.replace('CONFIRM_BOOK_', ''), tenantId, adminPhone, tenantDoc);
@@ -192,12 +190,6 @@ export async function handleAdminTextCommand(text, tenantId, adminPhone, tenantD
   // [FIX-CMD-10] Widened from [A-F0-9] (hex-only) to [A-Z0-9] so alphanumeric shortIds
   // (e.g. "A1B2G3") are accepted. Hex-only would silently fail to match if the order
   // system uses non-hex characters in its shortId scheme.
-  const approveCashMatch = upper.match(/^APPROVE\s+CASH\s+([A-Z0-9]{4,24})$/);
-  if (approveCashMatch) return approveCashRequest(approveCashMatch[1], tenantId, adminPhone, tenantDoc, business);
-
-  const rejectCashMatch = upper.match(/^REJECT\s+CASH\s+([A-Z0-9]{4,24})$/);
-  if (rejectCashMatch) return rejectCashRequest(rejectCashMatch[1], tenantId, adminPhone, tenantDoc, business);
-
   const approveMatch = upper.match(/^APPROVE\s+([A-Z0-9]{4,24})$/);
   if (approveMatch) return confirmPayment(approveMatch[1], tenantId, adminPhone, tenantDoc, business);
 
@@ -343,9 +335,7 @@ Use \`RESUME BOT <phone>\` to resume a specific customer.`;
       `⚠️ *Unrecognised command format.*\n\n` +
       `Valid admin commands:\n` +
       `✅ \`APPROVE <shortId>\`\n` +
-      `💵 \`APPROVE CASH <shortId>\`\n` +
       `❌ \`REJECT <shortId>\`\n` +
-      `💵 \`REJECT CASH <shortId>\`\n` +
       `🛑 \`CANCEL ORDER #<shortId>\`\n` +
       `🛑 \`CANCEL BOOKING #<shortId>\`\n` +
       `🛑 \`CANCEL #<shortId>\`\n` +
@@ -549,136 +539,6 @@ async function confirmPayment(shortId, tenantId, adminPhone, tenantDoc, business
     // reply, consistent with [FIX-CMD-4]'s "never silently drop an admin message" goal.
     logger.error('[AdminCmd] confirmPayment failed', { shortId, adminPhone, err: err.message });
     return `⚠️ Something went wrong confirming order #${shortId}. Please try again.`;
-  }
-}
-
-// ── Approve cash payment request (PAYMENT_PROOF — not payment received) ───────
-async function approveCashRequest(shortId, tenantId, adminPhone, tenantDoc, business) {
-  try {
-    const order = await Order.findOneAndUpdate(
-      {
-        shortId, tenantId,
-        cashRequestStatus: 'pending',
-        paymentStatus:     'unpaid',
-        status:            { $nin: ['cancelled', 'rejected'] },
-      },
-      { $set: {
-        cashRequestStatus:     'approved',
-        paymentMethod:         'cash',
-        cashRequestReviewedBy: adminPhone,
-        cashRequestReviewedAt: new Date(),
-      }},
-      { new: false },
-    ).select('_id customerPhone item quantity totalPrice shortId paymentReference paymentStatus').lean();
-
-    if (!order) {
-      const existing = await Order.findOne({ shortId, tenantId })
-        .select('cashRequestStatus paymentStatus status').lean().catch(() => null);
-      if (!existing) return `⚠️ No order found: ${shortId}`;
-      if (existing.cashRequestStatus === 'approved') return `ℹ️ Cash request for #${shortId} already approved.`;
-      if (existing.cashRequestStatus !== 'pending') return `⚠️ No pending cash request for order #${shortId}.`;
-      return `⚠️ Order #${shortId} can't be updated — current status is *${existing.status}*.`;
-    }
-
-    const ref = order.paymentReference || `#${order.shortId || shortId}`;
-
-    await updateSession(order.customerPhone, tenantId, {
-      currentFlow: 'ORDER',
-      step:        'AWAIT_ADMIN_CONFIRM',
-    }).catch(() => {});
-
-    await dispatchMessage(order.customerPhone, {
-      type: 'text',
-      body:
-        `✅ *Cash payment approved!*\n\n` +
-        `Your request for order *${ref}* has been approved.\n\n` +
-        `💵 You can pay in cash when you collect or receive your order.\n\n` +
-        `⏳ We'll confirm your order shortly — please wait. 🙏`,
-    }, tenantDoc).catch(err => logger.warn('[AdminCmd] approveCashRequest: customer dispatch failed', {
-      customerPhone: order.customerPhone, err: err.message,
-    }));
-
-    await dispatchMessage(adminPhone, {
-      type:    'buttons',
-      body:
-        `✅ *Cash payment approved* for order #${order.shortId || shortId}.\n\n` +
-        `Customer ${order.customerPhone} notified. Tap below when you're ready to confirm the order:`,
-      buttons: [
-        { id: `APPROVE_${order.shortId || shortId}`, title: '✅ Confirm Order' },
-        { id: `REJECT_${order.shortId || shortId}`,  title: '❌ Cancel Order'  },
-      ],
-    }, tenantDoc).catch(err => logger.warn('[AdminCmd] approveCashRequest: admin dispatch failed', {
-      adminPhone, err: err.message,
-    }));
-
-    logger.info('[AdminCmd] Cash payment request approved', { shortId, adminPhone });
-    return null;
-  } catch (err) {
-    logger.error('[AdminCmd] approveCashRequest failed', { shortId, adminPhone, err: err.message });
-    return `⚠️ Something went wrong approving cash request for #${shortId}. Please try again.`;
-  }
-}
-
-// ── Reject cash payment request — return customer to payment instructions ────
-async function rejectCashRequest(shortId, tenantId, adminPhone, tenantDoc, business) {
-  try {
-    const order = await Order.findOneAndUpdate(
-      {
-        shortId, tenantId,
-        cashRequestStatus: 'pending',
-        paymentStatus:     'unpaid',
-        status:            { $nin: ['cancelled', 'rejected'] },
-      },
-      { $set: {
-        cashRequestStatus:     'rejected',
-        cashRequestReviewedBy: adminPhone,
-        cashRequestReviewedAt: new Date(),
-      }},
-      { new: true },
-    ).select('_id customerPhone item totalPrice shortId paymentReference').lean();
-
-    if (!order) {
-      const existing = await Order.findOne({ shortId, tenantId })
-        .select('cashRequestStatus status').lean().catch(() => null);
-      if (!existing) return `⚠️ No order found: ${shortId}`;
-      if (existing.cashRequestStatus === 'rejected') return `ℹ️ Cash request for #${shortId} already rejected.`;
-      return `⚠️ No pending cash request for order #${shortId}.`;
-    }
-
-    const { buildPaymentInstructionsUI } = await import('./paymentService.js');
-    const paymentUI = buildPaymentInstructionsUI(
-      business,
-      order.totalPrice,
-      order.shortId,
-      order.paymentReference || null,
-    );
-
-    await updateSession(order.customerPhone, tenantId, {
-      currentFlow: 'ORDER',
-      step:        'PAYMENT_PROOF',
-    }).catch(() => {});
-
-    await dispatchMessage(order.customerPhone, {
-      type: 'text',
-      body:
-        `❌ *Cash payment request not approved*\n\n` +
-        `Your cash payment request for order *#${order.shortId || shortId}* was not approved.\n\n` +
-        `Please complete payment using one of the options below:`,
-    }, tenantDoc).catch(err => logger.warn('[AdminCmd] rejectCashRequest: intro dispatch failed', {
-      customerPhone: order.customerPhone, err: err.message,
-    }));
-
-    await dispatchMessage(order.customerPhone, paymentUI, tenantDoc).catch(err =>
-      logger.warn('[AdminCmd] rejectCashRequest: payment UI dispatch failed', {
-        customerPhone: order.customerPhone, err: err.message,
-      })
-    );
-
-    logger.info('[AdminCmd] Cash payment request rejected', { shortId, adminPhone });
-    return `❌ *Cash request rejected*\n\nOrder #${shortId} — customer ${order.customerPhone} returned to payment instructions.`;
-  } catch (err) {
-    logger.error('[AdminCmd] rejectCashRequest failed', { shortId, adminPhone, err: err.message });
-    return `⚠️ Something went wrong rejecting cash request for #${shortId}. Please try again.`;
   }
 }
 

@@ -125,7 +125,7 @@ test('modules/restaurant/flows/orderFlow.js: handleRestaurantQuestion answers im
   );
   assert.match(
     block,
-    /resolveQuestionReply/,
-    'handleRestaurantQuestion must answer via resolveQuestionReply when given real text'
+    /processQuestionMessage/,
+    'handleRestaurantQuestion must answer via processQuestionMessage when given real text'
   );
 });
