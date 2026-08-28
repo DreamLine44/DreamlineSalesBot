@@ -174,6 +174,14 @@ export async function startFlow({ flowName, session, business, tenant, message =
   }
 
   const updated = await updateSession(session.customerPhone, session.tenantId, sessionPatch);
+  // Do not render the first flow prompt from an in-memory snapshot when the
+  // transition write returned no document. A vanished/expired session must be
+  // recreated before the customer can answer the prompt.
+  const persisted = updated || await createSession(session.customerPhone, session.tenantId, {
+    ...sessionPatch,
+    phoneNumberId: session.phoneNumberId || null,
+    customerName: session.customerName || null,
+  });
 
   const handler = FLOW_REGISTRY.get(key) || GENERIC_REGISTRY.get(flowName.toUpperCase());
   if (!handler) {
@@ -188,7 +196,7 @@ export async function startFlow({ flowName, session, business, tenant, message =
   // Call handler with the forwarded message (null for a genuine fresh-tap start,
   // to trigger first-step UI; the customer's real text when one was passed in,
   // so it gets answered on this call instead of being thrown away).
-  const freshSession = updated || session;
+  const freshSession = persisted || session;
   const response = await handler({ session: freshSession, message, business, tenant, isInteractive: false });
   return suppressLegacyMenuOption(response, business);
 }
