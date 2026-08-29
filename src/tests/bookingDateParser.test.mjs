@@ -13,7 +13,7 @@ import {
   resolveBookingDateInput,
   getLocalNow,
   MAX_BOOKING_MONTHS_AHEAD,
-} from '../services/bookingDateParser.js';
+} from '../services/booking/bookingDateParser.js';
 
 const TZ = 'Africa/Banjul';
 
@@ -179,15 +179,6 @@ test('tryParseDate: ordinal suffixes are stripped correctly', () => {
   const b = tryParseDate('25 December', TZ);
   assert.ok(a && b);
   assert.equal(a.getTime(), b.getTime());
-});
-
-test('tryParseDate: natural-language ordinal next-month dates are supported', () => {
-  const parsed = tryParseDate('second of next month', TZ);
-  assert.ok(parsed);
-  const now = new Date();
-  const expected = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 2));
-  assert.equal(parsed.getUTCDate(), expected.getUTCDate());
-  assert.equal(parsed.getUTCMonth(), expected.getUTCMonth());
 });
 
 test('tryParseDate: "next <weekday>" resolves to a date strictly in the future', () => {

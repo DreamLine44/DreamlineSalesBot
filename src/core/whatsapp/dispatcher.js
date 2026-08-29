@@ -15,6 +15,7 @@
 
 import logger from '../../config/logger.js';
 import { decryptToken } from '../../controllers/tenantController.js';
+import { logAudit } from '../../services/admin/auditService.js';
 
 const SIM_MODE = () => process.env.SIMULATION_MODE === 'true';
 
@@ -632,6 +633,27 @@ export async function dispatchMessage(to, ui, tenant) {
       type: ui.type,
       status: resp.status,
     });
+
+    // [AUDIT-FIX-AUDITLOG-WIRE] customer_notified — documented in AuditLog.js as
+    // "a customer-facing message was dispatched" but logAudit() was never called
+    // anywhere. dispatchMessage() is the single choke point every outbound customer
+    // message passes through (dispatchText/dispatchTemplate both call this function
+    // too), so one call here — right after a real Meta send actually succeeds —
+    // covers every customer notification in the app instead of needing a call site
+    // at each of the dozens of places that build a UI payload. Deliberately placed
+    // AFTER the success check (not in the SIM_MODE early-return above) so simulated/
+    // test sends that never reach a real customer don't get logged. tenantId is
+    // read defensively since dispatcher.js only ever receives whatever tenant doc
+    // its caller passed in.
+    if (tenant?._id) {
+      logAudit({
+        tenantId: tenant._id,
+        actor:    'system',
+        action:   'customer_notified',
+        metadata: { to, type: ui.type },
+      });
+    }
+
     return resp;
   } catch (err) {
     logger.error('[Dispatch] ✗ Network error sending to Meta API', {

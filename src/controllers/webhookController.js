@@ -135,7 +135,7 @@ import { INTENT_PATTERNS }                           from '../core/intents/patte
 // intentEngine.js's own pre-flow step 4.5 uses, reused here so the mid-flow
 // switch intercept below can never silently drift from the pre-flow behavior.
 import { ORDER_DIRECT_RE, BOOKING_DIRECT_RE, DIRECT_INTENT_EXCLUDE_RE, QUESTION_LEADIN_RE } from '../core/intents/intentEngine.js';
-import { isInformationalActivityQuestion, isStayInQuestionMessage, isGreetingMessage, isHumanHandoffRequest } from '../services/questionModeHelper.js';
+import { isInformationalActivityQuestion, isStayInQuestionMessage, isGreetingMessage, isHumanHandoffRequest } from '../services/question/questionModeHelper.js';
 import { findBestMatch }                             from '../utils/matchEngine.js';
 import { updateName as persistCustomerName }         from '../core/memory/customerMemory.js';
 import { advance, startFlow }                        from '../core/conversations/flowEngine.js';
@@ -160,8 +160,8 @@ import { handlePostFlowMessage }                     from '../services/postFlowH
 // hit intent detection (GREET → welcome screen, ACKNOWLEDGE → micro-reply with no order
 // context) instead of the correct context-aware order-state card. This also caused the
 // "Ok/Hello after payment confirmation gets no order-aware response" bug seen in production.
-import { resolveActiveOrder }                        from '../services/activeOrderResolver.js';
-import { isStatusCommand }                           from '../services/activityStatusService.js';
+import { resolveActiveOrder }                        from '../services/order/activeOrderResolver.js';
+import { isStatusCommand }                           from '../services/activity/activityStatusService.js';
 import Tenant           from '../models/Tenant.js';
 import BusinessConfig   from '../models/BusinessConfig.js';
 import ProcessedMessage from '../models/ProcessedMessage.js';
@@ -173,6 +173,7 @@ import ProcessedMessage from '../models/ProcessedMessage.js';
 import Order            from '../models/Order.js';
 import logger           from '../config/logger.js';
 import { formatMoney }  from '../utils/formatCurrency.js';
+import { logAudit }     from '../services/admin/auditService.js';
 import crypto           from 'crypto';
 
 // [DEPLOY-VERIFY] Bumped whenever the signature-verification or catalog-gate logic in
@@ -395,7 +396,6 @@ function isFlowPassthroughId(id) {
     /^TIME_M_\d+$/.test(upper)       ||  // hours-aware booking slots (TIME_M_<minutes>)
     /^DATE_D_\d{8}$/.test(upper) ||              // booking month/day picker (DATE_D_YYYYMMDD)
     /^DATE_M_\d{6}$/.test(upper) ||              // booking month picker (DATE_M_YYYYMM)
-    /^\d{4}-\d{2}-\d{2}$/.test(upper) ||         // WhatsApp calendar reply (YYYY-MM-DD)
     /^DATE_DAY_MORE_\d{6}_\d+$/.test(upper) ||  // booking day list pagination
     // [FIX-RESUME-BTN-PT] RESUME_BOT_<phone> is an admin-facing button but must also be in
     // the passthrough set so that if the admin has an active flow when they tap it, the button
@@ -1575,7 +1575,7 @@ async function _handleIncomingMessageSerialized({ tenantId, tenantDoc, from, msg
     phoneNumberId: phoneNumberId || session.phoneNumberId,
   }, { messageCount: 1 }).catch(err => logger.warn('[Webhook] Non-critical session update failed', { err: err.message, from }));
 
-  const { expireStaleActivities } = await import('../services/activityLifecycleService.js');
+  const { expireStaleActivities } = await import('../services/activity/activityLifecycleService.js');
   await expireStaleActivities(from, tenantId).catch(() => {});
 
   // ── 4.6 [CATALOG-ORDER-WIRE] WA Catalog checkout ("order" message) ─────────
@@ -1645,7 +1645,7 @@ async function _handleIncomingMessageSerialized({ tenantId, tenantDoc, from, msg
     // [PFH-3 / BIZ-HOURS] Exempt customers with active confirmed orders from the closed gate.
     // A customer who just paid and is waiting for their order must not receive "we're closed"
     // — it's confusing, alarming, and wrong. We let their message through to postFlowAck.
-    const { hasVisibleActiveOrder } = await import('../services/activityLifecycleService.js');
+    const { hasVisibleActiveOrder } = await import('../services/activity/activityLifecycleService.js');
     const hasActiveOrder = await hasVisibleActiveOrder(from, tenantId);
 
     if (!hasActiveOrder) {
@@ -1717,7 +1717,7 @@ async function _handleIncomingMessageSerialized({ tenantId, tenantDoc, from, msg
       upper.startsWith('MARK READY ')   ||
       upper === 'RESUME BOT' || upper.startsWith('RESUME BOT ')
     ) {
-      const { handleAdminTextCommand, isAdminPhone } = await import('../services/adminCommandService.js');
+      const { handleAdminTextCommand, isAdminPhone } = await import('../services/admin/adminCommandService.js');
       // [FIX-X2] Pass pre-fetched business and tenantDoc so isAdminPhone skips both DB queries.
       const isAdmin = await isAdminPhone(from, tenantId, business, tenantDoc).catch(() => false);
       if (isAdmin) {
@@ -1749,7 +1749,7 @@ async function _handleIncomingMessageSerialized({ tenantId, tenantDoc, from, msg
       upper.startsWith('CONFIRM_BOOK_') || upper.startsWith('DECLINE_BOOK_') ||
       upper.startsWith('READY_') || upper.startsWith('RESUME_BOT_')
     )) {
-      const { handleAdminButtonReply, isAdminPhone } = await import('../services/adminCommandService.js');
+      const { handleAdminButtonReply, isAdminPhone } = await import('../services/admin/adminCommandService.js');
       // [FIX-X2] Pass pre-fetched business and tenantDoc so isAdminPhone skips both DB queries.
       const isAdmin = await isAdminPhone(from, tenantId, business, tenantDoc).catch(() => false);
       if (isAdmin) {
@@ -1775,7 +1775,7 @@ async function _handleIncomingMessageSerialized({ tenantId, tenantDoc, from, msg
 
     // Customer cancel — bare "cancel" or "cancel #F93217"
     if (/\bcancel\b/i.test(messageText)) {
-      const { tryCustomerCancelRequest } = await import('../services/activityLifecycleService.js');
+      const { tryCustomerCancelRequest } = await import('../services/activity/activityLifecycleService.js');
       const cancelReply = await tryCustomerCancelRequest({
         message: messageText, customerPhone: from, tenantId, business, tenant: tenantDoc, session,
       }).catch(() => null);
@@ -2044,7 +2044,7 @@ async function _handleIncomingMessageSerialized({ tenantId, tenantDoc, from, msg
     const isSuppPOL = upperPOL === 'SUPPORT';
 
     // [FIX-IMPORT-2] Order now a top-level import — removed redundant dynamic import
-    const { buildPendingOrderLockFilter } = await import('../services/activityLifecycleService.js');
+    const { buildPendingOrderLockFilter } = await import('../services/activity/activityLifecycleService.js');
     const pendingOrder = await Order.findOne(
       buildPendingOrderLockFilter(from, tenantId),
     ).select('_id item quantity shortId paymentStatus').sort({ createdAt: -1 }).lean().catch(() => null);
@@ -2224,7 +2224,7 @@ async function _handleIncomingMessageSerialized({ tenantId, tenantDoc, from, msg
       return;
     }
 
-    const { resolveQuestionReply, persistQuestionSession, recordQuestionHistory, toWhatsAppPayload } = await import('../services/questionAnswerService.js');
+    const { resolveQuestionReply, persistQuestionSession, recordQuestionHistory, toWhatsAppPayload } = await import('../services/question/questionAnswerService.js');
     const { tryShowCatalogForMenuRequest } = await import('../modules/catalog/waCatalogFlow.js');
 
     // Human-handoff requests must escalate immediately — "i want to talk to human"
@@ -2539,7 +2539,7 @@ async function _handleIncomingMessageSerialized({ tenantId, tenantDoc, from, msg
       }).lean().catch(() => null);
 
       if (pickedOrder) {
-        const { formatOrderStatusCard } = await import('../services/activityStatusService.js');
+        const { formatOrderStatusCard } = await import('../services/activity/activityStatusService.js');
         await dispatchMessage(from, {
           type: 'buttons',
           body: formatOrderStatusCard(pickedOrder, business),
@@ -2558,7 +2558,7 @@ async function _handleIncomingMessageSerialized({ tenantId, tenantDoc, from, msg
     const pickedShortId = messageText.trim().toUpperCase().replace('BOOKING_STATUS_', '');
     if (pickedShortId) {
       const { default: Booking } = await import('../models/Booking.js');
-      const { formatBookingStatusCard } = await import('../services/activityStatusService.js');
+      const { formatBookingStatusCard } = await import('../services/activity/activityStatusService.js');
       const pickedBooking = await Booking.findOne({
         shortId: pickedShortId, tenantId, customerPhone: from,
         status: { $in: ['pending', 'confirmed'] },
@@ -2592,10 +2592,24 @@ async function _handleIncomingMessageSerialized({ tenantId, tenantDoc, from, msg
       // order as completed, even though it wasn't theirs. Scoped to match the same
       // customerPhone + tenantId pattern used by every other customer-triggered
       // order write in this file.
-      await Order.findOneAndUpdate(
+      const completedOrder = await Order.findOneAndUpdate(
         { shortId: shortIdCollect, tenantId, customerPhone: from, status: { $in: ['ready', 'confirmed'] } },
-        { $set: { status: 'completed', completedAt: new Date() } }
-      ).catch(() => {});
+        { $set: { status: 'completed', completedAt: new Date() } },
+        { new: true },
+      ).select('_id').lean().catch(() => null);
+
+      // [AUDIT-FIX-AUDITLOG-WIRE] order_completed — documented in AuditLog.js but
+      // logAudit() was never called from this COLLECTED_<shortId> button-tap path.
+      if (completedOrder) {
+        logAudit({
+          tenantId,
+          orderId: completedOrder._id,
+          actor: 'customer',
+          actorId: from,
+          action: 'order_completed',
+          metadata: { shortId: shortIdCollect },
+        });
+      }
     }
     const bizName = business?.name || 'us';
     await dispatchMessage(from, {
@@ -2635,7 +2649,7 @@ async function _handleIncomingMessageSerialized({ tenantId, tenantDoc, from, msg
   // no-flow fast path and the mid-flow STATUS escape share one definition.)
   if (messageText && isStatusCommand(messageText) && !session.currentFlow) {
     try {
-      const { buildStatusReply } = await import('../services/activityStatusService.js');
+      const { buildStatusReply } = await import('../services/activity/activityStatusService.js');
       const statusReply = await buildStatusReply({
         session: { ...session, customerPhone: from },
         business,
@@ -2937,6 +2951,24 @@ async function _handleIncomingMessageSerialized({ tenantId, tenantDoc, from, msg
       // SELECT_SERVICE and SELECT_STYLIST use dynamic SVC_* / STYLIST_* IDs covered by
       // isFlowPassthroughId() regex — no static set needed. Omitting them is correct.
     };
+    // [AUDIT-FIX-RECOVERY-1] Global escape button IDs — must always be actionable
+    // no matter which step's allowed-button set they're validated against. These
+    // are exactly the recovery/reset affordances the bot itself hands the customer
+    // from system-level fallback messages (flowEngine's "No active session" / "not
+    // available right now" replies, loop-guard hints, etc.), so rejecting a tap on
+    // one of them as "stale" is always wrong — there is no step at which "start
+    // over" or "cancel" should ever be an invalid response.
+    //
+    // Previously each STEP_VALID_BUTTONS entry had to explicitly list SHOW_MENU/
+    // CANCEL for a tap to succeed, and several steps didn't (CONFIRM, ITEM_ADDED,
+    // EDIT_CART_MENU, UPSELL, EDIT_CART_PICK's guarded steps, etc.). Concretely: a
+    // customer whose session/flow was lost (e.g. TTL expiry) and who tapped the
+    // bot's own "🔄 Start Over" button in response got THIS gate's "⚠️ That option
+    // is no longer available at this stage of your order" instead of actually
+    // starting over — a permanent dead end, since every subsequent tap hit the
+    // exact same stale step. Exempting these IDs here closes that loop for good,
+    // independent of whether any single step's allow-list happens to include them.
+    const GLOBAL_ESCAPE_BUTTON_IDS = new Set(['SHOW_MENU', 'CANCEL', 'CANCEL_ORDER', 'CANCEL_BOOKING', 'SUPPORT']);
     const upperMsg = messageText.trim().toUpperCase();
     const currentStep = session.step;
     const pendingNaturalQuantity = session.data?.pendingNaturalQuantity;
@@ -2952,7 +2984,8 @@ async function _handleIncomingMessageSerialized({ tenantId, tenantDoc, from, msg
     if (isInteractive && !isListReply && currentStep && STEP_VALID_BUTTONS[currentStep] !== undefined) {
       const validSet = STEP_VALID_BUTTONS[currentStep];
       // Only enforce when the set is non-empty (empty means free-text step, no valid buttons)
-        if (validSet.size > 0 && !validSet.has(upperMsg) && upperMsg !== 'BROWSE_CATALOG'
+        if (validSet.size > 0 && !validSet.has(upperMsg) && !GLOBAL_ESCAPE_BUTTON_IDS.has(upperMsg)
+          && upperMsg !== 'BROWSE_CATALOG'
           && !isFlowPassthroughId(upperMsg) && !pendingNaturalCandidate) {
         await dispatchMessage(from, {
           type: 'text',
@@ -3506,7 +3539,7 @@ async function _handleIncomingMessageSerialized({ tenantId, tenantDoc, from, msg
 
         // Use the DB-first question layer here too. It resolves contextual menu
         // references against the current catalog before falling back to Groq.
-        const { processQuestionMessage, recordQuestionHistory, toWhatsAppPayload } = await import('../services/questionAnswerService.js');
+        const { processQuestionMessage, recordQuestionHistory, toWhatsAppPayload } = await import('../services/question/questionAnswerService.js');
         const questionReply = await processQuestionMessage({
           session: flowlessSession, message: messageText, business, tenant: tenantDoc, intent: 'QUESTION',
         }).catch(() => null);
@@ -3613,7 +3646,7 @@ async function _handleIncomingMessageSerialized({ tenantId, tenantDoc, from, msg
         const fsiSwitchFlow = session.currentFlow;
         const fsiSwitchStep = session.step;
         const fsiSwitchData = { ...(session.data || {}) };
-        const { snapshotActivityData } = await import('../services/questionModeHelper.js');
+        const { snapshotActivityData } = await import('../services/question/questionModeHelper.js');
         const activitySnapshot = snapshotActivityData(session, session.currentFlow);
         const fsiActionByFlow = { ORDER: 'START_ORDER', BOOKING: 'START_BOOKING', QUESTION: 'QUESTION' };
 
@@ -3835,7 +3868,7 @@ async function _handleIncomingMessageSerialized({ tenantId, tenantDoc, from, msg
   // path already answers this exact message) or when there's nothing to add.
   if (reply && effectiveAction !== 'QUESTION' && nlu?.entities?.questions?.length) {
     try {
-      const { tryDatabaseAnswer } = await import('../services/questionAnswerService.js');
+      const { tryDatabaseAnswer } = await import('../services/question/questionAnswerService.js');
       const secondaryQuestion = nlu.entities.questions[0];
       const dbAnswer = await tryDatabaseAnswer({ message: secondaryQuestion, business, session });
       if (dbAnswer?.handled && dbAnswer.body) {

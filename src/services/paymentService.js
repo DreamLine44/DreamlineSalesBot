@@ -39,7 +39,8 @@ import BusinessConfig from '../models/BusinessConfig.js';
 import { decryptToken } from '../controllers/tenantController.js';
 import logger from '../config/logger.js';
 import { formatMoney } from '../utils/formatCurrency.js';
-import { formatOrderItemsForMessage, formatOrderItemSummary } from './orderService.js';
+import { formatOrderItemsForMessage, formatOrderItemSummary } from './order/orderService.js';
+import { logAudit } from './admin/auditService.js';
 
 const PROOF_WINDOW_HOURS = Number(process.env.PROOF_ELIGIBLE_HOURS || 4);
 
@@ -74,6 +75,18 @@ export async function receiveProof(customerPhone, tenantId, imageId, tenantDoc) 
       // Prevents the scheduler from sending an abandoned-cart nudge after proof submission.
       abandonedCartAt: null,
     },
+  });
+
+  // [AUDIT-FIX-AUDITLOG-WIRE] payment_submitted — documented in AuditLog.js as
+  // "customer sent payment proof (paymentService.receiveProof)" but logAudit()
+  // was never actually called from here.
+  logAudit({
+    tenantId,
+    orderId: order._id,
+    actor: 'customer',
+    actorId: customerPhone || null,
+    action: 'payment_submitted',
+    metadata: { imageId: imageId || null },
   });
 
   // Notify admin

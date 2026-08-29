@@ -35,7 +35,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { ORDER_DIRECT_RE, BOOKING_DIRECT_RE, DIRECT_INTENT_EXCLUDE_RE, QUESTION_LEADIN_RE, normalise } from '../core/intents/intentEngine.js';
-import { isInformationalActivityQuestion } from '../services/questionModeHelper.js';
+import { isInformationalActivityQuestion } from '../services/question/questionModeHelper.js';
 
 function read(relPath) {
   return fs.readFileSync(new URL(relPath, import.meta.url), 'utf8');

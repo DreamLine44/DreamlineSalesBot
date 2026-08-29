@@ -97,7 +97,7 @@ test('postFlowHandler: status commands fall through instead of generic menu', ()
 });
 
 test('activityStatusService: isStatusCommand recognises track phrases', async () => {
-  const { isStatusCommand } = await import('../services/activityStatusService.js');
+  const { isStatusCommand } = await import('../services/activity/activityStatusService.js');
   assert.equal(isStatusCommand('track my order'), true);
   assert.equal(isStatusCommand('track my booking'), true);
   assert.equal(isStatusCommand('hello'), false);

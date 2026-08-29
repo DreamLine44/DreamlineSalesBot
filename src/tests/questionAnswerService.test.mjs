@@ -9,14 +9,14 @@ import {
   extractShortId,
   isValidShortIdFormat,
   formatLookupFailureMessage,
-} from '../services/activityLookupService.js';
+} from '../services/activity/activityLookupService.js';
 import {
   formatMenuText,
   formatHoursText,
   tryDatabaseAnswer,
-} from '../services/questionAnswerService.js';
+} from '../services/question/questionAnswerService.js';
 import { resolveDirectOrderParse } from '../core/shared/cartEngine.js';
-import { isBusinessScopeQuestion, isInformationalActivityQuestion, isBookingInfoQuestion, isStayInQuestionMessage, isGreetingMessage } from '../services/questionModeHelper.js';
+import { isBusinessScopeQuestion, isInformationalActivityQuestion, isBookingInfoQuestion, isStayInQuestionMessage, isGreetingMessage } from '../services/question/questionModeHelper.js';
 
 function readSource(relPath) {
   return fs.readFileSync(new URL(relPath, import.meta.url), 'utf8');
@@ -89,7 +89,7 @@ test('formatHoursText renders structured opening hours', () => {
 });
 
 test('tryDatabaseAnswer STATUS without ref delegates to buildStatusReply', () => {
-  const src = readSource('../services/questionAnswerService.js');
+  const src = readSource('../services/question/questionAnswerService.js');
   const statusBlock = src.slice(src.indexOf("if (qType === 'STATUS')"), src.indexOf("if (qType === 'MENU')"));
   assert.match(statusBlock, /buildStatusReply/);
   assert.match(statusBlock, /answerStatusQuestion/);
@@ -133,7 +133,7 @@ test('waCatalogFlow exposes tryShowCatalogForMenuRequest', () => {
 });
 
 test('questionAnswerService exposes toWhatsAppPayload for catalog replies', () => {
-  const src = readSource('../services/questionAnswerService.js');
+  const src = readSource('../services/question/questionAnswerService.js');
   assert.match(src, /toWhatsAppPayload/);
   assert.match(src, /catalogDispatched/);
 });
@@ -392,7 +392,7 @@ test('tryDatabaseAnswer answers what is this all about from business description
 // ── Wiring source assertions ──────────────────────────────────────────────────
 
 test('adminCommandService supports CANCEL ORDER/BOOKING by reference', () => {
-  const src = readSource('../services/adminCommandService.js');
+  const src = readSource('../services/admin/adminCommandService.js');
   assert.match(src, /cancelOrderByShortId/);
   assert.match(src, /cancelBookingByShortId/);
   assert.match(src, /CANCEL\\s\+ORDER/);
@@ -408,19 +408,19 @@ test('question handlers use resolveQuestionReply', () => {
 });
 
 test('persistQuestionSession preserves ENQUIRY flow', () => {
-  const src = readSource('../services/questionAnswerService.js');
+  const src = readSource('../services/question/questionAnswerService.js');
   assert.match(src, /currentFlow === 'ENQUIRY' \? 'ENQUIRY' : 'QUESTION'/);
 });
 
 test('activityStatusService uses reference-first lookup', () => {
-  const src = readSource('../services/activityStatusService.js');
+  const src = readSource('../services/activity/activityStatusService.js');
   assert.match(src, /extractShortId/);
   assert.match(src, /lookupActivityByReference/);
   assert.match(src, /trackingContext/);
 });
 
 test('processQuestionMessage returns welcome menu for bare greetings', async () => {
-  const { processQuestionMessage } = await import('../services/questionAnswerService.js');
+  const { processQuestionMessage } = await import('../services/question/questionAnswerService.js');
   const business = {
     businessMode: 'RESTAURANT',
     menuItems: [{ name: 'Domoda', price: 200, available: true }],

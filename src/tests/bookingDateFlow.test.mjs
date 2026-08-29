@@ -10,7 +10,7 @@ import {
   parseBookingDateFlowReply,
   resolveFlowBookingDate,
   BOOKING_DATE_FLOW_SCREEN,
-} from '../services/bookingDateFlow.js';
+} from '../services/booking/bookingDateFlow.js';
 
 const TZ = 'Africa/Banjul';
 

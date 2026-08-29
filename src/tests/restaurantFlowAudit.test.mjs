@@ -6,7 +6,7 @@ import {
   isTypedPartySizeRecoveryInput,
   shouldRecoverLostBookingPassthrough,
 } from '../core/conversations/flowPassthroughRecovery.js';
-import { continueFromMergedBookingData } from '../services/bookingInterpretation.js';
+import { continueFromMergedBookingData } from '../services/booking/bookingInterpretation.js';
 
 const RESTAURANT = { businessMode: 'RESTAURANT', hours: { timezone: 'Africa/Banjul' } };
 const TZ = 'Africa/Banjul';

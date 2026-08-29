@@ -52,7 +52,7 @@ import {
   buildItemAddedUI, buildItemsAddedUI, buildCartReviewUI, buildEditCartMenuUI, buildEditCartPickerUI,
 } from '../handlers/uiBuilders.js';
 import { parseQuantity }    from '../../../utils/parseQuantity.js';
-import { saveOrder }        from '../../../services/orderService.js';
+import { saveOrder }        from '../../../services/order/orderService.js';
 import { trackOrderAnalytics } from '../../../core/analytics/analyticsService.js';
 import { dispatchText }     from '../../../core/whatsapp/dispatcher.js';
 import { buildPaymentInstructionsUI } from '../../../services/paymentService.js';
@@ -320,7 +320,7 @@ export async function handleOrderFlow({ session, message, business, tenant, isIn
       // Route them to the existing DB-first Q&A layer before falling into the
       // "not found on our menu" item-lookup response. This preserves the order flow for
       // legitimate product-selection messages while keeping the ask-a-question flow helpful.
-      const questionAnswerService = await import('../../../services/questionAnswerService.js');
+      const questionAnswerService = await import('../../../services/question/questionAnswerService.js');
       const qAnswer = await questionAnswerService.tryDatabaseAnswer({ message: raw, business, session });
       if (qAnswer?.handled && qAnswer.body) {
         // [AUDIT-FIX-QMODE-2] This is an INLINE aside inside an active ORDER flow — the
@@ -335,7 +335,7 @@ export async function handleOrderFlow({ session, message, business, tenant, isIn
         // Fix: keep currentFlow/step exactly as they are (still mid-ORDER) and only
         // stash the Q&A context, mirroring what persistQuestionSession does internally
         // minus the flow/step overwrite.
-        const { mergeQuestionContext } = await import('../../../services/questionModeHelper.js');
+        const { mergeQuestionContext } = await import('../../../services/question/questionModeHelper.js');
         await updateSession(session.customerPhone, session.tenantId, {
           data: {
             ...(session.data || {}),
@@ -1185,7 +1185,7 @@ export async function handleRestaurantQuestion({ session, message, business, ten
     };
   }
 
-  const { resolveQuestionReply, persistQuestionSession, recordQuestionHistory, finalizeQuestionHandlerReply } = await import('../../../services/questionAnswerService.js');
+  const { resolveQuestionReply, persistQuestionSession, recordQuestionHistory, finalizeQuestionHandlerReply } = await import('../../../services/question/questionAnswerService.js');
 
   const reply = await resolveQuestionReply({
     session, message: raw, business, tenant, intent: 'FAQ',

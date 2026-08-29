@@ -78,6 +78,12 @@ const orderSchema = new mongoose.Schema({
 
   totalPrice: { type: Number, default: null },
 
+  // [AUDIT-FIX-PROMO-SCHEMA] Set by saveOrder() when a caller supplies a valid
+  // promoCode (see promoService.js). null/0 for every order that doesn't use one —
+  // zero behavior or schema change for existing callers.
+  promoCode:      { type: String, default: null },
+  discountAmount: { type: Number, default: 0 },
+
   status: {
     type: String,
     // [FIX-4] Added 'ready', 'preparing', 'out_for_delivery', 'delivered' — all four were

@@ -209,7 +209,7 @@ export async function route({ action, intent, session, message, business, tenant
       // reaction emoji or acknowledgement word (Ahh, Ok) spams the same status message.
       // Instead show a soft "what would you like to do?" with contextual buttons.
       try {
-        const { findVisibleActiveOrder } = await import('../../services/activityLifecycleService.js');
+        const { findVisibleActiveOrder } = await import('../../services/activity/activityLifecycleService.js');
         const ackOrder = await findVisibleActiveOrder(
           session.customerPhone,
           session.tenantId,
@@ -350,7 +350,7 @@ export async function route({ action, intent, session, message, business, tenant
       // no awareness that the customer had just paid for an order.
       try {
         const { default: _Booking } = await import('../../models/Booking.js');
-        const { findVisibleActiveOrder, buildActiveBookingFilter } = await import('../../services/activityLifecycleService.js');
+        const { findVisibleActiveOrder, buildActiveBookingFilter } = await import('../../services/activity/activityLifecycleService.js');
 
         const activeOrder = await findVisibleActiveOrder(
           session.customerPhone,
@@ -645,7 +645,7 @@ export async function route({ action, intent, session, message, business, tenant
 
       try {
         const { default: _CancelBooking } = await import('../../models/Booking.js');
-        const { buildActiveBookingFilter } = await import('../../services/activityLifecycleService.js');
+        const { buildActiveBookingFilter } = await import('../../services/activity/activityLifecycleService.js');
         const _bookingResult = await _CancelBooking.findOneAndUpdate(
           buildActiveBookingFilter(session.customerPhone, session.tenantId),
           {
@@ -661,7 +661,7 @@ export async function route({ action, intent, session, message, business, tenant
       } catch (_) { /* non-fatal */ }
 
       try {
-        const { cancelMostRecentActiveOrder } = await import('../../services/activityLifecycleService.js');
+        const { cancelMostRecentActiveOrder } = await import('../../services/activity/activityLifecycleService.js');
         const _orderResult = await cancelMostRecentActiveOrder({
           customerPhone: session.customerPhone,
           tenantId:      session.tenantId,
@@ -679,7 +679,7 @@ export async function route({ action, intent, session, message, business, tenant
       } catch (_) { /* non-fatal */ }
 
       if (!_bookingCancelled && !_orderCancelled && _uncancellableOrder) {
-        const { activityActiveCutoff } = await import('../../services/activityLifecycleService.js');
+        const { activityActiveCutoff } = await import('../../services/activity/activityLifecycleService.js');
         const expired = _uncancellableOrder.createdAt
           && new Date(_uncancellableOrder.createdAt) < activityActiveCutoff();
         if (expired) {
@@ -705,7 +705,7 @@ export async function route({ action, intent, session, message, business, tenant
 
     case 'CANCEL_ALL': {
       try {
-        const { cancelAllActiveForCustomer } = await import('../../services/activityLifecycleService.js');
+        const { cancelAllActiveForCustomer } = await import('../../services/activity/activityLifecycleService.js');
         return await cancelAllActiveForCustomer({
           customerPhone: session.customerPhone,
           tenantId:      session.tenantId,
@@ -922,7 +922,7 @@ export async function route({ action, intent, session, message, business, tenant
       // Otherwise show a gentle prompt to start a new order.
       try {
         const { default: _PayOrder } = await import('../../models/Order.js');
-        const { activityActiveCutoff } = await import('../../services/activityLifecycleService.js');
+        const { activityActiveCutoff } = await import('../../services/activity/activityLifecycleService.js');
         const pendingPay = await _PayOrder.findOne({
           customerPhone: session.customerPhone,
           tenantId:      session.tenantId,

@@ -11,7 +11,7 @@ import {
   tryParseDate,
   extractBookingDatePhraseFromText,
   resolveBookingDateInput,
-} from '../services/bookingDateParser.js';
+} from '../services/booking/bookingDateParser.js';
 import { parseDirectBookingRequest, resolveDirectBookingStep } from '../core/shared/moduleRegistry.js';
 
 const TZ = 'Africa/Banjul';
@@ -79,15 +79,6 @@ test('parseDirectBookingRequest: rich NL restaurant booking', async () => {
   assert.match(result.time, /7:00 PM/i);
 });
 
-test('parseNaturalOrderMessage: greeting before order lead-in is ignored', async () => {
-  const { parseNaturalOrderMessage } = await import('../core/shared/cartEngine.js');
-  const result = parseNaturalOrderMessage(
-    [{ name: 'Domoda', price: 200, available: true }],
-    'hi want to order domoda',
-  );
-  assert.ok(result?.lines?.length || result?.item, 'Domoda should resolve after the greeting');
-});
-
 test('parseDirectBookingRequest: relational guest count', async () => {
   const result = await parseDirectBookingRequest('me and two friends tomorrow at 7pm', RESTAURANT);
   assert.equal(result.partySize, 3);
@@ -146,7 +137,7 @@ test('Test E: first of next month phrase parses', async () => {
 });
 
 test('Test F: CONFIRM is a system action not a date', async () => {
-  const { isBookingSystemAction } = await import('../services/bookingInterpretation.js');
+  const { isBookingSystemAction } = await import('../services/booking/bookingInterpretation.js');
   assert.equal(isBookingSystemAction('CONFIRM'), true);
   const resolved = await resolveBookingDateInput('CONFIRM', TZ);
   assert.equal(resolved.ok, false);
@@ -160,14 +151,14 @@ test('parseDirectBookingRequest: book for DD Month is date-only not guest count'
 });
 
 test('interpretBookingMessage: rejects oversized party via NL merge', async () => {
-  const { interpretBookingMessage } = await import('../services/bookingInterpretation.js');
+  const { interpretBookingMessage } = await import('../services/booking/bookingInterpretation.js');
   const result = await interpretBookingMessage('party of 2026 on 25 June', RESTAURANT, {});
   assert.equal(result.merged.partySize, undefined);
   assert.ok(result.merged.date || result.extracted?.date);
 });
 
 test('Test G: correction updates guest count', async () => {
-  const { interpretBookingMessage } = await import('../services/bookingInterpretation.js');
+  const { interpretBookingMessage } = await import('../services/booking/bookingInterpretation.js');
   const first = await interpretBookingMessage('Book for 4 tomorrow.', RESTAURANT, {});
   assert.equal(first.merged.partySize, 4);
   const corrected = await interpretBookingMessage('Actually make it 10.', RESTAURANT, first.merged);

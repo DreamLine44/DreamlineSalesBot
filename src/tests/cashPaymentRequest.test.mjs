@@ -12,7 +12,7 @@ import {
   isCashPaymentRequestText,
   requestCashPayment,
 } from '../services/paymentService.js';
-import { handleAdminButtonReply } from '../services/adminCommandService.js';
+import { handleAdminButtonReply } from '../services/admin/adminCommandService.js';
 
 function readSource(relPath) {
   return fs.readFileSync(new URL(relPath, import.meta.url), 'utf8');
@@ -57,10 +57,10 @@ test('isCashPaymentRequestText recognises PAYMENT_PROOF-scoped phrases', () => {
 });
 
 test('adminCommandService routes APPROVE_CASH_ before APPROVE_', () => {
-  const src = readSource('../services/adminCommandService.js');
+  const src = readSource('../services/admin/adminCommandService.js');
   const block = src.slice(
-    src.indexOf('export async function handleAdminButtonReply'),
-    src.indexOf('export async function handleAdminTextCommand'),
+    src.indexOf('handleAdminButtonReply = async'),
+    src.indexOf('handleAdminTextCommand = async'),
   );
   const approveCashIdx = block.indexOf("startsWith('APPROVE_CASH_')");
   const approveIdx     = block.indexOf("startsWith('APPROVE_')");

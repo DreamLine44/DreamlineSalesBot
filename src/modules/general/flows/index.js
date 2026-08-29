@@ -17,7 +17,7 @@ import { updateSession }     from '../../../core/sessions/sessionService.js';
 import { completeFlow, cancelFlow } from '../../../core/conversations/flowEngine.js';
 import { handleBookingFlow } from '../../../core/conversations/bookingFlow.js';
 import { getAIReply }        from '../../../core/ai/providers/aiRouter.js';
-import { saveOrder }         from '../../../services/orderService.js';
+import { saveOrder }         from '../../../services/order/orderService.js';
 import logger                from '../../../config/logger.js';
 
 // ── Config ────────────────────────────────────────────────────────────────────
@@ -64,7 +64,7 @@ export async function handleGeneralQuestion({ session, message, business, tenant
     };
   }
 
-  const { resolveQuestionReply, persistQuestionSession, recordQuestionHistory, finalizeQuestionHandlerReply } = await import('../../../services/questionAnswerService.js');
+  const { resolveQuestionReply, persistQuestionSession, recordQuestionHistory, finalizeQuestionHandlerReply } = await import('../../../services/question/questionAnswerService.js');
   const reply = await resolveQuestionReply({
     session, message: raw, business, tenant, intent: 'FAQ',
     initPayload: {

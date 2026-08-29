@@ -8,16 +8,15 @@
 import { advance } from './flowEngine.js';
 import { getSession, updateSession } from '../sessions/sessionService.js';
 import { parsePartySizeFromText } from '../../utils/parsePartySize.js';
-import { looksLikeDate } from '../../services/bookingDateParser.js';
-import { buildActiveBookingFilter } from '../../services/activityLifecycleService.js';
-import { bookingDateIsoFromParsed } from '../../services/bookingState.js';
+import { looksLikeDate } from '../../services/booking/bookingDateParser.js';
+import { buildActiveBookingFilter } from '../../services/activity/activityLifecycleService.js';
+import { bookingDateIsoFromParsed } from '../../services/booking/bookingState.js';
 import { looksLikeBookingTime } from '../../utils/parseBookingTime.js';
 import { normalizeCustomerPhone } from '../../utils/customerPhone.js';
 
 const BOOKING_PARTY_RE = /^PARTY_\d+$/;
 const BOOKING_TIME_RE  = /^TIME_(M_\d+|\d+(AM|PM))$/;
 const BOOKING_DATE_RE  = /^DATE_/;
-const BOOKING_ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const BOOKING_BUTTON_IDS = new Set(['CONFIRM', 'DATE_BACK', 'TIME_BACK']);
 
 const ORDER_SUMMARY_PROMPT_RE = /\b(order summary|confirm this order|would you like to confirm)\b/i;
@@ -41,8 +40,7 @@ const BOOKING_ACTIVE_STEPS = new Set([
 
 export function isBookingPassthroughRecoveryId(id) {
   const upper = String(id || '').trim().toUpperCase();
-  return BOOKING_PARTY_RE.test(upper) || BOOKING_TIME_RE.test(upper) || BOOKING_DATE_RE.test(upper)
-    || BOOKING_ISO_DATE_RE.test(upper);
+  return BOOKING_PARTY_RE.test(upper) || BOOKING_TIME_RE.test(upper) || BOOKING_DATE_RE.test(upper);
 }
 
 function isRestaurantMode(business) {

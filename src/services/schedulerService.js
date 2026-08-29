@@ -107,6 +107,39 @@ function buildPaymentReminderComponents(item, amount, paymentContact) {
 
 let _timers = [];
 
+// [FIX-SCHED-OVERLAP] Each job below marks an order/booking "reminded" only
+// AFTER awaiting the WhatsApp send, one record at a time in a sequential
+// for-loop. None of that work was previously guarded against re-entrancy, so
+// if a single run ever took longer than its own setInterval period (a slow
+// Meta API response, a large candidate batch, a transient network stall),
+// the next tick started a SECOND overlapping run of the same job. That
+// second run's query would still see every record the first run hadn't
+// reached yet as unmarked, and would send the exact same customer the exact
+// same reminder a second time — an abandoned-cart nudge, booking reminder,
+// or payment reminder arriving twice in quick succession. wrapWithGuard()
+// makes each job a no-op re-entry (skip + log) while a previous invocation
+// of THAT SAME job is still in flight, so a slow run delays the next run
+// instead of doubling up on customer messages.
+const _runningJobs = new Set();
+
+// Exported so the re-entrancy guard itself can be unit-tested directly
+// (schedulerJobOverlapGuard.test.mjs) without needing to mock Mongoose models
+// or fake setInterval timing to exercise the overlap scenario end-to-end.
+export function wrapWithGuard(name, fn) {
+  return async () => {
+    if (_runningJobs.has(name)) {
+      logger.warn(`[Scheduler] ${name} skipped — previous run still in progress`);
+      return;
+    }
+    _runningJobs.add(name);
+    try {
+      await fn();
+    } finally {
+      _runningJobs.delete(name);
+    }
+  };
+}
+
 export function startScheduler() {
   if (process.env.SCHEDULER_ENABLED !== 'true') {
     logger.info('[Scheduler] Disabled (SCHEDULER_ENABLED != true)');
@@ -118,12 +151,16 @@ export function startScheduler() {
     logger.warn('[Scheduler] Template mode OFF — scheduler will use plain text (fine for dev; will fail for cold contacts in production). Set WHATSAPP_TEMPLATES_ENABLED=true and configure template names to fix.');
   }
   logger.info('[Scheduler] Starting jobs...');
-  _timers.push(setInterval(() => runAbandonedCartJob().catch(e => logger.error('[Scheduler] abandoned cart', { e: e.message })), 15 * 60 * 1000));
-  _timers.push(setInterval(() => runBookingReminderJob().catch(e => logger.error('[Scheduler] booking reminder', { e: e.message })), 60 * 60 * 1000));
-  _timers.push(setInterval(() => runPaymentReminderJob().catch(e => logger.error('[Scheduler] payment reminder', { e: e.message })), 20 * 60 * 1000));
+  const guardedAbandonedCart      = wrapWithGuard('abandoned cart',           runAbandonedCartJob);
+  const guardedBookingReminder    = wrapWithGuard('booking reminder',         runBookingReminderJob);
+  const guardedPaymentReminder    = wrapWithGuard('payment reminder',         runPaymentReminderJob);
+  const guardedPostAppointmentFU  = wrapWithGuard('post-appointment follow-up', runPostAppointmentFollowUpJob);
+  _timers.push(setInterval(() => guardedAbandonedCart().catch(e => logger.error('[Scheduler] abandoned cart', { e: e.message })), 15 * 60 * 1000));
+  _timers.push(setInterval(() => guardedBookingReminder().catch(e => logger.error('[Scheduler] booking reminder', { e: e.message })), 60 * 60 * 1000));
+  _timers.push(setInterval(() => guardedPaymentReminder().catch(e => logger.error('[Scheduler] payment reminder', { e: e.message })), 20 * 60 * 1000));
   // [v15-FOLLOWUP] Post-appointment follow-up: 3 days after a completed booking,
   // check in with the customer and offer to rebook. Runs every 6 hours.
-  _timers.push(setInterval(() => runPostAppointmentFollowUpJob().catch(e => logger.error('[Scheduler] post-appointment follow-up', { e: e.message })), 6 * 60 * 60 * 1000));
+  _timers.push(setInterval(() => guardedPostAppointmentFU().catch(e => logger.error('[Scheduler] post-appointment follow-up', { e: e.message })), 6 * 60 * 60 * 1000));
   logger.info('[Scheduler] 4 jobs running');
 }
 

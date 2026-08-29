@@ -30,16 +30,17 @@ import { updateSession }  from '../core/sessions/sessionService.js';
 import { getModeConfig }  from '../config/modes.js';
 import { dispatchMessage } from '../core/whatsapp/dispatcher.js';
 import { buildOptionsReply } from '../core/shared/uiOptionsHelper.js';
-import { isStatusCommand } from './activityStatusService.js';
-import { isInformationalActivityQuestion } from './questionModeHelper.js';
+import { isStatusCommand } from './activity/activityStatusService.js';
+import { isInformationalActivityQuestion } from './question/questionModeHelper.js';
 import {
   ORDER_DIRECT_RE, BOOKING_DIRECT_RE, DIRECT_INTENT_EXCLUDE_RE, QUESTION_LEADIN_RE,
 } from '../core/intents/intentEngine.js';
 import { isMenuBrowsingIntent } from '../core/intents/menuIntentDetector.js';
-import { looksLikeDate } from './bookingDateParser.js';
+import { looksLikeDate } from './booking/bookingDateParser.js';
 import { isBookingPassthroughRecoveryId, isTypedPartySizeRecoveryInput } from '../core/conversations/flowPassthroughRecovery.js';
 import logger from '../config/logger.js';
 import { formatMoney } from '../utils/formatCurrency.js';
+import { logAudit } from './admin/auditService.js';
 
 const POST_FLOW_FLOW_START_BUTTONS = new Set([
   'ORDER', 'START_ORDER', 'BOOK', 'START_BOOKING', 'QUESTION', 'ENQUIRY',
@@ -1073,7 +1074,7 @@ async function handleOrderConfirmed({
   // [SPEC-4H] Cancel intent — show confirmation prompt before doing anything
   const CANCEL_RE = /^(cancel|cancel\s*(my\s*)?order|stop|nevermind|never\s*mind|abort)$/i;
   if (CANCEL_RE.test(msg) || upper === 'CANCEL' || upper === 'CANCEL_ORDER') {
-    const { findVisibleActiveOrder } = await import('../services/activityLifecycleService.js');
+    const { findVisibleActiveOrder } = await import('./activity/activityLifecycleService.js');
     const activeOrd = await findVisibleActiveOrder(from, tenantId, {
       select: 'item quantity shortId',
     });
@@ -1129,7 +1130,7 @@ async function handleOrderConfirmed({
   // [SPEC-4G] "What did I order?" — show order summary
   const MY_ORDER_RE = /\b(what\s*(did\s*i|have\s*i)\s*order(ed)?|my\s*order|my\s*ref(erence)?|show\s*my\s*order|order\s*details?|what\s*am\s*i\s*(getting|having)|remind\s*me)\b/i;
   if (MY_ORDER_RE.test(msg)) {
-    const { findVisibleActiveOrder } = await import('../services/activityLifecycleService.js');
+    const { findVisibleActiveOrder } = await import('./activity/activityLifecycleService.js');
     const ord = await findVisibleActiveOrder(from, tenantId, {
       select: 'item quantity totalPrice shortId paymentStatus status',
     });
@@ -1296,10 +1297,24 @@ async function handleOrderReady({
     if (shortIdRef) {
       // [AUDIT-FIX-TRACE-5] Was missing `customerPhone: from` — same gap as the
       // COLLECTED_* handler in webhookController.js and the SWITCH_YES cancel above.
-      await Order.findOneAndUpdate(
+      const completedOrder = await Order.findOneAndUpdate(
         { shortId: shortIdRef, tenantId, customerPhone: from, status: 'ready' },
-        { $set: { status: 'completed', completedAt: new Date() } }
-      ).catch(() => {});
+        { $set: { status: 'completed', completedAt: new Date() } },
+        { new: true },
+      ).select('_id').lean().catch(() => null);
+
+      // [AUDIT-FIX-AUDITLOG-WIRE] order_completed — documented in AuditLog.js but
+      // logAudit() was never called from this customer-typed "collected" path.
+      if (completedOrder) {
+        logAudit({
+          tenantId,
+          orderId: completedOrder._id,
+          actor: 'customer',
+          actorId: from,
+          action: 'order_completed',
+          metadata: { shortId: shortIdRef },
+        });
+      }
     }
     await dispatchMessage(from, {
       type: 'text',

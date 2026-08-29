@@ -9,8 +9,8 @@ import {
   buildActiveOrderFilter,
   buildCustomerCancellableOrderFilter,
   ACTIVITY_ACTIVE_WINDOW_MS,
-} from '../services/activityLifecycleService.js';
-import { extractShortId } from '../services/activityLookupService.js';
+} from '../services/activity/activityLifecycleService.js';
+import { extractShortId } from '../services/activity/activityLookupService.js';
 
 function readSource(relPath) {
   return fs.readFileSync(new URL(relPath, import.meta.url), 'utf8');
@@ -76,17 +76,17 @@ test('extractShortId does not treat bare "cancel" as a reference', () => {
 });
 
 test('tryCustomerCancelRequest falls through during an active flow when nothing is saved yet', () => {
-  const src = readSource('../services/activityLifecycleService.js');
-  const block = src.slice(src.indexOf('async function _cancelMostRecentActivity'), src.indexOf('async function _cancelActivityByReference'));
+  const src = readSource('../services/activity/activityLifecycleService.js');
+  const block = src.slice(src.indexOf('_cancelMostRecentActivity = async'), src.indexOf('_cancelActivityByReference = async'));
   assert.match(block, /session\?\.currentFlow/);
   assert.match(block, /return null/);
 });
 
 test('tryCustomerCancelRequest defers to cancelFlow when mid-flow and no DB activity', () => {
-  const src = readSource('../services/activityLifecycleService.js');
+  const src = readSource('../services/activity/activityLifecycleService.js');
   const block = src.slice(
-    src.indexOf('async function _cancelMostRecentActivity'),
-    src.indexOf('async function _cancelActivityByReference'),
+    src.indexOf('_cancelMostRecentActivity = async'),
+    src.indexOf('_cancelActivityByReference = async'),
   );
   assert.match(block, /session\?\.currentFlow/);
   assert.match(block, /return null/);
@@ -105,7 +105,7 @@ test('moduleRouter CANCEL_ALL delegates to cancelAllActiveForCustomer', () => {
 });
 
 test('activeOrderResolver expires stale activities on every lookup', () => {
-  const src = readSource('../services/activeOrderResolver.js');
+  const src = readSource('../services/order/activeOrderResolver.js');
   assert.match(src, /expireStaleActivities/);
   assert.match(src, /buildActiveOrderFilter/);
 });
@@ -115,15 +115,15 @@ test('ACTIVITY_ACTIVE_WINDOW_MS is 24 hours', () => {
 });
 
 test('buildPendingOrderLockFilter bounds normal pending orders to 24 hours', async () => {
-  const { buildPendingOrderLockFilter } = await import('../services/activityLifecycleService.js');
+  const { buildPendingOrderLockFilter } = await import('../services/activity/activityLifecycleService.js');
   const filter = buildPendingOrderLockFilter('2207000000', 'tenant1');
   assert.ok(filter.$or.some(clause => clause.createdAt?.$gte));
   assert.ok(filter.$or.some(clause => clause.paymentReviewedAt?.$ne === null));
 });
 
 test('expireStaleActivities cancels abandoned pending carts older than 24h', () => {
-  const src = readSource('../services/activityLifecycleService.js');
-  const block = src.slice(src.indexOf('export async function expireStaleActivities'), src.indexOf('export async function cancelAllActiveForCustomer'));
+  const src = readSource('../services/activity/activityLifecycleService.js');
+  const block = src.slice(src.indexOf('expireStaleActivities = async'), src.indexOf('cancelAllActiveForCustomer = async'));
   assert.match(block, /status: 'pending'/);
   assert.match(block, /paymentReviewedAt: null/);
 });

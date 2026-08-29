@@ -42,9 +42,9 @@ import {
   verifyCredentials,
   markConnected,
   updateStatus,
-} from '../services/whatsappOnboardingService.js';
+} from '../services/whatsapp/whatsappOnboardingService.js';
 import { decryptToken } from '../controllers/tenantController.js';
-import { notifyAdminNewRequest } from '../services/whatsappNotificationService.js';
+import { notifyAdminNewRequest } from '../services/whatsapp/whatsappNotificationService.js';
 import logger from '../config/logger.js';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────

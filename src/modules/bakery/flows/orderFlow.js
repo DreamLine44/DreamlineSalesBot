@@ -16,7 +16,7 @@ import { updateSession }  from '../../../core/sessions/sessionService.js';
 import { completeFlow, cancelFlow } from '../../../core/conversations/flowEngine.js';
 import { findBestMatch }  from '../../../utils/matchEngine.js';
 import { parseQuantity }  from '../../../utils/parseQuantity.js';
-import { saveOrder }      from '../../../services/orderService.js';
+import { saveOrder }      from '../../../services/order/orderService.js';
 import { trackOrderAnalytics } from '../../../core/analytics/analyticsService.js';
 import { buildWhatsAppImageUrl } from '../../../config/cloudinary.js';
 import { itemLabel }      from '../../../utils/itemLabel.js';

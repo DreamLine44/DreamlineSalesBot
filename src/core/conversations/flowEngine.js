@@ -65,7 +65,33 @@ export function hasFlow(mode, flowName) {
  * Returns a UIResponse object for dispatch.
  */
 export async function advance({ session, message, business, tenant, isInteractive = false, flowReply = null }) {
+  // [AUDIT-FIX-RECOVERY-2] Both fallback branches below hand the customer a
+  // "🔄 Start Over" (SHOW_MENU) button as the only way forward, but previously
+  // neither branch touched the database — the session document (and whatever
+  // stale `step` it still held from before the flow/session was lost) was left
+  // completely untouched. webhookController.js's STEP_VALID_BUTTONS stale-tap
+  // gate validates every button tap against that same stale `step`, so if that
+  // step's allowed-button set didn't happen to include SHOW_MENU (true for
+  // several steps — CONFIRM, ITEM_ADDED, EDIT_CART_MENU, UPSELL, etc.), tapping
+  // the bot's OWN recovery button produced a second, unrelated "that option is
+  // no longer available" rejection — a hard dead end with literally no way out
+  // short of leaving the chat. Persisting the reset here (mirrors the exact
+  // reset every other SHOW_MENU/CANCEL handler in the codebase already does)
+  // means the very next tap — including a tap on this message's own button —
+  // is validated against a clean step, not a stale one. See webhookController.js
+  // [AUDIT-FIX-RECOVERY-1] for the companion fix (SHOW_MENU/CANCEL/etc. are also
+  // now globally exempt from the stale-button gate regardless of step, so this
+  // dead end is closed even if a session update ever races or fails).
+  const _resetStaleSession = async () => {
+    if (session?.customerPhone && session?.tenantId) {
+      await updateSession(session.customerPhone, session.tenantId, {
+        currentFlow: null, step: null, data: {},
+      }).catch(() => {});
+    }
+  };
+
   if (!session?.currentFlow) {
+    await _resetStaleSession();
     return {
       type:    'buttons',
       body:    '⚠️ No active session. Please tap below to get started.',
@@ -83,6 +109,7 @@ export async function advance({ session, message, business, tenant, isInteractiv
 
   if (!handler) {
     logger.warn(`[FlowEngine] No handler for ${specificKey}`);
+    await _resetStaleSession();
     return {
       type:    'buttons',
       body:    '⚠️ This option is not available right now.',
@@ -174,14 +201,6 @@ export async function startFlow({ flowName, session, business, tenant, message =
   }
 
   const updated = await updateSession(session.customerPhone, session.tenantId, sessionPatch);
-  // Do not render the first flow prompt from an in-memory snapshot when the
-  // transition write returned no document. A vanished/expired session must be
-  // recreated before the customer can answer the prompt.
-  const persisted = updated || await createSession(session.customerPhone, session.tenantId, {
-    ...sessionPatch,
-    phoneNumberId: session.phoneNumberId || null,
-    customerName: session.customerName || null,
-  });
 
   const handler = FLOW_REGISTRY.get(key) || GENERIC_REGISTRY.get(flowName.toUpperCase());
   if (!handler) {
@@ -196,7 +215,7 @@ export async function startFlow({ flowName, session, business, tenant, message =
   // Call handler with the forwarded message (null for a genuine fresh-tap start,
   // to trigger first-step UI; the customer's real text when one was passed in,
   // so it gets answered on this call instead of being thrown away).
-  const freshSession = persisted || session;
+  const freshSession = updated || session;
   const response = await handler({ session: freshSession, message, business, tenant, isInteractive: false });
   return suppressLegacyMenuOption(response, business);
 }
@@ -231,7 +250,7 @@ export async function cancelFlow(session, business) {
   // failure should never block the session reset / reply to the customer.
   try {
     const { default: Booking } = await import('../../models/Booking.js');
-    const { buildActiveBookingFilter } = await import('../../services/activityLifecycleService.js');
+    const { buildActiveBookingFilter } = await import('../../services/activity/activityLifecycleService.js');
     await Booking.findOneAndUpdate(
       buildActiveBookingFilter(session.customerPhone, session.tenantId),
       { $set: { status: 'cancelled', cancelledBy: 'customer', cancelledAt: new Date() } },

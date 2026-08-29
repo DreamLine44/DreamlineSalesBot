@@ -48,7 +48,7 @@ async function handleQuestionAction({ session, message, business, tenant, isInte
     // Answer the real question right now instead of waiting for the next
     // message — mirrors the AWAITING_QUESTION handling webhookController
     // runs for the *following* message, so the first one isn't wasted.
-    const { processQuestionMessage, persistQuestionSession, recordQuestionHistory, toWhatsAppPayload } = await import('../../services/questionAnswerService.js');
+    const { processQuestionMessage, persistQuestionSession, recordQuestionHistory, toWhatsAppPayload } = await import('../../services/question/questionAnswerService.js');
     const reply = await processQuestionMessage({ session, message: typedQuestion, business, tenant, intent: 'FAQ' });
     await persistQuestionSession(session, tenant, reply.context || { lastMessage: typedQuestion });
     await recordQuestionHistory(session, typedQuestion, reply);
@@ -94,7 +94,7 @@ export async function parseDirectBookingRequest(message, business) {
   const raw = String(message || '').trim();
   const { parsePartySizeFromText } = await import('../../utils/parsePartySize.js');
   const { extractBookingTimeFromText } = await import('../../utils/parseBookingTime.js');
-  const { resolveBookingDateInput, extractBookingDatePhraseFromText } = await import('../../services/bookingDateParser.js');
+  const { resolveBookingDateInput, extractBookingDatePhraseFromText } = await import('../../services/booking/bookingDateParser.js');
 
   const partySize = parsePartySizeFromText(raw);
   const tz = business?.hours?.timezone || 'UTC';
@@ -524,7 +524,7 @@ export async function registerAllModules() {
     // every direct-booking request for a service-less business threw
     // "updateSession is not defined" instead of confirming the booking.
     const { updateSession } = await import('../sessions/sessionService.js');
-    const { bookingDateIsoFromParsed } = await import('../../services/bookingState.js');
+    const { bookingDateIsoFromParsed } = await import('../../services/booking/bookingState.js');
     const { resolveSessionPhone } = await import('../../utils/customerPhone.js');
     const directBooking = await parseDirectBookingRequest(message, business).catch(() => null);
     const isRestaurant = (business?.businessMode || '').toUpperCase() === 'RESTAURANT';
@@ -682,7 +682,7 @@ export async function registerAllModules() {
   });
 
   registerAction('REPEAT_ORDER', async ({ session, message, business, tenant }) => {
-    const { getLastOrderItem } = await import('../../services/orderService.js');
+    const { getLastOrderItem } = await import('../../services/order/orderService.js');
     const { startFlow }        = await import('../conversations/flowEngine.js');
     const { updateSession }    = await import('../sessions/sessionService.js');
 
@@ -718,7 +718,7 @@ export async function registerAllModules() {
   });
 
   registerAction('TRACK_ORDER', async ({ session, business, message }) => {
-    const { buildStatusReply } = await import('../../services/activityStatusService.js');
+    const { buildStatusReply } = await import('../../services/activity/activityStatusService.js');
     return buildStatusReply({ session, business, message });
   });
 
