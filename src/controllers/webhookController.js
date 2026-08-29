@@ -2951,6 +2951,24 @@ async function _handleIncomingMessageSerialized({ tenantId, tenantDoc, from, msg
       // SELECT_SERVICE and SELECT_STYLIST use dynamic SVC_* / STYLIST_* IDs covered by
       // isFlowPassthroughId() regex — no static set needed. Omitting them is correct.
     };
+    // [AUDIT-FIX-RECOVERY-1] Global escape button IDs — must always be actionable
+    // no matter which step's allowed-button set they're validated against. These
+    // are exactly the recovery/reset affordances the bot itself hands the customer
+    // from system-level fallback messages (flowEngine's "No active session" / "not
+    // available right now" replies, loop-guard hints, etc.), so rejecting a tap on
+    // one of them as "stale" is always wrong — there is no step at which "start
+    // over" or "cancel" should ever be an invalid response.
+    //
+    // Previously each STEP_VALID_BUTTONS entry had to explicitly list SHOW_MENU/
+    // CANCEL for a tap to succeed, and several steps didn't (CONFIRM, ITEM_ADDED,
+    // EDIT_CART_MENU, UPSELL, EDIT_CART_PICK's guarded steps, etc.). Concretely: a
+    // customer whose session/flow was lost (e.g. TTL expiry) and who tapped the
+    // bot's own "🔄 Start Over" button in response got THIS gate's "⚠️ That option
+    // is no longer available at this stage of your order" instead of actually
+    // starting over — a permanent dead end, since every subsequent tap hit the
+    // exact same stale step. Exempting these IDs here closes that loop for good,
+    // independent of whether any single step's allow-list happens to include them.
+    const GLOBAL_ESCAPE_BUTTON_IDS = new Set(['SHOW_MENU', 'CANCEL', 'CANCEL_ORDER', 'CANCEL_BOOKING', 'SUPPORT']);
     const upperMsg = messageText.trim().toUpperCase();
     const currentStep = session.step;
     const pendingNaturalQuantity = session.data?.pendingNaturalQuantity;
@@ -2966,7 +2984,8 @@ async function _handleIncomingMessageSerialized({ tenantId, tenantDoc, from, msg
     if (isInteractive && !isListReply && currentStep && STEP_VALID_BUTTONS[currentStep] !== undefined) {
       const validSet = STEP_VALID_BUTTONS[currentStep];
       // Only enforce when the set is non-empty (empty means free-text step, no valid buttons)
-        if (validSet.size > 0 && !validSet.has(upperMsg) && upperMsg !== 'BROWSE_CATALOG'
+        if (validSet.size > 0 && !validSet.has(upperMsg) && !GLOBAL_ESCAPE_BUTTON_IDS.has(upperMsg)
+          && upperMsg !== 'BROWSE_CATALOG'
           && !isFlowPassthroughId(upperMsg) && !pendingNaturalCandidate) {
         await dispatchMessage(from, {
           type: 'text',
