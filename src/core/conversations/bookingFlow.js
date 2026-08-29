@@ -18,13 +18,13 @@
 
 import { updateSession }           from '../sessions/sessionService.js';
 import { completeFlow, cancelFlow } from './flowEngine.js';
-import { saveBooking }             from '../../services/bookingService.js';
+import { saveBooking }             from '../../services/booking/bookingService.js';
 import {
   getLocalNow,
   tryParseDate,
   resolveBookingDateInput,
   formatBookingDateLabel,
-} from '../../services/bookingDateParser.js';
+} from '../../services/booking/bookingDateParser.js';
 import {
   buildSimpleDayList,
   buildWeekDayList,
@@ -32,14 +32,14 @@ import {
   buildMonthDayList,
   parseMonthId,
   resolveDayPick,
-} from '../../services/bookingDatePickerUI.js';
+} from '../../services/booking/bookingDatePickerUI.js';
 import {
   shouldUseBookingDateFlow,
   resolveBookingDateFlowId,
   buildBookingDateFlowMessage,
   parseBookingDateFlowReply,
   resolveFlowBookingDate,
-} from '../../services/bookingDateFlow.js';
+} from '../../services/booking/bookingDateFlow.js';
 // buildAdminBookingAlertBody is imported dynamically inside BOOKING_CONFIRM to stay consistent
 // with the dynamic import already there. The static buildAdminBookingAlert alias was dead code.
 import { trackBookingAnalytics }   from '../analytics/analyticsService.js';
@@ -56,7 +56,7 @@ import {
   enrichBookingSessionData,
   bookingSnapshotFromSaved,
   bookingDateIsoFromParsed,
-} from '../../services/bookingState.js';
+} from '../../services/booking/bookingState.js';
 import { normalizeCustomerPhone, resolveSessionPhone } from '../../utils/customerPhone.js';
 
 import {
@@ -66,7 +66,7 @@ import {
 } from '../../utils/parseBookingTime.js';
 
 // Re-export for backward compatibility (bakery/delivery flows import from here).
-export { tryParseDate } from '../../services/bookingDateParser.js';
+export { tryParseDate } from '../../services/booking/bookingDateParser.js';
 
 function looksLikeTime(input) {
   return looksLikeBookingTime(input);
@@ -236,7 +236,7 @@ export async function handleBookingFlow({ session, message, business, tenant, is
       isBookingSystemAction,
       interpretBookingMessage,
       continueFromMergedBookingData,
-    } = await import('../../services/bookingInterpretation.js');
+    } = await import('../../services/booking/bookingInterpretation.js');
 
     if (!isBookingSystemAction(raw)) {
       const { merged, changed, changedFields } = await interpretBookingMessage(raw, business, data);
@@ -726,7 +726,7 @@ export async function handleBookingFlow({ session, message, business, tenant, is
       if ((isSalonMode || isRestaurantMode) && date) {
         try {
           const { default: _BookingModel } = await import('../../models/Booking.js');
-          const { buildActiveBookingFilter } = await import('../../services/activityLifecycleService.js');
+          const { buildActiveBookingFilter } = await import('../../services/activity/activityLifecycleService.js');
           const sameDayBookings = await _BookingModel.find({
             ...buildActiveBookingFilter(session.customerPhone, session.tenantId),
             date,
@@ -831,7 +831,7 @@ export async function handleBookingFlow({ session, message, business, tenant, is
       try {
         const adminPhone = business?.adminPhone || tenant?.adminPhone;
         if (adminPhone && tenant && savedBooking) {
-          const { buildAdminBookingAlertBody } = await import('../../services/adminCommandService.js');
+          const { buildAdminBookingAlertBody } = await import('../../services/admin/adminCommandService.js');
           const { dispatchMessage } = await import('../whatsapp/dispatcher.js');
           // [v14-BUG-10] Pass staff (stylist) to admin alert so admin sees who
           // the customer requested. Previously omitted — admin saw service/date/time

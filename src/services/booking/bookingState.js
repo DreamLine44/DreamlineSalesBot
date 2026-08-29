@@ -6,7 +6,7 @@
 import { tryParseDate } from './bookingDateParser.js';
 
 /** YYYY-MM-DD from a UTC-midnight booking Date. */
-export function bookingDateIsoFromParsed(parsed) {
+export const bookingDateIsoFromParsed = (parsed) => {
   if (!parsed) return null;
   const d = parsed instanceof Date ? parsed : new Date(parsed);
   if (isNaN(d.getTime())) return null;
@@ -16,7 +16,7 @@ export function bookingDateIsoFromParsed(parsed) {
   return `${y}-${m}-${day}`;
 }
 
-export function parsedFromBookingDateIso(iso) {
+export const parsedFromBookingDateIso = (iso) => {
   const m = String(iso || '').trim().match(/^(\d{4})-(\d{2})-(\d{2})$/);
   if (!m) return null;
   const d = new Date(Date.UTC(parseInt(m[1], 10), parseInt(m[2], 10) - 1, parseInt(m[3], 10)));
@@ -28,7 +28,7 @@ export function parsedFromBookingDateIso(iso) {
  * Resolve authoritative booking date from session data.
  * Prefer bookingDateIso → parsedDate → label parse (last resort).
  */
-export function coerceBookingParsedDate(data, tz = 'UTC') {
+export const coerceBookingParsedDate = (data, tz = 'UTC') => {
   if (!data) return null;
 
   if (data.bookingDateIso) {
@@ -50,7 +50,7 @@ export function coerceBookingParsedDate(data, tz = 'UTC') {
 }
 
 /** Merge confirmed date fields into session booking data without re-parsing. */
-export function enrichBookingSessionData(data, { parsed, label, raw, tz = 'UTC' }) {
+export const enrichBookingSessionData = (data, { parsed, label, raw, tz = 'UTC' }) => {
   const parsedDate = parsed instanceof Date ? parsed : new Date(parsed);
   const bookingDateIso = bookingDateIsoFromParsed(parsedDate);
   return {
@@ -63,7 +63,7 @@ export function enrichBookingSessionData(data, { parsed, label, raw, tz = 'UTC' 
 }
 
 /** Snapshot from a saved Booking document for post-flow / tracking context. */
-export function bookingSnapshotFromSaved(saved) {
+export const bookingSnapshotFromSaved = (saved) => {
   if (!saved) return null;
   return {
     shortId:        saved.shortId || null,

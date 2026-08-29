@@ -358,7 +358,7 @@ export async function detectIntent({ message, isInteractive = false, session, bu
   }
 
   if (!session?.currentFlow && !DIRECT_INTENT_EXCLUDE_RE.test(clean) && !QUESTION_LEADIN_RE.test(clean)) {
-    const { isInformationalActivityQuestion } = await import('../../services/questionModeHelper.js');
+    const { isInformationalActivityQuestion } = await import('../../services/question/questionModeHelper.js');
     if (!isInformationalActivityQuestion(raw) && BOOKING_DIRECT_RE.test(clean)) {
       return { action: 'START_BOOKING', intent: 'BOOKING', confidence: 'HIGH', source: 'direct-phrase' };
     }

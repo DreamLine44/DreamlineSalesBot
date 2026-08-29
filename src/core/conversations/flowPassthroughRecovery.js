@@ -8,9 +8,9 @@
 import { advance } from './flowEngine.js';
 import { getSession, updateSession } from '../sessions/sessionService.js';
 import { parsePartySizeFromText } from '../../utils/parsePartySize.js';
-import { looksLikeDate } from '../../services/bookingDateParser.js';
-import { buildActiveBookingFilter } from '../../services/activityLifecycleService.js';
-import { bookingDateIsoFromParsed } from '../../services/bookingState.js';
+import { looksLikeDate } from '../../services/booking/bookingDateParser.js';
+import { buildActiveBookingFilter } from '../../services/activity/activityLifecycleService.js';
+import { bookingDateIsoFromParsed } from '../../services/booking/bookingState.js';
 import { looksLikeBookingTime } from '../../utils/parseBookingTime.js';
 import { normalizeCustomerPhone } from '../../utils/customerPhone.js';
 

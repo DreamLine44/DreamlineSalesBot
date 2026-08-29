@@ -5,16 +5,16 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import { extractShortId } from '../services/activityLookupService.js';
+import { extractShortId } from '../services/activity/activityLookupService.js';
 import {
   isInformationalActivityQuestion,
   isBookingInfoQuestion,
   isStayInQuestionMessage,
   isGreetingMessage,
   isHumanHandoffRequest,
-} from '../services/questionModeHelper.js';
+} from '../services/question/questionModeHelper.js';
 import { isCatalogBrowseRequest } from '../core/intents/menuIntentDetector.js';
-import { tryDatabaseAnswer } from '../services/questionAnswerService.js';
+import { tryDatabaseAnswer } from '../services/question/questionAnswerService.js';
 
 function readSource(relPath) {
   return fs.readFileSync(new URL(relPath, import.meta.url), 'utf8');
@@ -41,7 +41,7 @@ test('audit: bare cancel is not treated as a #CANCEL reference', () => {
 });
 
 test('audit: mid-flow Cancel Order defers to cancelFlow when nothing is saved yet', () => {
-  const lifecycle = readSource('../services/activityLifecycleService.js');
+  const lifecycle = readSource('../services/activity/activityLifecycleService.js');
   assert.match(lifecycle, /session\?\.currentFlow[\s\S]*return null/);
   const webhook = readSource('../controllers/webhookController.js');
   assert.match(webhook, /tryCustomerCancelRequest\([\s\S]*session,/);
@@ -124,7 +124,7 @@ test('audit: bare hi/hello in Q&A routes to welcome menu with options', () => {
 
 test('audit: greeting helper and handler finalizer exist', () => {
   assert.ok(isGreetingMessage('hello'));
-  const qas = readSource('../services/questionAnswerService.js');
+  const qas = readSource('../services/question/questionAnswerService.js');
   assert.match(qas, /finalizeQuestionHandlerReply/);
   assert.match(qas, /welcome_sequence/);
 });

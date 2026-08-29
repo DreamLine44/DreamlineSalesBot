@@ -223,7 +223,7 @@ export async function cancelFlow(session, business) {
   // failure should never block the session reset / reply to the customer.
   try {
     const { default: Booking } = await import('../../models/Booking.js');
-    const { buildActiveBookingFilter } = await import('../../services/activityLifecycleService.js');
+    const { buildActiveBookingFilter } = await import('../../services/activity/activityLifecycleService.js');
     await Booking.findOneAndUpdate(
       buildActiveBookingFilter(session.customerPhone, session.tenantId),
       { $set: { status: 'cancelled', cancelledBy: 'customer', cancelledAt: new Date() } },

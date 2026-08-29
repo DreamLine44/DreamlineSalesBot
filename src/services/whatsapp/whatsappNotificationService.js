@@ -13,7 +13,7 @@
  *  - The module does NOT import the main dispatcher or flow engine,
  *    preserving full isolation from the bot.
  */
-import logger from '../config/logger.js';
+import logger from '../../config/logger.js';
 
 // ── Status message templates ─────────────────────────────────────────────────
 
@@ -58,7 +58,7 @@ const STATUS_MESSAGES = {
  * @param {string} newStatus          - The status being transitioned to
  * @param {string} [adminNotes]       - Optional admin notes (shown on rejection)
  */
-export async function notifyStatusChange(connectionRequest, newStatus, adminNotes = '') {
+export const notifyStatusChange = async (connectionRequest, newStatus, adminNotes = '') => {
   try {
     const template = STATUS_MESSAGES[newStatus];
     if (!template) {
@@ -138,7 +138,7 @@ export async function notifyStatusChange(connectionRequest, newStatus, adminNote
  *
  * @param {object} connectionRequest - The newly created request document
  */
-export async function notifyAdminNewRequest(connectionRequest) {
+export const notifyAdminNewRequest = async (connectionRequest) => {
   try {
     logger.info('[OnboardingNotify] New connection request — admin alert', {
       requestId:    String(connectionRequest._id),

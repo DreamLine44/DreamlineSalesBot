@@ -15,7 +15,7 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { resolveOrderFields } from '../services/orderService.js';
+import { resolveOrderFields } from '../services/order/orderService.js';
 
 test('single-item call (no items[]) — passes through unchanged, exactly like pre-v39', () => {
   const result = resolveOrderFields({

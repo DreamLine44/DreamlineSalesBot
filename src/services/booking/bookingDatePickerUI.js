@@ -17,49 +17,49 @@ const MONTH_NAMES = [
   'July', 'August', 'September', 'October', 'November', 'December',
 ];
 
-export function toDayId(d) {
+export const toDayId = (d) => {
   const y = d.getUTCFullYear();
   const m = String(d.getUTCMonth() + 1).padStart(2, '0');
   const day = String(d.getUTCDate()).padStart(2, '0');
   return `DATE_D_${y}${m}${day}`;
 }
 
-export function parseDayId(raw) {
+export const parseDayId = (raw) => {
   const m = String(raw || '').toUpperCase().match(/^DATE_D_(\d{4})(\d{2})(\d{2})$/);
   if (!m) return null;
   return new Date(Date.UTC(parseInt(m[1], 10), parseInt(m[2], 10) - 1, parseInt(m[3], 10)));
 }
 
-export function parseMonthId(raw) {
+export const parseMonthId = (raw) => {
   const m = String(raw || '').toUpperCase().match(/^DATE_M_(\d{4})(\d{2})$/);
   if (!m) return null;
   return { year: parseInt(m[1], 10), month: parseInt(m[2], 10) - 1 };
 }
 
-function addDays(base, n) {
+const addDays = (base, n) => {
   return new Date(Date.UTC(base.getUTCFullYear(), base.getUTCMonth(), base.getUTCDate() + n));
 }
 
-function localMidnight(now) {
+const localMidnight = (now) => {
   return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
 }
 
-function maxBookableDate(now) {
+const maxBookableDate = (now) => {
   const max = localMidnight(now);
   max.setUTCMonth(max.getUTCMonth() + MAX_BOOKING_MONTHS_AHEAD);
   return max;
 }
 
-function shortWeekday(d) {
+const shortWeekday = (d) => {
   return d.toLocaleDateString('en-GB', { weekday: 'short', timeZone: 'UTC' });
 }
 
-function shortMonthDay(d) {
+const shortMonthDay = (d) => {
   return d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', timeZone: 'UTC' });
 }
 
 /** Simple one-step picker: next 10 bookable days in a single list. */
-export function buildSimpleDayList(tz, headingOrError = null) {
+export const buildSimpleDayList = (tz, headingOrError = null) => {
   const now = getLocalNow(tz);
   const today = localMidnight(now);
   const maxDate = maxBookableDate(now);
@@ -95,7 +95,7 @@ export function buildSimpleDayList(tz, headingOrError = null) {
 }
 
 /** Hub: This week / Next week / Choose month (3 buttons — legacy fallback). */
-export function buildDatePickerHub(headingOrError = null) {
+export const buildDatePickerHub = (headingOrError = null) => {
   const body = headingOrError
     ? `${headingOrError}\n\nPlease select how you'd like to choose your date.`
     : `What date would you like? 📅\n\nPlease select how you'd like to choose your date.`;
@@ -112,7 +112,7 @@ export function buildDatePickerHub(headingOrError = null) {
 }
 
 /** Week slice as a dropdown-style list (7 days). */
-export function buildWeekDayList(weekOffset, tz, heading = null) {
+export const buildWeekDayList = (weekOffset, tz, heading = null) => {
   const now = getLocalNow(tz);
   const today = localMidnight(now);
   const maxDate = maxBookableDate(now);
@@ -149,7 +149,7 @@ export function buildWeekDayList(weekOffset, tz, heading = null) {
 }
 
 /** Month dropdown — next bookable months (max 10 rows). */
-export function buildMonthPickerList(tz, heading = null) {
+export const buildMonthPickerList = (tz, heading = null) => {
   const now = getLocalNow(tz);
   const today = localMidnight(now);
   const maxDate = maxBookableDate(now);
@@ -185,7 +185,7 @@ export function buildMonthPickerList(tz, heading = null) {
 }
 
 /** Day dropdown for a chosen month (paginated, 9 days + nav row). */
-export function buildMonthDayList({ year, month, tz, page = 0, heading = null }) {
+export const buildMonthDayList = ({ year, month, tz, page = 0, heading = null }) => {
   const now = getLocalNow(tz);
   const today = localMidnight(now);
   const maxDate = maxBookableDate(now);
@@ -249,7 +249,7 @@ export function buildMonthDayList({ year, month, tz, page = 0, heading = null })
   };
 }
 
-export async function resolveDayPick(raw, tz) {
+export const resolveDayPick = async (raw, tz) => {
   const parsed = parseDayId(raw);
   if (!parsed) return null;
   // List row ids (DATE_D_YYYYMMDD) are already normalized — do not re-parse via NL.

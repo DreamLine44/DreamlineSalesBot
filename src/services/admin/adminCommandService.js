@@ -95,19 +95,20 @@
  *               text with typed commands in the footer.
  */
 
-import Order          from '../models/Order.js';
-import Booking        from '../models/Booking.js';
-import Tenant         from '../models/Tenant.js';
-import BusinessConfig from '../models/BusinessConfig.js';
-import { updateSession } from '../core/sessions/sessionService.js';
-import { dispatchText, dispatchMessage } from '../core/whatsapp/dispatcher.js';
-import { getModeConfig } from '../config/modes.js';
-import logger            from '../config/logger.js';
-import { formatMoney }   from '../utils/formatCurrency.js';
-import { buildOptionsReply } from '../core/shared/uiOptionsHelper.js';
-import { isNoPaymentOrder, formatOrderItemsForMessage } from './orderService.js';
-import { getOrderByShortId, extractShortId } from './activityLookupService.js';
-import { getBookingByShortId } from './bookingService.js';
+import Order          from '../../models/Order.js';
+import Booking        from '../../models/Booking.js';
+import Tenant         from '../../models/Tenant.js';
+import BusinessConfig from '../../models/BusinessConfig.js';
+import { updateSession } from '../../core/sessions/sessionService.js';
+import { dispatchText, dispatchMessage } from '../../core/whatsapp/dispatcher.js';
+import { getModeConfig } from '../../config/modes.js';
+import logger            from '../../config/logger.js';
+import { formatMoney }   from '../../utils/formatCurrency.js';
+import { buildOptionsReply } from '../../core/shared/uiOptionsHelper.js';
+import { isNoPaymentOrder, formatOrderItemsForMessage } from '../order/orderService.js';
+import { getOrderByShortId, extractShortId } from '../activity/activityLookupService.js';
+import { getBookingByShortId } from '../booking/bookingService.js';
+import { logAudit } from './auditService.js';
 
 const MAX_INPUT_LENGTH = 500; // guard against absurdly long button IDs / command strings
 
@@ -121,7 +122,7 @@ const MAX_INPUT_LENGTH = 500; // guard against absurdly long button IDs / comman
 // passed in as a parameter) and forwards them here — eliminating both DB queries
 // on every admin command path.  Falls back to fetching when either is not supplied
 // (backwards compatible for callers outside webhookController).
-export async function isAdminPhone(senderPhone, tenantId, business = null, tenantDoc = null) {
+export const isAdminPhone = async (senderPhone, tenantId, business = null, tenantDoc = null) => {
   const norm = String(senderPhone).replace(/^\+/, '');
 
   // 1. Fast env-var check (no DB) — check first
@@ -149,7 +150,7 @@ export async function isAdminPhone(senderPhone, tenantId, business = null, tenan
 }
 
 // ── Admin button reply ─────────────────────────────────────────────────────────
-export async function handleAdminButtonReply(buttonId, tenantId, adminPhone, tenantDoc, business) {
+export const handleAdminButtonReply = async (buttonId, tenantId, adminPhone, tenantDoc, business) => {
   // [FIX-CMD-3] Guard against absurdly long inputs
   if (!buttonId || String(buttonId).length > MAX_INPUT_LENGTH) return null;
 
@@ -183,7 +184,7 @@ export async function handleAdminButtonReply(buttonId, tenantId, adminPhone, ten
 }
 
 // ── Admin text command router ─────────────────────────────────────────────────
-export async function handleAdminTextCommand(text, tenantId, adminPhone, tenantDoc, business) {
+export const handleAdminTextCommand = async (text, tenantId, adminPhone, tenantDoc, business) => {
   // [FIX-CMD-3] Guard against absurdly long inputs
   if (!text || String(text).length > MAX_INPUT_LENGTH) return null;
 
@@ -269,7 +270,7 @@ export async function handleAdminTextCommand(text, tenantId, adminPhone, tenantD
     // only one session was resumed with no indication that N-1 others remained, leaving
     // those customers silently stuck. The count is fetched BEFORE resumeBot() because
     // resumeBot() sets humanMode=false on the resumed session, changing the count.
-    const Session = (await import('../models/Session.js')).default;
+    const Session = (await import('../../models/Session.js')).default;
     const [latest, totalCount] = await Promise.all([
       Session.findOne({ tenantId, humanMode: true })
         .sort({ updatedAt: -1 })
@@ -361,7 +362,7 @@ Use \`RESUME BOT <phone>\` to resume a specific customer.`;
 }
 
 // ── Confirm payment ───────────────────────────────────────────────────────────
-async function confirmPayment(shortId, tenantId, adminPhone, tenantDoc, business) {
+const confirmPayment = async (shortId, tenantId, adminPhone, tenantDoc, business) => {
   try {
     // [FIX-CMD-11] shortId-only query. shortId is always 6 chars (pre-save hook sets it to the
     // last 6 hex chars of the ObjectId). The previous length===24 branch (treating shortId as
@@ -408,12 +409,25 @@ async function confirmPayment(shortId, tenantId, adminPhone, tenantDoc, business
       return `⚠️ Order #${shortId} can't be confirmed — current status is *${existing.status}*.`;
     }
 
+    // [AUDIT-FIX-AUDITLOG-WIRE] payment_approved — documented in AuditLog.js as
+    // "admin confirmed payment (adminCommandService.confirmPayment)" but logAudit()
+    // was never actually called from here. Placed right after the atomic state-guarded
+    // update succeeds, so a losing concurrent call (order === null above) never logs.
+    logAudit({
+      tenantId,
+      orderId: order._id,
+      actor: 'admin',
+      actorId: adminPhone,
+      action: 'payment_approved',
+      metadata: { shortId },
+    });
+
     // [FIX-AWAIT] Cash / no-payment orders must say "Order Confirmed", not "Payment
     // Confirmed". Previously this only checked session.step === AWAIT_ADMIN_CONFIRM,
     // which expires with the session TTL (~30 min) — so an admin confirming a cash
     // order 30+ minutes later wrongly told the customer "Your payment has been verified"
     // even when payment.enabled is false and no proof was ever submitted.
-    const { getSession: _getSession } = await import('../core/sessions/sessionService.js');
+    const { getSession: _getSession } = await import('../../core/sessions/sessionService.js');
     const custSession2 = await _getSession(order.customerPhone, tenantId).catch(() => null);
     const isCashConfirm = isNoPaymentOrder(business, order, custSession2);
 
@@ -496,7 +510,7 @@ async function confirmPayment(shortId, tenantId, adminPhone, tenantDoc, business
     // [PFH-5 / MEM-FIX-1] Record confirmed order in customer memory — only fires on
     // actual admin confirmation, not on saveOrder(), so memory reflects real completed
     // orders rather than all abandoned attempts.
-    import('../core/memory/customerMemory.js')
+    import('../../core/memory/customerMemory.js')
       .then(m => m.recordConfirmedOrder(order.customerPhone, String(tenantId), order.item))
       .catch(() => {});
 
@@ -513,7 +527,7 @@ async function confirmPayment(shortId, tenantId, adminPhone, tenantDoc, business
     // self-confirm both funnel through this function) — makes revenue reflect money
     // actually confirmed, consistent with how totalOrders is already counted.
     if (order.totalPrice) {
-      import('../core/analytics/analyticsService.js')
+      import('../../core/analytics/analyticsService.js')
         .then(m => m.recordRevenue({
           item:          order.item,
           quantity:      order.quantity,
@@ -553,7 +567,7 @@ async function confirmPayment(shortId, tenantId, adminPhone, tenantDoc, business
 }
 
 // ── Approve cash payment request (PAYMENT_PROOF — not payment received) ───────
-async function approveCashRequest(shortId, tenantId, adminPhone, tenantDoc, business) {
+const approveCashRequest = async (shortId, tenantId, adminPhone, tenantDoc, business) => {
   try {
     const order = await Order.findOneAndUpdate(
       {
@@ -620,7 +634,7 @@ async function approveCashRequest(shortId, tenantId, adminPhone, tenantDoc, busi
 }
 
 // ── Reject cash payment request — return customer to payment instructions ────
-async function rejectCashRequest(shortId, tenantId, adminPhone, tenantDoc, business) {
+const rejectCashRequest = async (shortId, tenantId, adminPhone, tenantDoc, business) => {
   try {
     const order = await Order.findOneAndUpdate(
       {
@@ -645,7 +659,7 @@ async function rejectCashRequest(shortId, tenantId, adminPhone, tenantDoc, busin
       return `⚠️ No pending cash request for order #${shortId}.`;
     }
 
-    const { buildPaymentInstructionsUI } = await import('./paymentService.js');
+    const { buildPaymentInstructionsUI } = await import('../paymentService.js');
     const paymentUI = buildPaymentInstructionsUI(
       business,
       order.totalPrice,
@@ -683,7 +697,7 @@ async function rejectCashRequest(shortId, tenantId, adminPhone, tenantDoc, busin
 }
 
 // ── Reject payment ────────────────────────────────────────────────────────────
-async function rejectPayment(shortId, tenantId, adminPhone, tenantDoc, business, rejectReason = null) {
+const rejectPayment = async (shortId, tenantId, adminPhone, tenantDoc, business, rejectReason = null) => {
   try {
     // [FIX-CMD-11] shortId-only query (see confirmPayment for full explanation)
     //
@@ -715,7 +729,7 @@ async function rejectPayment(shortId, tenantId, adminPhone, tenantDoc, business,
     // that also left the order briefly in the wrong state). We now write the correct
     // final state exactly once, via an atomic findOneAndUpdate keyed off the same
     // guard filter as the read above to close the double-tap TOCTOU race.
-    const { getSession } = await import('../core/sessions/sessionService.js');
+    const { getSession } = await import('../../core/sessions/sessionService.js');
     const custSession = await getSession(order.customerPhone, tenantId).catch(() => null);
     const isCashOrder = custSession?.step === 'AWAIT_ADMIN_CONFIRM';
 
@@ -735,6 +749,30 @@ async function rejectPayment(shortId, tenantId, adminPhone, tenantDoc, business,
       }}, { new: true }).lean();
 
       if (!updated) return `ℹ️ Order #${shortId} was already handled.`;
+
+      // [AUDIT-FIX-AUDITLOG-WIRE] payment_rejected — documented in AuditLog.js as
+      // "admin rejected payment (adminCommandService.rejectPayment)" but logAudit()
+      // was never actually called from here.
+      logAudit({
+        tenantId,
+        orderId: updated._id,
+        actor: 'admin',
+        actorId: adminPhone,
+        action: 'payment_rejected',
+        metadata: { shortId, rejectReason: rejectReason || null, cashOrder: true },
+      });
+
+      // [AUDIT-FIX-AUDITLOG-WIRE] order_cancelled — a cash order's rejection IS a
+      // cancellation (no retry window, status went straight to 'cancelled' above),
+      // so this write logs both the payment outcome and the order-lifecycle outcome.
+      logAudit({
+        tenantId,
+        orderId: updated._id,
+        actor: 'admin',
+        actorId: adminPhone,
+        action: 'order_cancelled',
+        metadata: { shortId, rejectReason: rejectReason || null },
+      });
 
       await updateSession(order.customerPhone, tenantId, {
         currentFlow: null, step: null, data: {},
@@ -790,6 +828,31 @@ async function rejectPayment(shortId, tenantId, adminPhone, tenantDoc, business,
 
     if (!updated) return `ℹ️ Order #${shortId} was already handled.`;
 
+    // [AUDIT-FIX-AUDITLOG-WIRE] payment_rejected — documented in AuditLog.js as
+    // "admin rejected payment (adminCommandService.rejectPayment)" but logAudit()
+    // was never actually called from here.
+    logAudit({
+      tenantId,
+      orderId: updated._id,
+      actor: 'admin',
+      actorId: adminPhone,
+      action: 'payment_rejected',
+      metadata: { shortId, rejectReason: rejectReason || null, cashOrder: false },
+    });
+
+    // [AUDIT-FIX-AUDITLOG-WIRE] rejection_noted — documented in AuditLog.js as
+    // "admin added/updated a rejection reason" — this is the retry-window branch
+    // where rejectedNote is actually persisted onto the order (the cash branch
+    // above has no retry, so there's nothing to "note" there — just a cancellation).
+    logAudit({
+      tenantId,
+      orderId: updated._id,
+      actor: 'admin',
+      actorId: adminPhone,
+      action: 'rejection_noted',
+      metadata: { shortId, rejectReason: rejectReason || null },
+    });
+
     // [FIX-CMD-8] Await the session update — if this fails the customer's session won't
     // point to PAYMENT_PROOF and they won't be able to send a retry screenshot.
     // Previously fire-and-forget, meaning a transient DB error silently broke retries.
@@ -829,7 +892,7 @@ async function rejectPayment(shortId, tenantId, adminPhone, tenantDoc, business,
 }
 
 // ── Confirm booking ───────────────────────────────────────────────────────────
-async function confirmBooking(shortId, tenantId, adminPhone, tenantDoc) {
+const confirmBooking = async (shortId, tenantId, adminPhone, tenantDoc) => {
   try {
     // [FIX-CMD-14] Atomic findOneAndUpdate closes the same double-tap TOCTOU race as
     // confirmPayment — two near-simultaneous CONFIRM BOOK taps could previously both
@@ -899,7 +962,7 @@ async function confirmBooking(shortId, tenantId, adminPhone, tenantDoc) {
     // Only fires for salon/barbershop modes (not restaurant, retail, etc.) and only
     // when the business has non-service menuItems available.
     try {
-      const { default: _BizCfg } = await import('../models/BusinessConfig.js');
+      const { default: _BizCfg } = await import('../../models/BusinessConfig.js');
       const _bizFull = await _BizCfg.findOne({ tenantId }).select('businessMode menuItems settings').lean().catch(() => null);
       const _mode = (_bizFull?.businessMode || '').toUpperCase();
       const _isSalonUpsell = _mode === 'SALON' || _mode === 'BARBERSHOP';
@@ -973,7 +1036,7 @@ async function confirmBooking(shortId, tenantId, adminPhone, tenantDoc) {
 }
 
 // ── Decline booking ───────────────────────────────────────────────────────────
-async function declineBooking(shortId, reason, tenantId, adminPhone, tenantDoc) {
+const declineBooking = async (shortId, reason, tenantId, adminPhone, tenantDoc) => {
   try {
     // [FIX-CMD-14] Atomic findOneAndUpdate — same TOCTOU rationale as confirmBooking.
     const booking = await Booking.findOneAndUpdate(
@@ -1041,7 +1104,7 @@ async function declineBooking(shortId, reason, tenantId, adminPhone, tenantDoc) 
 }
 
 // ── Cancel order by reference (admin) ─────────────────────────────────────────
-async function cancelOrderByShortId(shortId, tenantId, adminPhone, tenantDoc, business) {
+const cancelOrderByShortId = async (shortId, tenantId, adminPhone, tenantDoc, business) => {
   try {
     const ref = String(shortId).toUpperCase();
     const terminal = ['cancelled', 'completed', 'delivered', 'rejected'];
@@ -1070,6 +1133,17 @@ async function cancelOrderByShortId(shortId, tenantId, adminPhone, tenantDoc, bu
       return `⚠️ Order #${ref} could not be cancelled. Please try again.`;
     }
 
+    // [AUDIT-FIX-AUDITLOG-WIRE] order_cancelled — documented in AuditLog.js but
+    // logAudit() was never called from this admin-initiated CANCEL command path.
+    logAudit({
+      tenantId,
+      orderId: order._id,
+      actor:   'admin',
+      actorId: adminPhone,
+      action:  'order_cancelled',
+      metadata: { shortId: ref },
+    });
+
     const modeCfg = getModeConfig(business);
     await dispatchMessage(order.customerPhone, buildOptionsReply(
       modeCfg,
@@ -1095,7 +1169,7 @@ async function cancelOrderByShortId(shortId, tenantId, adminPhone, tenantDoc, bu
 }
 
 // ── Cancel booking by reference (admin) ─────────────────────────────────────────
-async function cancelBookingByShortId(shortId, tenantId, adminPhone, tenantDoc) {
+const cancelBookingByShortId = async (shortId, tenantId, adminPhone, tenantDoc) => {
   try {
     const ref = String(shortId).toUpperCase();
     const booking = await Booking.findOneAndUpdate(
@@ -1147,7 +1221,7 @@ async function cancelBookingByShortId(shortId, tenantId, adminPhone, tenantDoc) 
 // ── Mark order ready ──────────────────────────────────────────────────────────
 // [SPEC-5A] Admin types "MARK READY <shortId>" or taps READY_<shortId> button.
 // Updates order status to 'ready', dispatches the spec §5A message to the customer.
-async function markOrderReady(shortId, tenantId, adminPhone, tenantDoc, business) {
+const markOrderReady = async (shortId, tenantId, adminPhone, tenantDoc, business) => {
   try {
     // [FIX-MARK-READY-GUARD] Previously required status='confirmed' AND paymentStatus='confirmed'.
     // This blocked orders that were:
@@ -1173,6 +1247,18 @@ async function markOrderReady(shortId, tenantId, adminPhone, tenantDoc, business
       if (existing.status === 'completed') return `ℹ️ Order #${shortId} is already completed.`;
       return `⚠️ Order #${shortId} can't be marked ready — status is *${existing.status}*.`;
     }
+
+    // [AUDIT-FIX-AUDITLOG-WIRE] status_changed — documented in AuditLog.js as "order
+    // fulfilment status advanced by admin" but logAudit() was never called from this
+    // WA "MARK READY <shortId>" / READY_<shortId> button admin command path.
+    logAudit({
+      tenantId,
+      orderId: order._id,
+      actor: 'admin',
+      actorId: adminPhone,
+      action: 'status_changed',
+      metadata: { shortId, to: 'ready' },
+    });
 
     const bizName = business?.name || 'us';
 
@@ -1213,7 +1299,7 @@ async function markOrderReady(shortId, tenantId, adminPhone, tenantDoc, business
 }
 
 // ── Resume bot ────────────────────────────────────────────────────────────────
-async function resumeBot(customerPhone, tenantId, tenantDoc) {
+const resumeBot = async (customerPhone, tenantId, tenantDoc) => {
   // upsert returns null when no document matches — meaning there is no active
   // session for this customer (TTL-expired). The admin gets a success message either
   // way (the bot IS effectively not running for that customer), but logging the miss
@@ -1263,7 +1349,7 @@ async function resumeBot(customerPhone, tenantId, tenantDoc) {
 // itself (CONFIRM_BOOK_<shortId> / DECLINE_BOOK_<shortId>), which is the correct path
 // since admin alerts are sent as WhatsApp interactive button messages, not plain text
 // with typed commands in the footer.
-export function buildAdminBookingAlertBody({ customerPhone, date, time, service, partySize, business, shortId, staff, bookingType }) {
+export const buildAdminBookingAlertBody = ({ customerPhone, date, time, service, partySize, business, shortId, staff, bookingType }) => {
   const bizName       = business?.name || 'Business';
   const mode          = (business?.businessMode || '').toUpperCase();
   const isSalon       = mode === 'SALON' || mode === 'BARBERSHOP';

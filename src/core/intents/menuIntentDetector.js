@@ -35,7 +35,7 @@
  * browse-the-catalog request", not whether it's safe to act on right now.
  */
 
-import { isBookingInfoQuestion } from '../../services/questionModeHelper.js';
+import { isBookingInfoQuestion } from '../../services/question/questionModeHelper.js';
 
 // Words that unambiguously mean "the browsable list of things you sell",
 // regardless of surrounding words. Safe to fire on their own.

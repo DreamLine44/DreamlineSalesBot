@@ -27,7 +27,7 @@ import { cancelFlow }     from '../../../core/conversations/flowEngine.js';
 // confusion during future audits about where flow completion happens.
 import { getAIReply }     from '../../../core/ai/providers/aiRouter.js';
 import { findBestMatch }  from '../../../utils/matchEngine.js';
-import { saveOrder }      from '../../../services/orderService.js';
+import { saveOrder }      from '../../../services/order/orderService.js';
 import { parseQuantity }  from '../../../utils/parseQuantity.js';
 import { trackOrderAnalytics } from '../../../core/analytics/analyticsService.js';
 import { itemLabel }      from '../../../utils/itemLabel.js';

@@ -17,7 +17,7 @@ import {
 export const BOOKING_DATE_FLOW_SCREEN = 'BOOKING_DATE';
 
 /** Resolve Flow ID: per-business config → tenant → env fallback. */
-export function resolveBookingDateFlowId(business, tenant) {
+export const resolveBookingDateFlowId = (business, tenant) => {
   return (
     business?.whatsappFlows?.bookingDateFlowId?.trim() ||
     tenant?.whatsapp?.bookingDateFlowId?.trim() ||
@@ -27,17 +27,17 @@ export function resolveBookingDateFlowId(business, tenant) {
 }
 
 /** Flow calendar is opt-in — default is the standard list + typed-date picker. */
-export function shouldUseBookingDateFlow(business, tenant) {
+export const shouldUseBookingDateFlow = (business, tenant) => {
   if (process.env.BOOKING_DATE_FLOW_ENABLED !== 'true') return false;
   return Boolean(resolveBookingDateFlowId(business, tenant));
 }
 
-export function isBookingDateFlowConfigured(business, tenant) {
+export const isBookingDateFlowConfigured = (business, tenant) => {
   return shouldUseBookingDateFlow(business, tenant);
 }
 
 /** YYYY-MM-DD bounds for Flow DatePicker (v5.0+). */
-export function getBookingDateFlowBounds(tz = 'UTC') {
+export const getBookingDateFlowBounds = (tz = 'UTC') => {
   const now = getLocalNow(tz);
   const min = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
   const max = new Date(min);
@@ -53,7 +53,7 @@ export function getBookingDateFlowBounds(tz = 'UTC') {
   return { min_date: fmt(min), max_date: fmt(max) };
 }
 
-export function buildBookingDateFlowToken(customerPhone) {
+export const buildBookingDateFlowToken = (customerPhone) => {
   const safe = String(customerPhone || 'guest').replace(/\W/g, '').slice(-12);
   return `bkdt_${safe}_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`;
 }
@@ -62,13 +62,13 @@ export function buildBookingDateFlowToken(customerPhone) {
  * Build interactive Flow message UI for dispatcher.
  * Opens a calendar grid when the customer taps the CTA button.
  */
-export function buildBookingDateFlowMessage({
+export const buildBookingDateFlowMessage = ({
   heading = null,
   tz = 'UTC',
   flowId,
   customerPhone,
   flowToken = null,
-} = {}) {
+} = {}) => {
   if (!flowId) return null;
 
   const bounds = getBookingDateFlowBounds(tz);
@@ -92,7 +92,7 @@ export function buildBookingDateFlowMessage({
 }
 
 /** Parse nfm_reply payload from WhatsApp Flow completion. */
-export function parseBookingDateFlowReply(flowReply) {
+export const parseBookingDateFlowReply = (flowReply) => {
   if (!flowReply || typeof flowReply !== 'object') return null;
   const iso = flowReply.booking_date || flowReply.date;
   if (!iso) return null;
@@ -102,7 +102,7 @@ export function parseBookingDateFlowReply(flowReply) {
 /**
  * Turn Flow YYYY-MM-DD into the same resolved shape as typed date input.
  */
-export async function resolveFlowBookingDate(isoDate, tz = 'UTC') {
+export const resolveFlowBookingDate = async (isoDate, tz = 'UTC') => {
   const iso = String(isoDate || '').trim();
   const parsed = parsedFromIso(iso);
   if (!parsed) {

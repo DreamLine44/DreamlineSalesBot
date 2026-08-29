@@ -5,22 +5,22 @@
  * and customer-initiated cancellation (by reference or bulk).
  */
 
-import Order from '../models/Order.js';
-import Booking from '../models/Booking.js';
-import logger from '../config/logger.js';
+import Order from '../../models/Order.js';
+import Booking from '../../models/Booking.js';
+import logger from '../../config/logger.js';
 import { extractShortId, getOrderByShortId } from './activityLookupService.js';
-import { getBookingByShortId } from './bookingService.js';
-import { buildOptionsReply } from '../core/shared/uiOptionsHelper.js';
-import { getModeConfig } from '../config/modes.js';
-import { updateSession } from '../core/sessions/sessionService.js';
-import { customerPhoneQueryVariants } from '../utils/customerPhone.js';
+import { getBookingByShortId } from '../booking/bookingService.js';
+import { buildOptionsReply } from '../../core/shared/uiOptionsHelper.js';
+import { getModeConfig } from '../../config/modes.js';
+import { updateSession } from '../../core/sessions/sessionService.js';
+import { customerPhoneQueryVariants } from '../../utils/customerPhone.js';
 
 export const ACTIVITY_ACTIVE_WINDOW_MS = 24 * 60 * 60 * 1000;
 
 /** How long after delivery we still show "your order was delivered" context. */
 export const DELIVERED_CONTEXT_WINDOW_MS = 2 * 60 * 60 * 1000;
 
-export function activityActiveCutoff() {
+export const activityActiveCutoff = () => {
   return new Date(Date.now() - ACTIVITY_ACTIVE_WINDOW_MS);
 }
 
@@ -52,7 +52,7 @@ const ADMIN_ACCEPTED_ORDER_STATUSES = ['confirmed', 'preparing', 'ready', 'out_f
  * Mongo filter for orders that should intercept the customer as "active".
  * Non-terminal orders age out after 24h except admin-rejected payments (unbounded).
  */
-export function buildActiveOrderFilter(customerPhone, tenantId) {
+export const buildActiveOrderFilter = (customerPhone, tenantId) => {
   const cutoff24h = activityActiveCutoff();
   return {
     customerPhone,
@@ -76,7 +76,7 @@ export function buildActiveOrderFilter(customerPhone, tenantId) {
 }
 
 /** Mongo filter for customer-initiated cancellation (matches visible active activities). */
-export function buildCustomerCancellableOrderFilter(customerPhone, tenantId) {
+export const buildCustomerCancellableOrderFilter = (customerPhone, tenantId) => {
   const cutoff24h = activityActiveCutoff();
   return {
     customerPhone,
@@ -98,7 +98,7 @@ export function buildCustomerCancellableOrderFilter(customerPhone, tenantId) {
   };
 }
 
-export function buildActiveBookingFilter(customerPhone, tenantId) {
+export const buildActiveBookingFilter = (customerPhone, tenantId) => {
   const variants = customerPhoneQueryVariants(customerPhone);
   const phoneClause = variants.length > 1
     ? { customerPhone: { $in: variants } }
@@ -112,7 +112,7 @@ export function buildActiveBookingFilter(customerPhone, tenantId) {
 }
 
 /** Orders awaiting admin payment action that should lock new flows. */
-export function buildPendingOrderLockFilter(customerPhone, tenantId) {
+export const buildPendingOrderLockFilter = (customerPhone, tenantId) => {
   const cutoff = activityActiveCutoff();
   return {
     customerPhone,
@@ -126,11 +126,11 @@ export function buildPendingOrderLockFilter(customerPhone, tenantId) {
   };
 }
 
-export async function hasVisibleActiveOrder(customerPhone, tenantId) {
+export const hasVisibleActiveOrder = async (customerPhone, tenantId) => {
   return Order.exists(buildActiveOrderFilter(customerPhone, tenantId)).catch(() => false);
 }
 
-export async function findVisibleActiveOrder(customerPhone, tenantId, { select = null } = {}) {
+export const findVisibleActiveOrder = async (customerPhone, tenantId, { select = null } = {}) => {
   let query = Order.findOne(buildActiveOrderFilter(customerPhone, tenantId)).sort({ createdAt: -1 });
   if (select) query = query.select(select);
   return query.lean().catch(() => null);
@@ -140,7 +140,7 @@ export async function findVisibleActiveOrder(customerPhone, tenantId, { select =
  * Mark stale in-progress activities as cancelled so they stop resurfacing.
  * Admin-rejected payment orders are left alone — the customer still needs to retry or cancel.
  */
-export async function expireStaleActivities(customerPhone, tenantId) {
+export const expireStaleActivities = async (customerPhone, tenantId) => {
   const cutoff = activityActiveCutoff();
   try {
     await Order.updateMany(
@@ -200,7 +200,7 @@ export async function expireStaleActivities(customerPhone, tenantId) {
   }
 }
 
-export async function cancelAllActiveForCustomer({ customerPhone, tenantId, business }) {
+export const cancelAllActiveForCustomer = async ({ customerPhone, tenantId, business }) => {
   const orderFilter = buildCustomerCancellableOrderFilter(customerPhone, tenantId);
   const bookingFilter = buildActiveBookingFilter(customerPhone, tenantId);
   const cancelSet = {
@@ -240,7 +240,7 @@ export async function cancelAllActiveForCustomer({ customerPhone, tenantId, busi
   );
 }
 
-export async function cancelMostRecentActiveOrder({ customerPhone, tenantId }) {
+export const cancelMostRecentActiveOrder = async ({ customerPhone, tenantId }) => {
   return Order.findOneAndUpdate(
     buildCustomerCancellableOrderFilter(customerPhone, tenantId),
     {
@@ -255,7 +255,7 @@ export async function cancelMostRecentActiveOrder({ customerPhone, tenantId }) {
   ).select('shortId status paymentStatus item').lean().catch(() => null);
 }
 
-export async function cancelMostRecentActiveBooking({ customerPhone, tenantId }) {
+export const cancelMostRecentActiveBooking = async ({ customerPhone, tenantId }) => {
   return Booking.findOneAndUpdate(
     buildActiveBookingFilter(customerPhone, tenantId),
     {
@@ -278,7 +278,7 @@ const BARE_CANCEL_RE = /^(cancel|cancel\s+(my\s+)?(order|booking|it|this))(\s+pl
  * "cancel #F93217" / "cancel DSB-0823-4C7DB7" cancels by reference.
  * Returns null when the message should fall through to normal routing (e.g. cancel all).
  */
-export async function tryCustomerCancelRequest({ message, customerPhone, tenantId, business, tenant, session }) {
+export const tryCustomerCancelRequest = async ({ message, customerPhone, tenantId, business, tenant, session }) => {
   const raw = String(message || '').trim();
   if (!raw || !/\bcancel\b/i.test(raw)) return null;
 
@@ -300,11 +300,11 @@ export async function tryCustomerCancelRequest({ message, customerPhone, tenantI
 }
 
 /** @deprecated Use tryCustomerCancelRequest */
-export async function tryCustomerCancelByReference(opts) {
+export const tryCustomerCancelByReference = async (opts) => {
   return tryCustomerCancelRequest(opts);
 }
 
-async function _cancelMostRecentActivity({ customerPhone, tenantId, business, session }) {
+const _cancelMostRecentActivity = async ({ customerPhone, tenantId, business, session }) => {
   const cfg = getModeConfig(business);
 
   const order = await cancelMostRecentActiveOrder({ customerPhone, tenantId });
@@ -343,7 +343,7 @@ async function _cancelMostRecentActivity({ customerPhone, tenantId, business, se
   };
 }
 
-async function _cancelActivityByReference({ ref, customerPhone, tenantId, business }) {
+const _cancelActivityByReference = async ({ ref, customerPhone, tenantId, business }) => {
   const cfg = getModeConfig(business);
   const order = await getOrderByShortId(ref, tenantId);
   if (order) {

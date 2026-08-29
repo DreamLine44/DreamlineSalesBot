@@ -5,25 +5,25 @@
  * Retrieves real business data before falling back to Groq AI.
  */
 
-import { formatMoney } from '../utils/formatCurrency.js';
-import { cartTotal, cartItemCount, formatCartSummary } from '../core/shared/cartEngine.js';
-import { findBestMatch } from '../utils/matchEngine.js';
-import { normalizeHoursDays } from '../utils/businessHoursUtils.js';
-import { getAIReply } from '../core/ai/providers/aiRouter.js';
-import { getAiHistoryMessages, buildConversationContext } from '../core/nlu/nluContext.js';
+import { formatMoney } from '../../utils/formatCurrency.js';
+import { cartTotal, cartItemCount, formatCartSummary } from '../../core/shared/cartEngine.js';
+import { findBestMatch } from '../../utils/matchEngine.js';
+import { normalizeHoursDays } from '../../utils/businessHoursUtils.js';
+import { getAIReply } from '../../core/ai/providers/aiRouter.js';
+import { getAiHistoryMessages, buildConversationContext } from '../../core/nlu/nluContext.js';
 import {
   extractShortId,
   lookupActivityByReference,
   recoverRecentActivities,
   formatLookupFailureMessage,
   isValidShortIdFormat,
-} from './activityLookupService.js';
+} from '../activity/activityLookupService.js';
 import {
   formatOrderStatusCard,
   formatBookingStatusCard,
   detectStatusScope,
   buildStatusReply,
-} from './activityStatusService.js';
+} from '../activity/activityStatusService.js';
 import {
   isBusinessScopeQuestion,
   mergeQuestionContext,
@@ -31,7 +31,7 @@ import {
   isInformationalActivityQuestion,
   isGreetingMessage,
 } from './questionModeHelper.js';
-import { getModeConfig } from '../config/modes.js';
+import { getModeConfig } from '../../config/modes.js';
 
 // Includes conversational references to the menu just shown. Customers naturally
 // ask "are these the only ones you have?" instead of repeating the word "menu".
@@ -63,7 +63,7 @@ const PAYMENT_RE = /\b(payment|pay|wave|cash|mobile money|how (can|do) i pay|acc
 const BOOKING_INFO_RE = /\b(what (?:can|could|do|should) (?:i|we) (?:book|reserve)|what (?:do you|can you) offer (?:for )?(?:booking|reservation)|what (?:services?|tables?) (?:can|do) (?:i|you) book|how does booking work)\b/i;
 const ABOUT_RE = /\b(what is this (?:all )?about|what are you|who are you|tell me about (?:you|your business|this place))\b/i;
 
-function formatHourDecimal(h) {
+const formatHourDecimal = (h) => {
   if (h == null || h === '') return null;
   const n = Number(h);
   if (!Number.isFinite(n)) return String(h);
@@ -75,7 +75,7 @@ function formatHourDecimal(h) {
 }
 
 /** Format menu items / services as WhatsApp-friendly text. */
-export function formatMenuText(business, { maxItems = 30, heading = null } = {}) {
+export const formatMenuText = (business, { maxItems = 30, heading = null } = {}) => {
   const mode = (business?.businessMode || 'RETAIL').toUpperCase();
   const isSalon = mode === 'SALON' || mode === 'BARBERSHOP';
   const currency = business?.payment?.currency || 'GMD';
@@ -105,7 +105,7 @@ export function formatMenuText(business, { maxItems = 30, heading = null } = {})
   return body;
 }
 
-export function formatHoursText(business) {
+export const formatHoursText = (business) => {
   const hours = business?.hours;
   if (!hours?.enabled) {
     return business?.adminPhone
@@ -141,7 +141,7 @@ export function formatHoursText(business) {
 }
 
 /** Explain what the customer can book/reserve at this business. */
-export function formatBookingInfoText(business) {
+export const formatBookingInfoText = (business) => {
   const cfg = getModeConfig(business);
   const hasBooking = (cfg?.flows || []).includes('BOOKING');
   const currency = business?.payment?.currency || 'GMD';
@@ -172,7 +172,7 @@ export function formatBookingInfoText(business) {
   return '📅 You can make a booking with us. Tap *📅 Book* from the menu when you\'re ready.';
 }
 
-function formatAboutText(business) {
+const formatAboutText = (business) => {
   const name = business?.name || 'Our business';
   const desc = String(business?.description || '').trim();
   const mode = (business?.businessMode || 'RETAIL').toUpperCase();
@@ -196,7 +196,7 @@ function formatAboutText(business) {
   return body;
 }
 
-function tryFaqMatch(message, business) {
+const tryFaqMatch = (message, business) => {
   const raw = String(message || '').trim().toLowerCase();
   const faqs = business?.faq || [];
   for (const faq of faqs) {
@@ -208,7 +208,7 @@ function tryFaqMatch(message, business) {
   return null;
 }
 
-function classifyQuestion(message, session, business) {
+const classifyQuestion = (message, session, business) => {
   const raw = String(message || '').trim();
   const ctx = session?.data?._questionCtx || {};
 
@@ -231,7 +231,7 @@ function classifyQuestion(message, session, business) {
   return 'GENERAL';
 }
 
-async function answerStatusQuestion({ message, business, session }) {
+const answerStatusQuestion = async ({ message, business, session }) => {
   const phone = session.customerPhone;
   const tenantId = session.tenantId;
   const scope = detectStatusScope(message);
@@ -298,7 +298,7 @@ async function answerStatusQuestion({ message, business, session }) {
  * Try to answer from database/templates before calling Groq.
  * @returns {{ handled: boolean, body?: string, routingDecision?: string, context?: object, stayOnTopic?: boolean }}
  */
-export async function tryDatabaseAnswer({ message, business, session }) {
+export const tryDatabaseAnswer = async ({ message, business, session }) => {
   const raw = String(message || '').trim();
   if (!raw) return { handled: false };
 
@@ -349,7 +349,7 @@ export async function tryDatabaseAnswer({ message, business, session }) {
   }
 
   if (qType === 'MENU') {
-    const { shouldShowCatalogButton } = await import('../modules/catalog/waCatalogConfig.js');
+    const { shouldShowCatalogButton } = await import('../../modules/catalog/waCatalogConfig.js');
     if (shouldShowCatalogButton(business)) {
       return {
         handled: true,
@@ -499,12 +499,12 @@ export async function tryDatabaseAnswer({ message, business, session }) {
  * _detectMidFlowSwitchRequest) rather than offered as a tap target after
  * every answer.
  */
-export async function processQuestionMessage({ session, message, business, tenant, intent = 'FAQ' }) {
+export const processQuestionMessage = async ({ session, message, business, tenant, intent = 'FAQ' }) => {
   const raw = String(message || '').trim();
 
   if (isGreetingMessage(raw)) {
     const cfg = getModeConfig(business);
-    const { buildWelcomeSequence } = await import('../core/conversations/moduleRouter.js');
+    const { buildWelcomeSequence } = await import('../../core/conversations/moduleRouter.js');
     return {
       type: 'welcome_sequence',
       sequence: buildWelcomeSequence(business, cfg),
@@ -523,7 +523,7 @@ export async function processQuestionMessage({ session, message, business, tenan
   const dbAnswer = await tryDatabaseAnswer({ message: raw, business, session });
   if (dbAnswer.handled) {
     if (dbAnswer.showCatalog) {
-      const { tryShowCatalogForMenuRequest } = await import('../modules/catalog/waCatalogFlow.js');
+      const { tryShowCatalogForMenuRequest } = await import('../../modules/catalog/waCatalogFlow.js');
       const catalogResult = await tryShowCatalogForMenuRequest({
         message: raw, session, business, tenant,
       });
@@ -546,7 +546,7 @@ export async function processQuestionMessage({ session, message, business, tenan
   }
 
   // Natural menu/food browse outside strict DB MENU classification.
-  const { tryShowCatalogForMenuRequest } = await import('../modules/catalog/waCatalogFlow.js');
+  const { tryShowCatalogForMenuRequest } = await import('../../modules/catalog/waCatalogFlow.js');
   const catalogResult = await tryShowCatalogForMenuRequest({
     message: raw, session, business, tenant,
   });
@@ -577,8 +577,8 @@ export async function processQuestionMessage({ session, message, business, tenan
 }
 
 /** Persist question-mode session state (stay in Q&A). Preserves ENQUIRY vs QUESTION flow. */
-export async function persistQuestionSession(session, tenant, context = {}) {
-  const { updateSession } = await import('../core/sessions/sessionService.js');
+export const persistQuestionSession = async (session, tenant, context = {}) => {
+  const { updateSession } = await import('../../core/sessions/sessionService.js');
   const flow = session?.currentFlow === 'ENQUIRY' ? 'ENQUIRY' : 'QUESTION';
   const data = {
     ...(session.data || {}),
@@ -593,9 +593,9 @@ export async function persistQuestionSession(session, tenant, context = {}) {
 }
 
 /** Append user/bot turns to aiHistory for Q&A paths (mirrors webhook step 17). */
-export async function recordQuestionHistory(session, userMessage, botPayload) {
-  const { updateSession } = await import('../core/sessions/sessionService.js');
-  const { appendAiHistoryTurn, extractReplyText } = await import('../core/nlu/nluContext.js');
+export const recordQuestionHistory = async (session, userMessage, botPayload) => {
+  const { updateSession } = await import('../../core/sessions/sessionService.js');
+  const { appendAiHistoryTurn, extractReplyText } = await import('../../core/nlu/nluContext.js');
   let aiHistory = appendAiHistoryTurn(session, 'user', userMessage);
   const botText = extractReplyText(botPayload);
   if (botText) aiHistory = appendAiHistoryTurn({ aiHistory }, 'assistant', botText);
@@ -607,7 +607,7 @@ export async function recordQuestionHistory(session, userMessage, botPayload) {
  * Unified Q&A handler for all mode-specific QUESTION flows and generic ENQUIRY.
  * DB-first status/menu/hours, then AI fallback. Returns WhatsApp payload.
  */
-export function toWhatsAppPayload(reply) {
+export const toWhatsAppPayload = (reply) => {
   if (!reply || reply.catalogDispatched) return null;
   if (reply.type === 'welcome_sequence') return null;
   if (reply.type && reply.type !== 'text') {
@@ -624,9 +624,9 @@ export function toWhatsAppPayload(reply) {
  * Normalize a resolveQuestionReply result for flow handlers.
  * Returns a single payload, an array (welcome menu), or null (catalog already sent).
  */
-export async function finalizeQuestionHandlerReply({ session, tenant, reply }) {
+export const finalizeQuestionHandlerReply = async ({ session, tenant, reply }) => {
   if (reply?.type === 'welcome_sequence' && Array.isArray(reply.sequence)) {
-    const { updateSession } = await import('../core/sessions/sessionService.js');
+    const { updateSession } = await import('../../core/sessions/sessionService.js');
     await updateSession(session.customerPhone, session.tenantId, {
       currentFlow: null, step: null, postFlowAck: null, postFlowData: null,
     }).catch(() => {});
@@ -635,7 +635,7 @@ export async function finalizeQuestionHandlerReply({ session, tenant, reply }) {
   return toWhatsAppPayload(reply) || { type: 'text', body: '' };
 }
 
-export async function resolveQuestionReply({ session, message, business, tenant, intent = 'FAQ', initPayload = null }) {
+export const resolveQuestionReply = async ({ session, message, business, tenant, intent = 'FAQ', initPayload = null }) => {
   const raw = String(message || '').trim();
 
   if (!raw || raw.length < 2) {

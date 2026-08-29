@@ -4,7 +4,7 @@
  * Shared helpers for Question Mode (Prompt 3 + 7 + 8).
  */
 
-import { INTENT_PATTERNS } from '../core/intents/patterns.js';
+import { INTENT_PATTERNS } from '../../core/intents/patterns.js';
 
 const OFF_TOPIC_RE = /\b(weather|forecast|temperature|president|election|politics|football\s*score|premier\s*league|bitcoin|crypto|stock\s*market|who\s+is\s+the\s+president|tell\s+me\s+a\s+joke|write\s+(me\s+)?a\s+(poem|story|essay)|homework|math\s+problem)\b/i;
 
@@ -27,7 +27,7 @@ const GENERAL_TOPIC_RE = /\b(service|product|price|cost|hours|open|close|booking
  * Returns false when the message is clearly unrelated to business services.
  * Mode-aware — no longer restaurant-only.
  */
-export function isBusinessScopeQuestion(message, business = null) {
+export const isBusinessScopeQuestion = (message, business = null) => {
   const raw = String(message || '').trim();
   if (!raw || raw.length < 3) return true;
   if (OFF_TOPIC_RE.test(raw)) return false;
@@ -48,7 +48,7 @@ export function isBusinessScopeQuestion(message, business = null) {
  * True when the customer is asking *about* booking/ordering options — not
  * requesting to start those flows ("what can I book?" vs "book a table").
  */
-export function isInformationalActivityQuestion(message) {
+export const isInformationalActivityQuestion = (message) => {
   const clean = String(message || '').toLowerCase().replace(/[^\w\s?']/gu, ' ').replace(/\s+/g, ' ').trim();
   if (!clean) return false;
 
@@ -70,14 +70,14 @@ export function isInformationalActivityQuestion(message) {
 }
 
 /** True when the customer explicitly wants to remain in question mode. */
-export function isStayInQuestionMessage(message) {
+export const isStayInQuestionMessage = (message) => {
   const raw = String(message || '').trim();
   if (!raw) return false;
   return STAY_IN_QUESTION_RE.test(raw);
 }
 
 /** True for bare hi/hello/hey — route to welcome menu with options, not AI text. */
-export function isGreetingMessage(message) {
+export const isGreetingMessage = (message) => {
   const raw = String(message || '').trim();
   if (!raw) return false;
   return GREETING_ONLY_RE.test(raw);
@@ -88,7 +88,7 @@ export function isGreetingMessage(message) {
  * never to catalog/order flows. "i want to talk to human" contains "i want"
  * (ORDER_DIRECT_RE) so this guard must run before catalog/order intercepts.
  */
-export function isHumanHandoffRequest(message) {
+export const isHumanHandoffRequest = (message) => {
   const raw = String(message || '').trim();
   if (!raw || raw.length < 3) return false;
 
@@ -110,7 +110,7 @@ export function isHumanHandoffRequest(message) {
 }
 
 /** Booking/reservation info ask — should be answered in Q&A, not open WA Catalog. */
-export function isBookingInfoQuestion(message) {
+export const isBookingInfoQuestion = (message) => {
   const raw = String(message || '').trim();
   if (!raw || !/\b(?:book|reserve|booking|reservation|table|appointment)\b/i.test(raw)) return false;
   if (/\b(?:menu|food|dishes?|meals?|eat)\b/i.test(raw)) return false;
@@ -118,14 +118,14 @@ export function isBookingInfoQuestion(message) {
 }
 
 /** @deprecated Use isBusinessScopeQuestion — kept for backward compatibility. */
-export function isRestaurantScopeQuestion(message) {
+export const isRestaurantScopeQuestion = (message) => {
   return isBusinessScopeQuestion(message, { businessMode: 'RESTAURANT' });
 }
 
 /**
  * Preserve activity-specific session data when switching activities (Prompt 8).
  */
-export function snapshotActivityData(session, activity) {
+export const snapshotActivityData = (session, activity) => {
   const flow = (activity || session.currentFlow || '').toUpperCase();
   const data = session.data || {};
   if (flow === 'ORDER') {
@@ -144,7 +144,7 @@ export function snapshotActivityData(session, activity) {
 }
 
 /** Merge new question context into session state. */
-export function mergeQuestionContext(session, patch = {}) {
+export const mergeQuestionContext = (session, patch = {}) => {
   const prev = session?.data?._questionCtx || {};
   return {
     ...prev,
@@ -154,7 +154,7 @@ export function mergeQuestionContext(session, patch = {}) {
 }
 
 /** Compact context block for AI prompts. */
-export function buildQuestionContextBlock(session) {
+export const buildQuestionContextBlock = (session) => {
   const ctx = session?.data?._questionCtx;
   if (!ctx) return '';
   const parts = [];

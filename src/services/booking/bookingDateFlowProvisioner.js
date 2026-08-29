@@ -8,11 +8,11 @@
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import Tenant from '../models/Tenant.js';
-import BusinessConfig from '../models/BusinessConfig.js';
-import { decryptToken } from '../controllers/tenantController.js';
+import Tenant from '../../models/Tenant.js';
+import BusinessConfig from '../../models/BusinessConfig.js';
+import { decryptToken } from '../../controllers/tenantController.js';
 import { resolveBookingDateFlowId } from './bookingDateFlow.js';
-import logger from '../config/logger.js';
+import logger from '../../config/logger.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const FLOW_JSON_PATH = path.join(__dirname, '../../flows/booking-date-picker.json');
@@ -20,11 +20,11 @@ const FLOW_NAME = process.env.BOOKING_DATE_FLOW_NAME || 'dreamline_booking_date_
 
 const _inFlight = new Map();
 
-function readFlowJsonString() {
+const readFlowJsonString = () => {
   return fs.readFileSync(FLOW_JSON_PATH, 'utf8');
 }
 
-async function graphFetch(url, { method = 'GET', token, body } = {}) {
+const graphFetch = async (url, { method = 'GET', token, body } = {}) => {
   const resp = await fetch(url, {
     method,
     headers: {
@@ -40,7 +40,7 @@ async function graphFetch(url, { method = 'GET', token, body } = {}) {
   return data;
 }
 
-async function findExistingFlowId(wabaId, token, apiVersion) {
+const findExistingFlowId = async (wabaId, token, apiVersion) => {
   const data = await graphFetch(
     `https://graph.facebook.com/${apiVersion}/${wabaId}/flows?fields=id,name,status`,
     { token },
@@ -51,7 +51,7 @@ async function findExistingFlowId(wabaId, token, apiVersion) {
   return match?.id || null;
 }
 
-async function createAndPublishFlow(wabaId, token, apiVersion) {
+const createAndPublishFlow = async (wabaId, token, apiVersion) => {
   const flowJson = readFlowJsonString();
   const created = await graphFetch(
     `https://graph.facebook.com/${apiVersion}/${wabaId}/flows`,
@@ -69,7 +69,7 @@ async function createAndPublishFlow(wabaId, token, apiVersion) {
   return created.id;
 }
 
-async function persistFlowId(tenantId, flowId) {
+const persistFlowId = async (tenantId, flowId) => {
   await Promise.all([
     Tenant.updateOne(
       { _id: tenantId },
@@ -86,7 +86,7 @@ async function persistFlowId(tenantId, flowId) {
  * Ensure a published booking-date Flow exists for this tenant.
  * Returns Flow ID or null if Meta credentials are missing / publish failed.
  */
-export async function ensureBookingDateFlow({ business, tenant, force = false } = {}) {
+export const ensureBookingDateFlow = async ({ business, tenant, force = false } = {}) => {
   const tenantId = tenant?._id;
   if (!tenantId) return null;
 
@@ -134,7 +134,7 @@ export async function ensureBookingDateFlow({ business, tenant, force = false } 
 }
 
 /** Boot-time: provision flows only when calendar Flow is explicitly enabled. */
-export async function provisionBookingDateFlowsOnStartup() {
+export const provisionBookingDateFlowsOnStartup = async () => {
   if (process.env.BOOKING_DATE_FLOW_ENABLED !== 'true') return;
   if (process.env.BOOKING_DATE_FLOW_AUTO_PROVISION === 'false') return;
 

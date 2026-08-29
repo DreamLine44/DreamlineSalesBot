@@ -5,14 +5,14 @@
  * A write failure here must NEVER block order processing.
  *
  * Usage:
- *   import { logAudit } from '../services/auditService.js';
+ *   import { logAudit } from './auditService.js';
  *   logAudit({ tenantId, orderId, actor: 'admin', actorId: adminPhone,
  *              action: 'payment_approved', metadata: { shortId } });
  *   // Do NOT await — non-blocking by design.
  */
 
-import AuditLog from '../models/AuditLog.js';
-import logger   from '../config/logger.js';
+import AuditLog from '../../models/AuditLog.js';
+import logger   from '../../config/logger.js';
 
 /**
  * logAudit — write one audit entry.
@@ -27,7 +27,7 @@ import logger   from '../config/logger.js';
  *
  * Returns a Promise — callers should NOT await it. Logs on failure.
  */
-export function logAudit({ tenantId, orderId = null, actor, actorId = null, action, metadata = {} }) {
+export const logAudit = ({ tenantId, orderId = null, actor, actorId = null, action, metadata = {} }) => {
   return AuditLog.create({
     tenantId,
     orderId:  orderId  || null,

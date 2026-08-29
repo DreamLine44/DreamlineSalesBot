@@ -5,10 +5,12 @@
  *            customer memory / personalisation / repeat-order features actually work.
  *            Previously customerMemory was defined but never invoked from here.
  */
-import Order  from '../models/Order.js';
-import { recordOrderItem } from '../core/memory/customerMemory.js';
-import logger from '../config/logger.js';
-import { formatMoney } from '../utils/formatCurrency.js';
+import Order  from '../../models/Order.js';
+import { recordOrderItem } from '../../core/memory/customerMemory.js';
+import logger from '../../config/logger.js';
+import { formatMoney } from '../../utils/formatCurrency.js';
+import { validatePromoCode, applyPromoUsage } from './promoService.js';
+import { logAudit } from '../admin/auditService.js';
 
 // [MULTICART-v39] Phase 1 — pure normalization function, no DB/session
 // dependency. Given either legacy scalar order fields (item/quantity/
@@ -37,7 +39,7 @@ import { formatMoney } from '../utils/formatCurrency.js';
 // Wiring this into saveOrder() (and persisting items[] on the Order
 // document) is intentionally NOT done in this pass — that needs an Order
 // schema addition, which is out of scope for Phase 1.
-export function resolveOrderFields({ item, quantity, totalPrice, addOns, items } = {}) {
+export const resolveOrderFields = ({ item, quantity, totalPrice, addOns, items } = {}) => {
   const hasCart = Array.isArray(items) && items.length > 0;
 
   if (!hasCart) {
@@ -86,13 +88,41 @@ export function resolveOrderFields({ item, quantity, totalPrice, addOns, items }
 // all undefined. Single-item callers (the vast majority) pass no `items`, so
 // resolveOrderFields()'s hasCart:false branch returns their scalar fields
 // completely unchanged — zero behavior change for every existing caller.
-export async function saveOrder({ item, quantity, totalPrice, addOns, items, notes, customerName, customerPhone, tenantId, businessId, status }) {
+// [AUDIT-FIX-PROMO-WIRE] promoService.js's own docstring names this the ONE
+// intended integration point — the moment an order is persisted. Only runs
+// when a caller supplies promoCode; every existing caller (none pass one
+// today) keeps totalPrice/promoCode/discountAmount exactly as before.
+export const saveOrder = async ({ item, quantity, totalPrice, addOns, items, notes, customerName, customerPhone, tenantId, businessId, status, promoCode }) => {
   const resolved = resolveOrderFields({ item, quantity, totalPrice, addOns, items });
+
+  let finalTotal = resolved.resolvedTotal;
+  let discountAmount = 0;
+  let appliedPromoCode = null;
+
+  if (promoCode) {
+    if (finalTotal == null) {
+      logger.warn('[OrderService] promoCode supplied but order has no known subtotal — skipping discount', {
+        tenantId, promoCode,
+      });
+    } else {
+      const result = await validatePromoCode(tenantId, promoCode, finalTotal).catch(err => {
+        logger.warn('[OrderService] validatePromoCode failed (non-fatal)', { err: err.message, tenantId, promoCode });
+        return { valid: false, reason: 'Promo validation error' };
+      });
+      if (result.valid) {
+        finalTotal = result.newTotal;
+        discountAmount = result.discountAmount;
+        appliedPromoCode = promoCode.trim().toUpperCase();
+      } else {
+        logger.info('[OrderService] promoCode rejected', { tenantId, promoCode, reason: result.reason });
+      }
+    }
+  }
 
   const order = await Order.create({
     item:          resolved.resolvedItem,
     quantity:      resolved.resolvedQuantity,
-    totalPrice:    resolved.resolvedTotal,
+    totalPrice:    finalTotal,
     addOns:        resolved.resolvedAddOns,
     items:         resolved.hasCart ? items : [],
     notes:         notes         || null,
@@ -100,6 +130,26 @@ export async function saveOrder({ item, quantity, totalPrice, addOns, items, not
     customerPhone, tenantId, businessId,
     status:        status || 'pending',
     paymentStatus: 'unpaid',
+    promoCode:      appliedPromoCode,
+    discountAmount,
+  });
+
+  // Fire-and-forget per applyPromoUsage()'s own contract — never rolls back
+  // an order that's already been created.
+  if (appliedPromoCode) {
+    applyPromoUsage(tenantId, appliedPromoCode).catch(() => {});
+  }
+
+  // [AUDIT-FIX-AUDITLOG-WIRE] order_created — documented in AuditLog.js as
+  // "a new order was saved (orderService.saveOrder)" but logAudit() was never
+  // actually called from here. Fire-and-forget: logAudit() already never throws.
+  logAudit({
+    tenantId,
+    orderId: order._id,
+    actor: 'customer',
+    actorId: customerPhone || null,
+    action: 'order_created',
+    metadata: { item: resolved.resolvedItem, quantity: resolved.resolvedQuantity, totalPrice: finalTotal },
   });
 
   // [FIX-BUG5] Update customer memory — fire-and-forget, never blocks order completion
@@ -122,7 +172,7 @@ export async function saveOrder({ item, quantity, totalPrice, addOns, items, not
  * Must NOT rely on session.step alone — AWAIT_ADMIN_CONFIRM expires with the session TTL
  * (~30 min), but cash / no-payment businesses still need order wording after that.
  */
-export function isNoPaymentOrder(business, order, session = null) {
+export const isNoPaymentOrder = (business, order, session = null) => {
   if (!business?.payment?.enabled) return true;
   if (session?.step === 'AWAIT_ADMIN_CONFIRM') return true;
   if (order?.paymentStatus === 'unpaid' && !order?.paymentProof) return true;
@@ -133,7 +183,7 @@ export function isNoPaymentOrder(business, order, session = null) {
  * WhatsApp-friendly order lines for admin/customer notifications.
  * Uses order.items[] when present (multi-item cart); falls back to item/quantity.
  */
-export function formatOrderItemsForMessage(order, business) {
+export const formatOrderItemsForMessage = (order, business) => {
   const currency = business?.payment?.currency || 'GMD';
   const cartLines = Array.isArray(order?.items) && order.items.length > 0 ? order.items : null;
 
@@ -154,7 +204,7 @@ export function formatOrderItemsForMessage(order, business) {
 }
 
 /** Compact inline summary e.g. "*Attaya* × 1, *Akara* × 1" for status cards. */
-export function formatOrderItemSummary(order) {
+export const formatOrderItemSummary = (order) => {
   const cartLines = Array.isArray(order?.items) && order.items.length > 1 ? order.items : null;
   if (!cartLines) {
     return `*${order.item}* × ${order.quantity}`;
@@ -162,11 +212,11 @@ export function formatOrderItemSummary(order) {
   return cartLines.map((i) => `*${i.item}* × ${i.quantity ?? 1}`).join(', ');
 }
 
-export async function getRecentOrders(customerPhone, tenantId, limit = 5) {
+export const getRecentOrders = async (customerPhone, tenantId, limit = 5) => {
   return Order.find({ customerPhone, tenantId }).sort({ createdAt: -1 }).limit(limit).lean();
 }
 
-export async function getLastOrderItem(customerPhone, tenantId) {
+export const getLastOrderItem = async (customerPhone, tenantId) => {
   const order = await Order.findOne({ customerPhone, tenantId }).sort({ createdAt: -1 }).lean();
   return order?.item || null;
 }

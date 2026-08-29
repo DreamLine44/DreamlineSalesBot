@@ -4,12 +4,12 @@
  * [FIX-BUG5] Now calls recordBooking() after every successful booking so
  *            customer memory stats.totalBookings is actually tracked.
  */
-import Booking from '../models/Booking.js';
-import { recordBooking } from '../core/memory/customerMemory.js';
-import logger from '../config/logger.js';
-import { normalizeCustomerPhone } from '../utils/customerPhone.js';
+import Booking from '../../models/Booking.js';
+import { recordBooking } from '../../core/memory/customerMemory.js';
+import logger from '../../config/logger.js';
+import { normalizeCustomerPhone } from '../../utils/customerPhone.js';
 
-export async function saveBooking({ customerPhone, customerName, date, time, service, partySize, parsedDate, tenantId, businessId, staff, bookingType, notes }) {
+export const saveBooking = async ({ customerPhone, customerName, date, time, service, partySize, parsedDate, tenantId, businessId, staff, bookingType, notes }) => {
   const phone = normalizeCustomerPhone(customerPhone);
   const booking = await Booking.create({
     customerPhone: phone,
@@ -35,7 +35,7 @@ export async function saveBooking({ customerPhone, customerName, date, time, ser
   return booking;
 }
 
-export async function getBookingByShortId(shortId, tenantId) {
+export const getBookingByShortId = async (shortId, tenantId) => {
   return Booking.findOne({ shortId: shortId.toUpperCase(), tenantId }).lean();
 }
 
@@ -45,15 +45,15 @@ export async function getBookingByShortId(shortId, tenantId) {
 // booking is "active" (still relevant to the customer) while it's pending admin
 // confirmation or already confirmed — completed/cancelled bookings are history, not
 // something to surface as "you have an active booking".
-export async function getActiveBooking(customerPhone, tenantId) {
-  const { buildActiveBookingFilter } = await import('./activityLifecycleService.js');
+export const getActiveBooking = async (customerPhone, tenantId) => {
+  const { buildActiveBookingFilter } = await import('../activity/activityLifecycleService.js');
   return Booking.findOne(buildActiveBookingFilter(customerPhone, tenantId))
     .sort({ createdAt: -1 })
     .lean();
 }
 
-export async function getActiveBookings(customerPhone, tenantId, limit = 10) {
-  const { buildActiveBookingFilter } = await import('./activityLifecycleService.js');
+export const getActiveBookings = async (customerPhone, tenantId, limit = 10) => {
+  const { buildActiveBookingFilter } = await import('../activity/activityLifecycleService.js');
   return Booking.find(buildActiveBookingFilter(customerPhone, tenantId))
     .sort({ createdAt: -1 })
     .limit(limit)

@@ -5,13 +5,13 @@
  * and merge them into session data. Execution stays in bookingFlow.js.
  */
 
-import logger from '../config/logger.js';
+import logger from '../../config/logger.js';
 import {
   parseDirectBookingRequest,
   resolveDirectBookingStep,
-} from '../core/shared/moduleRegistry.js';
-import { MAX_PARTY_SIZE } from '../utils/parsePartySize.js';
-import { isBookingDateClosed, formatClosedDayMessage } from '../utils/businessHoursUtils.js';
+} from '../../core/shared/moduleRegistry.js';
+import { MAX_PARTY_SIZE } from '../../utils/parsePartySize.js';
+import { isBookingDateClosed, formatClosedDayMessage } from '../../utils/businessHoursUtils.js';
 import { coerceBookingParsedDate } from './bookingState.js';
 
 const SYSTEM_ACTIONS = new Set([
@@ -24,7 +24,7 @@ const SYSTEM_ACTIONS = new Set([
 
 const SYSTEM_ACTION_RE = /^(PARTY_|DATE_|TIME_|SVC_|DATE_HUB_|DATE_DAY_|DATE_PICK_|TIME_M_)/;
 
-function isoFromParsed(parsed) {
+const isoFromParsed = (parsed) => {
   if (!parsed) return null;
   const d = parsed instanceof Date ? parsed : new Date(parsed);
   if (isNaN(d.getTime())) return null;
@@ -34,12 +34,12 @@ function isoFromParsed(parsed) {
   return `${y}-${m}-${day}`;
 }
 
-function coerceParsedDate(data, tz) {
+const coerceParsedDate = (data, tz) => {
   return coerceBookingParsedDate(data, tz);
 }
 
 /** Button / list ids — never treat as NL date/time/guest input. */
-export function isBookingSystemAction(raw) {
+export const isBookingSystemAction = (raw) => {
   const upper = String(raw || '').trim().toUpperCase();
   if (!upper) return false;
   if (SYSTEM_ACTIONS.has(upper)) return true;
@@ -52,12 +52,12 @@ export function isBookingSystemAction(raw) {
  * Guard merged NL data before skipping ahead — same rules as the stepped flow.
  * Returns a UI payload to show, or null when safe to continue.
  */
-export function guardMergedBookingData(data, business, tz, {
+export const guardMergedBookingData = (data, business, tz, {
   buildPartySizeErrorFn,
   buildDatePickerFn,
   buildTimePickerFn,
   validateTimeFn,
-} = {}) {
+} = {}) => {
   if (data.partySize && data.partySize > MAX_PARTY_SIZE) {
     return buildPartySizeErrorFn?.() || null;
   }
@@ -80,7 +80,7 @@ export function guardMergedBookingData(data, business, tz, {
  * Extract guests / date / time from a message and merge into existing booking data.
  * Uses parsedDate as source of truth once normalized — never re-parses data.date label.
  */
-export async function interpretBookingMessage(message, business, existingData = {}) {
+export const interpretBookingMessage = async (message, business, existingData = {}) => {
   const raw = String(message || '').trim();
   if (!raw || isBookingSystemAction(raw)) {
     return { extracted: null, merged: { ...existingData }, changed: false, changedFields: { partySize: false, date: false, time: false } };
@@ -140,7 +140,7 @@ export async function interpretBookingMessage(message, business, existingData = 
 }
 
 /** Where the booking should resume given merged field values. */
-export function resolveBookingResumeStep(data, business) {
+export const resolveBookingResumeStep = (data, business) => {
   const isRestaurant = (business?.businessMode || '').toUpperCase() === 'RESTAURANT';
   return resolveDirectBookingStep({
     partySize: data.partySize || null,
@@ -155,7 +155,7 @@ export function resolveBookingResumeStep(data, business) {
  * already supplied fields for later steps. Returns a UI payload or null to
  * fall through to the normal step handler.
  */
-export async function continueFromMergedBookingData({
+export const continueFromMergedBookingData = async ({
   session, data, step, business, tenant, tz, changed = false,
   changedFields = { partySize: false, date: false, time: false },
   confirmBookingDateFn,
@@ -164,7 +164,7 @@ export async function continueFromMergedBookingData({
   buildPartySizeErrorFn,
   buildDatePickerFn,
   validateTimeFn,
-}) {
+}) => {
   const resumeStep = resolveBookingResumeStep(data, business);
   if (!resumeStep) {
     if (changed) await updateSessionFromInterpretation(session, data, step);
@@ -277,7 +277,7 @@ export async function continueFromMergedBookingData({
   return null;
 }
 
-async function updateSessionFromInterpretation(session, data, step) {
-  const { updateSession } = await import('../core/sessions/sessionService.js');
+const updateSessionFromInterpretation = async (session, data, step) => {
+  const { updateSession } = await import('../../core/sessions/sessionService.js');
   await updateSession(session.customerPhone, session.tenantId, { step, data });
 }

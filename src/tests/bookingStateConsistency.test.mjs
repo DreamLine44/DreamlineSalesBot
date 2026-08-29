@@ -5,9 +5,9 @@ import {
   coerceBookingParsedDate,
   enrichBookingSessionData,
   parsedFromBookingDateIso,
-} from '../services/bookingState.js';
+} from '../services/booking/bookingState.js';
 import { normalizeCustomerPhone, customerPhoneQueryVariants } from '../utils/customerPhone.js';
-import { buildActiveBookingFilter } from '../services/activityLifecycleService.js';
+import { buildActiveBookingFilter } from '../services/activity/activityLifecycleService.js';
 
 const TZ = 'Africa/Banjul';
 

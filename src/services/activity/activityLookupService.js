@@ -5,11 +5,11 @@
  * Used by status tracking, Q&A mode, and admin commands.
  */
 
-import Order from '../models/Order.js';
-import Booking from '../models/Booking.js';
-import { resolveActiveOrder } from './activeOrderResolver.js';
-import { getActiveBookings, getBookingByShortId } from './bookingService.js';
-import { customerPhoneQueryVariants } from '../utils/customerPhone.js';
+import Order from '../../models/Order.js';
+import Booking from '../../models/Booking.js';
+import { resolveActiveOrder } from '../order/activeOrderResolver.js';
+import { getActiveBookings, getBookingByShortId } from '../booking/bookingService.js';
+import { customerPhoneQueryVariants } from '../../utils/customerPhone.js';
 
 const SHORT_ID_RE = /#?([A-Z0-9]{4,24})\b/i;
 
@@ -19,7 +19,7 @@ const RESERVED_REF_WORDS = new Set([
 ]);
 
 /** Extract a shortId from customer or admin text (#F921EB or F921EB). */
-export function extractShortId(message, session = null) {
+export const extractShortId = (message, session = null) => {
   const raw = String(message || '').trim();
   if (!raw) return null;
 
@@ -51,12 +51,12 @@ export function extractShortId(message, session = null) {
   return null;
 }
 
-export function isValidShortIdFormat(shortId) {
+export const isValidShortIdFormat = (shortId) => {
   return Boolean(shortId && /^[A-Z0-9]{4,24}$/.test(String(shortId).toUpperCase()));
 }
 
 /** Lookup order by shortId within tenant. */
-export async function getOrderByShortId(shortId, tenantId) {
+export const getOrderByShortId = async (shortId, tenantId) => {
   if (!shortId || !tenantId) return null;
   return Order.findOne({ shortId: String(shortId).toUpperCase(), tenantId }).lean();
 }
@@ -65,12 +65,12 @@ export async function getOrderByShortId(shortId, tenantId) {
  * Search for an activity by reference with phone-based recovery.
  * @returns {{ order, booking, checks: string[], scope: 'ORDER'|'BOOKING'|'BOTH' }}
  */
-export async function lookupActivityByReference({
+export const lookupActivityByReference = async ({
   shortId,
   tenantId,
   customerPhone = null,
   scope = 'BOTH',
-}) {
+}) => {
   const checks = [];
   const ref = String(shortId || '').toUpperCase();
   let order = null;
@@ -124,7 +124,7 @@ export async function lookupActivityByReference({
 /**
  * Broader recovery when reference lookup fails — recent phone-scoped activities.
  */
-export async function recoverRecentActivities({ customerPhone, tenantId, scope = 'BOTH' }) {
+export const recoverRecentActivities = async ({ customerPhone, tenantId, scope = 'BOTH' }) => {
   const checks = [];
   let orderResolution = null;
   let bookings = [];
@@ -151,7 +151,7 @@ export async function recoverRecentActivities({ customerPhone, tenantId, scope =
 }
 
 /** Build a human-readable summary of lookup attempts. */
-export function formatLookupFailureMessage({ shortId, checks = [], adminPhone = null }) {
+export const formatLookupFailureMessage = ({ shortId, checks = [], adminPhone = null }) => {
   const ref = shortId ? `#${shortId}` : 'that reference';
   const checked = checks.length
     ? checks.join(', ')

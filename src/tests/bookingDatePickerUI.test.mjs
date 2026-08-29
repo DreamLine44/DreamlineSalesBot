@@ -11,7 +11,7 @@ import {
   parseDayId,
   parseMonthId,
   toDayId,
-} from '../services/bookingDatePickerUI.js';
+} from '../services/booking/bookingDatePickerUI.js';
 
 const TZ = 'Africa/Banjul';
 
@@ -67,8 +67,8 @@ test('parseDayId and parseMonthId round-trip', () => {
 });
 
 test('resolveDayPick: DATE_D list id returns exact day without re-parse drift', async () => {
-  const { resolveDayPick } = await import('../services/bookingDatePickerUI.js');
-  const { tryParseDate } = await import('../services/bookingDateParser.js');
+  const { resolveDayPick } = await import('../services/booking/bookingDatePickerUI.js');
+  const { tryParseDate } = await import('../services/booking/bookingDateParser.js');
 
   // Use a date relative to "now" (10 days out) instead of a hardcoded
   // calendar date, so this test doesn't go stale and start failing once

@@ -32,15 +32,15 @@
  *   }
  */
 
-import Order  from '../models/Order.js';
-import logger from '../config/logger.js';
-import { formatMoney } from '../utils/formatCurrency.js';
+import Order  from '../../models/Order.js';
+import logger from '../../config/logger.js';
+import { formatMoney } from '../../utils/formatCurrency.js';
 import { formatOrderItemSummary } from './orderService.js';
 import {
   buildActiveOrderFilter,
   DELIVERED_CONTEXT_WINDOW_MS,
   expireStaleActivities,
-} from './activityLifecycleService.js';
+} from '../activity/activityLifecycleService.js';
 
 // ── Active order state constants ───────────────────────────────────────────────
 export const ACTIVE_ORDER_STATES = {
@@ -58,7 +58,7 @@ export const ACTIVE_ORDER_STATES = {
 // How long after delivery do we still show a "your order was delivered" context
 // rather than the normal welcome menu? Default 2 hours.
 // Re-exported from activityLifecycleService for backward compatibility.
-export { DELIVERED_CONTEXT_WINDOW_MS } from './activityLifecycleService.js';
+export { DELIVERED_CONTEXT_WINDOW_MS } from '../activity/activityLifecycleService.js';
 
 /**
  * resolveActiveOrder
@@ -69,7 +69,7 @@ export { DELIVERED_CONTEXT_WINDOW_MS } from './activityLifecycleService.js';
  * @param {object} session   — current session (for customerName)
  * @returns {Promise<{order, orders, state, shouldIntercept, uiResponse}>}
  */
-export async function resolveActiveOrder(customerPhone, tenantId, business = null, session = null) {
+export const resolveActiveOrder = async (customerPhone, tenantId, business = null, session = null) => {
   try {
     await expireStaleActivities(customerPhone, tenantId);
 
@@ -101,7 +101,7 @@ export async function resolveActiveOrder(customerPhone, tenantId, business = nul
 
 // ── State resolution ──────────────────────────────────────────────────────────
 
-function _resolveState(order, business, session) {
+const _resolveState = (order, business, session) => {
   const { paymentStatus, status, updatedAt } = order;
 
   const currency    = business?.payment?.currency || 'D';
@@ -271,7 +271,7 @@ function _resolveState(order, business, session) {
 
 // ── UI builders ───────────────────────────────────────────────────────────────
 
-function _preparingCard(order, business, session, stage) {
+const _preparingCard = (order, business, session, stage) => {
   const currency   = business?.payment?.currency || 'D';
   const custName   = session?.customerName ? `, ${session.customerName}` : '';
   const shortId    = order.shortId || '???';
@@ -299,7 +299,7 @@ function _preparingCard(order, business, session, stage) {
   };
 }
 
-function _multipleOrders(orders, business) {
+const _multipleOrders = (orders, business) => {
   // [FIX-LIST-LIMIT] WhatsApp enforces a hard cap of 10 rows across ALL sections
   // in a single list message. We always include a CANCEL_ALL action row (1 row),
   // so order rows must be capped at 9. With .limit(10) in the query, up to 10 orders
@@ -349,7 +349,7 @@ function _multipleOrders(orders, business) {
   };
 }
 
-function _noActiveOrder() {
+const _noActiveOrder = () => {
   return {
     order:  null,
     orders: [],
@@ -361,7 +361,7 @@ function _noActiveOrder() {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-function _formatDate(date) {
+const _formatDate = (date) => {
   try {
     const d  = new Date(date);
     const dd = String(d.getDate()).padStart(2, '0');
@@ -374,7 +374,7 @@ function _formatDate(date) {
   }
 }
 
-function _statusLabel(status) {
+const _statusLabel = (status) => {
   const MAP = {
     pending:                     'Pending',
     payment_pending_verification:'Awaiting Payment',
@@ -391,7 +391,7 @@ function _statusLabel(status) {
   return MAP[status] || status || 'Unknown';
 }
 
-function _paymentLabel(paymentStatus) {
+const _paymentLabel = (paymentStatus) => {
   const MAP = {
     unpaid:                      'Unpaid',
     proof_received:              'Screenshot received',

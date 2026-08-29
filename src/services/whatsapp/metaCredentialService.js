@@ -50,8 +50,8 @@
  *              functions give consistent, actionable guidance for the same codes.
  */
 
-import { decryptToken } from '../controllers/tenantController.js';
-import logger           from '../config/logger.js';
+import { decryptToken } from '../../controllers/tenantController.js';
+import logger           from '../../config/logger.js';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -68,7 +68,7 @@ const FETCH_TIMEOUT_MS    = 10_000;
  * @param {string}      message
  * @returns {string|null}
  */
-function translateMetaError(code, message = '') {
+const translateMetaError = (code, message = '') => {
   const msg = message.toLowerCase();
 
   if (code === 190 || msg.includes('access token') || msg.includes('oauth')) {
@@ -124,7 +124,7 @@ function translateMetaError(code, message = '') {
  * @param {string} token       Plaintext bearer token (already decrypted by caller)
  * @param {string} [context]   Caller description for log messages (e.g. 'verifyCredentials')
  */
-async function metaGet(url, token, context = 'metaGet') {
+const metaGet = async (url, token, context = 'metaGet') => {
   const ctrl  = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), FETCH_TIMEOUT_MS);
 
@@ -186,12 +186,12 @@ async function metaGet(url, token, context = 'metaGet') {
  * @returns {{ ok: boolean, tokenInfo?, phoneInfo?, appMismatch?: boolean,
  *             error?, hint?, metaCode? }}
  */
-export async function verifyCredentials({
+export const verifyCredentials = async ({
   accessToken,
   phoneNumberId,
   apiVersion = DEFAULT_API_VERSION,
   appId = null,
-}) {
+}) => {
   // ── Pre-flight ────────────────────────────────────────────────────────────
   if (!accessToken) {
     return { ok: false, error: 'accessToken is required.' };
@@ -328,11 +328,11 @@ export async function verifyCredentials({
  * @returns {{ ok: boolean, waba?: { id, name, currency, timezone, ownerBusinessId,
  *             messageTemplateNamespace, status }, error?, hint?, metaCode? }}
  */
-export async function getWABADetails({
+export const getWABADetails = async ({
   wabaId,
   accessToken,
   apiVersion = DEFAULT_API_VERSION,
-}) {
+}) => {
   if (!wabaId || !accessToken) {
     return { ok: false, error: 'wabaId and accessToken are required.' };
   }
@@ -392,11 +392,11 @@ export async function getWABADetails({
  *
  * @returns {{ ok: boolean, phoneNumbers?: Array, error?, hint?, metaCode? }}
  */
-export async function getPhoneNumbers({
+export const getPhoneNumbers = async ({
   wabaId,
   accessToken,
   apiVersion = DEFAULT_API_VERSION,
-}) {
+}) => {
   if (!wabaId || !accessToken) {
     return { ok: false, error: 'wabaId and accessToken are required.' };
   }
@@ -450,11 +450,11 @@ export async function getPhoneNumbers({
  * @returns {{ ok: boolean, business?: { id, name, verificationStatus,
  *             isVerified }, error?, hint?, metaCode? }}
  */
-export async function getBusinessDetails({
+export const getBusinessDetails = async ({
   businessId,
   accessToken,
   apiVersion = DEFAULT_API_VERSION,
-}) {
+}) => {
   if (!businessId || !accessToken) {
     return { ok: false, error: 'businessId and accessToken are required.' };
   }
@@ -516,13 +516,13 @@ export async function getBusinessDetails({
  * @returns {{ ok: boolean, suggestedConfig?, waba?, phoneNumbers?,
  *             business?, verification?, warnings?: string[], error?, hint? }}
  */
-export async function autoDiscoverTenantCredentials({
+export const autoDiscoverTenantCredentials = async ({
   accessToken,
   wabaId        = null,
   phoneNumberId = null,
   appId         = null,
   apiVersion    = DEFAULT_API_VERSION,
-}) {
+}) => {
   if (!accessToken) {
     return { ok: false, error: 'accessToken is required to auto-discover credentials.' };
   }

@@ -40,7 +40,7 @@ import { errorHandler }          from './middleware/errorHandler.js';
 import { createRateLimiter, webhookLimiter, adminLimiter } from './middleware/rateLimiter.js';
 import { requireApiKey, requireSuperAdminKey } from './middleware/authMiddleware.js';
 import { startScheduler, stopScheduler } from './services/schedulerService.js';
-import { provisionBookingDateFlowsOnStartup } from './services/bookingDateFlowProvisioner.js';
+import { provisionBookingDateFlowsOnStartup } from './services/booking/bookingDateFlowProvisioner.js';
 import { aiHealthCheck }         from './core/ai/providers/aiRouter.js';
 import { registerAllModules }    from './core/shared/moduleRegistry.js';
 import { getSupportedModes }     from './config/modes.js';

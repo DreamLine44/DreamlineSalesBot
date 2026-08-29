@@ -36,7 +36,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 
-const svcSrc = fs.readFileSync(new URL('../services/promoService.js', import.meta.url), 'utf8');
+const svcSrc = fs.readFileSync(new URL('../services/order/promoService.js', import.meta.url), 'utf8');
 
 test('applyPromoUsage no longer unconditionally increments usedCount with no maxUses guard', () => {
   // The old, buggy query: a plain filter with no maxUses condition anywhere,
@@ -50,7 +50,7 @@ test('applyPromoUsage no longer unconditionally increments usedCount with no max
 test('applyPromoUsage update references maxUses in its write, not just its docstring', () => {
   // Grab just the function body so this doesn't pass by accidentally matching
   // "maxUses" in validatePromoCode() elsewhere in the file.
-  const fnStart = svcSrc.indexOf('export async function applyPromoUsage');
+  const fnStart = svcSrc.indexOf('applyPromoUsage = async');
   assert.ok(fnStart !== -1, 'applyPromoUsage export not found');
   const fnBody = svcSrc.slice(fnStart);
   assert.match(fnBody, /maxUses/, 'applyPromoUsage no longer mentions maxUses in its implementation, not just its comment');

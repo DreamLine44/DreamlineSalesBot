@@ -6,17 +6,17 @@
  * Status is never inferred from conversation history — DB only.
  */
 
-import { resolveActiveOrder } from './activeOrderResolver.js';
-import { getActiveBookings } from './bookingService.js';
-import { formatOrderItemSummary } from './orderService.js';
-import { getModeConfig } from '../config/modes.js';
+import { resolveActiveOrder } from '../order/activeOrderResolver.js';
+import { getActiveBookings } from '../booking/bookingService.js';
+import { formatOrderItemSummary } from '../order/orderService.js';
+import { getModeConfig } from '../../config/modes.js';
 import {
   extractShortId,
   lookupActivityByReference,
   recoverRecentActivities,
   formatLookupFailureMessage,
 } from './activityLookupService.js';
-import { normalizeCustomerPhone } from '../utils/customerPhone.js';
+import { normalizeCustomerPhone } from '../../utils/customerPhone.js';
 
 const ORDER_STATUS_LABELS = {
   pending:                      '⏳ Waiting for our team to confirm',
@@ -49,12 +49,12 @@ const SALON_ORDER_STATUS_LABELS = {
   completed:                    '✅ Completed — thank you!',
 };
 
-function _isSalonMode(business) {
+const _isSalonMode = (business) => {
   const mode = (business?.businessMode || '').toUpperCase();
   return mode === 'SALON' || mode === 'BARBERSHOP';
 }
 
-function _orderStatusLabels(business) {
+const _orderStatusLabels = (business) => {
   return _isSalonMode(business) ? SALON_ORDER_STATUS_LABELS : ORDER_STATUS_LABELS;
 }
 
@@ -66,7 +66,7 @@ const BOOKING_STATUS_LABELS = {
 /** Exact phrases for quick status lookups — shared with webhook post-flow fallthrough. */
 export const STATUS_CMD_RE = /^(status|order status|my order|my orders|where is my order|check order|track my order|track|check my order|my booking|my bookings|booking status|where is my booking|check booking|check my booking|track my booking|my appointment|check my appointment|appointment status|my reservation|check my reservation|reservation status|my activities|my activity|active orders?|active bookings?|do i have any active orders?|do i have any active bookings?|do i have an active order|do i have an active booking|any active orders?|any active bookings?|any active order or booking|do i have any orders?|do i have any bookings?)$/i;
 
-export function isStatusCommand(message) {
+export const isStatusCommand = (message) => {
   return STATUS_CMD_RE.test(String(message || '').trim());
 }
 
@@ -74,7 +74,7 @@ export function isStatusCommand(message) {
  * Detect whether the customer asked about orders, bookings, or both.
  * Explicit mentions win over generic phrasing like bare "status".
  */
-export function detectStatusScope(message) {
+export const detectStatusScope = (message) => {
   const raw = String(message || '').trim().toLowerCase();
   if (!raw) return 'BOTH';
 
@@ -93,7 +93,7 @@ export function detectStatusScope(message) {
   return 'BOTH';
 }
 
-export function formatOrderStatusCard(order, business) {
+export const formatOrderStatusCard = (order, business) => {
   if (!order) return '';
   const ref = order.shortId || '???';
   const items = formatOrderItemSummary(order);
@@ -117,7 +117,7 @@ export function formatOrderStatusCard(order, business) {
   );
 }
 
-export function formatBookingStatusCard(booking, business = null) {
+export const formatBookingStatusCard = (booking, business = null) => {
   if (!booking) return '';
   const ref = booking.shortId || '???';
   const status = BOOKING_STATUS_LABELS[booking.status] || booking.status;
@@ -137,7 +137,7 @@ export function formatBookingStatusCard(booking, business = null) {
   return lines.join('\n');
 }
 
-function _defaultButtons(business, { trackingContext = false } = {}) {
+const _defaultButtons = (business, { trackingContext = false } = {}) => {
   if (trackingContext) {
     return [
       { id: 'QUESTION', title: '❓ Ask a Question' },
@@ -155,7 +155,7 @@ function _defaultButtons(business, { trackingContext = false } = {}) {
   ].filter(Boolean).slice(0, 3);
 }
 
-function _multipleBookingsList(bookings) {
+const _multipleBookingsList = (bookings) => {
   const rows = bookings.slice(0, 9).map(b => ({
     id:          `BOOKING_STATUS_${b.shortId || String(b._id).slice(-6).toUpperCase()}`,
     title:       `#${b.shortId || '???'} — ${(b.date || 'Booking').slice(0, 24)}`,
@@ -173,7 +173,7 @@ function _multipleBookingsList(bookings) {
 /**
  * Build a WhatsApp reply for status lookups scoped to the customer's message.
  */
-export async function buildStatusReply({ session, business, message }) {
+export const buildStatusReply = async ({ session, business, message }) => {
   const scope = detectStatusScope(message);
   const phone = normalizeCustomerPhone(session.customerPhone);
   const tenantId = session.tenantId;
