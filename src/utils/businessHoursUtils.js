@@ -1,5 +1,5 @@
-﻿/**
- * businessHoursUtils.js â€” shared helpers for business-hours / closed-day checks.
+/**
+ * businessHoursUtils.js — shared helpers for business-hours / closed-day checks.
  * Used by bookingFlow (closed-day validation) and can be reused elsewhere.
  */
 
@@ -66,9 +66,9 @@ export function getNextOpenBookingDate(fromDate, hours, tz = 'UTC', maxDays = 21
 export function formatClosedDayMessage(selectedLabel, hours, tz, parsedDate) {
   const next = getNextOpenBookingDate(parsedDate, hours, tz);
   if (next) {
-    return `We're closed on *${selectedLabel}*. Our next available day is *${next.label}* â€” please pick a date below. ðŸ“…`;
+    return `We're closed on *${selectedLabel}*. Our next available day is *${next.label}* — please pick a date below. 📅`;
   }
-  return `We're closed on *${selectedLabel}*. Please choose another date. ðŸ“…`;
+  return `We're closed on *${selectedLabel}*. Please choose another date. 📅`;
 }
 
 

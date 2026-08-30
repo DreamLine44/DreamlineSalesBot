@@ -1,13 +1,13 @@
-﻿/**
+/**
  * modules/general/flows/index.js
  *
- * GENERAL mode â€” catch-all for any business that doesn't fit a specific category.
+ * GENERAL mode — catch-all for any business that doesn't fit a specific category.
  * FAQ-heavy, AI-driven, simple enquiry capture + optional booking.
  *
  * Flows:
- *   ENQUIRY   â€” structured contact/enquiry capture
- *   BOOKING   â€” generic appointment/call booking (shared bookingFlow)
- *   FAQ       â€” AI-powered FAQ answering with context from business profile
+ *   ENQUIRY   — structured contact/enquiry capture
+ *   BOOKING   — generic appointment/call booking (shared bookingFlow)
+ *   FAQ       — AI-powered FAQ answering with context from business profile
  *
  * Persona: a helpful, friendly business assistant who answers questions clearly
  * and directs customers to the right next step.
@@ -20,7 +20,7 @@ import { getAIReply }        from '../../../core/ai/providers/aiRouter.js';
 import { saveOrder }         from '../../../services/order/orderService.js';
 import logger                from '../../../config/logger.js';
 
-// â”€â”€ Config â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── Config ────────────────────────────────────────────────────────────────────
 
 export const GENERAL_CONFIG = {
   businessMode: 'GENERAL',
@@ -31,36 +31,36 @@ export const GENERAL_CONFIG = {
     BOOKING: ['SELECT_SERVICE', 'DATE', 'DATE_CONFIRM', 'TIME', 'TIME_CONFIRM', 'CONFIRM'],
   },
   ui: {
-    // [FIX-4BTN-GEN] Meta button cap is 3 â€” ABOUT (4th button) was silently dropped by
+    // [FIX-4BTN-GEN] Meta button cap is 3 — ABOUT (4th button) was silently dropped by
     // the dispatcher's .slice(0,3). Customers reach About Us via text ("about you", "who are you")
     // which is caught by intent detection, or via the ENQUIRY flow. The 3 most-used CTAs
     // (QUESTION, ENQUIRY, BOOK) are retained.
     welcomeButtons: [
-      { id: 'QUESTION',   title: 'â“ Ask a Question'    },
-      { id: 'ENQUIRY',    title: 'ðŸ“¬ Send an Enquiry'   },
-      { id: 'BOOK',       title: 'ðŸ“… Book Appointment'  },
+      { id: 'QUESTION',   title: '❓ Ask a Question'    },
+      { id: 'ENQUIRY',    title: '📬 Send an Enquiry'   },
+      { id: 'BOOK',       title: '📅 Book Appointment'  },
     ],
     fallbackButtons: [
-      { id: 'QUESTION', title: 'â“ Ask'         },
-      { id: 'ENQUIRY',  title: 'ðŸ“¬ Enquiry'     },
-      { id: 'BOOK',     title: 'ðŸ“… Book'        },
+      { id: 'QUESTION', title: '❓ Ask'         },
+      { id: 'ENQUIRY',  title: '📬 Enquiry'     },
+      { id: 'BOOK',     title: '📅 Book'        },
     ],
   },
   messages: {
-    welcome:   'ðŸ‘‹ Hi! How can we help you today?\n\nChoose an option below or just type your question.',
+    welcome:   '👋 Hi! How can we help you today?\n\nChoose an option below or just type your question.',
     fallback:  'Can I help you with a question, enquiry, or booking?',
-    cancelMsg: 'âœ… No problem! Let us know if you need anything else.',
+    cancelMsg: '✅ No problem! Let us know if you need anything else.',
   },
 };
 
-// â”€â”€ FAQ / AI Question Handler â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── FAQ / AI Question Handler ─────────────────────────────────────────────────
 
 export async function handleGeneralQuestion({ session, message, business, tenant }) {
   const raw = String(message || '').trim();
   if (!raw || raw.length < 2) {
     return {
       type: 'text',
-      body: 'â“ What would you like to know? Feel free to type your question.',
+      body: '❓ What would you like to know? Feel free to type your question.',
     };
   }
 
@@ -68,7 +68,7 @@ export async function handleGeneralQuestion({ session, message, business, tenant
   const reply = await processQuestionMessage({ session, message: raw, business, tenant, intent: 'FAQ' });
   await persistQuestionSession(session, tenant, reply.context || { lastMessage: raw });
 
-  // Answer-only: stay in QUESTION mode and wait â€” no buttons. Switching activity
+  // Answer-only: stay in QUESTION mode and wait — no buttons. Switching activity
   // is picked up upstream from the customer's own words, not from a tap target.
   return {
     type: reply.type || 'text',
@@ -76,7 +76,7 @@ export async function handleGeneralQuestion({ session, message, business, tenant
   };
 }
 
-// â”€â”€ About Handler â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── About Handler ─────────────────────────────────────────────────────────────
 
 export async function handleAbout({ session, message, business, tenant }) {
   const name    = business?.name || business?.businessName || 'us';
@@ -84,49 +84,49 @@ export async function handleAbout({ session, message, business, tenant }) {
   const phone   = business?.adminPhone   || null;
   const address = business?.address      || null;
 
-  const lines = [`â„¹ï¸ *About ${name}*\n`];
+  const lines = [`ℹ️ *About ${name}*\n`];
   if (desc)    lines.push(desc);
-  if (address) lines.push(`\nðŸ“ *Address:* ${address}`);
-  if (phone)   lines.push(`ðŸ“ž *Contact:* ${phone}`);
+  if (address) lines.push(`\n📍 *Address:* ${address}`);
+  if (phone)   lines.push(`📞 *Contact:* ${phone}`);
 
   // [FIX-GENERAL-CF] Same fix as handleGeneralQuestion: build response first.
   const aboutResponse = {
     type: 'buttons',
     body: lines.join('\n'),
     buttons: [
-      { id: 'QUESTION', title: 'â“ Ask a Question'   },
-      { id: 'ENQUIRY',  title: 'ðŸ“¬ Send an Enquiry'  },
-      { id: 'BOOK',     title: 'ðŸ“… Book Appointment' },
+      { id: 'QUESTION', title: '❓ Ask a Question'   },
+      { id: 'ENQUIRY',  title: '📬 Send an Enquiry'  },
+      { id: 'BOOK',     title: '📅 Book Appointment' },
     ],
   };
   await completeFlow(session, 'ABOUT', business, tenant).catch(() => {});
   return aboutResponse;
 }
 
-// â”€â”€ Enquiry Flow â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── Enquiry Flow ──────────────────────────────────────────────────────────────
 
 export async function handleGeneralEnquiry({ session, message, business, tenant }) {
   const raw  = String(message || '').trim();
   const step = session.step || 'TOPIC';
   const data = session.data || {};
 
-  // â”€â”€ INIT â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // ── INIT ──────────────────────────────────────────────────────────────────
   if (message === null) {
     await updateSession(session.customerPhone, session.tenantId, {
       step: 'TOPIC',
       data: {},
     });
-    // [UX-GEN-1] 5 topic buttons exceed WhatsApp's 3-button limit â€” use a list instead.
+    // [UX-GEN-1] 5 topic buttons exceed WhatsApp's 3-button limit — use a list instead.
     return {
       type: 'list',
-      body: 'ðŸ“¬ *Send an Enquiry*\n\nWhat is your enquiry about?',
+      body: '📬 *Send an Enquiry*\n\nWhat is your enquiry about?',
       button: 'Choose topic',
       sections: [{ title: 'Enquiry Topics', rows: [
-        { id: 'TOPIC_PRODUCT', title: 'ðŸ“¦ Product / Service', description: 'Questions about what we offer'  },
-        { id: 'TOPIC_PRICE',   title: 'ðŸ’° Pricing',           description: 'Costs, quotes, discounts'       },
-        { id: 'TOPIC_SUPPORT', title: 'ðŸ›  Support',           description: 'Help with an existing order'    },
-        { id: 'TOPIC_PARTNER', title: 'ðŸ¤ Partnership',       description: 'Collaboration or wholesale'     },
-        { id: 'TOPIC_OTHER',   title: 'ðŸ’¬ Something else',    description: 'Any other enquiry'              },
+        { id: 'TOPIC_PRODUCT', title: '📦 Product / Service', description: 'Questions about what we offer'  },
+        { id: 'TOPIC_PRICE',   title: '💰 Pricing',           description: 'Costs, quotes, discounts'       },
+        { id: 'TOPIC_SUPPORT', title: '🛠 Support',           description: 'Help with an existing order'    },
+        { id: 'TOPIC_PARTNER', title: '🤝 Partnership',       description: 'Collaboration or wholesale'     },
+        { id: 'TOPIC_OTHER',   title: '💬 Something else',    description: 'Any other enquiry'              },
       ]}],
       footer: 'Or type your topic',
     };
@@ -134,7 +134,7 @@ export async function handleGeneralEnquiry({ session, message, business, tenant 
 
   switch (step) {
 
-    // â”€â”€ TOPIC â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ── TOPIC ─────────────────────────────────────────────────────────────────
     case 'TOPIC': {
       const TOPIC_MAP = {
         'TOPIC_PRODUCT':  'Product / Service',
@@ -148,10 +148,10 @@ export async function handleGeneralEnquiry({ session, message, business, tenant 
       if (!topic || topic.length < 2) {
         return {
           type: 'buttons',
-          body: 'ðŸ“¬ What is your enquiry about? Please choose one or type your topic.',
+          body: '📬 What is your enquiry about? Please choose one or type your topic.',
           buttons: [
-            { id: 'TOPIC_PRODUCT', title: 'ðŸ“¦ Product / Service' },
-            { id: 'TOPIC_OTHER',   title: 'ðŸ’¬ Something else'    },
+            { id: 'TOPIC_PRODUCT', title: '📦 Product / Service' },
+            { id: 'TOPIC_OTHER',   title: '💬 Something else'    },
           ],
         };
       }
@@ -163,18 +163,18 @@ export async function handleGeneralEnquiry({ session, message, business, tenant 
 
       return {
         type: 'buttons',
-        body: `ðŸ“¬ *${topic}*\n\nPlease describe your enquiry â€” include as much detail as you like.\n\n_We'll get back to you as soon as possible._`,
-        buttons: [{ id: 'CANCEL', title: 'âŒ Cancel' }],
+        body: `📬 *${topic}*\n\nPlease describe your enquiry — include as much detail as you like.\n\n_We'll get back to you as soon as possible._`,
+        buttons: [{ id: 'CANCEL', title: '❌ Cancel' }],
       };
     }
 
-    // â”€â”€ DESCRIPTION â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ── DESCRIPTION ──────────────────────────────────────────────────────────
     case 'DESCRIPTION': {
       if (!raw || raw.length < 5) {
         return {
           type: 'buttons',
-          body: 'ðŸ“ Please describe your enquiry so we can help you better.',
-          buttons: [{ id: 'CANCEL', title: 'âŒ Cancel' }],
+          body: '📝 Please describe your enquiry so we can help you better.',
+          buttons: [{ id: 'CANCEL', title: '❌ Cancel' }],
         };
       }
 
@@ -185,20 +185,20 @@ export async function handleGeneralEnquiry({ session, message, business, tenant 
 
       return {
         type: 'buttons',
-        body: `ðŸ“¬ *Review your enquiry*\n\n` +
-          `ðŸ“Œ *Topic:* ${data.topic || 'General'}\n` +
-          `ðŸ“ *Details:* ${raw}\n\n` +
+        body: `📬 *Review your enquiry*\n\n` +
+          `📌 *Topic:* ${data.topic || 'General'}\n` +
+          `📝 *Details:* ${raw}\n\n` +
           `We'll send our reply to this WhatsApp number. Ready to submit?`,
         buttons: [
-          { id: 'ENQUIRY_SEND', title: 'âœ… Send Enquiry' },
-          { id: 'CANCEL',       title: 'âŒ Cancel'        },
+          { id: 'ENQUIRY_SEND', title: '✅ Send Enquiry' },
+          { id: 'CANCEL',       title: '❌ Cancel'        },
         ],
       };
     }
 
-    // â”€â”€ CONTACT_CONFIRM â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ── CONTACT_CONFIRM ──────────────────────────────────────────────────────
     case 'CONTACT_CONFIRM': {
-      // [FIX-DUALLAYER-CONFIRM] See core/shared/confirmationMatcher.js â€” was
+      // [FIX-DUALLAYER-CONFIRM] See core/shared/confirmationMatcher.js — was
       // exact-match-only, so a typed "yes please"/"go ahead" never registered.
       const { resolveConfirmation } = await import('../../../core/shared/confirmationMatcher.js');
       const verdict = await resolveConfirmation({
@@ -211,8 +211,8 @@ export async function handleGeneralEnquiry({ session, message, business, tenant 
           type: 'buttons',
           body: 'Ready to send your enquiry?',
           buttons: [
-            { id: 'ENQUIRY_SEND', title: 'âœ… Yes, send it' },
-            { id: 'CANCEL',       title: 'âŒ Cancel'        },
+            { id: 'ENQUIRY_SEND', title: '✅ Yes, send it' },
+            { id: 'CANCEL',       title: '❌ Cancel'        },
           ],
         };
       }
@@ -227,23 +227,23 @@ export async function handleGeneralEnquiry({ session, message, business, tenant 
           quantity:      1,
           notes:         data.description,
           status:        'pending',
-          // [FIX-GENERAL-1] businessId was missing â€” without it this enquiry record has
+          // [FIX-GENERAL-1] businessId was missing — without it this enquiry record has
           // no link back to the BusinessConfig, breaking business-scoped admin views.
           businessId:    business._id,
         });
       } catch (err) {
         logger.warn('[General] saveOrder failed for enquiry:', err.message);
-        // [FIX-SAVE-ERR-GENERAL] Don't confirm an enquiry that was never persisted â€”
+        // [FIX-SAVE-ERR-GENERAL] Don't confirm an enquiry that was never persisted —
         // the admin alert below would also be misleading since there's no DB record.
         await updateSession(session.customerPhone, session.tenantId, {
           currentFlow: null, step: null, data: {},
         });
         return {
           type:    'buttons',
-          body:    `âš ï¸ *Something went wrong submitting your enquiry.*\n\nPlease try again â€” tap below to start over.`,
+          body:    `⚠️ *Something went wrong submitting your enquiry.*\n\nPlease try again — tap below to start over.`,
           buttons: [
-            { id: 'ENQUIRY', title: 'ðŸ“ Try Again'   },
-            { id: 'SUPPORT', title: 'ðŸ’¬ Contact Us'  },
+            { id: 'ENQUIRY', title: '📝 Try Again'   },
+            { id: 'SUPPORT', title: '💬 Contact Us'  },
           ],
         };
       }
@@ -255,10 +255,10 @@ export async function handleGeneralEnquiry({ session, message, business, tenant 
           const { dispatchText } = await import('../../../core/whatsapp/dispatcher.js');
           await dispatchText(
             adminPhone,
-            `ðŸ”” *New Enquiry*\n\n` +
-            `ðŸ“ž From: ${session.customerPhone}\n` +
-            `ðŸ“Œ Topic: ${data.topic || 'General'}\n` +
-            `ðŸ“ Details: ${data.description}`,
+            `🔔 *New Enquiry*\n\n` +
+            `📞 From: ${session.customerPhone}\n` +
+            `📌 Topic: ${data.topic || 'General'}\n` +
+            `📝 Details: ${data.description}`,
             tenant,
           );
         } catch (err) {
@@ -267,18 +267,18 @@ export async function handleGeneralEnquiry({ session, message, business, tenant 
       }
 
       // [FIX-1] Correct completeFlow signature: (session, completedFlow, business, tenant)
-      // [FIX-2] Capture return value â€” completeFlow may return a lead-capture UIResponse
+      // [FIX-2] Capture return value — completeFlow may return a lead-capture UIResponse
       const _lcRge = await completeFlow(session, 'ENQUIRY', business, tenant);
       if (_lcRge) return _lcRge;
 
       return {
         type: 'buttons',
-        body: `âœ… *Enquiry Sent!*\n\nThank you! We've received your message and will respond shortly.\n\n` +
-          (adminPhone ? `For urgent matters: ðŸ“ž *${adminPhone}*` : 'We\'ll be in touch soon.'),
+        body: `✅ *Enquiry Sent!*\n\nThank you! We've received your message and will respond shortly.\n\n` +
+          (adminPhone ? `For urgent matters: 📞 *${adminPhone}*` : 'We\'ll be in touch soon.'),
         buttons: [
-          { id: 'QUESTION',   title: 'â“ Ask a Question'   },
-          { id: 'BOOK',       title: 'ðŸ“… Book Appointment' },
-          { id: 'SHOW_MENU',  title: 'ðŸ”„ Start Over'      },
+          { id: 'QUESTION',   title: '❓ Ask a Question'   },
+          { id: 'BOOK',       title: '📅 Book Appointment' },
+          { id: 'SHOW_MENU',  title: '🔄 Start Over'      },
         ],
       };
     }
@@ -289,7 +289,7 @@ export async function handleGeneralEnquiry({ session, message, business, tenant 
   }
 }
 
-// â”€â”€ Booking (shared) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── Booking (shared) ──────────────────────────────────────────────────────────
 
 export async function handleGeneralBooking({ session, message, business, tenant, isInteractive }) {
   return handleBookingFlow({ session, message, business, tenant, isInteractive });

@@ -1,4 +1,4 @@
-﻿/**
+/**
  * services/whatsappOnboardingService.js
  *
  * Business-logic layer for the WhatsApp onboarding module.
@@ -13,7 +13,7 @@
  *   Previously credentials were stored plaintext here, bypassing the
  *   AES-256-GCM encryption applied by the tenantController PATCH path.
  *   Any token saved via the onboarding service would fail decryptToken()
- *   in the dispatcher (no enc: prefix â†’ passthrough, but inconsistent with
+ *   in the dispatcher (no enc: prefix → passthrough, but inconsistent with
  *   encrypted tokens stored via PATCH).  Now both paths encrypt identically.
  *
  * [FIX-ONBOARD-2] verifyCredentials uses the same Authorization: Bearer
@@ -27,7 +27,7 @@
  * [FIX-ONBOARD-3] markConnected no longer force-sets status = 'ACTIVE'.
  *   Marking connected and activating are separate admin decisions.
  *   Only whatsapp.connected and whatsapp.lastVerifiedAt are set here.
- *   Activation (status â†’ ACTIVE) happens via PATCH /admin/tenants/:id/status
+ *   Activation (status → ACTIVE) happens via PATCH /admin/tenants/:id/status
  *   or the ONE-SHOT activate:true path.
  */
 import Tenant from '../../models/Tenant.js';
@@ -36,19 +36,19 @@ import { encryptToken, decryptToken } from '../../controllers/tenantController.j
 import { notifyStatusChange } from './whatsappNotificationService.js';
 import logger from '../../config/logger.js';
 
-// â”€â”€ Meta Graph API verification â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── Meta Graph API verification ──────────────────────────────────────────────
 
 /**
  * verifyCredentials
  *
  * Validates a phoneNumberId + accessToken pair against the Meta Graph API.
  * Uses Authorization: Bearer header (matches tenantController pattern).
- * Never throws â€” always returns a structured result.
+ * Never throws — always returns a structured result.
  *
  * @param {object} params
  * @param {string} params.phoneNumberId
  * @param {string} params.accessToken   plaintext token (not yet encrypted)
- * @param {string} [params.wabaId]      informational only â€” not used in verification
+ * @param {string} [params.wabaId]      informational only — not used in verification
  * @param {string} [params.apiVersion]  default "v21.0"
  *
  * @returns {Promise<{
@@ -62,7 +62,7 @@ export async function verifyCredentials({ phoneNumberId, wabaId, accessToken, ap
   if (!phoneNumberId || phoneNumberId.startsWith('SIM_')) {
     return {
       status:  'INVALID_PHONE_NUMBER',
-      message: 'phoneNumberId is a simulation placeholder â€” set a real Meta Phone Number ID first.',
+      message: 'phoneNumberId is a simulation placeholder — set a real Meta Phone Number ID first.',
     };
   }
 
@@ -136,7 +136,7 @@ export async function verifyCredentials({ phoneNumberId, wabaId, accessToken, ap
   };
 }
 
-// â”€â”€ Credential persistence â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── Credential persistence ────────────────────────────────────────────────────
 
 /**
  * saveCredentials
@@ -155,7 +155,7 @@ export async function saveCredentials(tenantId, credentials) {
     const update = {
       'whatsapp.phoneNumberId':  phoneNumberId,
       'whatsapp.wabaId':         wabaId || null,
-      // [FIX-ONBOARD-1] Encrypt before storing â€” consistent with tenantController
+      // [FIX-ONBOARD-1] Encrypt before storing — consistent with tenantController
       'whatsapp.accessToken':    accessToken ? encryptToken(accessToken) : null,
       'whatsapp.verifyToken':    verifyToken ? encryptToken(verifyToken) : null,
       'whatsapp.tokenUpdatedAt': new Date(),
@@ -183,7 +183,7 @@ export async function saveCredentials(tenantId, credentials) {
  * markConnected
  *
  * Sets whatsapp.connected = true and stamps lastVerifiedAt.
- * [FIX-ONBOARD-3] Does NOT force status = 'ACTIVE' â€” activation is a
+ * [FIX-ONBOARD-3] Does NOT force status = 'ACTIVE' — activation is a
  * separate admin decision handled by PATCH /admin/tenants/:id/status.
  *
  * @param {string} tenantId

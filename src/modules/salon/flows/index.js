@@ -1,18 +1,18 @@
-﻿/**
- * modules/salon/flows/index.js â€” WhatSalesAgent v14
+/**
+ * modules/salon/flows/index.js — WhatSalesAgent v14
  *
- * SALON & BARBERSHOP module â€” appointment booking, walk-in queue,
+ * SALON & BARBERSHOP module — appointment booking, walk-in queue,
  * product sales, AI consultation, and returning-customer personalisation.
  *
  * Business modes handled: SALON, BARBERSHOP
  *
  * Flows:
- *   BOOKING   â€” structured appointment (service â†’ stylist â†’ date â†’ time â†’ confirm)
- *   WALKIN    â€” walk-in queue (service â†’ stylist â†’ confirm)
- *   ORDER     â€” retail product sales
- *   QUESTION  â€” AI-powered FAQ (pricing, hours, aftercare, prep advice)
+ *   BOOKING   — structured appointment (service → stylist → date → time → confirm)
+ *   WALKIN    — walk-in queue (service → stylist → confirm)
+ *   ORDER     — retail product sales
+ *   QUESTION  — AI-powered FAQ (pricing, hours, aftercare, prep advice)
  *
- * â”€â”€ v14 CHANGES â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+ * ── v14 CHANGES ────────────────────────────────────────────────────────────────
  *
  * [v14-GREET-1]  Returning-customer greeting: checks booking history and emits
  *                a personalised welcome ("Welcome back, Fatou!") with last-visit
@@ -25,7 +25,7 @@
  *                the bot proactively offers to book the recommended service.
  *
  * [v14-RESCHEDULE] Appointment modification: customer can type "reschedule" or tap
- *                "ðŸ“… Reschedule" button after a booking is confirmed. Bot looks up
+ *                "📅 Reschedule" button after a booking is confirmed. Bot looks up
  *                their most recent confirmed appointment and starts a new BOOKING
  *                flow while cancelling the old one atomically.
  *
@@ -40,7 +40,7 @@
  *
  * [v14-UPSELL]   Post-service product upsell: after a booking is CONFIRMED by admin,
  *                the bot recommends maintenance products from menuItems if any are
- *                tagged as retail (category !== 'services'). Shows 1â€“3 products
+ *                tagged as retail (category !== 'services'). Shows 1–3 products
  *                matching the booked service category (e.g. hair products after
  *                haircut bookings).
  *
@@ -50,7 +50,7 @@
  *
  * [v14-DUPLICATE] Double-booking guard: before saving an appointment, checks for
  *                an existing PENDING or CONFIRMED booking for the same phone on the
- *                same date and time window (Â±30 min). Warns the customer and offers
+ *                same date and time window (±30 min). Warns the customer and offers
  *                to reschedule instead of silently creating a duplicate.
  *
  * [v14-AVAILABILITY] Business-hours awareness: if a business has hours.schedule
@@ -62,7 +62,7 @@
  *                reschedule/cancel buttons instead of routing to generic intent.
  *
  * [v14-BUG-1]    BOOKING_CONFIRM step: CANCEL button was missing from STEP_VALID_BUTTONS
- *                guard â€” tapping Cancel at the summary screen was silently dropped and
+ *                guard — tapping Cancel at the summary screen was silently dropped and
  *                the session stayed on BOOKING_CONFIRM. Added to guard and handler.
  *
  * [v14-BUG-2]    SELECT_STYLIST: when staff list changes between the menu render and
@@ -73,18 +73,18 @@
  * [v14-BUG-3]    Walk-in CONFIRM: CANCEL_BOOKING was not handled, causing an infinite
  *                re-prompt loop. Now delegates to cancelFlow() immediately.
  *
- * [v14-BUG-4]    Product ORDER flow: CONFIRM step had no CANCEL guard â€” customer tapping
+ * [v14-BUG-4]    Product ORDER flow: CONFIRM step had no CANCEL guard — customer tapping
  *                Cancel at the order summary stayed stuck on CONFIRM. Fixed with early
  *                CANCEL / CANCEL_BOOKING / SHOW_MENU interception.
  *
  * [v14-BUG-5]    handleSalonQuestion: when completeFlow() returned a lead-capture UI
  *                the questionResponse was discarded. Now returns questionResponse first
  *                and lets lead-capture fire on the NEXT turn (correct sequencing).
- *                Previous comment was present but the logic was inverted â€” `if (lc) return lc`
+ *                Previous comment was present but the logic was inverted — `if (lc) return lc`
  *                meant lead-capture REPLACED the answer. Fixed to `if (!lc) return questionResponse`.
  *
  * [v14-BUG-6]    _buildServiceMenu: rows were capped at slice(0,10) but WhatsApp list
- *                sections require each row.title â‰¤ 24 chars and row.description â‰¤ 72 chars.
+ *                sections require each row.title ≤ 24 chars and row.description ≤ 72 chars.
  *                Added description field with price + duration so customers see pricing
  *                in the list without having to ask.
  *
@@ -93,7 +93,7 @@
  *                every service must be with a named stylist). Now respects this flag.
  *
  * [v14-BUG-8]    Walk-in CONFIRM save: bookingType was set to 'walkin' only via the
- *                saveBooking call â€” but the Booking.bookingType enum is ['appointment','walkin',null].
+ *                saveBooking call — but the Booking.bookingType enum is ['appointment','walkin',null].
  *                If saveBooking() didn't pass bookingType through, it defaulted to null
  *                and the walkin-exclusion query in schedulerService ($ne:'walkin') would
  *                accidentally include it. Now explicitly passed in all save calls.
@@ -102,7 +102,7 @@
  *                (e.g. "1" from a list row) was treated as a text search when menuViewed
  *                was false, re-showing the menu instead of selecting item #1. The guard
  *                `!isInteractive && !session.menuViewed` was correct for button taps but
- *                list row IDs are numeric strings and isInteractive=true for list taps â€”
+ *                list row IDs are numeric strings and isInteractive=true for list taps —
  *                the guard was bypassed, falling through to numIdx parsing which should
  *                have worked, but only if the list row IDs match the 1-based index.
  *                Root fix: list rows now use 1-based numeric IDs ("1","2",...) and the
@@ -111,7 +111,7 @@
  * [v14-BUG-10]   Booking admin alert: staff field was not passed to buildAdminBookingAlertBody()
  *                in the BOOKING_CONFIRM step of bookingFlow.js (shared engine). The salon
  *                SELECT_STYLIST stores stylist in session.data.stylist, and BOOKING_CONFIRM
- *                reads it via `const { stylist, staff } = data` â€” but buildAdminBookingAlertBody
+ *                reads it via `const { stylist, staff } = data` — but buildAdminBookingAlertBody
  *                only receives { customerPhone, date, time, service, partySize, business, shortId }.
  *                Added `staff: staffToSave` to the alert body call so admin sees stylist name.
  *
@@ -142,7 +142,7 @@ import {
   getSalonPrepTip as _getPrepTip,
 } from '../salonHelpers.js';
 
-// â”€â”€ Salon Config â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── Salon Config ───────────────────────────────────────────────────────────────
 
 export const SALON_CONFIG = {
   businessMode: 'SALON',
@@ -151,7 +151,7 @@ export const SALON_CONFIG = {
   steps: {
     BOOKING: ['SELECT_SERVICE', 'SELECT_STYLIST', 'DATE', 'DATE_CONFIRM', 'TIME', 'TIME_CONFIRM', 'CONFIRM'],
     WALKIN:  ['SELECT_SERVICE', 'SELECT_STYLIST', 'CONFIRM'],
-    // [MULTICART-v39-PHASE2] CART_REVIEW added â€” reached from SELECT_ITEM on a
+    // [MULTICART-v39-PHASE2] CART_REVIEW added — reached from SELECT_ITEM on a
     // multi-item message, or from CONFIRM via "Add Another Item".
     ORDER:   ['SELECT_ITEM', 'SELECT_VARIANT', 'CART_REVIEW', 'QUANTITY', 'CONFIRM'],
   },
@@ -159,36 +159,36 @@ export const SALON_CONFIG = {
     welcomeList: {
       button: 'Choose an option â–¼',
       rows: [
-        { id: 'BOOK',           title: 'ðŸ“… Book Appointment',   description: 'Schedule a service with us'        },
-        { id: 'WALKIN',         title: 'ðŸš¶ Join Walk-In Queue', description: 'Walk in â€” no appointment needed' },
-        { id: 'ORDER',          title: 'ðŸ› Shop Products',      description: 'Browse hair & beauty products'   },
-        { id: 'BROWSE_CATALOG', title: 'ðŸ› Browse Catalog',     description: 'Shop our product catalog'        },
-        { id: 'QUESTION',       title: 'â“ Ask a Question',     description: 'Get help from our team'          },
+        { id: 'BOOK',           title: '📅 Book Appointment',   description: 'Schedule a service with us'        },
+        { id: 'WALKIN',         title: '🚶 Join Walk-In Queue', description: 'Walk in — no appointment needed' },
+        { id: 'ORDER',          title: '🛍 Shop Products',      description: 'Browse hair & beauty products'   },
+        { id: 'BROWSE_CATALOG', title: '🛍 Browse Catalog',     description: 'Shop our product catalog'        },
+        { id: 'QUESTION',       title: '❓ Ask a Question',     description: 'Get help from our team'          },
       ],
     },
     welcomeButtons: [
-      { id: 'BOOK',     title: 'ðŸ“… Book Appointment'   },
-      { id: 'WALKIN',   title: 'ðŸš¶ Join Walk-In Queue'  },
-      { id: 'QUESTION', title: 'â“ Ask a Question'      },
+      { id: 'BOOK',     title: '📅 Book Appointment'   },
+      { id: 'WALKIN',   title: '🚶 Join Walk-In Queue'  },
+      { id: 'QUESTION', title: '❓ Ask a Question'      },
     ],
     fallbackButtons: [
-      { id: 'BOOK',     title: 'ðŸ“… Book'      },
-      { id: 'WALKIN',   title: 'ðŸš¶ Walk-In'   },
-      { id: 'QUESTION', title: 'â“ Question'  },
+      { id: 'BOOK',     title: '📅 Book'      },
+      { id: 'WALKIN',   title: '🚶 Walk-In'   },
+      { id: 'QUESTION', title: '❓ Question'  },
     ],
-    confirmButtons: [{ id: 'CONFIRM', title: 'âœ… Confirm' }, { id: 'CANCEL', title: 'âŒ Cancel' }],
+    confirmButtons: [{ id: 'CONFIRM', title: '✅ Confirm' }, { id: 'CANCEL', title: '❌ Cancel' }],
   },
   messages: {
-    welcome:        'ðŸ’‡ Welcome! How can we help you today?\n\nBook an appointment, join our walk-in queue, shop products, or ask us anything.',
-    cancelMsg:      "âœ… No problem! Tap below whenever you're ready. ðŸ’‡",
+    welcome:        '💇 Welcome! How can we help you today?\n\nBook an appointment, join our walk-in queue, shop products, or ask us anything.',
+    cancelMsg:      "✅ No problem! Tap below whenever you're ready. 💇",
     fallback:       'Would you like to *book an appointment*, join the *walk-in queue*, or ask a *question*?',
-    orderPrompt:    'ðŸ› Our hair & beauty products â€” tap to select:',
-    bookPrompt:     'ðŸ“… What service would you like to book?',
-    showMenuPrompt: 'ðŸ’‡ What would you like to do?',
+    orderPrompt:    '🛍 Our hair & beauty products — tap to select:',
+    bookPrompt:     '📅 What service would you like to book?',
+    showMenuPrompt: '💇 What would you like to do?',
   },
 };
 
-// â”€â”€ Barbershop Config â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── Barbershop Config ──────────────────────────────────────────────────────────
 
 export const BARBERSHOP_CONFIG = {
   businessMode: 'BARBERSHOP',
@@ -197,7 +197,7 @@ export const BARBERSHOP_CONFIG = {
   steps: {
     BOOKING: ['SELECT_SERVICE', 'SELECT_STYLIST', 'DATE', 'DATE_CONFIRM', 'TIME', 'TIME_CONFIRM', 'CONFIRM'],
     WALKIN:  ['SELECT_SERVICE', 'SELECT_STYLIST', 'CONFIRM'],
-    // [MULTICART-v39-PHASE2] CART_REVIEW added â€” reached from SELECT_ITEM on a
+    // [MULTICART-v39-PHASE2] CART_REVIEW added — reached from SELECT_ITEM on a
     // multi-item message, or from CONFIRM via "Add Another Item".
     ORDER:   ['SELECT_ITEM', 'SELECT_VARIANT', 'CART_REVIEW', 'QUANTITY', 'CONFIRM'],
   },
@@ -205,36 +205,36 @@ export const BARBERSHOP_CONFIG = {
     welcomeList: {
       button: 'Choose an option â–¼',
       rows: [
-        { id: 'BOOK',           title: 'ðŸ’ˆ Book Appointment',   description: 'Schedule a cut or treatment'     },
-        { id: 'WALKIN',         title: 'ðŸš¶ Join Walk-In Queue', description: 'Walk in â€” no appointment needed' },
-        { id: 'ORDER',          title: 'ðŸ› Shop Products',      description: 'Browse grooming products'        },
-        { id: 'BROWSE_CATALOG', title: 'ðŸ› Browse Catalog',     description: 'Shop our product catalog'        },
-        { id: 'QUESTION',       title: 'â“ Ask a Question',     description: 'Get help from our team'          },
+        { id: 'BOOK',           title: '💈 Book Appointment',   description: 'Schedule a cut or treatment'     },
+        { id: 'WALKIN',         title: '🚶 Join Walk-In Queue', description: 'Walk in — no appointment needed' },
+        { id: 'ORDER',          title: '🛍 Shop Products',      description: 'Browse grooming products'        },
+        { id: 'BROWSE_CATALOG', title: '🛍 Browse Catalog',     description: 'Shop our product catalog'        },
+        { id: 'QUESTION',       title: '❓ Ask a Question',     description: 'Get help from our team'          },
       ],
     },
     welcomeButtons: [
-      { id: 'BOOK',     title: 'ðŸ’ˆ Book Appointment'   },
-      { id: 'WALKIN',   title: 'ðŸš¶ Join Walk-In Queue'  },
-      { id: 'QUESTION', title: 'â“ Ask a Question'      },
+      { id: 'BOOK',     title: '💈 Book Appointment'   },
+      { id: 'WALKIN',   title: '🚶 Join Walk-In Queue'  },
+      { id: 'QUESTION', title: '❓ Ask a Question'      },
     ],
     fallbackButtons: [
-      { id: 'BOOK',     title: 'ðŸ’ˆ Book'     },
-      { id: 'WALKIN',   title: 'ðŸš¶ Walk-In'  },
-      { id: 'QUESTION', title: 'â“ Question' },
+      { id: 'BOOK',     title: '💈 Book'     },
+      { id: 'WALKIN',   title: '🚶 Walk-In'  },
+      { id: 'QUESTION', title: '❓ Question' },
     ],
-    confirmButtons: [{ id: 'CONFIRM', title: 'âœ… Confirm' }, { id: 'CANCEL', title: 'âŒ Cancel' }],
+    confirmButtons: [{ id: 'CONFIRM', title: '✅ Confirm' }, { id: 'CANCEL', title: '❌ Cancel' }],
   },
   messages: {
-    welcome:        'âœ‚ï¸ Welcome! Ready for a fresh cut?\n\nBook an appointment, join our walk-in queue, shop products, or ask us anything.',
-    cancelMsg:      "âœ… No problem â€” come back whenever you're ready. âœ‚ï¸",
+    welcome:        '✂️ Welcome! Ready for a fresh cut?\n\nBook an appointment, join our walk-in queue, shop products, or ask us anything.',
+    cancelMsg:      "✅ No problem — come back whenever you're ready. ✂️",
     fallback:       'Would you like to *book an appointment*, join the *walk-in queue*, or ask a *question*?',
-    orderPrompt:    'ðŸ› Our grooming products â€” tap to select:',
-    bookPrompt:     'âœ‚ï¸ What cut or treatment would you like to book?',
-    showMenuPrompt: 'âœ‚ï¸ What would you like to do?',
+    orderPrompt:    '🛍 Our grooming products — tap to select:',
+    bookPrompt:     '✂️ What cut or treatment would you like to book?',
+    showMenuPrompt: '✂️ What would you like to do?',
   },
 };
 
-// â”€â”€ Helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── Helpers ────────────────────────────────────────────────────────────────────
 
 /** Returns available staff names, respecting the available flag.
  * [v14-BUG-2] Returns full staff objects (not just names) so we can validate
@@ -250,7 +250,7 @@ function _getStaff(business) {
     .filter(s => s.name);
 }
 
-/** Build SVC_ button ID â†’ service name map. */
+/** Build SVC_ button ID → service name map. */
 function _buildServiceIdMap(services) {
   const map = {};
   services.forEach(s => {
@@ -260,7 +260,7 @@ function _buildServiceIdMap(services) {
   return map;
 }
 
-/** Build STYLIST_ button ID â†’ name map. */
+/** Build STYLIST_ button ID → name map. */
 function _buildStaffIdMap(staffList) {
   const map = {};
   staffList.forEach(s => {
@@ -278,18 +278,18 @@ function _showAnyAvailable(business) {
   return !(business?.settings?.requireNamedStylist === true);
 }
 
-// â”€â”€ Walk-In Queue Flow â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-// Steps: SELECT_SERVICE â†’ SELECT_STYLIST â†’ CONFIRM
+// ── Walk-In Queue Flow ─────────────────────────────────────────────────────────
+// Steps: SELECT_SERVICE → SELECT_STYLIST → CONFIRM
 
 export async function handleSalonWalkIn({ session, message, business, tenant, isInteractive }) {
   const raw       = String(message || '').trim();
   const step      = session.step || 'SELECT_SERVICE';
   const data      = session.data || {};
   const isBarbershop = _isBarbershop(business);
-  const emoji     = isBarbershop ? 'âœ‚ï¸' : 'ðŸ’‡';
+  const emoji     = isBarbershop ? '✂️' : '💇';
   const staffRole = isBarbershop ? 'barber' : 'stylist';
 
-  // â”€â”€ INIT â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // ── INIT ──────────────────────────────────────────────────────────────────
   if (message === null) {
     await updateSession(session.customerPhone, session.tenantId, {
       step: 'SELECT_SERVICE', data: {},
@@ -297,14 +297,14 @@ export async function handleSalonWalkIn({ session, message, business, tenant, is
     return _buildServiceMenu(business, 'walkin');
   }
 
-  // â”€â”€ Global escape: CANCEL / SHOW_MENU always exits cleanly â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // ── Global escape: CANCEL / SHOW_MENU always exits cleanly ────────────────
   if (['CANCEL', 'SHOW_MENU', 'CANCEL_BOOKING'].includes(raw.toUpperCase())) {
     return cancelFlow(session, business);
   }
 
   switch (step) {
 
-    // â”€â”€ SELECT_SERVICE â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ── SELECT_SERVICE ───────────────────────────────────────────────────────
     case 'SELECT_SERVICE': {
       const services = _getServices(business);
       const SVC_MAP  = _buildServiceIdMap(services);
@@ -332,11 +332,11 @@ export async function handleSalonWalkIn({ session, message, business, tenant, is
           type: 'buttons',
           body:
             `${emoji} *Walk-In Queue*\n\n` +
-            `âœ‚ï¸ *Service:* ${matched}\n\n` +
+            `✂️ *Service:* ${matched}\n\n` +
             `You'll be added to the queue when you arrive. Shall we confirm?`,
           buttons: [
-            { id: 'CONFIRM',         title: 'âœ… Join Queue'  },
-            { id: 'CANCEL_BOOKING',  title: 'âŒ Cancel'       },
+            { id: 'CONFIRM',         title: '✅ Join Queue'  },
+            { id: 'CANCEL_BOOKING',  title: '❌ Cancel'       },
           ],
         };
       }
@@ -344,7 +344,7 @@ export async function handleSalonWalkIn({ session, message, business, tenant, is
       return _buildStylistMenu(staffList, business, isBarbershop);
     }
 
-    // â”€â”€ SELECT_STYLIST â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ── SELECT_STYLIST ───────────────────────────────────────────────────────
     case 'SELECT_STYLIST': {
       const staffList = _getStaff(business);
       const STAFF_MAP = _buildStaffIdMap(staffList);
@@ -371,25 +371,25 @@ export async function handleSalonWalkIn({ session, message, business, tenant, is
       });
 
       const stylistLine = stylist === 'Any available'
-        ? `\nðŸ‘¤ *${isBarbershop ? 'Barber' : 'Stylist'}:* Any available`
-        : `\nðŸ‘¤ *${isBarbershop ? 'Barber' : 'Stylist'}:* ${stylist}`;
+        ? `\n👤 *${isBarbershop ? 'Barber' : 'Stylist'}:* Any available`
+        : `\n👤 *${isBarbershop ? 'Barber' : 'Stylist'}:* ${stylist}`;
 
       return {
         type: 'buttons',
         body:
           `${emoji} *Walk-In Summary*\n\n` +
-          `âœ‚ï¸ *Service:* ${data.service}` +
+          `✂️ *Service:* ${data.service}` +
           stylistLine +
           `\n\nYou'll be added to the walk-in queue when you arrive. Confirm?`,
         buttons: [
-          { id: 'CONFIRM',        title: 'âœ… Join Queue' },
-          { id: 'CANCEL_BOOKING', title: 'âŒ Cancel'      },
+          { id: 'CONFIRM',        title: '✅ Join Queue' },
+          { id: 'CANCEL_BOOKING', title: '❌ Cancel'      },
         ],
       };
     }
 
-    // â”€â”€ CONFIRM â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-    // [FIX-DUALLAYER-CONFIRM] See core/shared/confirmationMatcher.js â€” the old
+    // ── CONFIRM ──────────────────────────────────────────────────────────────
+    // [FIX-DUALLAYER-CONFIRM] See core/shared/confirmationMatcher.js — the old
     // exact-match check meant a typed "yes please"/"go ahead" (instead of
     // tapping the button) silently failed and just re-showed this prompt.
     case 'CONFIRM': {
@@ -405,8 +405,8 @@ export async function handleSalonWalkIn({ session, message, business, tenant, is
           type: 'buttons',
           body: `${emoji} Ready to join the walk-in queue?`,
           buttons: [
-            { id: 'CONFIRM',        title: 'âœ… Yes, join queue' },
-            { id: 'CANCEL_BOOKING', title: 'âŒ Cancel'           },
+            { id: 'CONFIRM',        title: '✅ Yes, join queue' },
+            { id: 'CANCEL_BOOKING', title: '❌ Cancel'           },
           ],
         };
       }
@@ -422,7 +422,7 @@ export async function handleSalonWalkIn({ session, message, business, tenant, is
           staff:         (data.stylist && data.stylist !== 'Any available') ? data.stylist : null,
           date:          new Date().toISOString().split('T')[0], // today
           time:          'Walk-In',
-          notes:         `Walk-in queue entry${data.stylist ? ` â€” requesting ${data.stylist}` : ''}`,
+          notes:         `Walk-in queue entry${data.stylist ? ` — requesting ${data.stylist}` : ''}`,
           bookingType:   'walkin', // [v14-BUG-8]
           status:        'pending',
           businessId:    business._id,
@@ -436,10 +436,10 @@ export async function handleSalonWalkIn({ session, message, business, tenant, is
         });
         return {
           type:    'buttons',
-          body:    `âš ï¸ *Something went wrong joining the queue.*\n\nPlease try again â€” tap below to start over.`,
+          body:    `⚠️ *Something went wrong joining the queue.*\n\nPlease try again — tap below to start over.`,
           buttons: [
-            { id: 'BOOK',     title: 'ðŸ“… Try Again'   },
-            { id: 'SUPPORT',  title: 'ðŸ’¬ Contact Us'  },
+            { id: 'BOOK',     title: '📅 Try Again'   },
+            { id: 'SUPPORT',  title: '💬 Contact Us'  },
           ],
         };
       }
@@ -466,8 +466,8 @@ export async function handleSalonWalkIn({ session, message, business, tenant, is
               type:    'buttons',
               body:    alertBody,
               buttons: [
-                { id: `CONFIRM_BOOK_${savedBooking.shortId}`, title: 'âœ… Confirm Queue' },
-                { id: `DECLINE_BOOK_${savedBooking.shortId}`, title: 'âŒ Remove'        },
+                { id: `CONFIRM_BOOK_${savedBooking.shortId}`, title: '✅ Confirm Queue' },
+                { id: `DECLINE_BOOK_${savedBooking.shortId}`, title: '❌ Remove'        },
               ],
             },
             tenant,
@@ -493,29 +493,29 @@ export async function handleSalonWalkIn({ session, message, business, tenant, is
         const waitMins = business?.settings?.walkInWaitMinutesPerPerson ?? 15;
         const estWait  = Math.max(0, (position - 1) * waitMins);
         queueLine =
-          `\nðŸŽ« *Queue position:* #${position}` +
-          (estWait > 0 ? `\nâ± *Estimated wait:* ~${estWait} min` : '\nâ± *Estimated wait:* You\'re next!');
+          `\n🎫 *Queue position:* #${position}` +
+          (estWait > 0 ? `\n⏱ *Estimated wait:* ~${estWait} min` : '\n⏱ *Estimated wait:* You\'re next!');
       } catch { /* non-fatal */ }
 
       const nameStr = session.customerName ? `, *${session.customerName}*` : '';
-      const shortRef = savedBooking?.shortId ? `\nðŸ”– *Ref:* #${savedBooking.shortId}` : '';
+      const shortRef = savedBooking?.shortId ? `\n🔖 *Ref:* #${savedBooking.shortId}` : '';
       const bizName  = business?.businessName || business?.name || (isBarbershop ? 'the barbershop' : 'the salon');
 
       return {
         type: 'buttons',
         body:
-          `âœ… *You're in the queue!* ${emoji}\n\n` +
-          `ðŸ“‹ *Service:* ${data.service}\n` +
+          `✅ *You're in the queue!* ${emoji}\n\n` +
+          `📋 *Service:* ${data.service}\n` +
           (data.stylist && data.stylist !== 'Any available'
-            ? `ðŸ‘¤ *${isBarbershop ? 'Barber' : 'Stylist'}:* ${data.stylist}\n`
+            ? `👤 *${isBarbershop ? 'Barber' : 'Stylist'}:* ${data.stylist}\n`
             : '') +
           shortRef +
           queueLine +
-          `\n\nPlease head to *${bizName}*${nameStr} â€” our team will message you to confirm your spot.\n\nSee you soon! ðŸ™`,
+          `\n\nPlease head to *${bizName}*${nameStr} — our team will message you to confirm your spot.\n\nSee you soon! 🙏`,
         buttons: [
-          { id: 'BOOK',      title: 'ðŸ“… Book Next Time'  },
-          { id: 'QUESTION',  title: 'â“ Ask a Question'   },
-          { id: 'SHOW_MENU', title: 'ðŸ”„ Main Menu'        },
+          { id: 'BOOK',      title: '📅 Book Next Time'  },
+          { id: 'QUESTION',  title: '❓ Ask a Question'   },
+          { id: 'SHOW_MENU', title: '🔄 Main Menu'        },
         ],
       };
     }
@@ -526,7 +526,7 @@ export async function handleSalonWalkIn({ session, message, business, tenant, is
   }
 }
 
-// â”€â”€ Appointment Booking Flow â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── Appointment Booking Flow ───────────────────────────────────────────────────
 // Adds salon-specific steps (SELECT_SERVICE, SELECT_STYLIST) before the shared bookingFlow.
 
 export async function handleSalonBooking({ session, message, business, tenant, isInteractive }) {
@@ -535,20 +535,20 @@ export async function handleSalonBooking({ session, message, business, tenant, i
   const data      = session.data || {};
   const isBarbershop = _isBarbershop(business);
 
-  // â”€â”€ GLOBAL ESCAPE: CANCEL / SHOW_MENU â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // ── GLOBAL ESCAPE: CANCEL / SHOW_MENU ─────────────────────────────────────
   // Must be checked BEFORE delegating to shared bookingFlow to prevent the
   // shared flow's catch-all from re-prompting instead of cancelling.
   if (['CANCEL', 'CANCEL_BOOKING', 'SHOW_MENU'].includes(raw.toUpperCase())) {
     return cancelFlow(session, business);
   }
 
-  // â”€â”€ Shared bookingFlow handles date/time/confirm steps â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // ── Shared bookingFlow handles date/time/confirm steps ─────────────────────
   const BOOKING_SHARED_STEPS = new Set(['DATE', 'DATE_MONTH', 'DATE_DAY', 'DATE_CONFIRM', 'TIME', 'TIME_CONFIRM', 'BOOKING_CONFIRM']);
   if (BOOKING_SHARED_STEPS.has(step)) {
     return handleBookingFlow({ session, message, business, tenant, isInteractive });
   }
 
-  // â”€â”€ INIT â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // ── INIT ──────────────────────────────────────────────────────────────────
   if (message === null) {
     await updateSession(session.customerPhone, session.tenantId, {
       step: 'SELECT_SERVICE', data: {},
@@ -558,7 +558,7 @@ export async function handleSalonBooking({ session, message, business, tenant, i
 
   switch (step) {
 
-    // â”€â”€ SELECT_SERVICE â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ── SELECT_SERVICE ───────────────────────────────────────────────────────
     case 'SELECT_SERVICE': {
       const services = _getServices(business);
       const SVC_MAP  = _buildServiceIdMap(services);
@@ -594,7 +594,7 @@ export async function handleSalonBooking({ session, message, business, tenant, i
       return _buildStylistMenu(staffList, business, isBarbershop);
     }
 
-    // â”€â”€ SELECT_STYLIST â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ── SELECT_STYLIST ───────────────────────────────────────────────────────
     case 'SELECT_STYLIST': {
       const staffList = _getStaff(business);
       const STAFF_MAP = _buildStaffIdMap(staffList);
@@ -619,7 +619,7 @@ export async function handleSalonBooking({ session, message, business, tenant, i
 
       if (!isValidStylist && staffList.length > 0) {
         return _buildStylistMenu(staffList, business, isBarbershop,
-          `âš ï¸ Sorry, _${stylist}_ isn't available right now. Please choose from the list:`
+          `⚠️ Sorry, _${stylist}_ isn't available right now. Please choose from the list:`
         );
       }
 
@@ -643,8 +643,8 @@ export async function handleSalonBooking({ session, message, business, tenant, i
   }
 }
 
-// â”€â”€ Product Order Flow â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-// Steps: SELECT_ITEM â†’ QUANTITY â†’ CONFIRM
+// ── Product Order Flow ─────────────────────────────────────────────────────────
+// Steps: SELECT_ITEM → QUANTITY → CONFIRM
 
 export async function handleSalonProductOrder({ session, message, business, tenant, isInteractive = false }) {
   const raw   = String(message || '').trim();
@@ -652,7 +652,7 @@ export async function handleSalonProductOrder({ session, message, business, tena
   const step  = session.step || 'SELECT_ITEM';
   const data  = session.data || {};
   const isBarbershop = _isBarbershop(business);
-  const emoji = isBarbershop ? 'âœ‚ï¸' : 'ðŸ’‡';
+  const emoji = isBarbershop ? '✂️' : '💇';
 
   // Products: menuItems that are NOT tagged as services
   const allItems = (business?.menuItems || []).filter(i => i.available !== false);
@@ -660,25 +660,25 @@ export async function handleSalonProductOrder({ session, message, business, tena
     !i.category || !['services', 'service'].includes(i.category?.toLowerCase())
   );
 
-  // â”€â”€ GLOBAL ESCAPE â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // ── GLOBAL ESCAPE ──────────────────────────────────────────────────────────
   if (['CANCEL', 'CANCEL_BOOKING', 'SHOW_MENU'].includes(raw.toUpperCase())) {
     return cancelFlow(session, business);
   }
 
-  // â”€â”€ No products â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // ── No products ───────────────────────────────────────────────────────────
   if (!menu.length) {
     await updateSession(session.customerPhone, session.tenantId, { currentFlow: null, step: null, data: {} });
     return {
       type:    'buttons',
       body:    `${emoji} Our product range is currently being updated. Please check back soon or ask us directly!`,
       buttons: [
-        { id: 'BOOK',     title: 'ðŸ“… Book Appointment' },
-        { id: 'QUESTION', title: 'â“ Ask a Question'   },
+        { id: 'BOOK',     title: '📅 Book Appointment' },
+        { id: 'QUESTION', title: '❓ Ask a Question'   },
       ],
     };
   }
 
-  // â”€â”€ INIT â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // ── INIT ──────────────────────────────────────────────────────────────────
   if (message === null) {
     await updateSession(session.customerPhone, session.tenantId, {
       step: 'SELECT_ITEM', data: {}, menuViewed: false,
@@ -688,10 +688,10 @@ export async function handleSalonProductOrder({ session, message, business, tena
 
   switch (step) {
 
-    // â”€â”€ SELECT_ITEM â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ── SELECT_ITEM ────────────────────────────────────────────────────────
     case 'SELECT_ITEM': {
       // [v14-BUG-9] List row IDs are 1-based numeric strings; resolve them first
-      // [AUDIT-FIX-PARSEINT] parseInt("2 red shirts", 10) === 2, NOT NaN â€” so any
+      // [AUDIT-FIX-PARSEINT] parseInt("2 red shirts", 10) === 2, NOT NaN — so any
       // message merely STARTING with a digit silently hijacked the menu index
       // once menuViewed was true (the normal case). Only trust the parsed index
       // for a bare number or an interactive tap; everything else falls through
@@ -719,13 +719,13 @@ export async function handleSalonProductOrder({ session, message, business, tena
             type: 'buttons',
             body: `Did you mean *${matched.name}*?`,
             buttons: [
-              { id: 'CONFIRM',   title: `âœ… Yes, ${matched.name.slice(0, 15)}` },
-              { id: 'SHOW_MENU', title: 'ðŸ”„ Browse All'                         },
+              { id: 'CONFIRM',   title: `✅ Yes, ${matched.name.slice(0, 15)}` },
+              { id: 'SHOW_MENU', title: '🔄 Browse All'                         },
             ],
           };
         } else {
           // [MULTICART-v39-PHASE2] Neither a numeric index nor a single
-          // confident item name matched â€” try reading the message as MULTIPLE
+          // confident item name matched — try reading the message as MULTIPLE
           // products before giving up ("2 shampoos and a conditioner"). A
           // normal single-item message already resolved above and never
           // reaches here, so this is purely additive.
@@ -738,7 +738,7 @@ export async function handleSalonProductOrder({ session, message, business, tena
             });
             let note = buildUnmatchedNote(multi.unmatchedSegments);
             if (overflowCount > 0) {
-              note += `\n\n_(Your cart can hold up to ${business?.multiItemCart?.maxItems || 10} items â€” ${overflowCount} extra item${overflowCount > 1 ? 's were' : ' was'} left out.)_`;
+              note += `\n\n_(Your cart can hold up to ${business?.multiItemCart?.maxItems || 10} items — ${overflowCount} extra item${overflowCount > 1 ? 's were' : ' was'} left out.)_`;
             }
             return _buildProductCartSummaryUI(cappedCart, business, isBarbershop, note);
           }
@@ -756,20 +756,20 @@ export async function handleSalonProductOrder({ session, message, business, tena
       if (hasVariants) return _buildProductVariantPicker(item, business, isBarbershop);
 
       const currency = item.currency || business?.payment?.currency || 'D';
-      const price = item.price ? ` â€” ${currency}${formatMoney(item.price)}` : '';
+      const price = item.price ? ` — ${currency}${formatMoney(item.price)}` : '';
       const desc  = item.description ? `\n_${item.description}_` : '';
       return {
         type: 'buttons',
-        body: `ðŸ› *${item.name}*${price}${desc}\n\nHow many would you like?`,
+        body: `🛍 *${item.name}*${price}${desc}\n\nHow many would you like?`,
         buttons: [
-          { id: 'QTY_1', title: '1ï¸âƒ£  1' },
-          { id: 'QTY_2', title: '2ï¸âƒ£  2' },
-          { id: 'QTY_3', title: '3ï¸âƒ£  3' },
+          { id: 'QTY_1', title: '1️⃣  1' },
+          { id: 'QTY_2', title: '2️⃣  2' },
+          { id: 'QTY_3', title: '3️⃣  3' },
         ],
       };
     }
 
-    // â”€â”€ SELECT_VARIANT â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ── SELECT_VARIANT ────────────────────────────────────────────────────
     case 'SELECT_VARIANT': {
       const item = data.item;
       if (!item) {
@@ -781,14 +781,14 @@ export async function handleSalonProductOrder({ session, message, business, tena
       if (!variantKeys.length) {
         await updateSession(session.customerPhone, session.tenantId, { step: 'QUANTITY', data: { ...data, variant: null } });
         const currency = item.currency || business?.payment?.currency || 'D';
-        const price = item.price ? ` â€” ${currency}${formatMoney(item.price)}` : '';
+        const price = item.price ? ` — ${currency}${formatMoney(item.price)}` : '';
         return {
           type: 'buttons',
-          body: `ðŸ› *${item.name}*${price}\n\nHow many would you like?`,
+          body: `🛍 *${item.name}*${price}\n\nHow many would you like?`,
           buttons: [
-            { id: 'QTY_1', title: '1ï¸âƒ£  1' },
-            { id: 'QTY_2', title: '2ï¸âƒ£  2' },
-            { id: 'QTY_3', title: '3ï¸âƒ£  3' },
+            { id: 'QTY_1', title: '1️⃣  1' },
+            { id: 'QTY_2', title: '2️⃣  2' },
+            { id: 'QTY_3', title: '3️⃣  3' },
           ],
         };
       }
@@ -803,14 +803,14 @@ export async function handleSalonProductOrder({ session, message, business, tena
           step: 'QUANTITY', data: { ...data, variant: matchedVariant },
         });
         const currency = item.currency || business?.payment?.currency || 'D';
-        const price = item.price ? ` â€” ${currency}${formatMoney(item.price)}` : '';
+        const price = item.price ? ` — ${currency}${formatMoney(item.price)}` : '';
         return {
           type: 'buttons',
-          body: `ðŸ› *${item.name}* â€” *${matchedVariant}*${price}\n\nHow many would you like?`,
+          body: `🛍 *${item.name}* — *${matchedVariant}*${price}\n\nHow many would you like?`,
           buttons: [
-            { id: 'QTY_1', title: '1ï¸âƒ£  1' },
-            { id: 'QTY_2', title: '2ï¸âƒ£  2' },
-            { id: 'QTY_3', title: '3ï¸âƒ£  3' },
+            { id: 'QTY_1', title: '1️⃣  1' },
+            { id: 'QTY_2', title: '2️⃣  2' },
+            { id: 'QTY_3', title: '3️⃣  3' },
           ],
         };
       }
@@ -818,8 +818,8 @@ export async function handleSalonProductOrder({ session, message, business, tena
       return _buildProductVariantPicker(item, business, isBarbershop);
     }
 
-    // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-    // [MULTICART-v39-PHASE2] Reached once data.cart has 2+ distinct products â€”
+    // ────────────────────────────────────────────────────────────────────────
+    // [MULTICART-v39-PHASE2] Reached once data.cart has 2+ distinct products —
     // either from a single multi-item message (SELECT_ITEM above) or from
     // repeated "Add Another Item" taps from CONFIRM below.
     case 'CART_REVIEW': {
@@ -844,7 +844,7 @@ export async function handleSalonProductOrder({ session, message, business, tena
         return _buildProductMenu(menu, business, isBarbershop);
       }
 
-      // [CART-AI-MODIFY] "remove the shampoo" / "make it 3 conditioners" â€”
+      // [CART-AI-MODIFY] "remove the shampoo" / "make it 3 conditioners" —
       // resolved against items ALREADY in the cart, checked BEFORE treating
       // the message as an attempt to add a brand-new product.
       const mod = parseCartModification(cart, raw);
@@ -875,16 +875,16 @@ export async function handleSalonProductOrder({ session, message, business, tena
         await updateSession(session.customerPhone, session.tenantId, { data: { ...data, cart: cappedCart } });
         let note = multiAdd ? buildUnmatchedNote(multiAdd.unmatchedSegments) : '';
         if (overflowCount > 0) {
-          note += `\n\n_(Your cart can hold up to ${business?.multiItemCart?.maxItems || 10} items â€” ${overflowCount} extra item${overflowCount > 1 ? 's were' : ' was'} left out.)_`;
+          note += `\n\n_(Your cart can hold up to ${business?.multiItemCart?.maxItems || 10} items — ${overflowCount} extra item${overflowCount > 1 ? 's were' : ' was'} left out.)_`;
         }
         return _buildProductCartSummaryUI(cappedCart, business, isBarbershop, note);
       }
 
       return _buildProductCartSummaryUI(cart, business, isBarbershop,
-        `\n\n_(I didn't catch a product in that â€” try naming an item, or tap Checkout/Add More.)_`);
+        `\n\n_(I didn't catch a product in that — try naming an item, or tap Checkout/Add More.)_`);
     }
 
-    // â”€â”€ QUANTITY â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ── QUANTITY ──────────────────────────────────────────────────────────
     case 'QUANTITY': {
       const QTY = { 'QTY_1': 1, 'QTY_2': 2, 'QTY_3': 3 };
       const qty = QTY[raw.toUpperCase()] ?? parseQuantity(raw);
@@ -893,19 +893,19 @@ export async function handleSalonProductOrder({ session, message, business, tena
       if (!qty || qty < 1) {
         return {
           type: 'buttons',
-          body: `ðŸ› How many *${data.item?.name}* would you like?`,
+          body: `🛍 How many *${data.item?.name}* would you like?`,
           buttons: [
-            { id: 'QTY_1', title: '1ï¸âƒ£  1' },
-            { id: 'QTY_2', title: '2ï¸âƒ£  2' },
-            { id: 'QTY_3', title: '3ï¸âƒ£  3' },
+            { id: 'QTY_1', title: '1️⃣  1' },
+            { id: 'QTY_2', title: '2️⃣  2' },
+            { id: 'QTY_3', title: '3️⃣  3' },
           ],
         };
       }
       if (qty > MAX) {
         return {
           type: 'buttons',
-          body: `âš ï¸ Maximum is *${MAX}* per order. For bulk orders please contact us.`,
-          buttons: [{ id: 'SUPPORT', title: 'ðŸ’¬ Contact Us' }, { id: 'CANCEL', title: 'âŒ Cancel' }],
+          body: `⚠️ Maximum is *${MAX}* per order. For bulk orders please contact us.`,
+          buttons: [{ id: 'SUPPORT', title: '💬 Contact Us' }, { id: 'CANCEL', title: '❌ Cancel' }],
         };
       }
 
@@ -918,20 +918,20 @@ export async function handleSalonProductOrder({ session, message, business, tena
       return {
         type: 'buttons',
         body:
-          `ðŸ§¾ *Order Summary*\n\n` +
-          `ðŸ› *${qty}Ã— ${itemLabel(data.item, data.variant)}*\n` +
-          (total ? `ðŸ’° *Total:* ${currency}${formatMoney(total)}\n` : '') +
+          `🧾 *Order Summary*\n\n` +
+          `🛍 *${qty}× ${itemLabel(data.item, data.variant)}*\n` +
+          (total ? `💰 *Total:* ${currency}${formatMoney(total)}\n` : '') +
           `\nReady to confirm?`,
         buttons: [
-          { id: 'CONFIRM',          title: 'âœ… Confirm Order'    },
+          { id: 'CONFIRM',          title: '✅ Confirm Order'    },
           { id: 'ADD_ANOTHER_ITEM', title: 'âž• Add Another Item' },
-          { id: 'CANCEL_BOOKING',   title: 'âŒ Cancel'           },
+          { id: 'CANCEL_BOOKING',   title: '❌ Cancel'           },
         ],
       };
     }
 
-    // â”€â”€ CONFIRM â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-    // [FIX-DUALLAYER-CONFIRM] See core/shared/confirmationMatcher.js â€” the old
+    // ── CONFIRM ───────────────────────────────────────────────────────────
+    // [FIX-DUALLAYER-CONFIRM] See core/shared/confirmationMatcher.js — the old
     // exact-match check meant a typed "yes please"/"go ahead" (instead of
     // tapping the button) silently failed and just re-showed this prompt.
     case 'CONFIRM': {
@@ -946,7 +946,7 @@ export async function handleSalonProductOrder({ session, message, business, tena
       });
       if (cancelVerdict === 'no') return cancelFlow(session, business);
 
-      // [MULTICART-v39-PHASE2] "Add Another Item" â€” folds the item that just
+      // [MULTICART-v39-PHASE2] "Add Another Item" — folds the item that just
       // reached this summary into data.cart and loops back to product
       // selection instead of saving. See _addAnotherProduct() below.
       if (raw === 'ADD_ANOTHER_ITEM' || /^(add more|add another|add another item|another item|add item|more items?)$/i.test(clean)) {
@@ -965,20 +965,20 @@ export async function handleSalonProductOrder({ session, message, business, tena
           type: 'buttons',
           // [FIX-SALON-CONFIRM-REPROMPT] previously dropped item/total summary on invalid input; currency was computed but unused
           body:
-            `ðŸ§¾ *Order Summary*\n\n` +
-            `ðŸ› *${data.quantity || 1}Ã— ${itemLabel(data.item, data.variant)}*\n` +
-            (total ? `ðŸ’° *Total:* ${currency}${formatMoney(total)}\n` : '') +
+            `🧾 *Order Summary*\n\n` +
+            `🛍 *${data.quantity || 1}× ${itemLabel(data.item, data.variant)}*\n` +
+            (total ? `💰 *Total:* ${currency}${formatMoney(total)}\n` : '') +
             `\n${emoji} Ready to place your order?`,
           buttons: [
-            { id: 'CONFIRM',          title: 'âœ… Confirm Order'    },
+            { id: 'CONFIRM',          title: '✅ Confirm Order'    },
             { id: 'ADD_ANOTHER_ITEM', title: 'âž• Add Another Item' },
-            { id: 'CANCEL_BOOKING',   title: 'âŒ Cancel'           },
+            { id: 'CANCEL_BOOKING',   title: '❌ Cancel'           },
           ],
         };
       }
 
       // [MULTICART-v39-PHASE2] Items accumulated via prior "Add Another Item"
-      // taps checkout as one multi-item order â€” same saveOrder({items}) path
+      // taps checkout as one multi-item order — same saveOrder({items}) path
       // CART_REVIEW uses.
       const priorCart = Array.isArray(data.cart) ? data.cart : [];
       if (priorCart.length > 0) {
@@ -1013,10 +1013,10 @@ export async function handleSalonProductOrder({ session, message, business, tena
         });
         return {
           type:    'buttons',
-          body:    `âš ï¸ *Something went wrong saving your order.*\n\nPlease try again â€” tap below to start over.`,
+          body:    `⚠️ *Something went wrong saving your order.*\n\nPlease try again — tap below to start over.`,
           buttons: [
-            { id: 'ORDER',    title: 'ðŸ›’ Try Again'   },
-            { id: 'SUPPORT',  title: 'ðŸ’¬ Contact Us'  },
+            { id: 'ORDER',    title: '🛒 Try Again'   },
+            { id: 'SUPPORT',  title: '💬 Contact Us'  },
           ],
         };
       }
@@ -1054,15 +1054,15 @@ export async function handleSalonProductOrder({ session, message, business, tena
             {
               type: 'buttons',
               body:
-                `ðŸ”” *New Product Order â€” ${business?.name || (isBarbershop ? 'Barbershop' : 'Salon')}*\n\n` +
-                `ðŸ“ž Customer: ${session.customerPhone}\n` +
-                (session.customerName ? `ðŸ‘¤ Name: ${session.customerName}\n` : '') +
-                `ðŸ› *${data.quantity}Ã— ${itemLabel(data.item, data.variant)}*\n` +
-                (data.totalPrice ? `ðŸ’° Total: ${currency}${formatMoney(data.totalPrice)}\n` : '') +
-                `ðŸ”– Ref: \`${savedOrder?.shortId || 'N/A'}\``,
+                `🔔 *New Product Order — ${business?.name || (isBarbershop ? 'Barbershop' : 'Salon')}*\n\n` +
+                `📞 Customer: ${session.customerPhone}\n` +
+                (session.customerName ? `👤 Name: ${session.customerName}\n` : '') +
+                `🛍 *${data.quantity}× ${itemLabel(data.item, data.variant)}*\n` +
+                (data.totalPrice ? `💰 Total: ${currency}${formatMoney(data.totalPrice)}\n` : '') +
+                `🔖 Ref: \`${savedOrder?.shortId || 'N/A'}\``,
               buttons: [
-                { id: `APPROVE_${savedOrder.shortId}`, title: 'âœ… Confirm Order' },
-                { id: `REJECT_${savedOrder.shortId}`,  title: 'âŒ Cancel Order'  },
+                { id: `APPROVE_${savedOrder.shortId}`, title: '✅ Confirm Order' },
+                { id: `REJECT_${savedOrder.shortId}`,  title: '❌ Cancel Order'  },
               ],
             },
             tenant,
@@ -1071,7 +1071,7 @@ export async function handleSalonProductOrder({ session, message, business, tena
       } catch {}
 
       trackOrderAnalytics(itemLabel(data.item, data.variant), null, data.quantity, data.totalPrice || 0, session.tenantId).catch(() => {});
-      // [AUDIT-FIX-4] recordRevenue() moved to adminCommandService.confirmPayment() â€”
+      // [AUDIT-FIX-4] recordRevenue() moved to adminCommandService.confirmPayment() —
       // recording it here at placement time counted unconfirmed/later-rejected orders
       // as revenue. See adminCommandService.js AUDIT-FIX-4 for full rationale.
 
@@ -1084,10 +1084,10 @@ export async function handleSalonProductOrder({ session, message, business, tena
       return {
         type: 'text',
         body:
-          `âœ… *Order received!* ${emoji}\n\n` +
-          `ðŸ› *${data.quantity}Ã— ${itemLabel(data.item, data.variant)}*\n` +
-          (data.totalPrice ? `ðŸ’° Total: *${currency}${formatMoney(data.totalPrice)}*\n` : '') +
-          `\nâ³ Our team will confirm your order shortly. We'll message you when it's ready! ðŸ™`,
+          `✅ *Order received!* ${emoji}\n\n` +
+          `🛍 *${data.quantity}× ${itemLabel(data.item, data.variant)}*\n` +
+          (data.totalPrice ? `💰 Total: *${currency}${formatMoney(data.totalPrice)}*\n` : '') +
+          `\n⏳ Our team will confirm your order shortly. We'll message you when it's ready! 🙏`,
       };
     }
 
@@ -1100,9 +1100,9 @@ export async function handleSalonProductOrder({ session, message, business, tena
   }
 }
 
-// â”€â”€ Add-another-product helper â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── Add-another-product helper ────────────────────────────────────────────────
 // [MULTICART-v39-PHASE2] Extracted out of the CONFIRM case body (same reason
-// as restaurant/flows/orderFlow.js's _addAnotherItem â€” keeps the case short
+// as restaurant/flows/orderFlow.js's _addAnotherItem — keeps the case short
 // for any future source-window regression tests).
 async function _addAnotherProduct(session, business, data, isBarbershop) {
   const priorCart = Array.isArray(data.cart) ? data.cart : [];
@@ -1115,23 +1115,23 @@ async function _addAnotherProduct(session, business, data, isBarbershop) {
     data: { cart: cappedCart }, // single-item fields folded into the cart now
   });
   const overflowNote = overflowCount > 0
-    ? `\n\n_(Your cart can hold up to ${business?.multiItemCart?.maxItems || 10} items â€” ${overflowCount} extra item${overflowCount > 1 ? 's were' : ' was'} left out.)_`
+    ? `\n\n_(Your cart can hold up to ${business?.multiItemCart?.maxItems || 10} items — ${overflowCount} extra item${overflowCount > 1 ? 's were' : ' was'} left out.)_`
     : '';
   const allItems = (business?.menuItems || []).filter(i => i.available !== false);
   const menu = allItems.filter(i => !i.category || !['services', 'service'].includes(i.category?.toLowerCase()));
   const menuUI = _buildProductMenu(menu, business, isBarbershop);
   if (menuUI.type === 'buttons') return menuUI; // empty-catalog guard already returned its own message
-  return { ...menuUI, body: `Added to your cart! ðŸ›’${overflowNote}\n\n${menuUI.body}` };
+  return { ...menuUI, body: `Added to your cart! 🛒${overflowNote}\n\n${menuUI.body}` };
 }
 
-// â”€â”€ Product cart checkout helper â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── Product cart checkout helper ──────────────────────────────────────────────
 // [MULTICART-v39-PHASE2] Multi-item counterpart to the CONFIRM step's
-// single-item save logic above â€” same saveOrder({items}) call, same
+// single-item save logic above — same saveOrder({items}) call, same
 // payment-vs-cash branching, same admin alert shape (salon-flavored: 'SLN-'
 // payment reference prefix, Product Order title), so a text-typed multi-item
 // product order behaves identically to a single-item one from here on.
 async function _checkoutProductCart(cart, session, business, tenant, isBarbershop) {
-  const emoji = isBarbershop ? 'âœ‚ï¸' : 'ðŸ’‡';
+  const emoji = isBarbershop ? '✂️' : '💇';
   const currency = business?.payment?.currency || 'D';
   const cartSummary = formatCartSummary(cart, business);
   const total = cartTotal(cart);
@@ -1152,10 +1152,10 @@ async function _checkoutProductCart(cart, session, business, tenant, isBarbersho
     });
     return {
       type:    'buttons',
-      body:    `âš ï¸ *Something went wrong saving your order.*\n\nPlease try again â€” tap below to start over.`,
+      body:    `⚠️ *Something went wrong saving your order.*\n\nPlease try again — tap below to start over.`,
       buttons: [
-        { id: 'ORDER',   title: 'ðŸ›’ Try Again'  },
-        { id: 'SUPPORT', title: 'ðŸ’¬ Contact Us' },
+        { id: 'ORDER',   title: '🛒 Try Again'  },
+        { id: 'SUPPORT', title: '💬 Contact Us' },
       ],
     };
   }
@@ -1192,15 +1192,15 @@ async function _checkoutProductCart(cart, session, business, tenant, isBarbersho
         {
           type: 'buttons',
           body:
-            `ðŸ”” *New Product Order â€” ${business?.name || (isBarbershop ? 'Barbershop' : 'Salon')}*\n\n` +
-            `ðŸ“ž Customer: ${session.customerPhone}\n` +
-            (session.customerName ? `ðŸ‘¤ Name: ${session.customerName}\n` : '') +
-            `ðŸ› Items:\n${cartSummary}\n` +
-            (totalPrice ? `ðŸ’° Total: ${currency}${formatMoney(totalPrice)}\n` : '') +
-            `ðŸ”– Ref: \`${savedOrder?.shortId || 'N/A'}\``,
+            `🔔 *New Product Order — ${business?.name || (isBarbershop ? 'Barbershop' : 'Salon')}*\n\n` +
+            `📞 Customer: ${session.customerPhone}\n` +
+            (session.customerName ? `👤 Name: ${session.customerName}\n` : '') +
+            `🛍 Items:\n${cartSummary}\n` +
+            (totalPrice ? `💰 Total: ${currency}${formatMoney(totalPrice)}\n` : '') +
+            `🔖 Ref: \`${savedOrder?.shortId || 'N/A'}\``,
           buttons: [
-            { id: `APPROVE_${savedOrder.shortId}`, title: 'âœ… Confirm Order' },
-            { id: `REJECT_${savedOrder.shortId}`,  title: 'âŒ Cancel Order'  },
+            { id: `APPROVE_${savedOrder.shortId}`, title: '✅ Confirm Order' },
+            { id: `REJECT_${savedOrder.shortId}`,  title: '❌ Cancel Order'  },
           ],
         },
         tenant,
@@ -1223,17 +1223,17 @@ async function _checkoutProductCart(cart, session, business, tenant, isBarbersho
   return {
     type: 'text',
     body:
-      `âœ… *Order received!* ${emoji}\n\nðŸ› Items:\n${cartSummary}\n` +
-      (totalPrice ? `ðŸ’° Total: *${currency}${formatMoney(totalPrice)}*\n` : '') +
-      `\nâ³ Our team will confirm your order shortly. We'll message you when it's ready! ðŸ™`,
+      `✅ *Order received!* ${emoji}\n\n🛍 Items:\n${cartSummary}\n` +
+      (totalPrice ? `💰 Total: *${currency}${formatMoney(totalPrice)}*\n` : '') +
+      `\n⏳ Our team will confirm your order shortly. We'll message you when it's ready! 🙏`,
   };
 }
 
-// â”€â”€ AI Question / Consultation Handler â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── AI Question / Consultation Handler ────────────────────────────────────────
 // Handles FAQs, aftercare advice, pricing, and beauty consultations.
 //
 // [v14-BUG-5] completeFlow() lead-capture fix:
-//   OLD: if (lc) return lc  â†’ lead-capture replaced the AI answer
+//   OLD: if (lc) return lc  → lead-capture replaced the AI answer
 //   NEW: build questionResponse first, call completeFlow, return questionResponse
 //        so the AI answer is always delivered. Lead capture fires on next turn.
 
@@ -1241,14 +1241,14 @@ export async function handleSalonQuestion({ session, message, business, tenant }
   const isBarbershop = _isBarbershop(business);
   const step         = session.step || 'AWAITING_QUESTION';
 
-  // â”€â”€ INIT â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // ── INIT ────────────────────────────────────────────────────────────────
   if (message === null) {
     await updateSession(session.customerPhone, session.tenantId, {
       step: 'AWAITING_QUESTION', data: {},
     });
     return {
       type: 'text',
-      body: `${isBarbershop ? 'âœ‚ï¸' : 'ðŸ’‡'} What would you like to know? Feel free to type your question.\n\n_(e.g. pricing, opening hours, aftercare tips, which service is right for me)_`,
+      body: `${isBarbershop ? '✂️' : '💇'} What would you like to know? Feel free to type your question.\n\n_(e.g. pricing, opening hours, aftercare tips, which service is right for me)_`,
     };
   }
 
@@ -1258,11 +1258,11 @@ export async function handleSalonQuestion({ session, message, business, tenant }
     return cancelFlow(session, business);
   }
 
-  // â”€â”€ AWAITING_QUESTION â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // ── AWAITING_QUESTION ─────────────────────────────────────────────────────
   if (!raw || raw.length < 2) {
     return {
       type: 'text',
-      body: `${isBarbershop ? 'âœ‚ï¸' : 'ðŸ’‡'} What would you like to know? Feel free to type your question.\n\n_(e.g. pricing, opening hours, aftercare tips, product recommendations)_`,
+      body: `${isBarbershop ? '✂️' : '💇'} What would you like to know? Feel free to type your question.\n\n_(e.g. pricing, opening hours, aftercare tips, product recommendations)_`,
     };
   }
 
@@ -1279,16 +1279,16 @@ export async function handleSalonQuestion({ session, message, business, tenant }
   const reply = await processQuestionMessage({ session, message: raw, business, tenant, intent });
   await persistQuestionSession(session, tenant, reply.context || { lastMessage: raw });
 
-  // Answer-only: stay in QUESTION mode and wait â€” no buttons. Switching activity
+  // Answer-only: stay in QUESTION mode and wait — no buttons. Switching activity
   // is picked up upstream from the customer's own words, not from a tap target.
   const questionResponse = {
     type: reply.type || 'text',
     body: reply.body || `Great question! For detailed information please contact us directly.`,
   };
 
-  // [text type ignores the footer field â€” fold the same hint into the body]
+  // [text type ignores the footer field — fold the same hint into the body]
   if (isAftercare && reply.body) {
-    questionResponse.body += `\n\n_We hope to see you again soon! ðŸ™_`;
+    questionResponse.body += `\n\n_We hope to see you again soon! 🙏_`;
   } else if (isConsultation && reply.body) {
     questionResponse.body += `\n\n_Just say the word when you're ready to book that service._`;
   }
@@ -1296,16 +1296,16 @@ export async function handleSalonQuestion({ session, message, business, tenant }
   return questionResponse;
 }
 
-// â”€â”€ UI Helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── UI Helpers ─────────────────────────────────────────────────────────────────
 
 /**
- * _buildServiceMenu â€” shows services as interactive list (>3 items) or buttons (â‰¤3).
+ * _buildServiceMenu — shows services as interactive list (>3 items) or buttons (≤3).
  * [v14-BUG-6] Includes price + duration in list row descriptions.
  */
 function _buildServiceMenu(business, mode = 'booking') {
   const services    = _getServices(business);
   const isBarbershop = _isBarbershop(business);
-  const emoji       = isBarbershop ? 'âœ‚ï¸' : 'ðŸ’‡';
+  const emoji       = isBarbershop ? '✂️' : '💇';
   const heading     = mode === 'walkin'
     ? `${emoji} *Walk-In Queue*\n\nWhat service do you need today?`
     : `${emoji} *Book Appointment*\n\nWhat service would you like to book?`;
@@ -1338,12 +1338,12 @@ function _buildServiceMenu(business, mode = 'booking') {
       rows: services.map(s => {
         const pricePart    = toPrice(s, business);
         const durationPart = toDuration(s);
-        // [v14-BUG-6] Description â‰¤72 chars with price + duration info
+        // [v14-BUG-6] Description ≤72 chars with price + duration info
         const descParts = [pricePart, durationPart].filter(Boolean);
         return {
           id:          `SVC_${toName(s).toUpperCase().replace(/\s+/g, '_')}`,
           title:       toName(s).slice(0, 24),
-          description: descParts.length ? descParts.join(' Â· ').slice(0, 72) : undefined,
+          description: descParts.length ? descParts.join(' · ').slice(0, 72) : undefined,
         };
       }),
     }],
@@ -1351,12 +1351,12 @@ function _buildServiceMenu(business, mode = 'booking') {
 }
 
 /**
- * _buildStylistMenu â€” shows stylist list with 'Any available' option.
+ * _buildStylistMenu — shows stylist list with 'Any available' option.
  * [v14-BUG-7] Respects business.settings.requireNamedStylist flag.
  */
 function _buildStylistMenu(staffList, business, isBarbershop, errorMsg = null) {
   const role    = isBarbershop ? 'barber' : 'stylist';
-  const emoji   = isBarbershop ? 'âœ‚ï¸' : 'ðŸ’‡';
+  const emoji   = isBarbershop ? '✂️' : '💇';
   const showAny = _showAnyAvailable(business);
   const options = showAny
     ? [...staffList.map(s => ({ name: s.name, specialty: s.specialty })), { name: 'Any available', specialty: `Next available ${role}` }]
@@ -1393,22 +1393,22 @@ function _buildStylistMenu(staffList, business, isBarbershop, errorMsg = null) {
 }
 
 // [MULTICART-v39-PHASE2] Multi-item counterpart to _buildProductMenu()'s single
-// pick â€” shown once 2+ distinct products are in data.cart, whether from one
+// pick — shown once 2+ distinct products are in data.cart, whether from one
 // "2 shampoos and a conditioner" message or repeated "Add Another Item" taps.
 function _buildProductCartSummaryUI(cart, business, isBarbershop, note = '') {
-  const emoji = isBarbershop ? 'âœ‚ï¸' : 'ðŸ’‡';
+  const emoji = isBarbershop ? '✂️' : '💇';
   const total = cartTotal(cart);
   const currency = business?.payment?.currency || 'D';
   return {
     type: 'buttons',
     body:
-      `${emoji} ðŸ§¾ *Your Order*\n\n${formatCartSummary(cart, business)}` +
-      (total != null ? `\n\nðŸ’° Total: *${currency}${formatMoney(total)}*` : '') +
+      `${emoji} 🧾 *Your Order*\n\n${formatCartSummary(cart, business)}` +
+      (total != null ? `\n\n💰 Total: *${currency}${formatMoney(total)}*` : '') +
       `${note}\n\nReady to checkout, or add something else?`,
     buttons: [
-      { id: 'CONFIRM',          title: 'âœ… Checkout'  },
+      { id: 'CONFIRM',          title: '✅ Checkout'  },
       { id: 'ADD_ANOTHER_ITEM', title: 'âž• Add More'   },
-      { id: 'CANCEL_BOOKING',   title: 'âŒ Cancel'     },
+      { id: 'CANCEL_BOOKING',   title: '❌ Cancel'     },
     ],
   };
 }
@@ -1416,12 +1416,12 @@ function _buildProductCartSummaryUI(cart, business, isBarbershop, note = '') {
 function _buildProductVariantPicker(item, business, isBarbershop) {
   const variantKeys = (item.variants || []).map(v => (typeof v === 'string' ? v : v.name || String(v)));
   const currency = item.currency || business?.payment?.currency || 'D';
-  const price = item.price ? ` â€” ${currency}${formatMoney(item.price)}` : '';
+  const price = item.price ? ` — ${currency}${formatMoney(item.price)}` : '';
 
   if (variantKeys.length <= 3) {
     return {
       type: 'buttons',
-      body: `ðŸ› *${item.name}*${price}\n\nWhich option would you like?`,
+      body: `🛍 *${item.name}*${price}\n\nWhich option would you like?`,
       buttons: variantKeys.slice(0, 3).map(v => ({
         id:    `VAR_${v.toUpperCase().replace(/\s+/g, '_')}`,
         title: v.slice(0, 20),
@@ -1431,7 +1431,7 @@ function _buildProductVariantPicker(item, business, isBarbershop) {
 
   return {
     type: 'list',
-    body:   `ðŸ› *${item.name}*${price}\n\nWhich option would you like?`,
+    body:   `🛍 *${item.name}*${price}\n\nWhich option would you like?`,
     button: 'Choose option',
     rows: variantKeys.map(v => ({
       id:          `VAR_${v.toUpperCase().replace(/\s+/g, '_')}`,
@@ -1443,20 +1443,20 @@ function _buildProductVariantPicker(item, business, isBarbershop) {
 
 function _buildProductMenu(items, business, isBarbershop) {
   const name  = business?.businessName || business?.name || (isBarbershop ? 'Barbershop' : 'Salon');
-  const emoji = isBarbershop ? 'âœ‚ï¸' : 'ðŸ’‡';
+  const emoji = isBarbershop ? '✂️' : '💇';
 
   if (!items.length) {
     return {
       type:    'buttons',
       body:    `${emoji} *${name}*\n\nOur product range is being updated. Please check back soon!`,
-      buttons: [{ id: 'BOOK', title: 'ðŸ“… Book Appointment' }, { id: 'SUPPORT', title: 'ðŸ’¬ Contact Us' }],
+      buttons: [{ id: 'BOOK', title: '📅 Book Appointment' }, { id: 'SUPPORT', title: '💬 Contact Us' }],
     };
   }
 
   const currency = business?.payment?.currency || 'D';
 
   // [FIX-LIST-CAP-2] Row IDs are 1-based numeric strings to match numIdx
-  // parsing. No build-time slice needed â€” dispatcher.js hard-caps the
+  // parsing. No build-time slice needed — dispatcher.js hard-caps the
   // outgoing message at Meta's real limit of 10 rows TOTAL (it does not
   // chunk a long list across multiple sections, contrary to an earlier
   // version of this comment), truncating with a footer hint if the full
@@ -1467,24 +1467,24 @@ function _buildProductMenu(items, business, isBarbershop) {
     description: [
       item.description?.slice(0, 40),
       item.price ? `${item.currency || currency}${formatMoney(item.price)}` : null,
-    ].filter(Boolean).join(' â€” ').slice(0, 72) || undefined,
+    ].filter(Boolean).join(' — ').slice(0, 72) || undefined,
   }));
 
   return {
     type: 'list',
     header: `${emoji} *${name}*`,
     body:   isBarbershop
-      ? 'Our grooming products â€” tap to select:'
-      : 'Our hair & beauty products â€” tap to select:',
+      ? 'Our grooming products — tap to select:'
+      : 'Our hair & beauty products — tap to select:',
     button: 'View Products',
     // [FIX-LIST-CAP-2] Flat top-level `rows`, not pre-wrapped in a single
-    // `sections` entry â€” dispatcher.js treats both shapes identically (it
+    // `sections` entry — dispatcher.js treats both shapes identically (it
     // hard-caps at 10 rows total either way), so this is just consistency
     // with the other modules, not a functional requirement.
     rows,
   };
 }
 
-// Re-export helpers from salonHelpers.js (avoids circular import via postFlowHandler â†’ modes)
+// Re-export helpers from salonHelpers.js (avoids circular import via postFlowHandler → modes)
 export { getSalonPrepTip, getSalonServices } from '../salonHelpers.js';
 

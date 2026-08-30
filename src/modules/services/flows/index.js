@@ -1,11 +1,11 @@
-﻿/**
+/**
  * modules/services/flows/index.js
  *
- * SERVICES mode â€” freelancers, agencies, consultants, tradespeople.
+ * SERVICES mode — freelancers, agencies, consultants, tradespeople.
  * No physical menu / stock. Flows:
- *   ENQUIRY      â€” scoped quote request (type â†’ description â†’ budget â†’ contact)
- *   BOOKING      â€” schedule a consultation / call / site visit
- *   QUOTE_FOLLOW â€” follow-up on a pending quote
+ *   ENQUIRY      — scoped quote request (type → description → budget → contact)
+ *   BOOKING      — schedule a consultation / call / site visit
+ *   QUOTE_FOLLOW — follow-up on a pending quote
  *
  * Persona: a professional service coordinator who qualifies leads efficiently,
  * collects just enough info, and always ends with a clear next step.
@@ -18,7 +18,7 @@ import { getAIReply }        from '../../../core/ai/providers/aiRouter.js';
 import { saveOrder }         from '../../../services/order/orderService.js';
 import logger                from '../../../config/logger.js';
 
-// â”€â”€ Config â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── Config ────────────────────────────────────────────────────────────────────
 
 export const SERVICES_CONFIG = {
   businessMode: 'SERVICES',
@@ -30,45 +30,45 @@ export const SERVICES_CONFIG = {
   },
   ui: {
     // [FIX-4BTN-SVC] Meta button messages are capped at 3 buttons; the dispatcher
-    // silently drops the 4th via .slice(0,3). This array previously had 4 items â€”
+    // silently drops the 4th via .slice(0,3). This array previously had 4 items —
     // 'QUESTION' was never rendered and customers had no way to tap it.
     // Fix: keep 3 buttons. QUESTION is accessible via the 'ENQUIRY' flow, free-text,
     // or by using a list-type welcome message (see welcomeList below).
     welcomeButtons: [
-      { id: 'ENQUIRY',      title: 'ðŸ“‹ Get a Quote'        },
-      { id: 'BOOK',         title: 'ðŸ“… Book Consultation'  },
-      { id: 'QUESTION',     title: 'â“ Ask a Question'     },
+      { id: 'ENQUIRY',      title: '📋 Get a Quote'        },
+      { id: 'BOOK',         title: '📅 Book Consultation'  },
+      { id: 'QUESTION',     title: '❓ Ask a Question'     },
     ],
     // [FIX-4BTN-SVC] Full 4-option list for callers that use list-type messages.
     // Use this instead of welcomeButtons when the UI can support a list (no button cap).
     welcomeList: [
-      { id: 'ENQUIRY',      title: 'ðŸ“‹ Get a Quote',           description: 'Request a project quote'       },
-      { id: 'BOOK',         title: 'ðŸ“… Book Consultation',     description: 'Schedule a call or site visit' },
-      { id: 'QUOTE_FOLLOW', title: 'ðŸ” Follow Up on Quote',    description: 'Check on a pending quote'      },
-      { id: 'QUESTION',     title: 'â“ Ask a Question',        description: 'Get a quick answer'            },
+      { id: 'ENQUIRY',      title: '📋 Get a Quote',           description: 'Request a project quote'       },
+      { id: 'BOOK',         title: '📅 Book Consultation',     description: 'Schedule a call or site visit' },
+      { id: 'QUOTE_FOLLOW', title: '🔍 Follow Up on Quote',    description: 'Check on a pending quote'      },
+      { id: 'QUESTION',     title: '❓ Ask a Question',        description: 'Get a quick answer'            },
     ],
     fallbackButtons: [
-      { id: 'ENQUIRY', title: 'ðŸ“‹ Get a Quote'       },
-      { id: 'BOOK',    title: 'ðŸ“… Book a Call'       },
-      { id: 'QUESTION',title: 'â“ Ask'               },
+      { id: 'ENQUIRY', title: '📋 Get a Quote'       },
+      { id: 'BOOK',    title: '📅 Book a Call'       },
+      { id: 'QUESTION',title: '❓ Ask'               },
     ],
   },
   messages: {
-    welcome:      'ðŸ‘‹ Hi! We\'re happy to help with your project.\n\nWhat would you like to do?',
+    welcome:      '👋 Hi! We\'re happy to help with your project.\n\nWhat would you like to do?',
     fallback:     'Would you like to *get a quote*, *book a consultation*, or *ask a question*?',
-    cancelMsg:    'âœ… No problem! Feel free to come back whenever you\'re ready.',
-    afterEnquiry: 'âœ… Got it! We\'ll review your enquiry and get back to you shortly with a personalised quote.',
+    cancelMsg:    '✅ No problem! Feel free to come back whenever you\'re ready.',
+    afterEnquiry: '✅ Got it! We\'ll review your enquiry and get back to you shortly with a personalised quote.',
   },
 };
 
-// â”€â”€ Enquiry Flow â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── Enquiry Flow ──────────────────────────────────────────────────────────────
 
 export async function handleEnquiryFlow({ session, message, business, tenant }) {
   const raw  = String(message || '').trim();
   const step = session.step || 'SERVICE_TYPE';
   const data = session.data || {};
 
-  // â”€â”€ INIT â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // ── INIT ──────────────────────────────────────────────────────────────────
   if (message === null) {
     await updateSession(session.customerPhone, session.tenantId, {
       step: 'SERVICE_TYPE',
@@ -76,9 +76,9 @@ export async function handleEnquiryFlow({ session, message, business, tenant }) 
     });
 
     const serviceTypes = _getServiceTypes(business);
-    // [FIX-LIST-CAP-2] No build-time slice needed here â€” dispatcher.js
+    // [FIX-LIST-CAP-2] No build-time slice needed here — dispatcher.js
     // hard-caps the OUTGOING message at Meta's real limit of 10 rows TOTAL
-    // (not chunked into extra sections â€” an earlier version of this comment
+    // (not chunked into extra sections — an earlier version of this comment
     // wrongly claimed that; Meta's actual cap is 10 rows combined across the
     // whole message, full stop). If a tenant configures more than 10 service
     // types, the dispatcher truncates to 10 and adds a footer hint; the rest
@@ -86,7 +86,7 @@ export async function handleEnquiryFlow({ session, message, business, tenant }) 
     // a real limitation for any tenant.
     return {
       type: 'list',
-      body:   'ðŸ“‹ *Get a Quote*\n\nWhat type of service are you looking for?\n\n_(Tap one below or type your answer)_',
+      body:   '📋 *Get a Quote*\n\nWhat type of service are you looking for?\n\n_(Tap one below or type your answer)_',
       button: 'Choose service',
       sections: [{
         title: 'Service Types',
@@ -98,7 +98,7 @@ export async function handleEnquiryFlow({ session, message, business, tenant }) 
 
   switch (step) {
 
-    // â”€â”€ SERVICE_TYPE â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ── SERVICE_TYPE ─────────────────────────────────────────────────────────
     case 'SERVICE_TYPE': {
       if (!raw || raw.length < 2) return _askServiceType(business);
 
@@ -114,18 +114,18 @@ export async function handleEnquiryFlow({ session, message, business, tenant }) 
 
       return {
         type: 'buttons',
-        body: `Great â€” *${cleaned}* ðŸ‘\n\nCould you describe what you need in a bit more detail?\n\n_For example: the scope, goals, specific requirements, or any challenges._`,
-        buttons: [{ id: 'CANCEL', title: 'âŒ Cancel' }],
+        body: `Great — *${cleaned}* 👍\n\nCould you describe what you need in a bit more detail?\n\n_For example: the scope, goals, specific requirements, or any challenges._`,
+        buttons: [{ id: 'CANCEL', title: '❌ Cancel' }],
       };
     }
 
-    // â”€â”€ DESCRIPTION â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ── DESCRIPTION ──────────────────────────────────────────────────────────
     case 'DESCRIPTION': {
       if (!raw || raw.length < 10) {
         return {
           type: 'buttons',
-          body: 'ðŸ“ Please give us a bit more detail so we can quote accurately.\n\n_Describe your project, goals, or what you need done._',
-          buttons: [{ id: 'CANCEL', title: 'âŒ Cancel' }],
+          body: '📝 Please give us a bit more detail so we can quote accurately.\n\n_Describe your project, goals, or what you need done._',
+          buttons: [{ id: 'CANCEL', title: '❌ Cancel' }],
         };
       }
 
@@ -134,27 +134,27 @@ export async function handleEnquiryFlow({ session, message, business, tenant }) 
         data: { ...data, description: raw },
       });
 
-      // [UX-SVC-2] 4 budget options exceed WhatsApp's 3-button cap â€” use a list.
+      // [UX-SVC-2] 4 budget options exceed WhatsApp's 3-button cap — use a list.
       return {
         type: 'list',
-        body: 'ðŸ’° *Budget*\n\nDo you have a rough budget in mind?\n\n_This helps us tailor the right solution for you._',
+        body: '💰 *Budget*\n\nDo you have a rough budget in mind?\n\n_This helps us tailor the right solution for you._',
         button: 'Choose budget',
         sections: [{ title: 'Budget Range', rows: [
-          { id: 'BUDGET_DISCUSS', title: 'ðŸ’¬ Discuss it',    description: 'Open to conversation'   },
-          { id: 'BUDGET_SMALL',   title: 'ðŸŸ¢ Under $500',    description: 'Small project budget'   },
-          { id: 'BUDGET_MED',     title: 'ðŸŸ¡ $500 â€“ $2,000', description: 'Mid-range budget'       },
-          { id: 'BUDGET_LARGE',   title: 'ðŸ”´ $2,000+',       description: 'Larger project budget'  },
+          { id: 'BUDGET_DISCUSS', title: '💬 Discuss it',    description: 'Open to conversation'   },
+          { id: 'BUDGET_SMALL',   title: '🟢 Under $500',    description: 'Small project budget'   },
+          { id: 'BUDGET_MED',     title: '🟡 $500 – $2,000', description: 'Mid-range budget'       },
+          { id: 'BUDGET_LARGE',   title: '🔴 $2,000+',       description: 'Larger project budget'  },
         ]}],
         footer: 'Or type your budget e.g. $800',
       };
     }
 
-    // â”€â”€ BUDGET â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ── BUDGET ───────────────────────────────────────────────────────────────
     case 'BUDGET': {
       const BUDGET_MAP = {
         'BUDGET_DISCUSS': 'Open to discussion',
         'BUDGET_SMALL':   'Under $500',
-        'BUDGET_MED':     '$500 â€“ $2,000',
+        'BUDGET_MED':     '$500 – $2,000',
         'BUDGET_LARGE':   '$2,000+',
       };
       const budget = BUDGET_MAP[raw.toUpperCase()] || raw;
@@ -164,21 +164,21 @@ export async function handleEnquiryFlow({ session, message, business, tenant }) 
         data: { ...data, budget },
       });
 
-      // [UX-SVC-1] 4 timeline options exceed WhatsApp's 3-button cap â€” use a list instead.
+      // [UX-SVC-1] 4 timeline options exceed WhatsApp's 3-button cap — use a list instead.
       return {
         type: 'list',
-        body: 'ðŸ“… *Timeline*\n\nWhen are you looking to get started or have this completed?',
+        body: '📅 *Timeline*\n\nWhen are you looking to get started or have this completed?',
         button: 'Choose timeline',
         sections: [{ title: 'When do you need this?', rows: [
-          { id: 'TL_ASAP',  title: 'ðŸ”¥ ASAP',         description: 'Start immediately'    },
-          { id: 'TL_WEEK',  title: 'ðŸ“† This week',     description: 'Within 7 days'        },
-          { id: 'TL_MONTH', title: 'ðŸ—“ This month',    description: 'Within 30 days'       },
-          { id: 'TL_FLEX',  title: 'ðŸŒ€ Flexible',      description: 'No rush, discuss it'  },
+          { id: 'TL_ASAP',  title: '🔥 ASAP',         description: 'Start immediately'    },
+          { id: 'TL_WEEK',  title: '📆 This week',     description: 'Within 7 days'        },
+          { id: 'TL_MONTH', title: '🗓 This month',    description: 'Within 30 days'       },
+          { id: 'TL_FLEX',  title: '🌀 Flexible',      description: 'No rush, discuss it'  },
         ]}],
       };
     }
 
-    // â”€â”€ TIMELINE â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ── TIMELINE ─────────────────────────────────────────────────────────────
     case 'TIMELINE': {
       const TL_MAP = {
         'TL_ASAP':  'ASAP',
@@ -196,22 +196,22 @@ export async function handleEnquiryFlow({ session, message, business, tenant }) 
 
       return {
         type: 'buttons',
-        body: `ðŸ“‹ *Quote Summary*\n\n` +
-          `ðŸ”§ *Service:* ${updatedData.serviceType || 'Not specified'}\n` +
-          `ðŸ“ *Details:* ${updatedData.description}\n` +
-          `ðŸ’° *Budget:* ${updatedData.budget}\n` +
-          `ðŸ“… *Timeline:* ${timeline}\n\n` +
+        body: `📋 *Quote Summary*\n\n` +
+          `🔧 *Service:* ${updatedData.serviceType || 'Not specified'}\n` +
+          `📝 *Details:* ${updatedData.description}\n` +
+          `💰 *Budget:* ${updatedData.budget}\n` +
+          `📅 *Timeline:* ${timeline}\n\n` +
           `We'll send the quote to this WhatsApp number. Shall we proceed?`,
         buttons: [
-          { id: 'ENQUIRY_CONFIRM', title: 'âœ… Yes, send quote' },
-          { id: 'CANCEL',          title: 'âŒ Cancel'          },
+          { id: 'ENQUIRY_CONFIRM', title: '✅ Yes, send quote' },
+          { id: 'CANCEL',          title: '❌ Cancel'          },
         ],
       };
     }
 
-    // â”€â”€ CONTACT_CONFIRM â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ── CONTACT_CONFIRM ──────────────────────────────────────────────────────
     case 'CONTACT_CONFIRM': {
-      // [FIX-DUALLAYER-CONFIRM] See core/shared/confirmationMatcher.js â€” was
+      // [FIX-DUALLAYER-CONFIRM] See core/shared/confirmationMatcher.js — was
       // exact-match-only, so a typed "yes please"/"go ahead" never registered.
       const { resolveConfirmation } = await import('../../../core/shared/confirmationMatcher.js');
       const verdict = await resolveConfirmation({
@@ -224,8 +224,8 @@ export async function handleEnquiryFlow({ session, message, business, tenant }) 
           type: 'buttons',
           body: 'Would you like us to send you a quote based on the details provided?',
           buttons: [
-            { id: 'ENQUIRY_CONFIRM', title: 'âœ… Yes, send it' },
-            { id: 'CANCEL',          title: 'âŒ Cancel'        },
+            { id: 'ENQUIRY_CONFIRM', title: '✅ Yes, send it' },
+            { id: 'CANCEL',          title: '❌ Cancel'        },
           ],
         };
       }
@@ -240,23 +240,23 @@ export async function handleEnquiryFlow({ session, message, business, tenant }) 
           quantity:      1,
           notes:         `Desc: ${data.description} | Budget: ${data.budget} | Timeline: ${data.timeline}`,
           status:        'pending',
-          // [FIX-SERVICES-1] businessId was missing â€” without it this quote-request record
+          // [FIX-SERVICES-1] businessId was missing — without it this quote-request record
           // has no link back to the BusinessConfig, breaking business-scoped admin views.
           businessId:    business._id,
         });
       } catch (err) {
         logger.warn('[Services] saveOrder failed for enquiry:', err.message);
         // [FIX-SAVE-ERR-SERVICES] Don't confirm a quote request that was never
-        // persisted â€” the admin alert below would also be misleading.
+        // persisted — the admin alert below would also be misleading.
         await updateSession(session.customerPhone, session.tenantId, {
           currentFlow: null, step: null, data: {},
         });
         return {
           type:    'buttons',
-          body:    `âš ï¸ *Something went wrong submitting your quote request.*\n\nPlease try again â€” tap below to start over.`,
+          body:    `⚠️ *Something went wrong submitting your quote request.*\n\nPlease try again — tap below to start over.`,
           buttons: [
-            { id: 'ENQUIRY', title: 'ðŸ“‹ Try Again'   },
-            { id: 'SUPPORT', title: 'ðŸ’¬ Contact Us'  },
+            { id: 'ENQUIRY', title: '📋 Try Again'   },
+            { id: 'SUPPORT', title: '💬 Contact Us'  },
           ],
         };
       }
@@ -269,12 +269,12 @@ export async function handleEnquiryFlow({ session, message, business, tenant }) 
           const { dispatchText } = await import('../../../core/whatsapp/dispatcher.js');
           await dispatchText(
             adminPhone,
-            `ðŸ”” *New Service Enquiry*\n\n` +
-            `ðŸ“ž From: ${session.customerPhone}\n` +
-            `ðŸ”§ Service: ${data.serviceType || 'Not specified'}\n` +
-            `ðŸ“ Details: ${data.description}\n` +
-            `ðŸ’° Budget: ${data.budget}\n` +
-            `ðŸ“… Timeline: ${data.timeline}`,
+            `🔔 *New Service Enquiry*\n\n` +
+            `📞 From: ${session.customerPhone}\n` +
+            `🔧 Service: ${data.serviceType || 'Not specified'}\n` +
+            `📝 Details: ${data.description}\n` +
+            `💰 Budget: ${data.budget}\n` +
+            `📅 Timeline: ${data.timeline}`,
             tenant,
           );
         } catch (err) {
@@ -283,17 +283,17 @@ export async function handleEnquiryFlow({ session, message, business, tenant }) 
       }
 
       // [FIX-1] Correct completeFlow signature: (session, completedFlow, business, tenant)
-      // [FIX-2] Capture return value â€” completeFlow may return a lead-capture UIResponse
+      // [FIX-2] Capture return value — completeFlow may return a lead-capture UIResponse
       const _lcRs = await completeFlow(session, 'ENQUIRY', business, tenant);
       if (_lcRs) return _lcRs;
 
       return {
         type: 'buttons',
-        body: `âœ… *Enquiry Received!*\n\nThank you! We've logged your enquiry and will be in touch with a personalised quote.\n\n` +
-          (adminPhone ? `You can also reach us directly: ðŸ“ž *${adminPhone}*` : 'We\'ll be in touch shortly.'),
+        body: `✅ *Enquiry Received!*\n\nThank you! We've logged your enquiry and will be in touch with a personalised quote.\n\n` +
+          (adminPhone ? `You can also reach us directly: 📞 *${adminPhone}*` : 'We\'ll be in touch shortly.'),
         buttons: [
-          { id: 'BOOK',    title: 'ðŸ“… Book a Call' },
-          { id: 'SHOW_MENU', title: 'ðŸ”„ Start Over' },
+          { id: 'BOOK',    title: '📅 Book a Call' },
+          { id: 'SHOW_MENU', title: '🔄 Start Over' },
         ],
       };
     }
@@ -304,13 +304,13 @@ export async function handleEnquiryFlow({ session, message, business, tenant }) 
   }
 }
 
-// â”€â”€ Booking Flow â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── Booking Flow ──────────────────────────────────────────────────────────────
 
 export async function handleServicesBooking({ session, message, business, tenant, isInteractive }) {
   return handleBookingFlow({ session, message, business, tenant, isInteractive });
 }
 
-// â”€â”€ Quote Follow-Up â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── Quote Follow-Up ───────────────────────────────────────────────────────────
 
 export async function handleQuoteFollowUp({ session, message, business, tenant }) {
   const adminPhone = business?.adminPhone;
@@ -319,19 +319,19 @@ export async function handleQuoteFollowUp({ session, message, business, tenant }
   if (_lcRqf) return _lcRqf;
   return {
     type: 'buttons',
-    body: 'ðŸ” *Quote Follow-Up*\n\nWe\'d love to help you track your quote!\n\n' +
+    body: '🔍 *Quote Follow-Up*\n\nWe\'d love to help you track your quote!\n\n' +
       (adminPhone
-        ? `Please reach out directly and we'll look it up right away:\nðŸ“ž *${adminPhone}*`
+        ? `Please reach out directly and we'll look it up right away:\n📞 *${adminPhone}*`
         : 'Please contact us directly and we\'ll pull up your quote immediately.'),
     buttons: [
-      { id: 'ENQUIRY',   title: 'ðŸ“‹ New Quote'     },
-      { id: 'BOOK',      title: 'ðŸ“… Book a Call'   },
-      { id: 'SHOW_MENU', title: 'ðŸ”„ Start Over'    },
+      { id: 'ENQUIRY',   title: '📋 New Quote'     },
+      { id: 'BOOK',      title: '📅 Book a Call'   },
+      { id: 'SHOW_MENU', title: '🔄 Start Over'    },
     ],
   };
 }
 
-// â”€â”€ AI Question Handler â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── AI Question Handler ───────────────────────────────────────────────────────
 
 export async function handleServicesQuestion({ session, message, business, tenant }) {
   const raw = String(message || '').trim();
@@ -339,7 +339,7 @@ export async function handleServicesQuestion({ session, message, business, tenan
   const reply = await processQuestionMessage({ session, message: raw, business, tenant, intent: 'SERVICES_QUESTION' });
   await persistQuestionSession(session, tenant, reply.context || { lastMessage: raw });
 
-  // Answer-only: stay in QUESTION mode and wait â€” no buttons. Switching activity
+  // Answer-only: stay in QUESTION mode and wait — no buttons. Switching activity
   // (e.g. asking for a quote, booking a consultation) is picked up upstream from
   // the customer's own words, not from a tap target.
   return {
@@ -348,7 +348,7 @@ export async function handleServicesQuestion({ session, message, business, tenan
   };
 }
 
-// â”€â”€ Helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── Helpers ───────────────────────────────────────────────────────────────────
 
 function _getServiceTypes(business) {
   // Use business's menu items as service categories if available
@@ -368,12 +368,12 @@ function _getServiceTypes(business) {
 
 function _askServiceType(business) {
   const serviceTypes = _getServiceTypes(business);
-  // [FIX-LIST-CAP-2] same as the INIT handler above â€” dispatcher.js hard-caps
+  // [FIX-LIST-CAP-2] same as the INIT handler above — dispatcher.js hard-caps
   // at 10 rows total (truncating with a footer hint past that), it does not
   // chunk into extra sections, so nothing needs pre-slicing here either.
   return {
     type: 'list',
-    body:   'ðŸ“‹ *Get a Quote*\n\nWhat type of service are you looking for?',
+    body:   '📋 *Get a Quote*\n\nWhat type of service are you looking for?',
     button: 'Choose service',
     sections: [{
       title: 'Service Types',

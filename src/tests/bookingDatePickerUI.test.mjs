@@ -11,7 +11,7 @@ import {
   parseDayId,
   parseMonthId,
   toDayId,
-} from '../services/bookingDatePickerUI.js';
+} from '../services/booking/bookingDatePickerUI.js';
 
 const TZ = 'Africa/Banjul';
 

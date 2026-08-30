@@ -1,15 +1,15 @@
-﻿/**
+/**
  * modules/bakery/flows/orderFlow.js
  *
- * BAKERY ORDER FLOW â€” dedicated, not a restaurant proxy.
+ * BAKERY ORDER FLOW — dedicated, not a restaurant proxy.
  *
  * Bakery-specific logic:
- *   â€¢ Collection vs delivery (not dine-in/table)
- *   â€¢ Pickup time slot selection (morning / afternoon batches)
- *   â€¢ Custom message notes (e.g. "wedding cake, write Happy Anniversary")
- *   â€¢ Payment via Wave/cash â€” same payment service as restaurant
+ *   • Collection vs delivery (not dine-in/table)
+ *   • Pickup time slot selection (morning / afternoon batches)
+ *   • Custom message notes (e.g. "wedding cake, write Happy Anniversary")
+ *   • Payment via Wave/cash — same payment service as restaurant
  *
- * Steps: SELECT_ITEM â†’ QUANTITY â†’ NOTES â†’ FULFILMENT â†’ PICKUP_TIME â†’ CONFIRM â†’ [PAYMENT?]
+ * Steps: SELECT_ITEM → QUANTITY → NOTES → FULFILMENT → PICKUP_TIME → CONFIRM → [PAYMENT?]
  */
 
 import { updateSession }  from '../../../core/sessions/sessionService.js';
@@ -37,20 +37,20 @@ export async function handleBakeryOrderFlow({ session, message, business, tenant
   const data  = session.data || {};
   const menu  = (business?.menuItems || []).filter(i => i.available !== false);
 
-  // â”€â”€ No menu â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // ── No menu ───────────────────────────────────────────────────────────────
   if (!menu.length) {
     await updateSession(session.customerPhone, session.tenantId, { currentFlow: null, step: null, data: {} });
     return {
       type:    'buttons',
-      body:    'ðŸ¥ Our menu is being updated â€” please check back soon or contact us directly.',
-      buttons: [{ id: 'SUPPORT', title: 'ðŸ’¬ Contact Us' }, { id: 'SHOW_MENU', title: 'ðŸ”„ Start Over' }],
+      body:    '🥐 Our menu is being updated — please check back soon or contact us directly.',
+      buttons: [{ id: 'SUPPORT', title: '💬 Contact Us' }, { id: 'SHOW_MENU', title: '🔄 Start Over' }],
     };
   }
 
-  // â”€â”€ INIT â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // ── INIT ──────────────────────────────────────────────────────────────────
   if (message === null) {
     // [FEAT-BAKERY-CATEGORY] Only shown when the tenant has 2+ distinct
-    // categories set (e.g. "Bread", "Cakes", "Pastries") â€” real data, not a
+    // categories set (e.g. "Bread", "Cakes", "Pastries") — real data, not a
     // forced step. Mirrors retail/fashion's exact pattern.
     const categories = _getCategories(menu);
     if (categories.length > 1) {
@@ -67,7 +67,7 @@ export async function handleBakeryOrderFlow({ session, message, business, tenant
 
   switch (step) {
 
-    // â”€â”€ BROWSE_CATEGORY â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ── BROWSE_CATEGORY ───────────────────────────────────────────────────────
     case 'BROWSE_CATEGORY': {
       const categories = _getCategories(menu);
       const catMatch = categories.find(c => raw.toUpperCase() === `CAT_${c.toUpperCase().replace(/\s+/g, '_')}`);
@@ -81,7 +81,7 @@ export async function handleBakeryOrderFlow({ session, message, business, tenant
         return _buildBakeryMenu(filtered, business, catMatch);
       }
       if (clean.length >= 2) {
-        // Typed text while browsing categories â€” recurse into SELECT_ITEM
+        // Typed text while browsing categories — recurse into SELECT_ITEM
         // with the same message so its existing fuzzy-match logic runs
         // unchanged instead of duplicating it here.
         await updateSession(session.customerPhone, session.tenantId, {
@@ -95,10 +95,10 @@ export async function handleBakeryOrderFlow({ session, message, business, tenant
       return _buildCategoryUI(categories, business);
     }
 
-    // â”€â”€ SELECT_ITEM â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ── SELECT_ITEM ──────────────────────────────────────────────────────────
     case 'SELECT_ITEM': {
       // [FEAT-BAKERY-CATEGORY] Scope numeric/interactive taps to the
-      // category-filtered list actually rendered â€” same fix class as
+      // category-filtered list actually rendered — same fix class as
       // [AUDIT-FIX-RETAIL-SCOPEDINDEX], applied here from the start.
       const scopedMenu = data.category
         ? menu.filter(i => (i.category || 'General') === data.category)
@@ -110,11 +110,11 @@ export async function handleBakeryOrderFlow({ session, message, business, tenant
       }
       if (clean.length < 2) return _buildBakeryMenu(scopedMenu, business, data.category || null);
 
-      // [CART-AI] Try multi-item parsing FIRST â€” "2 croissants and a loaf of
+      // [CART-AI] Try multi-item parsing FIRST — "2 croissants and a loaf of
       // bread" resolves to 2+ distinct menu lines and jumps straight to
       // CART_REVIEW. A normal single-item message ("croissant", "6 donuts")
       // never resolves 2+ lines, so this is a pure no-op for the vast
-      // majority of messages â€” the existing single-item path below runs
+      // majority of messages — the existing single-item path below runs
       // completely unchanged for those. Same pattern as restaurant/salon.
       const multi = parseMultiItemMessage(menu, raw);
       if (multi) {
@@ -125,12 +125,12 @@ export async function handleBakeryOrderFlow({ session, message, business, tenant
         });
         let note = buildUnmatchedNote(multi.unmatchedSegments);
         if (overflowCount > 0) {
-          note += `\n\n_(Your cart can hold up to ${business?.multiItemCart?.maxItems || 10} items â€” ${overflowCount} extra item${overflowCount > 1 ? 's were' : ' was'} left out.)_`;
+          note += `\n\n_(Your cart can hold up to ${business?.multiItemCart?.maxItems || 10} items — ${overflowCount} extra item${overflowCount > 1 ? 's were' : ' was'} left out.)_`;
         }
         return _buildBakeryCartSummaryUI(cappedCart, business, note);
       }
 
-      // [AUDIT-FIX-PARSEINT] parseInt("2 red buns", 10) === 2, NOT NaN â€” so any
+      // [AUDIT-FIX-PARSEINT] parseInt("2 red buns", 10) === 2, NOT NaN — so any
       // message merely STARTING with a digit silently hijacked the menu index
       // once menuViewed was true (the normal case). Only trust the parsed index
       // for a bare number or an interactive tap; everything else falls through
@@ -146,10 +146,10 @@ export async function handleBakeryOrderFlow({ session, message, business, tenant
         } else if (confidenceLevel === 'LOW' && matched) {
           return {
             type: 'buttons',
-            body: `Did you mean *${matched.name}*? ðŸ¥`,
+            body: `Did you mean *${matched.name}*? 🥐`,
             buttons: [
-              { id: 'CONFIRM',   title: `âœ… Yes, ${matched.name.slice(0, 15)}` },
-              { id: 'SHOW_MENU', title: 'ðŸ”„ Browse All'                         },
+              { id: 'CONFIRM',   title: `✅ Yes, ${matched.name.slice(0, 15)}` },
+              { id: 'SHOW_MENU', title: '🔄 Browse All'                         },
             ],
           };
         }
@@ -157,7 +157,7 @@ export async function handleBakeryOrderFlow({ session, message, business, tenant
 
       if (!item) return _buildBakeryMenu(scopedMenu, business, data.category || null);
 
-      const price = item.price ? ` â€” ${item.currency || 'D'}${formatMoney(item.price)}` : '';
+      const price = item.price ? ` — ${item.currency || 'D'}${formatMoney(item.price)}` : '';
       const desc  = item.description ? `\n_${item.description}_` : '';
       await updateSession(session.customerPhone, session.tenantId, {
         step: 'QUANTITY', data: { item }, menuViewed: true,
@@ -165,17 +165,17 @@ export async function handleBakeryOrderFlow({ session, message, business, tenant
 
       const qtyPrompt = {
         type: 'buttons',
-        body: `ðŸ§ *${item.name}*${price}${desc}\n\nHow many would you like?`,
+        body: `🧁 *${item.name}*${price}${desc}\n\nHow many would you like?`,
         buttons: [
-          { id: 'QTY_1', title: '1ï¸âƒ£  1' },
-          { id: 'QTY_2', title: '2ï¸âƒ£  2' },
-          { id: 'QTY_3', title: '3ï¸âƒ£  3' },
+          { id: 'QTY_1', title: '1️⃣  1' },
+          { id: 'QTY_2', title: '2️⃣  2' },
+          { id: 'QTY_3', title: '3️⃣  3' },
         ],
         footer: 'Or type any number e.g. 6, 12, 24',
       };
 
       // [FEAT-CATALOG-IMAGES] Same pattern as restaurant/retail/fashion/
-      // electronics/cosmetics â€” the tenant's uploaded photo is stored
+      // electronics/cosmetics — the tenant's uploaded photo is stored
       // correctly regardless of vertical, but bakery never sent it before.
       const imageUrl = item?.image?.url;
       if (imageUrl && item?.showImageOnSelect !== false) {
@@ -183,7 +183,7 @@ export async function handleBakeryOrderFlow({ session, message, business, tenant
           {
             type:    'image',
             url:     buildWhatsAppImageUrl(imageUrl),
-            caption: `*${item.name}*${item.price ? ` â€” ${item.currency || 'D'}${formatMoney(item.price)}` : ''}`,
+            caption: `*${item.name}*${item.price ? ` — ${item.currency || 'D'}${formatMoney(item.price)}` : ''}`,
           },
           qtyPrompt,
         ];
@@ -191,8 +191,8 @@ export async function handleBakeryOrderFlow({ session, message, business, tenant
       return qtyPrompt;
     }
 
-    // â”€â”€ CART_REVIEW â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-    // [CART-AI] Reached once data.cart has 2+ distinct items â€” either from a
+    // ── CART_REVIEW ───────────────────────────────────────────────────────────
+    // [CART-AI] Reached once data.cart has 2+ distinct items — either from a
     // single multi-item message (SELECT_ITEM above) or repeated additions.
     // Checkout skips the per-item QUANTITY step (each cart line already
     // carries its own quantity) and goes straight to NOTES.
@@ -210,10 +210,10 @@ export async function handleBakeryOrderFlow({ session, message, business, tenant
         });
         return {
           type: 'buttons',
-          body: `ðŸŽ‚ *Your Order:*\n\n${formatCartSummary(cart, business)}\n\nAny special message or notes for the whole order?\n_(e.g. "Write Happy Birthday Sara", "No nuts")_`,
+          body: `🎂 *Your Order:*\n\n${formatCartSummary(cart, business)}\n\nAny special message or notes for the whole order?\n_(e.g. "Write Happy Birthday Sara", "No nuts")_`,
           buttons: [
-            { id: 'NOTES_NONE', title: 'âœ… No special notes' },
-            { id: 'CANCEL',     title: 'âŒ Cancel'            },
+            { id: 'NOTES_NONE', title: '✅ No special notes' },
+            { id: 'CANCEL',     title: '❌ Cancel'            },
           ],
           footer: 'Or type your message/notes and send',
         };
@@ -225,7 +225,7 @@ export async function handleBakeryOrderFlow({ session, message, business, tenant
         return _buildBakeryMenu(menu, business, data.category || null);
       }
 
-      // [CART-AI-MODIFY] "remove the croissant" / "make it 6 donuts" â€”
+      // [CART-AI-MODIFY] "remove the croissant" / "make it 6 donuts" —
       // resolved against items ALREADY in the cart, checked before treating
       // the message as an attempt to add a brand-new item.
       const mod = parseCartModification(cart, raw);
@@ -256,16 +256,16 @@ export async function handleBakeryOrderFlow({ session, message, business, tenant
         await updateSession(session.customerPhone, session.tenantId, { data: { ...data, cart: cappedCart } });
         let note = multiAdd ? buildUnmatchedNote(multiAdd.unmatchedSegments) : '';
         if (overflowCount > 0) {
-          note += `\n\n_(Your cart can hold up to ${business?.multiItemCart?.maxItems || 10} items â€” ${overflowCount} extra item${overflowCount > 1 ? 's were' : ' was'} left out.)_`;
+          note += `\n\n_(Your cart can hold up to ${business?.multiItemCart?.maxItems || 10} items — ${overflowCount} extra item${overflowCount > 1 ? 's were' : ' was'} left out.)_`;
         }
         return _buildBakeryCartSummaryUI(cappedCart, business, note);
       }
 
       return _buildBakeryCartSummaryUI(cart, business,
-        `\n\n_(I didn't catch an item in that â€” try naming something, or tap Checkout/Add More.)_`);
+        `\n\n_(I didn't catch an item in that — try naming something, or tap Checkout/Add More.)_`);
     }
 
-    // â”€â”€ QUANTITY â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ── QUANTITY ──────────────────────────────────────────────────────────────
     case 'QUANTITY': {
       const QTY = { 'QTY_1': 1, 'QTY_2': 2, 'QTY_3': 3 };
       const qty = QTY[raw.toUpperCase()] ?? parseQuantity(raw);
@@ -274,11 +274,11 @@ export async function handleBakeryOrderFlow({ session, message, business, tenant
       if (!qty || qty < 1) {
         return {
           type:    'buttons',
-          body:    `ðŸ§ How many *${data.item?.name}* would you like?\n_(Enter a number, e.g. 1, 6, 12)_`,
+          body:    `🧁 How many *${data.item?.name}* would you like?\n_(Enter a number, e.g. 1, 6, 12)_`,
           buttons: [
-            { id: 'QTY_1', title: '1ï¸âƒ£  1'  },
-            { id: 'QTY_2', title: '2ï¸âƒ£  2'  },
-            { id: 'QTY_3', title: '3ï¸âƒ£  3'  },
+            { id: 'QTY_1', title: '1️⃣  1'  },
+            { id: 'QTY_2', title: '2️⃣  2'  },
+            { id: 'QTY_3', title: '3️⃣  3'  },
           ],
           footer: `Maximum: ${MAX}`,
         };
@@ -286,8 +286,8 @@ export async function handleBakeryOrderFlow({ session, message, business, tenant
       if (qty > MAX) {
         return {
           type:    'buttons',
-          body:    `âš ï¸ Maximum order is *${MAX}* per order. For bulk/wholesale orders please contact us directly.`,
-          buttons: [{ id: 'SUPPORT', title: 'ðŸ“ž Contact Us' }, { id: 'CANCEL', title: 'âŒ Cancel' }],
+          body:    `⚠️ Maximum order is *${MAX}* per order. For bulk/wholesale orders please contact us directly.`,
+          buttons: [{ id: 'SUPPORT', title: '📞 Contact Us' }, { id: 'CANCEL', title: '❌ Cancel' }],
         };
       }
 
@@ -297,16 +297,16 @@ export async function handleBakeryOrderFlow({ session, message, business, tenant
 
       return {
         type: 'buttons',
-        body: `ðŸŽ‚ *${qty}Ã— ${data.item?.name}*\n\nAny special message or notes?\n_(e.g. "Write Happy Birthday Sara", "No nuts", "Extra icing")_`,
+        body: `🎂 *${qty}× ${data.item?.name}*\n\nAny special message or notes?\n_(e.g. "Write Happy Birthday Sara", "No nuts", "Extra icing")_`,
         buttons: [
-          { id: 'NOTES_NONE', title: 'âœ… No special notes' },
-          { id: 'CANCEL',     title: 'âŒ Cancel'            },
+          { id: 'NOTES_NONE', title: '✅ No special notes' },
+          { id: 'CANCEL',     title: '❌ Cancel'            },
         ],
         footer: 'Or type your message/notes and send',
       };
     }
 
-    // â”€â”€ NOTES â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ── NOTES ─────────────────────────────────────────────────────────────────
     case 'NOTES': {
       const notes = raw.toUpperCase() === 'NOTES_NONE' ? null : raw;
 
@@ -316,15 +316,15 @@ export async function handleBakeryOrderFlow({ session, message, business, tenant
 
       return {
         type: 'buttons',
-        body: `ðŸ“¦ *How would you like to receive your order?*`,
+        body: `📦 *How would you like to receive your order?*`,
         buttons: [
-          { id: 'COLLECT',  title: 'ðŸª Collect In-Store' },
-          { id: 'DELIVERY', title: 'ðŸšš Home Delivery'     },
+          { id: 'COLLECT',  title: '🏪 Collect In-Store' },
+          { id: 'DELIVERY', title: '🚚 Home Delivery'     },
         ],
       };
     }
 
-    // â”€â”€ FULFILMENT â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ── FULFILMENT ────────────────────────────────────────────────────────────
     case 'FULFILMENT': {
       const isDelivery = raw.toUpperCase() === 'DELIVERY';
       const isCollect  = raw.toUpperCase() === 'COLLECT';
@@ -332,10 +332,10 @@ export async function handleBakeryOrderFlow({ session, message, business, tenant
       if (!isDelivery && !isCollect) {
         return {
           type: 'buttons',
-          body: 'ðŸ“¦ Would you like to collect in-store or have it delivered?',
+          body: '📦 Would you like to collect in-store or have it delivered?',
           buttons: [
-            { id: 'COLLECT',  title: 'ðŸª Collect In-Store' },
-            { id: 'DELIVERY', title: 'ðŸšš Home Delivery'     },
+            { id: 'COLLECT',  title: '🏪 Collect In-Store' },
+            { id: 'DELIVERY', title: '🚚 Home Delivery'     },
           ],
         };
       }
@@ -346,26 +346,26 @@ export async function handleBakeryOrderFlow({ session, message, business, tenant
         });
         return {
           type:    'buttons',
-          body:    `ðŸ“ *Delivery Address*\n\nPlease type your full delivery address.\n\n_Include: street, area, and a landmark._`,
-          buttons: [{ id: 'CANCEL', title: 'âŒ Cancel' }],
+          body:    `📍 *Delivery Address*\n\nPlease type your full delivery address.\n\n_Include: street, area, and a landmark._`,
+          buttons: [{ id: 'CANCEL', title: '❌ Cancel' }],
           footer:  'Type address and send',
         };
       }
 
-      // Collect â€” pick a time slot
+      // Collect — pick a time slot
       await updateSession(session.customerPhone, session.tenantId, {
         step: 'PICKUP_TIME', data: { ...data, fulfilment: 'Collection' },
       });
       return _buildPickupTimeUI(business);
     }
 
-    // â”€â”€ DELIVERY_ADDRESS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ── DELIVERY_ADDRESS ──────────────────────────────────────────────────────
     case 'DELIVERY_ADDRESS': {
       if (!raw || raw.length < 5) {
         return {
           type:    'buttons',
-          body:    'ðŸ“ Please provide a valid delivery address.',
-          buttons: [{ id: 'CANCEL', title: 'âŒ Cancel' }],
+          body:    '📍 Please provide a valid delivery address.',
+          buttons: [{ id: 'CANCEL', title: '❌ Cancel' }],
         };
       }
       await updateSession(session.customerPhone, session.tenantId, {
@@ -374,12 +374,12 @@ export async function handleBakeryOrderFlow({ session, message, business, tenant
       return _buildPickupTimeUI(business);
     }
 
-    // â”€â”€ PICKUP_TIME â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ── PICKUP_TIME ───────────────────────────────────────────────────────────
     case 'PICKUP_TIME': {
       const SLOT_MAP = {
-        'SLOT_MORNING':   'Morning (8am â€“ 12pm)',
-        'SLOT_AFTERNOON': 'Afternoon (12pm â€“ 4pm)',
-        'SLOT_EVENING':   'Evening (4pm â€“ 7pm)',
+        'SLOT_MORNING':   'Morning (8am – 12pm)',
+        'SLOT_AFTERNOON': 'Afternoon (12pm – 4pm)',
+        'SLOT_EVENING':   'Evening (4pm – 7pm)',
         'SLOT_TOMORROW':  'Tomorrow (any time)',
       };
 
@@ -407,31 +407,31 @@ export async function handleBakeryOrderFlow({ session, message, business, tenant
         step: 'CONFIRM', data: { ...data, pickupTime: slot, totalPrice: total },
       });
 
-      const notesLine   = notes   ? `\nðŸ“ *Notes:* ${notes}` : '';
-      const addressLine = address ? `\nðŸ“ *Deliver to:* ${address}` : '';
+      const notesLine   = notes   ? `\n📝 *Notes:* ${notes}` : '';
+      const addressLine = address ? `\n📍 *Deliver to:* ${address}` : '';
       const currency    = business?.payment?.currency || 'D';
-      const totalLine   = total  != null ? `\nðŸ’° *Total:* ${currency}${formatMoney(total)}` : '';
-      const itemsBlock  = isCart ? `ðŸ§ ${formatCartSummary(cart, business).replace(/\n/g, '\nðŸ§ ')}` : `ðŸ§ *${qty}Ã— ${itemLabel(item, data.variant)}*`;
+      const totalLine   = total  != null ? `\n💰 *Total:* ${currency}${formatMoney(total)}` : '';
+      const itemsBlock  = isCart ? `🧁 ${formatCartSummary(cart, business).replace(/\n/g, '\n🧁 ')}` : `🧁 *${qty}× ${itemLabel(item, data.variant)}*`;
 
       return {
         type: 'buttons',
         body:
-          `ðŸ§¾ *Order Summary*\n\n` +
+          `🧾 *Order Summary*\n\n` +
           `${itemsBlock}\n` +
-          `ðŸ“¦ *${method}*` +
+          `📦 *${method}*` +
           addressLine +
-          `\nâ° *${method === 'Delivery' ? 'Delivery' : 'Collection'} Time:* ${slot}` +
+          `\n⏰ *${method === 'Delivery' ? 'Delivery' : 'Collection'} Time:* ${slot}` +
           notesLine +
           totalLine +
           `\n\nReady to confirm?`,
         buttons: [
-          { id: 'CONFIRM', title: 'âœ… Confirm Order' },
-          { id: 'CANCEL',  title: 'âŒ Cancel'         },
+          { id: 'CONFIRM', title: '✅ Confirm Order' },
+          { id: 'CANCEL',  title: '❌ Cancel'         },
         ],
       };
     }
 
-    // â”€â”€ CONFIRM â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ── CONFIRM ───────────────────────────────────────────────────────────────
     // [FIX-DUALLAYER-CONFIRM] Was exact-match-only ('CONFIRM'/'YES' strings),
     // so a typed "yes please" / "sure, confirm it" / "go ahead" silently
     // failed and just re-showed this same prompt. resolveConfirmation() adds
@@ -444,10 +444,10 @@ export async function handleBakeryOrderFlow({ session, message, business, tenant
       if (verdict !== 'yes') {
         return {
           type:    'buttons',
-          body:    'ðŸ§ Ready to place your bakery order?',
+          body:    '🧁 Ready to place your bakery order?',
           buttons: [
-            { id: 'CONFIRM', title: 'âœ… Confirm Order' },
-            { id: 'CANCEL',  title: 'âŒ Cancel'         },
+            { id: 'CONFIRM', title: '✅ Confirm Order' },
+            { id: 'CANCEL',  title: '❌ Cancel'         },
           ],
         };
       }
@@ -461,9 +461,9 @@ export async function handleBakeryOrderFlow({ session, message, business, tenant
           tenantId:      session.tenantId,
           customerPhone: session.customerPhone,
           customerName:  session.customerName,
-          // [CART-AI] Multi-item cart â†’ items[]; orderService.resolveOrderFields()
+          // [CART-AI] Multi-item cart → items[]; orderService.resolveOrderFields()
           // mirrors items[0] into item/quantity/addOns for backward-compat readers.
-          // Single-item order (no cart) â†’ exactly the pre-existing shape.
+          // Single-item order (no cart) → exactly the pre-existing shape.
           ...(isCart
             ? { items: cartToOrderItems(cart), totalPrice: cartTotal(cart) }
             : {
@@ -485,17 +485,17 @@ export async function handleBakeryOrderFlow({ session, message, business, tenant
       } catch (err) {
         logger.error('[BakeryOrder] saveOrder failed', { err: err.message });
         // [FIX-SAVE-ERR-BAKERY] If we couldn't persist the order, do NOT proceed to
-        // payment instructions or AWAIT_ADMIN_CONFIRM â€” the customer would be told the
+        // payment instructions or AWAIT_ADMIN_CONFIRM — the customer would be told the
         // order was received when nothing was saved. Clear the flow and let them retry.
         await updateSession(session.customerPhone, session.tenantId, {
           currentFlow: null, step: null, data: {},
         });
         return {
           type:    'buttons',
-          body:    `âš ï¸ *Something went wrong saving your order.*\n\nPlease try again â€” tap below to start over.`,
+          body:    `⚠️ *Something went wrong saving your order.*\n\nPlease try again — tap below to start over.`,
           buttons: [
-            { id: 'ORDER',    title: 'ðŸ›’ Try Again'   },
-            { id: 'SUPPORT',  title: 'ðŸ’¬ Contact Us'  },
+            { id: 'ORDER',    title: '🛒 Try Again'   },
+            { id: 'SUPPORT',  title: '💬 Contact Us'  },
           ],
         };
       }
@@ -529,31 +529,31 @@ export async function handleBakeryOrderFlow({ session, message, business, tenant
       // to dispatchMessage with APPROVE_/REJECT_ buttons so admin can confirm/cancel
       // with a single tap instead of typing commands. Also parks session at
       // AWAIT_ADMIN_CONFIRM so the customer cannot place a duplicate order before
-      // the admin acts â€” mirrors the restaurant/electronics pattern.
+      // the admin acts — mirrors the restaurant/electronics pattern.
       try {
         const adminPhone = business?.adminPhone || tenant?.adminPhone;
         if (adminPhone && tenant && savedOrder) {
           const { dispatchMessage } = await import('../../../core/whatsapp/dispatcher.js');
           const currency    = business?.payment?.currency || 'D';
-          const notesLine   = data.notes          ? `\nðŸ“ Notes: ${data.notes}`             : '';
-          const addressLine = data.deliveryAddress ? `\nðŸ“ Address: ${data.deliveryAddress}` : '';
-          const totalLine   = data.totalPrice      ? `\nðŸ’° Total: *${currency}${formatMoney(data.totalPrice)}*` : '';
+          const notesLine   = data.notes          ? `\n📝 Notes: ${data.notes}`             : '';
+          const addressLine = data.deliveryAddress ? `\n📍 Address: ${data.deliveryAddress}` : '';
+          const totalLine   = data.totalPrice      ? `\n💰 Total: *${currency}${formatMoney(data.totalPrice)}*` : '';
           const itemsLine   = isCart
-            ? `ðŸ§ ${formatCartSummary(cart, business).replace(/\n/g, '\nðŸ§ ')}\n`
-            : `ðŸ§ *${data.quantity}Ã— ${itemLabel(data.item, data.variant)}*\n`;
+            ? `🧁 ${formatCartSummary(cart, business).replace(/\n/g, '\n🧁 ')}\n`
+            : `🧁 *${data.quantity}× ${itemLabel(data.item, data.variant)}*\n`;
           await dispatchMessage(adminPhone, {
             type: 'buttons',
             body:
-              `ðŸ”” *New Bakery Order â€” ${business?.name || 'Bakery'}*\n\n` +
-              `ðŸ“ž Customer: *${session.customerPhone}*\n` +
+              `🔔 *New Bakery Order — ${business?.name || 'Bakery'}*\n\n` +
+              `📞 Customer: *${session.customerPhone}*\n` +
               itemsLine +
-              `ðŸ“¦ Fulfilment: *${data.fulfilment || 'Collection'}*\n` +
-              `â° Time: *${data.pickupTime || 'ASAP'}*` +
+              `📦 Fulfilment: *${data.fulfilment || 'Collection'}*\n` +
+              `⏰ Time: *${data.pickupTime || 'ASAP'}*` +
               addressLine + notesLine + totalLine +
-              `\nðŸ”– Ref: \`${savedOrder?.shortId || 'N/A'}\``,
+              `\n🔖 Ref: \`${savedOrder?.shortId || 'N/A'}\``,
             buttons: [
-              { id: `APPROVE_${savedOrder.shortId}`, title: 'âœ… Confirm Order' },
-              { id: `REJECT_${savedOrder.shortId}`,  title: 'âŒ Cancel Order'  },
+              { id: `APPROVE_${savedOrder.shortId}`, title: '✅ Confirm Order' },
+              { id: `REJECT_${savedOrder.shortId}`,  title: '❌ Cancel Order'  },
             ],
           }, tenant).catch(e => logger.warn('[BakeryOrder] admin notify failed', { err: e.message }));
         }
@@ -566,11 +566,11 @@ export async function handleBakeryOrderFlow({ session, message, business, tenant
         data.totalPrice || 0,
         session.tenantId,
       ).catch(() => {});
-      // [AUDIT-FIX-4] recordRevenue() moved to adminCommandService.confirmPayment() â€”
+      // [AUDIT-FIX-4] recordRevenue() moved to adminCommandService.confirmPayment() —
       // recording it here at placement time counted unconfirmed/later-rejected orders
       // as revenue. See adminCommandService.js AUDIT-FIX-4 for full rationale.
 
-      // Park session â€” customer waits for admin confirmation before placing another order
+      // Park session — customer waits for admin confirmation before placing another order
       await updateSession(session.customerPhone, session.tenantId, {
         step: 'AWAIT_ADMIN_CONFIRM', currentFlow: 'ORDER',
         data: { ...data },
@@ -579,13 +579,13 @@ export async function handleBakeryOrderFlow({ session, message, business, tenant
       return {
         type: 'text',
         body:
-          `âœ… *Order Received!* ðŸ¥\n\n` +
+          `✅ *Order Received!* 🥐\n\n` +
           (isCart
             ? `${formatCartSummary(cart, business)}\n`
-            : `ðŸ§ *${data.quantity}Ã— ${itemLabel(data.item, data.variant)}*\n`) +
-          `ðŸ“¦ ${data.fulfilment || 'Collection'} â€” ${data.pickupTime || 'ASAP'}\n` +
-          (data.notes ? `ðŸ“ ${data.notes}\n` : '') +
-          `\nâ³ Our team will confirm your order shortly. Please wait for confirmation before placing a new one. ðŸ™`,
+            : `🧁 *${data.quantity}× ${itemLabel(data.item, data.variant)}*\n`) +
+          `📦 ${data.fulfilment || 'Collection'} — ${data.pickupTime || 'ASAP'}\n` +
+          (data.notes ? `📝 ${data.notes}\n` : '') +
+          `\n⏳ Our team will confirm your order shortly. Please wait for confirmation before placing a new one. 🙏`,
       };
     }
 
@@ -595,18 +595,18 @@ export async function handleBakeryOrderFlow({ session, message, business, tenant
   }
 }
 
-// â”€â”€ UI Helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── UI Helpers ────────────────────────────────────────────────────────────────
 
 function _buildBakeryCartSummaryUI(cart, business, note = '') {
   const currency = business?.payment?.currency || 'D';
   const total = cartTotal(cart);
   return {
     type: 'buttons',
-    body: `ðŸ§¾ *Your Order*\n\n${formatCartSummary(cart, business)}${total != null ? `\n\nðŸ’° Total: *${currency}${formatMoney(total)}*` : ''}${note}\n\nReady to checkout, or add something else?`,
+    body: `🧾 *Your Order*\n\n${formatCartSummary(cart, business)}${total != null ? `\n\n💰 Total: *${currency}${formatMoney(total)}*` : ''}${note}\n\nReady to checkout, or add something else?`,
     buttons: [
-      { id: 'CONFIRM',          title: 'âœ… Checkout'  },
+      { id: 'CONFIRM',          title: '✅ Checkout'  },
       { id: 'ADD_ANOTHER_ITEM', title: 'âž• Add More'   },
-      { id: 'CANCEL',           title: 'âŒ Cancel'     },
+      { id: 'CANCEL',           title: '❌ Cancel'     },
     ],
   };
 }
@@ -618,22 +618,22 @@ function _getCategories(menu) {
 function _buildCategoryUI(categories, business) {
   const name = business?.businessName || business?.name || 'Bakery';
   // Single "Categories" section capped at 9 rows + one reserved "Browse All"
-  // row â€” mirrors retail's _buildCategoryUI cap.
+  // row — mirrors retail's _buildCategoryUI cap.
   const shown    = categories.slice(0, 9);
   const overflow = categories.length > 9;
   return {
     type:   'list',
-    body:   `ðŸ¥ *${name}*\n\nWhat would you like today?`,
+    body:   `🥐 *${name}*\n\nWhat would you like today?`,
     button: 'Choose category',
     sections: [{
       title: 'Categories',
       rows: shown.map(c => ({
         id:    `CAT_${c.toUpperCase().replace(/\s+/g, '_')}`,
         title: c,
-      })).concat([{ id: 'SHOW_MENU', title: 'ðŸ“‹ Browse All' }]),
+      })).concat([{ id: 'SHOW_MENU', title: '📋 Browse All' }]),
     }],
     footer: overflow
-      ? `Showing ${shown.length} of ${categories.length} categories â€” tap "Browse All" or type what you're looking for`
+      ? `Showing ${shown.length} of ${categories.length} categories — tap "Browse All" or type what you're looking for`
       : 'Tap a category or type what you\'re looking for',
   };
 }
@@ -643,13 +643,13 @@ function _buildBakeryMenu(menu, business, category = null) {
   if (!menu.length) {
     return {
       type:    'buttons',
-      body:    `ðŸ¥ *${name}*\n\nOur menu is being updated. Please check back soon!`,
-      buttons: [{ id: 'SUPPORT', title: 'ðŸ’¬ Contact Us' }],
+      body:    `🥐 *${name}*\n\nOur menu is being updated. Please check back soon!`,
+      buttons: [{ id: 'SUPPORT', title: '💬 Contact Us' }],
     };
   }
-  // [FIX-LIST-CAP-2] No build-time slice needed here â€” dispatcher.js now
+  // [FIX-LIST-CAP-2] No build-time slice needed here — dispatcher.js now
   // hard-caps the OUTGOING message at Meta's real limit of 10 rows TOTAL
-  // across all sections (not 10/section as previously assumed here â€” that
+  // across all sections (not 10/section as previously assumed here — that
   // assumption caused production 400s: "Total row count exceed max
   // allowed count: 10"). If this list has more than 10 items, the
   // dispatcher truncates and adds a footer hint; consider category
@@ -661,12 +661,12 @@ function _buildBakeryMenu(menu, business, category = null) {
     description: [
       item.description?.slice(0, 40),
       item.price ? `${item.currency || 'D'}${formatMoney(item.price)}` : null,
-    ].filter(Boolean).join(' â€” ').slice(0, 72) || undefined,
+    ].filter(Boolean).join(' — ').slice(0, 72) || undefined,
   }));
   return {
     type:   'list',
-    header: category ? `ðŸ¥ ${category}` : `ðŸ¥ ${name}`,
-    body:   'Fresh baked daily â€” what would you like?',
+    header: category ? `🥐 ${category}` : `🥐 ${name}`,
+    body:   'Fresh baked daily — what would you like?',
     button: 'View Menu',
     rows,
   };
@@ -675,15 +675,15 @@ function _buildBakeryMenu(menu, business, category = null) {
 function _buildPickupTimeUI(business) {
   return {
     type:   'list',
-    body:   `â° *When would you like it?*`,
+    body:   `⏰ *When would you like it?*`,
     button: 'Choose time',
     sections: [{
       title: 'Collection / Delivery Window',
       rows: [
-        { id: 'SLOT_MORNING',   title: 'ðŸŒ… Morning',    description: '8:00 AM â€“ 12:00 PM'  },
-        { id: 'SLOT_AFTERNOON', title: 'â˜€ï¸ Afternoon',  description: '12:00 PM â€“ 4:00 PM'  },
-        { id: 'SLOT_EVENING',   title: 'ðŸŒ† Evening',    description: '4:00 PM â€“ 7:00 PM'   },
-        { id: 'SLOT_TOMORROW',  title: 'ðŸ“… Tomorrow',   description: 'Any time tomorrow'    },
+        { id: 'SLOT_MORNING',   title: '🌅 Morning',    description: '8:00 AM – 12:00 PM'  },
+        { id: 'SLOT_AFTERNOON', title: '☀️ Afternoon',  description: '12:00 PM – 4:00 PM'  },
+        { id: 'SLOT_EVENING',   title: '🌆 Evening',    description: '4:00 PM – 7:00 PM'   },
+        { id: 'SLOT_TOMORROW',  title: '📅 Tomorrow',   description: 'Any time tomorrow'    },
       ],
     }],
     footer: 'Or type a specific time e.g. "10am today"',

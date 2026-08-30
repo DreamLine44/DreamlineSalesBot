@@ -1,5 +1,5 @@
-﻿/**
- * controllers/dashboardController.js â€” WhatSalesAgent (Final Merged)
+/**
+ * controllers/dashboardController.js — WhatSalesAgent (Final Merged)
  *
  * FIXES applied:
  *
@@ -9,7 +9,7 @@
  *
  * [FIX-6b]   updateBookingStatus notifies customer on confirm/cancel/complete.
  *
- * [FIX-9]    Status enum validation on both update endpoints â€” previously an invalid
+ * [FIX-9]    Status enum validation on both update endpoints — previously an invalid
  *            status caused an unhandled Mongoose ValidationError (raw 500 stack trace).
  *
  * [FIX #11]  updateBookingStatus: when date or time changes, clear parsedDate AND
@@ -17,7 +17,7 @@
  *            V1 nulled both unconditionally; V2 only nulled reminderSentAt and
  *            conditionally forwarded parsedDate from the request body.
  *            Correct behaviour: null both parsedDate and reminderSentAt on any
- *            date/time change â€” the scheduler will re-parse the new date itself.
+ *            date/time change — the scheduler will re-parse the new date itself.
  *
  * [FIX-4]    deleteMenuItem / deleteService / deleteFaq all check modifiedCount.
  *            $pull is a no-op when the subdocument ID doesn't exist; previously
@@ -28,7 +28,7 @@
  * [MERGED]   Full Menu / Services / FAQ CRUD available on dashboard routes.
  *            V2 only had these under /business/:tenantId.
  *
- * [MERGED]   getCustomerOrderHistory â€” returns last N orders for a customer phone.
+ * [MERGED]   getCustomerOrderHistory — returns last N orders for a customer phone.
  */
 
 import crypto          from 'crypto';
@@ -49,8 +49,8 @@ import { formatOrderItemsForMessage } from '../services/order/orderService.js';
 // [AUDIT-FIX-9] User-supplied search strings were interpolated directly into
 // $regex filters (getCustomers below, and the equivalent pattern in
 // tenantController.listTenants). Two real problems: (1) a search containing
-// a regex metacharacter that isn't a valid standalone pattern â€” e.g. a phone
-// number search like "+220..." starts with an unescaped quantifier â€” throws
+// a regex metacharacter that isn't a valid standalone pattern — e.g. a phone
+// number search like "+220..." starts with an unescaped quantifier — throws
 // a MongoDB regex-compile error and 500s the request for an entirely
 // legitimate query; (2) a crafted pattern (e.g. nested quantifiers) can
 // trigger catastrophic backtracking against every document field scanned,
@@ -62,12 +62,12 @@ function escapeRegex(str) {
 }
 import { uploadMenuImage, deleteMenuImage, CLOUDINARY_ENABLED } from '../config/cloudinary.js';
 
-// â”€â”€ Helper: load tenant doc for WhatsApp dispatch â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── Helper: load tenant doc for WhatsApp dispatch ─────────────────────────────
 async function loadTenant(tenantId) {
   return Tenant.findById(tenantId).lean().catch(() => null);
 }
 
-// â”€â”€ Overview â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── Overview ──────────────────────────────────────────────────────────────────
 export async function getDashboardOverview(req, res) {
   try {
     const { tenantId } = req.params;
@@ -82,7 +82,7 @@ export async function getDashboardOverview(req, res) {
       BusinessConfig.findOne({ tenantId }).select('name businessMode adminPhone').lean(),
       // [AUDIT-FIX-USAGE-WIRE] getTenantUsageSummary() was built specifically
       // "for the dashboard overview" per its own doc comment, but nothing ever
-      // called it â€” plan/limits/usage were invisible to every tenant. Folded
+      // called it — plan/limits/usage were invisible to every tenant. Folded
       // in here alongside the other overview reads.
       getTenantUsageSummary(tenantId).catch(() => null),
     ]);
@@ -99,12 +99,12 @@ export async function getDashboardOverview(req, res) {
   }
 }
 
-// â”€â”€ Orders â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── Orders ────────────────────────────────────────────────────────────────────
 export async function getOrders(req, res) {
   try {
     const { tenantId } = req.params;
     const { status } = req.query;
-    // Cap at 200 â€” matches the admin sessions endpoint. Prevents a caller passing
+    // Cap at 200 — matches the admin sessions endpoint. Prevents a caller passing
     // limit=100000 from triggering a full collection scan on a large tenant.
     const limit  = Math.min(Math.max(Number(req.query.limit)  || 50, 1), 200);
     const page   = Math.max(Number(req.query.page) || 1, 1);
@@ -145,12 +145,12 @@ export async function updateOrderStatus(req, res) {
           status,
           ...(notes ? { notes } : {}),
           // [FIX-DASH-6] When an order is rolled back to 'pending' the old paymentReference
-          // is stale â€” it pointed to the previous payment cycle. Clear it so a new reference
+          // is stale — it pointed to the previous payment cycle. Clear it so a new reference
           // is generated when the customer is shown payment instructions again. Without this
           // the scheduler / payment instructions UI would continue to display the old ref.
           ...(status === 'pending' ? { paymentReference: null } : {}),
           ...(status === 'confirmed' ? { abandonedCartAt: null } : {}),
-          // [FIX-32] Clear abandonedCartAt on completion/cancellation â€” order is no longer
+          // [FIX-32] Clear abandonedCartAt on completion/cancellation — order is no longer
           // "abandoned" regardless of outcome. Without this, the scheduler job could send
           // a follow-up nudge for an order that was already completed or cancelled.
           ...(status === 'completed' || status === 'cancelled' || status === 'rejected' ? { abandonedCartAt: null } : {}),
@@ -166,7 +166,7 @@ export async function updateOrderStatus(req, res) {
     );
     if (!order) return res.status(404).json({ error: 'Order not found' });
 
-    // [FIX-6a] Notify customer â€” all significant status transitions
+    // [FIX-6a] Notify customer — all significant status transitions
     try {
       const tenant = await loadTenant(tenantId);
       if (tenant && order.customerPhone) {
@@ -176,24 +176,24 @@ export async function updateOrderStatus(req, res) {
 
         if (status === 'preparing') {
           await dispatchText(order.customerPhone,
-            `ðŸ³ *Your order is being prepared!*\n\n` +
+            `🍳 *Your order is being prepared!*\n\n` +
             `${itemsBlock}\n` +
-            `ðŸ”–  Reference: *#${order.shortId}*\n\n` +
-            `Our kitchen is working on it â€” we'll message you the moment it's ready. ðŸ˜Š`,
+            `🔖  Reference: *#${order.shortId}*\n\n` +
+            `Our kitchen is working on it — we'll message you the moment it's ready. 😊`,
             tenant);
 
         } else if (status === 'ready') {
           await dispatchMessage(order.customerPhone, {
             type: 'buttons',
             body:
-              `ðŸ½ï¸ *Your Order is Ready!*\n\n` +
+              `🍽️ *Your Order is Ready!*\n\n` +
               `${itemsBlock}\n` +
-              `ðŸ”–  Reference: *#${order.shortId}*\n\n` +
-              `Please collect your order at the counter ðŸ˜Š\n\n` +
+              `🔖  Reference: *#${order.shortId}*\n\n` +
+              `Please collect your order at the counter 😊\n\n` +
               `Thank you for choosing *${bizName}*!`,
             buttons: [
-              { id: `COLLECTED_${order.shortId}`, title: 'âœ… Collected â€” Thanks!' },
-              { id: 'SUPPORT',                     title: 'â“ Need Help'           },
+              { id: `COLLECTED_${order.shortId}`, title: '✅ Collected — Thanks!' },
+              { id: 'SUPPORT',                     title: '❓ Need Help'           },
             ],
           }, tenant);
 
@@ -210,12 +210,12 @@ export async function updateOrderStatus(req, res) {
           await dispatchMessage(order.customerPhone, {
             type: 'buttons',
             body:
-              `ðŸš— *Your order is on its way!*\n\n` +
+              `🚗 *Your order is on its way!*\n\n` +
               `${itemsBlock}\n` +
-              `ðŸ”–  Reference: *#${order.shortId}*\n\n` +
-              `Sit tight â€” your delivery is en route! ðŸ™`,
+              `🔖  Reference: *#${order.shortId}*\n\n` +
+              `Sit tight — your delivery is en route! 🙏`,
             buttons: [
-              { id: 'SUPPORT', title: 'ðŸ’¬ Contact Us' },
+              { id: 'SUPPORT', title: '💬 Contact Us' },
             ],
           }, tenant);
 
@@ -229,7 +229,7 @@ export async function updateOrderStatus(req, res) {
             },
           }).catch(() => {});
           await dispatchText(order.customerPhone,
-            `âœ… *Your order is confirmed!*\n\n${itemsBlock}\n\nThank you for your patience! ðŸ˜Š`,
+            `✅ *Your order is confirmed!*\n\n${itemsBlock}\n\nThank you for your patience! 😊`,
             tenant);
         } else if (status === 'cancelled' || status === 'rejected') {
           // [FIX-23] Set postFlowAck=ORDER_REJECTED so customer follow-up ("ok", "why?")
@@ -240,11 +240,11 @@ export async function updateOrderStatus(req, res) {
             postFlowData: { item: order.item, shortId: order.shortId, rejectReason: notes || null },
           }).catch(() => {});
           await dispatchText(order.customerPhone,
-            `âŒ *Order update*\n\nUnfortunately your order (*${order.item}*) has been ${status}.${notes ? `\n\nNote: ${notes}` : ''}\n\nPlease contact us if you have questions.`,
+            `❌ *Order update*\n\nUnfortunately your order (*${order.item}*) has been ${status}.${notes ? `\n\nNote: ${notes}` : ''}\n\nPlease contact us if you have questions.`,
             tenant);
         } else if (status === 'completed') {
           await dispatchText(order.customerPhone,
-            `ðŸŽ‰ *Order completed!*\n\nYour order of *${order.item}* is done. Enjoy! ðŸ˜Š`,
+            `🎉 *Order completed!*\n\nYour order of *${order.item}* is done. Enjoy! 😊`,
             tenant);
         }
       }
@@ -259,7 +259,7 @@ export async function updateOrderStatus(req, res) {
   }
 }
 
-// Customer order history â€” last N orders for a phone number
+// Customer order history — last N orders for a phone number
 export async function getCustomerOrderHistory(req, res) {
   try {
     const { tenantId, customerPhone } = req.params;
@@ -274,23 +274,23 @@ export async function getCustomerOrderHistory(req, res) {
 }
 
 /**
- * notifyOrderReady â€” POST /:tenantId/orders/:orderId/notify-ready
+ * notifyOrderReady — POST /:tenantId/orders/:orderId/notify-ready
  *
  * [FIX-NOTIFY-READY-ENDPOINT] Dedicated endpoint for the dashboard "Notify Ready" button.
  *
- * The dashboard needs a clear, explicit action button: admin clicks "Order Ready â€” Notify
+ * The dashboard needs a clear, explicit action button: admin clicks "Order Ready — Notify
  * Customer" and the customer gets the WhatsApp collection message with Collected + Help buttons.
  *
  * This is separate from updateOrderStatus so:
  *  1. The admin can re-send the ready notification without changing status (e.g. customer
  *     missed the first message).
- *  2. The frontend can show a clearly labelled button ("ðŸ“² Notify Customer â€” Ready")
+ *  2. The frontend can show a clearly labelled button ("📲 Notify Customer — Ready")
  *     instead of relying on a hidden side-effect of the status dropdown.
  *  3. Mirrors adminCommandService.markOrderReady() so dashboard and WhatsApp-command
  *     paths produce an identical customer experience.
  *
  * Behaviour:
- *  - Sets status â†’ 'ready' and readyAt if not already ready.
+ *  - Sets status → 'ready' and readyAt if not already ready.
  *  - Dispatches the collection WhatsApp message with Collected + Need Help buttons.
  *  - Sets session postFlowAck=ORDER_READY so postFlowHandler handles follow-ups correctly.
  *  - Returns { ok: true, order } on success.
@@ -315,7 +315,7 @@ export async function notifyOrderReady(req, res) {
     if (!order) {
       const existing = await Order.findOne({ _id: orderId, tenantId }).select('status').lean();
       if (!existing) return res.status(404).json({ error: 'Order not found' });
-      return res.status(400).json({ error: `Cannot notify ready â€” order is already ${existing.status}.` });
+      return res.status(400).json({ error: `Cannot notify ready — order is already ${existing.status}.` });
     }
 
     const tenant = await loadTenant(tenantId);
@@ -329,14 +329,14 @@ export async function notifyOrderReady(req, res) {
       await dispatchMessage(order.customerPhone, {
         type: 'buttons',
         body:
-          `ðŸ½ï¸ *Your Order is Ready!*\n\n` +
+          `🍽️ *Your Order is Ready!*\n\n` +
           `${itemsBlock}\n` +
-          `ðŸ”–  Reference: *#${order.shortId}*\n\n` +
-          `Please collect your order at the counter ðŸ˜Š\n\n` +
+          `🔖  Reference: *#${order.shortId}*\n\n` +
+          `Please collect your order at the counter 😊\n\n` +
           `Thank you for choosing *${bizName}*!`,
         buttons: [
-          { id: `COLLECTED_${order.shortId}`, title: 'âœ… Collected â€” Thanks!' },
-          { id: 'SUPPORT',                     title: 'â“ Need Help'           },
+          { id: `COLLECTED_${order.shortId}`, title: '✅ Collected — Thanks!' },
+          { id: 'SUPPORT',                     title: '❓ Need Help'           },
         ],
       }, tenant);
 
@@ -359,7 +359,7 @@ export async function notifyOrderReady(req, res) {
   }
 }
 
-// â”€â”€ Bookings â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── Bookings ──────────────────────────────────────────────────────────────────
 export async function getBookings(req, res) {
   try {
     const { tenantId } = req.params;
@@ -393,10 +393,10 @@ export async function updateBookingStatus(req, res) {
     const updateFields = { status, ...(adminNote ? { adminNote } : {}) };
 
     // [FIX #11] When date or time changes, null BOTH parsedDate AND reminderSentAt.
-    // parsedDate holds the last scheduler-parsed DateTime â€” it must be cleared so the
+    // parsedDate holds the last scheduler-parsed DateTime — it must be cleared so the
     // scheduler re-parses the new date string rather than targeting the old appointment.
     // reminderSentAt must be cleared so the reminder re-arms for the new slot.
-    // V1 cleared both but also forwarded parsedDate from the body (wrong â€” stale value);
+    // V1 cleared both but also forwarded parsedDate from the body (wrong — stale value);
     // V2 kept the body's parsedDate (also wrong). Correct: null both, let scheduler re-parse.
     if (req.body.date !== undefined || req.body.time !== undefined) {
       if (req.body.date !== undefined) updateFields.date = req.body.date;
@@ -422,16 +422,16 @@ export async function updateBookingStatus(req, res) {
 
         if (status === 'confirmed') {
           await dispatchText(booking.customerPhone,
-            `âœ… *Booking Confirmed!*\n\nðŸ“… *${when}*${svcStr}${partySuffix}\n\nWe look forward to seeing you! ðŸ˜Š`,
+            `✅ *Booking Confirmed!*\n\n📅 *${when}*${svcStr}${partySuffix}\n\nWe look forward to seeing you! 😊`,
             tenant);
         } else if (status === 'cancelled') {
           const reason = adminNote ? `\n\nReason: ${adminNote}` : '';
           await dispatchText(booking.customerPhone,
-            `âŒ *Booking Cancelled*\n\nSorry, your booking${svcStr} for *${when}* has been cancelled.${reason}\n\nPlease contact us to reschedule.`,
+            `❌ *Booking Cancelled*\n\nSorry, your booking${svcStr} for *${when}* has been cancelled.${reason}\n\nPlease contact us to reschedule.`,
             tenant);
         } else if (status === 'completed') {
           await dispatchText(booking.customerPhone,
-            `ðŸŽ‰ Thank you for visiting${svcStr ? ` for your ${booking.service}` : ''}! We hope to see you again soon. ðŸ˜Š`,
+            `🎉 Thank you for visiting${svcStr ? ` for your ${booking.service}` : ''}! We hope to see you again soon. 😊`,
             tenant);
         }
       }
@@ -446,7 +446,7 @@ export async function updateBookingStatus(req, res) {
   }
 }
 
-// â”€â”€ Analytics â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── Analytics ─────────────────────────────────────────────────────────────────
 export async function getAnalytics(req, res) {
   try {
     const { tenantId } = req.params;
@@ -459,7 +459,7 @@ export async function getAnalytics(req, res) {
   }
 }
 
-// [IMPROVE-TIMESERIES] New endpoint â€” getAnalytics above only ever returned 3
+// [IMPROVE-TIMESERIES] New endpoint — getAnalytics above only ever returned 3
 // flat numbers (orders/bookings/revenue totals), nothing chart-shaped. This
 // gives the frontend a real day-by-day breakdown plus top items, without
 // changing the existing getAnalytics response that may already be relied on.
@@ -475,7 +475,7 @@ export async function getAnalyticsTimeseriesHandler(req, res) {
   }
 }
 
-// â”€â”€ Conversations / Sessions â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── Conversations / Sessions ──────────────────────────────────────────────────
 export async function getConversations(req, res) {
   try {
     const { tenantId } = req.params;
@@ -484,7 +484,7 @@ export async function getConversations(req, res) {
     // A session with humanMode=true may have expired from MongoDB's TTL sweep, but the
     // customer is still in the human handoff queue waiting for an admin response. Filtering
     // strictly by expiresAt > now hides these customers from the dashboard, making it appear
-    // no one is waiting when actually they are â€” the admin has no way to find them.
+    // no one is waiting when actually they are — the admin has no way to find them.
     // Fix: use $or so live sessions AND expired humanMode sessions both appear.
     const now = new Date();
     const sessions = await Session.find({
@@ -511,8 +511,8 @@ export async function setHumanMode(req, res) {
       return res.status(400).json({ error: 'humanMode must be a boolean' });
     }
     // [FIX-DASH-2] updateSession is now a static top-level import.
-    // The previous dynamic import() was unnecessary â€” sessionService has no circular
-    // dependencies with dashboardController â€” and added async resolution overhead on
+    // The previous dynamic import() was unnecessary — sessionService has no circular
+    // dependencies with dashboardController — and added async resolution overhead on
     // every humanMode toggle (a frequent admin action).
     const session = await updateSession(phone, tenantId, { humanMode });
     if (!session) return res.status(404).json({ error: 'Session not found' });
@@ -523,7 +523,7 @@ export async function setHumanMode(req, res) {
         const tenant = await loadTenant(tenantId);
         if (tenant) {
           await dispatchText(phone,
-            `You're now connected back to our automated assistant. How can we help? ðŸ˜Š`,
+            `You're now connected back to our automated assistant. How can we help? 😊`,
             tenant);
         }
       } catch {}
@@ -536,12 +536,12 @@ export async function setHumanMode(req, res) {
   }
 }
 
-// â”€â”€ Customers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── Customers ─────────────────────────────────────────────────────────────────
 export async function getCustomers(req, res) {
   try {
     const { tenantId } = req.params;
     // [FIX-DASH-1] ?page pagination support
-    // [AUDIT-FIX-9] Added Math.max(...,1) lower bound â€” every other paginated
+    // [AUDIT-FIX-9] Added Math.max(...,1) lower bound — every other paginated
     // endpoint in this file (orders, bookings) bounds limit to [1,200]; this one
     // only bounded the upper end, so ?limit=-5 (or any negative number) passed
     // straight through to Mongoose's .limit(), which is undefined/surprising
@@ -586,7 +586,7 @@ export async function getCustomers(req, res) {
   }
 }
 
-// â”€â”€ Business settings â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── Business settings ─────────────────────────────────────────────────────────
 export async function getBusinessSettings(req, res) {
   try {
     const { tenantId } = req.params;
@@ -607,7 +607,7 @@ export async function updateBusinessSettings(req, res) {
     // [FIX-SETTINGS-WHITELIST-1] 'multiItemCart' and 'address' were both missing
     // from this whitelist. multiItemCart: the schema field and the businessController.js
     // PUT route both had it, but this PATCH route (the one PreferencesPage.jsx actually
-    // calls) silently dropped it â€” the "Enable Multi-Item Cart" toggle saved successfully
+    // calls) silently dropped it — the "Enable Multi-Item Cart" toggle saved successfully
     // with a "Preferences saved" toast while doing nothing, on every tenant. address:
     // present on the schema and used by the bot's "About Us" reply, but never
     // save-able from the dashboard at all. Both added below.
@@ -619,7 +619,7 @@ export async function updateBusinessSettings(req, res) {
     }
 
     // [FIX-SETTINGS-WHITELIST-1] Same $set-replaces-whole-subdocument hazard as
-    // [CATALOG-BIZ-1]/[FIX-MULTIITEMCART-BIZ-1] in businessController.js â€” flatten
+    // [CATALOG-BIZ-1]/[FIX-MULTIITEMCART-BIZ-1] in businessController.js — flatten
     // multiItemCart and settings to dot-notation so a partial payload can't wipe
     // sibling fields it didn't intend to touch.
     for (const key of ['multiItemCart', 'settings']) {
@@ -635,7 +635,7 @@ export async function updateBusinessSettings(req, res) {
     // subdocument that also holds admin-only fields (catalogId, lastSyncedAt,
     // lastSyncError). A tenant is only allowed to touch `enabled`/`mode`.
     // Doing `updates.waCatalog = req.body.waCatalog` would let $set REPLACE
-    // the whole subdocument â€” silently wiping catalogId and sync history the
+    // the whole subdocument — silently wiping catalogId and sync history the
     // moment a tenant saves this form. Dot-notation on just the two
     // tenant-editable leaves keeps everything else untouched.
     if (req.body.waCatalog && typeof req.body.waCatalog === 'object') {
@@ -645,7 +645,7 @@ export async function updateBusinessSettings(req, res) {
 
     if (!Object.keys(updates).length) return res.status(400).json({ error: 'No valid fields to update' });
 
-    // [FIX-TONE-3] findOneAndUpdate bypasses Mongoose pre('save') hooks â€” inline
+    // [FIX-TONE-3] findOneAndUpdate bypasses Mongoose pre('save') hooks — inline
     // tone sync when businessMode changes so tone fields stay consistent.
     if (updates.businessMode) {
       const toneMap = {
@@ -677,10 +677,10 @@ export async function updateBusinessSettings(req, res) {
 }
 
 // [NO-SELFSERVE-APIKEY-1] Previously only the super-admin could rotate a
-// tenant's shared API key (POST /admin/tenants/:id/rotate-key) â€” a tenant that
+// tenant's shared API key (POST /admin/tenants/:id/rotate-key) — a tenant that
 // suspected their key had leaked had no way to invalidate it without a support
 // ticket. Mirrors tenantController.rotateApiKey's key-generation logic exactly;
-// gated OWNER-only in the route (requireRole('OWNER') â€” a legacy shared-key
+// gated OWNER-only in the route (requireRole('OWNER') — a legacy shared-key
 // caller is treated as OWNER-equivalent per requireRole's existing rule, so this
 // also lets that caller rotate its own key, which is the whole point).
 export async function rotateOwnApiKey(req, res) {
@@ -700,7 +700,7 @@ export async function rotateOwnApiKey(req, res) {
     res.json({
       ok:     true,
       apiKey: newKey,
-      note:   'Store this key immediately â€” it will not be shown again. The previous key is now invalid.',
+      note:   'Store this key immediately — it will not be shown again. The previous key is now invalid.',
     });
   } catch (err) {
     logger.error('[Dashboard] rotateOwnApiKey failed', { err: err.message });
@@ -708,7 +708,7 @@ export async function rotateOwnApiKey(req, res) {
   }
 }
 
-// â”€â”€ Menu CRUD â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── Menu CRUD ─────────────────────────────────────────────────────────────────
 export async function getMenu(req, res) {
   try {
     const biz = await BusinessConfig.findOne({ tenantId: req.params.tenantId })
@@ -724,7 +724,7 @@ export async function addMenuItem(req, res) {
     const { name, price, description, available = true, showImageOnSelect = true } = req.body;
     if (!name || !String(name).trim()) return res.status(400).json({ error: 'name required' });
 
-    // â”€â”€ Parse array fields sent as JSON strings from multipart/form-data â”€â”€â”€â”€â”€
+    // ── Parse array fields sent as JSON strings from multipart/form-data ─────
     // When using multipart (for image upload), array fields arrive as strings.
     let keywords = req.body.keywords ?? [];
     if (typeof keywords === 'string') {
@@ -735,7 +735,7 @@ export async function addMenuItem(req, res) {
       try { tags = JSON.parse(tags); } catch { tags = tags ? [tags] : []; }
     }
 
-    // â”€â”€ Cloudinary image upload (optional) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ── Cloudinary image upload (optional) ────────────────────────────────────
     let image = { url: null, public_id: null };
     if (req.file) {
       if (!CLOUDINARY_ENABLED) {
@@ -768,7 +768,7 @@ export async function addMenuItem(req, res) {
       { new: true },
     );
     if (!biz) return res.status(404).json({ error: 'Not found' });
-    // [CATALOG-AUTOSYNC-1] Fire-and-forget debounced WA Catalog sync â€” no-op
+    // [CATALOG-AUTOSYNC-1] Fire-and-forget debounced WA Catalog sync — no-op
     // for tenants who haven't enabled it (see waCatalogSyncScheduler.js).
     scheduleWaCatalogSync(tenantId);
     res.status(201).json({ menuItems: biz.menuItems });
@@ -786,7 +786,7 @@ export async function updateMenuItem(req, res) {
     if (available         !== undefined) patch['menuItems.$.available']        = available === 'false' ? false : Boolean(available);
     if (showImageOnSelect !== undefined) patch['menuItems.$.showImageOnSelect'] = showImageOnSelect === 'false' ? false : Boolean(showImageOnSelect);
 
-    // â”€â”€ Parse array fields sent as JSON strings from multipart/form-data â”€â”€â”€â”€â”€
+    // ── Parse array fields sent as JSON strings from multipart/form-data ─────
     let keywords = req.body.keywords;
     if (keywords !== undefined) {
       if (typeof keywords === 'string') {
@@ -802,7 +802,7 @@ export async function updateMenuItem(req, res) {
       patch['menuItems.$.tags'] = tags;
     }
 
-    // â”€â”€ Image logic: upload and remove are mutually exclusive â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ── Image logic: upload and remove are mutually exclusive ─────────────────
     // If both req.file and removeImage arrive (malformed request), upload wins.
     if (req.file) {
       if (!CLOUDINARY_ENABLED) {
@@ -825,7 +825,7 @@ export async function updateMenuItem(req, res) {
         return res.status(502).json({ error: `Image upload failed: ${uploadErr.message}` });
       }
     } else if (removeImage === 'true' || removeImage === true) {
-      // Remove image â€” only runs when no new file is being uploaded
+      // Remove image — only runs when no new file is being uploaded
       const existing = await BusinessConfig.findOne(
         { tenantId, 'menuItems._id': itemId },
         { 'menuItems.$': 1 },
@@ -867,7 +867,7 @@ export async function deleteMenuItem(req, res) {
     if (result.matchedCount === 0) return res.status(404).json({ error: 'Business not found' });
     if (result.modifiedCount === 0) return res.status(404).json({ error: 'Menu item not found' });
 
-    // Clean up Cloudinary image (non-fatal â€” item is already removed from DB)
+    // Clean up Cloudinary image (non-fatal — item is already removed from DB)
     if (imagePublicId) await deleteMenuImage(imagePublicId);
 
     scheduleWaCatalogSync(tenantId);
@@ -875,7 +875,7 @@ export async function deleteMenuItem(req, res) {
   } catch (err) { logger.error('[Dashboard] Request failed', { err: err.message }); res.status(500).json({ error: err.message }); }
 }
 
-// â”€â”€ Services CRUD â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── Services CRUD ─────────────────────────────────────────────────────────────
 export async function getServices(req, res) {
   try {
     const biz = await BusinessConfig.findOne({ tenantId: req.params.tenantId })
@@ -938,7 +938,7 @@ export async function deleteService(req, res) {
   } catch (err) { logger.error('[Dashboard] Request failed', { err: err.message }); res.status(500).json({ error: err.message }); }
 }
 
-// â”€â”€ FAQ CRUD â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── FAQ CRUD ──────────────────────────────────────────────────────────────────
 export async function getFaqs(req, res) {
   try {
     const biz = await BusinessConfig.findOne({ tenantId: req.params.tenantId })

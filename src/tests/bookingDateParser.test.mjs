@@ -13,7 +13,7 @@ import {
   resolveBookingDateInput,
   getLocalNow,
   MAX_BOOKING_MONTHS_AHEAD,
-} from '../services/bookingDateParser.js';
+} from '../services/booking/bookingDateParser.js';
 
 const TZ = 'Africa/Banjul';
 

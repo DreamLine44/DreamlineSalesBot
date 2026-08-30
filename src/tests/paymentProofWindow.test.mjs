@@ -9,7 +9,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import Order from '../models/Order.js';
 import BusinessConfig from '../models/BusinessConfig.js';
-import { receiveProof } from '../services/paymentService.js';
+import { receiveProof } from '../services/payment/paymentService.js';
 
 // [FIX-PROOF-WINDOW] regression: adminCommandService.rejectPayment() reactivates a
 // rejected order for retry by resetting paymentStatus back to 'unpaid' and stamping

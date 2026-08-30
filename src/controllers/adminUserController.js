@@ -1,4 +1,4 @@
-﻿/**
+/**
  * controllers/adminUserController.js
  *
  * [FEATURE-MULTIADMIN-1] Login and staff-management endpoints for the Tenant
@@ -6,17 +6,17 @@
  * semantics, services/adminAuthService.js for the crypto primitives.
  *
  * Route surface (mounted in routes/adminUserRoutes.js):
- *   POST /dashboard/auth/login                       â€” email+password â†’ session token
- *   POST /dashboard/auth/accept-invite                â€” invite token + password â†’ session token
- *   GET  /dashboard/auth/me                            â€” whoami for the current session
- *   POST /dashboard/:tenantId/admins/claim-owner       â€” bootstrap the FIRST admin for a
+ *   POST /dashboard/auth/login                       — email+password → session token
+ *   POST /dashboard/auth/accept-invite                — invite token + password → session token
+ *   GET  /dashboard/auth/me                            — whoami for the current session
+ *   POST /dashboard/:tenantId/admins/claim-owner       — bootstrap the FIRST admin for a
  *                                                         tenant that predates this feature,
  *                                                         authenticated via the existing
  *                                                         tenant x-api-key as proof of ownership
- *   GET  /dashboard/:tenantId/admins                   â€” list staff              (OWNER, MANAGER)
- *   POST /dashboard/:tenantId/admins/invite             â€” invite a new staff member (OWNER only)
- *   PATCH /dashboard/:tenantId/admins/:id               â€” change role/status     (OWNER only)
- *   DELETE /dashboard/:tenantId/admins/:id              â€” remove a staff member  (OWNER only)
+ *   GET  /dashboard/:tenantId/admins                   — list staff              (OWNER, MANAGER)
+ *   POST /dashboard/:tenantId/admins/invite             — invite a new staff member (OWNER only)
+ *   PATCH /dashboard/:tenantId/admins/:id               — change role/status     (OWNER only)
+ *   DELETE /dashboard/:tenantId/admins/:id              — remove a staff member  (OWNER only)
  */
 import AdminUser from '../models/AdminUser.js';
 import Tenant     from '../models/Tenant.js';
@@ -29,7 +29,7 @@ import logger from '../config/logger.js';
 
 const INVITE_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days to accept an invite
 
-// â”€â”€ Login / session â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── Login / session ──────────────────────────────────────────────────────────
 
 export async function login(req, res) {
   try {
@@ -39,7 +39,7 @@ export async function login(req, res) {
     }
 
     // [FEATURE-MULTIADMIN-1] Email is only unique PER TENANT, not globally
-    // (see AdminUser schema note) â€” the same person could have accounts on
+    // (see AdminUser schema note) — the same person could have accounts on
     // two tenants with different passwords. Login has no tenant context yet,
     // so a single email may legitimately match multiple AdminUser docs; try
     // each until the password matches rather than assuming the first is the
@@ -83,7 +83,7 @@ export async function login(req, res) {
 
 export async function me(req, res) {
   // req.adminUser is set by requireApiKey's Bearer path. A legacy x-api-key
-  // caller has no individual admin identity â€” say so plainly rather than
+  // caller has no individual admin identity — say so plainly rather than
   // fabricating one.
   if (!req.adminUser) {
     return res.json({ authMethod: 'api_key', tenantId: req.tenantId, isSuperAdmin: !!req.isSuperAdmin });
@@ -91,9 +91,9 @@ export async function me(req, res) {
   res.json({ authMethod: 'admin_session', ...req.adminUser, tenantId: req.tenantId });
 }
 
-// â”€â”€ Self-service password change â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── Self-service password change ─────────────────────────────────────────────
 // [NO-SELFSERVE-PASSWORD-1] Previously there was no way for a logged-in staff/
-// owner account to change their own password â€” only an OWNER could DISABLE and
+// owner account to change their own password — only an OWNER could DISABLE and
 // re-invite someone, which throws away their whole account history. Requires
 // an actual Bearer session (req.adminUser); a legacy shared tenant/super-admin
 // x-api-key has no individual password to change, so it's rejected with a
@@ -137,7 +137,7 @@ export async function changePassword(req, res) {
   }
 }
 
-// â”€â”€ Invite acceptance (no auth â€” the invite token itself is the credential) â”€â”€
+// ── Invite acceptance (no auth — the invite token itself is the credential) ──
 
 export async function acceptInvite(req, res) {
   try {
@@ -178,7 +178,7 @@ export async function acceptInvite(req, res) {
   }
 }
 
-// â”€â”€ Bootstrap â€” one-time claim for tenants that predate this feature â”€â”€â”€â”€â”€â”€â”€â”€
+// ── Bootstrap — one-time claim for tenants that predate this feature ────────
 
 export async function claimOwner(req, res) {
   try {
@@ -193,7 +193,7 @@ export async function claimOwner(req, res) {
 
     // [FEATURE-MULTIADMIN-1] Only allowed when this tenant has NO admins yet.
     // Auth here is deliberately the EXISTING x-api-key (requireApiKey on the
-    // route, super-admin or this tenant's own key) â€” possession of that key
+    // route, super-admin or this tenant's own key) — possession of that key
     // already proves ownership under the pre-existing auth model, so this is
     // the one-time bridge from "shared key" to "named accounts" without
     // requiring a support ticket or admin intervention for every tenant that
@@ -225,7 +225,7 @@ export async function claimOwner(req, res) {
   }
 }
 
-// â”€â”€ Staff management (OWNER-gated via requireRole in the route definitions) â”€
+// ── Staff management (OWNER-gated via requireRole in the route definitions) ─
 
 export async function listAdmins(req, res) {
   try {
@@ -248,9 +248,9 @@ export async function inviteAdmin(req, res) {
       return res.status(400).json({ error: 'role must be one of OWNER, MANAGER, STAFF' });
     }
 
-    // [FEATURE-MULTIADMIN-1] Enforce Tenant.limits.maxAdmins â€” this field has
+    // [FEATURE-MULTIADMIN-1] Enforce Tenant.limits.maxAdmins — this field has
     // existed in the schema since before this feature but was previously
-    // unenforced anywhere (same class of gap as maxMenuItems â€” see
+    // unenforced anywhere (same class of gap as maxMenuItems — see
     // [AUDIT-FIX-USAGE-1] in dashboardController.js).
     const [tenant, currentCount] = await Promise.all([
       Tenant.findById(tenantId).select('limits.maxAdmins').lean(),
@@ -259,7 +259,7 @@ export async function inviteAdmin(req, res) {
     const maxAdmins = tenant?.limits?.maxAdmins ?? 1;
     if (currentCount >= maxAdmins) {
       return res.status(403).json({
-        // [NO-SELFSERVE-1] Same wording fix as the menu-item cap messages â€”
+        // [NO-SELFSERVE-1] Same wording fix as the menu-item cap messages —
         // there's no self-serve billing/upgrade flow, only the platform admin
         // can raise this limit.
         error: `Admin limit reached (${currentCount}/${maxAdmins} on your current plan). `
@@ -272,7 +272,7 @@ export async function inviteAdmin(req, res) {
     const admin = await AdminUser.create({
       tenantId, name, email: String(email).toLowerCase().trim(), role,
       status: 'INVITED',
-      passwordSalt: 'pending', // placeholder â€” required:true in schema but unused until accept-invite
+      passwordSalt: 'pending', // placeholder — required:true in schema but unused until accept-invite
       inviteTokenHash: hash,
       inviteExpiresAt: new Date(Date.now() + INVITE_TTL_MS),
       invitedBy: req.adminUser?.id || null,
@@ -280,7 +280,7 @@ export async function inviteAdmin(req, res) {
 
     logger.info('[AdminAuth] Admin invited', { tenantId, email, role });
     // [FEATURE-MULTIADMIN-1] The raw invite token is returned ONLY in this
-    // response, never stored â€” whoever calls this endpoint (the frontend) is
+    // response, never stored — whoever calls this endpoint (the frontend) is
     // responsible for delivering it to the invitee (email, WhatsApp, etc.).
     // This backend has no email-sending integration to hook into yet.
     res.status(201).json({
@@ -316,7 +316,7 @@ export async function updateAdmin(req, res) {
     }
     if (!Object.keys(updates).length) return res.status(400).json({ error: 'Nothing to update' });
 
-    // [FEATURE-MULTIADMIN-1] Prevent a tenant from locking themselves out â€”
+    // [FEATURE-MULTIADMIN-1] Prevent a tenant from locking themselves out —
     // refuse to demote/disable the LAST active OWNER.
     if ((updates.role && updates.role !== 'OWNER') || updates.status === 'DISABLED') {
       const target = await AdminUser.findOne({ _id: id, tenantId }).lean();

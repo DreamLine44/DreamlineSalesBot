@@ -37,14 +37,14 @@
  *              approved template parameter slots.
  */
 
-import Order   from '../models/Order.js';
-import Booking from '../models/Booking.js';
-import Tenant  from '../models/Tenant.js';
-import BusinessConfig from '../models/BusinessConfig.js';
-import { dispatchText, dispatchTemplate } from '../core/whatsapp/dispatcher.js';
-import { TEMPLATE_LANGUAGE } from '../config/env.js';
-import logger from '../config/logger.js';
-import { formatMoney } from '../utils/formatCurrency.js';
+import Order   from '../../models/Order.js';
+import Booking from '../../models/Booking.js';
+import Tenant  from '../../models/Tenant.js';
+import BusinessConfig from '../../models/BusinessConfig.js';
+import { dispatchText, dispatchTemplate } from '../../core/whatsapp/dispatcher.js';
+import { TEMPLATE_LANGUAGE } from '../../config/env.js';
+import logger from '../../config/logger.js';
+import { formatMoney } from '../../utils/formatCurrency.js';
 
 const TEMPLATES_ENABLED = () => process.env.WHATSAPP_TEMPLATES_ENABLED === 'true';
 

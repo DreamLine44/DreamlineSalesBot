@@ -13,7 +13,7 @@ import {
   isNoPaymentOrder,
   formatOrderItemsForMessage,
   formatOrderItemSummary,
-} from '../services/orderService.js';
+} from '../services/order/orderService.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const adminSrc = readFileSync(join(__dirname, '../services/adminCommandService.js'), 'utf8');

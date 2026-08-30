@@ -1,4 +1,4 @@
-﻿/**
+/**
  * activityLookupService.js
  *
  * Reference-first activity lookup for orders and bookings.
@@ -105,7 +105,7 @@ export async function lookupActivityByReference({
 }
 
 /**
- * Broader recovery when reference lookup fails â€” recent phone-scoped activities.
+ * Broader recovery when reference lookup fails — recent phone-scoped activities.
  */
 export async function recoverRecentActivities({ customerPhone, tenantId, scope = 'BOTH' }) {
   const checks = [];
@@ -144,7 +144,7 @@ export const formatLookupFailureMessage = ({ shortId, checks = [], adminPhone = 
     `I couldn't find an activity with reference *${ref}*. ` +
     `I checked ${checked} but couldn't locate it.\n\n` +
     `Please verify the reference or send another one if available.`;
-  if (adminPhone) body += `\n\n_Need help?_ ðŸ“ž *${adminPhone}*`;
+  if (adminPhone) body += `\n\n_Need help?_ 📞 *${adminPhone}*`;
   return body;
 }
 

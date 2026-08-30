@@ -1,19 +1,19 @@
-﻿/**
+/**
  * routes/adminRoutes.js
  *
- * [FIX] All handlers now have try/catch â€” previously an unhandled DB error
+ * [FIX] All handlers now have try/catch — previously an unhandled DB error
  *       would crash the response with an uncaught exception.
  * [FIX] All handlers enforce tenantId ownership: non-superadmins can only
  *       access sessions/orders/bookings belonging to their own tenantId.
  *
- * [FIX-ADMIN-1] PATCH /orders/:id/status â€” added status enum validation +
+ * [FIX-ADMIN-1] PATCH /orders/:id/status — added status enum validation +
  *               customer WhatsApp notification on status change (was silently
  *               updating DB only, unlike the dashboard equivalent).
- * [FIX-ADMIN-2] PATCH /bookings/:id/status â€” same: validation + notification.
- * [FIX-ADMIN-3] PATCH /sessions/:tenantId/:phone/human â€” now notifies the
+ * [FIX-ADMIN-2] PATCH /bookings/:id/status — same: validation + notification.
+ * [FIX-ADMIN-3] PATCH /sessions/:tenantId/:phone/human — now notifies the
  *               customer when humanMode is switched OFF (bot resumed), matching
  *               dashboardController.setHumanMode behaviour.
- * [FIX-ADMIN-4] GET /sessions/:tenantId â€” added ?limit and ?page pagination;
+ * [FIX-ADMIN-4] GET /sessions/:tenantId — added ?limit and ?page pagination;
  *               previously hard-capped at 100 with no way to page beyond that.
  */
 import { Router } from 'express';
@@ -33,8 +33,8 @@ import { formatOrderItemsForMessage } from '../services/order/orderFeature.js';
 const r = Router();
 
 // [FIX-ADMIN-7] payment_pending_verification is a valid Order.status value (in schema enum)
-// but was absent here â€” any admin PATCH to set that status got a 400 "Invalid status" error.
-// [FIX-ADMIN-STATUS] 'preparing', 'ready', 'out_for_delivery', 'delivered' were also missing â€”
+// but was absent here — any admin PATCH to set that status got a 400 "Invalid status" error.
+// [FIX-ADMIN-STATUS] 'preparing', 'ready', 'out_for_delivery', 'delivered' were also missing —
 // all are valid Order.status enum values and were similarly blocked with 400.
 const VALID_ORDER_STATUSES   = [
   'pending', 'payment_pending_verification', 'confirmed',
@@ -58,9 +58,9 @@ async function loadTenant(tenantId) {
   return Tenant.findById(tenantId).lean().catch(() => null);
 }
 
-// â”€â”€ Human mode toggle â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── Human mode toggle ─────────────────────────────────────────────────────────
 // [FIX-ADMIN-5] Apply a dedicated humanModeLimiter (5 req/min) that is stricter than
-// the global adminLimiter (30 req/min). The toggle directly silences/restores the bot â€”
+// the global adminLimiter (30 req/min). The toggle directly silences/restores the bot —
 // rapid toggling could expose a customer to the bot mid-human-mode handoff.
 r.patch('/sessions/:tenantId/:phone/human', humanModeLimiter, async (req, res) => {
   const { tenantId, phone } = req.params;
@@ -70,7 +70,7 @@ r.patch('/sessions/:tenantId/:phone/human', humanModeLimiter, async (req, res) =
     if (typeof humanMode !== 'boolean') {
       return res.status(400).json({ error: 'humanMode must be a boolean' });
     }
-    // [FIX-ADMIN-NULL] Capture updateSession result â€” returns null when no active session
+    // [FIX-ADMIN-NULL] Capture updateSession result — returns null when no active session
     // exists (TTL-expired). Only dispatch the resume notification when the session was
     // actually updated; firing it on a null return sends a confusing message to a customer
     // whose session is already expired and who may have moved on entirely.
@@ -83,7 +83,7 @@ r.patch('/sessions/:tenantId/:phone/human', humanModeLimiter, async (req, res) =
         if (tenant) {
           await dispatchText(
             phone,
-            `âœ… Our team has finished assisting you. Our automated assistant is back and ready to help! ðŸ˜Š`,
+            `✅ Our team has finished assisting you. Our automated assistant is back and ready to help! 😊`,
             tenant,
           );
         }
@@ -99,7 +99,7 @@ r.patch('/sessions/:tenantId/:phone/human', humanModeLimiter, async (req, res) =
   }
 });
 
-// â”€â”€ Order status update â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── Order status update ───────────────────────────────────────────────────────
 r.patch('/orders/:id/status', async (req, res) => {
   try {
     const { status, notes } = req.body;
@@ -107,7 +107,7 @@ r.patch('/orders/:id/status', async (req, res) => {
     // [FIX-ADMIN-6] Explicit early guard: non-super-admins must have a resolved
     // tenantId from requireApiKey. Without this, a middleware bug that sets
     // req.tenantId to undefined would produce filter.tenantId=undefined, which
-    // MongoDB silently treats as {tenantId: null} â€” matching no document but
+    // MongoDB silently treats as {tenantId: null} — matching no document but
     // returning 404 rather than 403, masking the auth gap in logs.
     if (!req.isSuperAdmin && !req.tenantId) {
       return res.status(403).json({ error: 'Forbidden' });
@@ -129,7 +129,7 @@ r.patch('/orders/:id/status', async (req, res) => {
         $set: {
           status,
           ...(notes ? { notes } : {}),
-          // Lifecycle timestamps â€” mirrors dashboardController behaviour
+          // Lifecycle timestamps — mirrors dashboardController behaviour
           ...(status === 'preparing'        ? { preparingAt:       new Date() } : {}),
           ...(status === 'ready'            ? { readyAt:           new Date() } : {}),
           ...(status === 'out_for_delivery' ? { outForDeliveryAt:  new Date() } : {}),
@@ -151,17 +151,17 @@ r.patch('/orders/:id/status', async (req, res) => {
         if (status === 'preparing') {
           await dispatchText(
             order.customerPhone,
-            `ðŸ³ *Your order is being prepared!*\n\n${itemsBlock}\nðŸ”–  Reference: *#${order.shortId}*\n\nOur kitchen is working on it â€” we'll message you the moment it's ready. ðŸ˜Š`,
+            `🍳 *Your order is being prepared!*\n\n${itemsBlock}\n🔖  Reference: *#${order.shortId}*\n\nOur kitchen is working on it — we'll message you the moment it's ready. 😊`,
             tenant,
           );
         } else if (status === 'ready') {
           await dispatchMessage(order.customerPhone, {
             type: 'buttons',
             body:
-              `ðŸ½ï¸ *Your Order is Ready!*\n\n${itemsBlock}\nðŸ”–  Reference: *#${order.shortId}*\n\nPlease collect your order at the counter ðŸ˜Š`,
+              `🍽️ *Your Order is Ready!*\n\n${itemsBlock}\n🔖  Reference: *#${order.shortId}*\n\nPlease collect your order at the counter 😊`,
             buttons: [
-              { id: `COLLECTED_${order.shortId}`, title: 'âœ… Collected â€” Thanks!' },
-              { id: 'SUPPORT',                     title: 'â“ Need Help'           },
+              { id: `COLLECTED_${order.shortId}`, title: '✅ Collected — Thanks!' },
+              { id: 'SUPPORT',                     title: '❓ Need Help'           },
             ],
           }, tenant);
           await updateSession(order.customerPhone, String(order.tenantId), {
@@ -176,25 +176,25 @@ r.patch('/orders/:id/status', async (req, res) => {
           await dispatchMessage(order.customerPhone, {
             type: 'buttons',
             body:
-              `ðŸš— *Your order is on its way!*\n\n${itemsBlock}\nðŸ”–  Reference: *#${order.shortId}*\n\nSit tight â€” your delivery is en route! ðŸ™`,
-            buttons: [{ id: 'SUPPORT', title: 'ðŸ’¬ Contact Us' }],
+              `🚗 *Your order is on its way!*\n\n${itemsBlock}\n🔖  Reference: *#${order.shortId}*\n\nSit tight — your delivery is en route! 🙏`,
+            buttons: [{ id: 'SUPPORT', title: '💬 Contact Us' }],
           }, tenant);
         } else if (status === 'confirmed') {
           await dispatchText(
             order.customerPhone,
-            `âœ… *Your order is confirmed!*\n\n${itemsBlock}\n\nThank you for your patience! ðŸ˜Š`,
+            `✅ *Your order is confirmed!*\n\n${itemsBlock}\n\nThank you for your patience! 😊`,
             tenant,
           );
         } else if (status === 'cancelled' || status === 'rejected') {
           await dispatchText(
             order.customerPhone,
-            `âŒ *Order update*\n\nUnfortunately your order (*${order.item}*) has been ${status}.${notes ? `\n\nNote: ${notes}` : ''}\n\nPlease contact us if you have questions.`,
+            `❌ *Order update*\n\nUnfortunately your order (*${order.item}*) has been ${status}.${notes ? `\n\nNote: ${notes}` : ''}\n\nPlease contact us if you have questions.`,
             tenant,
           );
         } else if (status === 'completed') {
           await dispatchText(
             order.customerPhone,
-            `ðŸŽ‰ *Order completed!*\n\nYour order of *${order.item}* is done. Enjoy! ðŸ˜Š`,
+            `🎉 *Order completed!*\n\nYour order of *${order.item}* is done. Enjoy! 😊`,
             tenant,
           );
         }
@@ -210,7 +210,7 @@ r.patch('/orders/:id/status', async (req, res) => {
   }
 });
 
-// â”€â”€ Booking status update â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── Booking status update ─────────────────────────────────────────────────────
 r.patch('/bookings/:id/status', async (req, res) => {
   try {
     const { status, adminNote } = req.body;
@@ -248,19 +248,19 @@ r.patch('/bookings/:id/status', async (req, res) => {
         if (status === 'confirmed') {
           await dispatchText(
             booking.customerPhone,
-            `âœ… *Booking Confirmed!*\n\nðŸ“… *${when}*${svcStr}\n\nWe look forward to seeing you! ðŸ˜Š`,
+            `✅ *Booking Confirmed!*\n\n📅 *${when}*${svcStr}\n\nWe look forward to seeing you! 😊`,
             tenant,
           );
         } else if (status === 'cancelled') {
           await dispatchText(
             booking.customerPhone,
-            `âŒ *Booking Cancelled*\n\nSorry, your booking${svcStr} for *${when}* has been cancelled.${noteStr}\n\nPlease contact us to reschedule.`,
+            `❌ *Booking Cancelled*\n\nSorry, your booking${svcStr} for *${when}* has been cancelled.${noteStr}\n\nPlease contact us to reschedule.`,
             tenant,
           );
         } else if (status === 'completed') {
           await dispatchText(
             booking.customerPhone,
-            `ðŸŽ‰ Thank you for visiting${svcStr ? ` for your ${booking.service}` : ''}! We hope to see you again soon. ðŸ˜Š`,
+            `🎉 Thank you for visiting${svcStr ? ` for your ${booking.service}` : ''}! We hope to see you again soon. 😊`,
             tenant,
           );
         }
@@ -276,13 +276,13 @@ r.patch('/bookings/:id/status', async (req, res) => {
   }
 });
 
-// â”€â”€ Active sessions list â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── Active sessions list ──────────────────────────────────────────────────────
 // [FIX-ADMIN-4] Added ?limit and ?page query params for pagination
 r.get('/sessions/:tenantId', overviewLimiter, async (req, res) => {
   const { tenantId } = req.params;
   if (!assertTenant(req, res, tenantId)) return;
   try {
-    // [AUDIT-FIX-10] Added Math.max(...,1) lower bound â€” this was the one remaining
+    // [AUDIT-FIX-10] Added Math.max(...,1) lower bound — this was the one remaining
     // paginated endpoint without it (dashboardController's equivalent endpoints were
     // already fixed). ?limit=-5 or ?limit=0 would otherwise pass straight through to
     // Mongoose's .limit() unguarded.
@@ -317,14 +317,14 @@ r.get('/sessions/:tenantId', overviewLimiter, async (req, res) => {
   }
 });
 
-// â”€â”€ Admin â†” tenant-admin notifications [ADMIN-NOTIFY-1] â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── Admin ↔ tenant-admin notifications [ADMIN-NOTIFY-1] ───────────────────────
 // Two-way messaging surfaced in both the super-admin console and the tenant
 // dashboard. See models/AdminNotification.js for the full design rationale
 // (why broadcasts fan out into one doc per tenant, direction semantics, etc).
 
 /**
  * validateNotificationInput({ subject, body, severity })
- * Pure â€” no DB. Returns an error string, or null when the input is valid.
+ * Pure — no DB. Returns an error string, or null when the input is valid.
  */
 export function validateNotificationInput({ subject, body, severity } = {}) {
   if (!subject || !String(subject).trim()) return 'subject is required';
@@ -339,7 +339,7 @@ export function validateNotificationInput({ subject, body, severity } = {}) {
 
 /**
  * buildNotificationAccessFilter(req, query)
- * Pure â€” no DB. The security-critical piece: a tenant caller is ALWAYS
+ * Pure — no DB. The security-critical piece: a tenant caller is ALWAYS
  * scoped to their own tenantId (never the query string's), and can never
  * filter by broadcastId (which would let them probe other tenants'
  * broadcast IDs). A super admin gets an unscoped filter by default, with
@@ -360,7 +360,7 @@ export function buildNotificationAccessFilter(req, query = {}) {
   if (isSuperAdmin) {
     if (query.tenantId) filter.tenantId = query.tenantId;
   } else {
-    // SECURITY: never honour a caller-supplied tenantId â€” a tenant admin's
+    // SECURITY: never honour a caller-supplied tenantId — a tenant admin's
     // own req.tenantId (set by auth middleware, not the request) is the
     // only tenantId they can ever be scoped to.
     filter.tenantId = callerTenantId;
@@ -374,7 +374,7 @@ export function buildNotificationAccessFilter(req, query = {}) {
     filter.read = false;
   }
 
-  // SECURITY: broadcastId enumeration guard â€” only a super admin may filter
+  // SECURITY: broadcastId enumeration guard — only a super admin may filter
   // by it. A tenant caller guessing/iterating broadcastId values could
   // otherwise confirm whether a given broadcast reached other tenants.
   if (isSuperAdmin && query.broadcastId) {
@@ -386,7 +386,7 @@ export function buildNotificationAccessFilter(req, query = {}) {
 
 /**
  * pingTenantAdmin(tenant, notification)
- * Best-effort WhatsApp nudge for a TO_TENANT send â€” reuses the existing
+ * Best-effort WhatsApp nudge for a TO_TENANT send — reuses the existing
  * dispatch pipeline exactly the way order/booking status changes already
  * do. Fire-and-forget: never blocks or fails the notification write.
  */
@@ -395,7 +395,7 @@ async function pingTenantAdmin(tenant, notification) {
   try {
     await dispatchText(
       tenant.adminPhone,
-      `ðŸ“‹ *${notification.subject}*\n\n${notification.body}\n\nâ€” WhatSales`,
+      `📋 *${notification.subject}*\n\n${notification.body}\n\n— WhatSales`,
       tenant,
     );
     return true;
@@ -405,7 +405,7 @@ async function pingTenantAdmin(tenant, notification) {
   }
 }
 
-// GET /notifications â€” list this caller's thread (scoped per buildNotificationAccessFilter)
+// GET /notifications — list this caller's thread (scoped per buildNotificationAccessFilter)
 r.get('/notifications', overviewLimiter, async (req, res) => {
   try {
     const { filter, error } = buildNotificationAccessFilter(req, req.query);
@@ -427,7 +427,7 @@ r.get('/notifications', overviewLimiter, async (req, res) => {
   }
 });
 
-// POST /notifications â€” send a message.
+// POST /notifications — send a message.
 //   Super admin: { tenantId, subject, body, severity? } for a direct send, or
 //                { broadcast: true, subject, body, severity? } to fan out to
 //                every tenant (one AdminNotification doc per tenant, sharing
@@ -441,7 +441,7 @@ r.post('/notifications', async (req, res) => {
     if (validationErr) return res.status(400).json({ error: validationErr });
 
     if (!req.isSuperAdmin) {
-      // Tenant admin â†’ TO_ADMIN, always scoped to their own tenantId, never a broadcast.
+      // Tenant admin → TO_ADMIN, always scoped to their own tenantId, never a broadcast.
       if (!req.tenantId) return res.status(403).json({ error: 'Forbidden' });
 
       const notification = await AdminNotification.create({
@@ -454,7 +454,7 @@ r.post('/notifications', async (req, res) => {
       return res.status(201).json({ notification });
     }
 
-    // Super admin â†’ TO_TENANT, direct or broadcast.
+    // Super admin → TO_TENANT, direct or broadcast.
     if (broadcast) {
       const tenants = await Tenant.find({}, { _id: 1, whatsapp: 1 }).lean();
       const broadcastId = randomUUID();
@@ -468,7 +468,7 @@ r.post('/notifications', async (req, res) => {
           ...(severity ? { severity } : {}),
         })),
       );
-      // Best-effort WhatsApp nudge per tenant â€” never blocks the response.
+      // Best-effort WhatsApp nudge per tenant — never blocks the response.
       Promise.all(tenants.map((t, i) => pingTenantAdmin(t, docs[i]).then(pinged => {
         if (pinged) return AdminNotification.updateOne({ _id: docs[i]._id }, { whatsappPinged: true }).catch(() => {});
       }))).catch(() => {});
@@ -496,7 +496,7 @@ r.post('/notifications', async (req, res) => {
   }
 });
 
-// PATCH /notifications/:id/read â€” mark a single notification read.
+// PATCH /notifications/:id/read — mark a single notification read.
 r.patch('/notifications/:id/read', async (req, res) => {
   try {
     const { filter, error } = buildNotificationAccessFilter(req, {});
@@ -516,20 +516,20 @@ r.patch('/notifications/:id/read', async (req, res) => {
   }
 });
 
-// â”€â”€ Webhook secret fingerprint (diagnostic only) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── Webhook secret fingerprint (diagnostic only) ────────────────────────────
 // [FIX-SIG-FINGERPRINT] Webhook signature mismatches (see webhookController.js
 // _verifyTenantWebhookSignature) are indistinguishable in the logs between
-// "the stored secret is wrong" and "something else is misconfigured" â€” both
+// "the stored secret is wrong" and "something else is misconfigured" — both
 // just say hadTenantSecret: true, mismatch. This endpoint closes that gap:
 // paste the App Secret currently shown in the Meta App Dashboard here, get
 // back its 12-char fingerprint, and compare it against the fingerprint that
 // was logged when the tenant's meta.appSecret/whatsapp.webhookSecret was
 // saved (tenantController.js updateTenant) or against the fingerprint on a
-// live mismatch log line. Match â†’ the stored secret is correct and the real
+// live mismatch log line. Match → the stored secret is correct and the real
 // cause is elsewhere (e.g. a second/legacy Meta App still subscribed to this
-// WABA's webhook). No match â†’ the stored secret is simply wrong; re-enter it.
+// WABA's webhook). No match → the stored secret is simply wrong; re-enter it.
 //
-// The posted secret is used only in-memory for this one hash computation â€”
+// The posted secret is used only in-memory for this one hash computation —
 // it is never persisted, never written to a log, and never echoed back.
 r.post('/webhook-secret-fingerprint', async (req, res) => {
   try {

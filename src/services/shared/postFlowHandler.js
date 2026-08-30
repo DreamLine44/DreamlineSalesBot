@@ -1,8 +1,8 @@
-﻿/**
- * services/postFlowHandler.js â€” WhatSalesAgent
+/**
+ * services/postFlowHandler.js — WhatSalesAgent
  *
  * Extracted postFlowAck state machine, previously embedded inline in webhookController.js
- * (lines ~1021â€“1540, ~600 lines of inline logic).
+ * (lines ~1021–1540, ~600 lines of inline logic).
  *
  * Handles customer messages that arrive AFTER an order or booking has reached a
  * terminal admin-set state (confirmed, rejected, ready, booking confirmed/declined).
@@ -14,7 +14,7 @@
  *         of silently falling through to intent detection which would wipe customer context.
  * [PFH-3] ORDER_CONFIRMED ETA response: uses business.settings.estimatedDeliveryMinutes
  *         if set, otherwise falls back to a generic "our team will update you" message.
- *         Eliminates the hardcoded "20â€“30 minutes" that was wrong for bakeries, salons,
+ *         Eliminates the hardcoded "20–30 minutes" that was wrong for bakeries, salons,
  *         retail, and any non-restaurant business with different preparation times.
  * [PFH-4] ORDER_CONFIRMED isUnrelated: mode-aware response. Food modes (RESTAURANT,
  *         BAKERY) keep the focused "order only" message. Retail/delivery/other modes
@@ -26,15 +26,15 @@
  * [PFH-7] Payment rejection with reason: reads flowData.rejectReason if present.
  */
 
-import { updateSession }  from '../core/sessions/sessionService.js';
-import { getModeConfig }  from '../config/modes.js';
-import { dispatchMessage } from '../core/whatsapp/dispatcher.js';
-import { buildOptionsReply } from '../core/shared/uiOptionsHelper.js';
-import { isStatusCommand } from './activity/activityStatusService.js';
-import logger from '../config/logger.js';
-import { formatMoney } from '../utils/formatCurrency.js';
+import { updateSession }  from '../../core/sessions/sessionService.js';
+import { getModeConfig }  from '../../config/modes.js';
+import { dispatchMessage } from '../../core/whatsapp/dispatcher.js';
+import { buildOptionsReply } from '../../core/shared/uiOptionsHelper.js';
+import { isStatusCommand } from '../activity/activityStatusService.js';
+import logger from '../../config/logger.js';
+import { formatMoney } from '../../utils/formatCurrency.js';
 
-// â”€â”€ Name validation (duplicated from webhookController â€” avoids circular import) â”€â”€
+// ── Name validation (duplicated from webhookController — avoids circular import) ──
 const isValidName = (n) => {
   if (!n || n.length < 3 || n.length > 40) return false;
   if (!/^[a-zA-Z\s]+$/.test(n)) return false;
@@ -59,13 +59,13 @@ const isValidName = (n) => {
   });
 }
 
-// â”€â”€ Sentiment classifiers (shared across all ackCtx paths) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-const ACK_RE        = /^(ok|okay|k|kk|thanks?|thank\s*you|thank\s*u|thx|ty|tq|great|perfect|got\s*it|noted|alright|cool|nice|sounds\s*good|good|ðŸ‘|ðŸ™|ðŸ˜Š|yep|yh|yah|understood|cheers|appreciate\s*it|brilliant|wonderful|awesome|lovely|received|noted|sure|fine|no\s*problem|np)$/i;
+// ── Sentiment classifiers (shared across all ackCtx paths) ───────────────────
+const ACK_RE        = /^(ok|okay|k|kk|thanks?|thank\s*you|thank\s*u|thx|ty|tq|great|perfect|got\s*it|noted|alright|cool|nice|sounds\s*good|good|👍|🙏|😊|yep|yh|yah|understood|cheers|appreciate\s*it|brilliant|wonderful|awesome|lovely|received|noted|sure|fine|no\s*problem|np)$/i;
 const COMPLIMENT_RE = /\b(amazing|excellent|fantastic|love|best|delicious|enjoyed|happy|pleased|satisfied|impressed|recommend|5\s*star|five\s*star|well\s*done|great\s*job|keep\s*it\s*up|good\s*job|wonderful|superb|outstanding|top\s*notch|quality|wow|incredible|perfect|so\s*good|lovely|awesome|brilliant|cool|nice)\b/i;
 const LOYALTY_RE    = /\b(will\s*always|always\s*come|come\s*back|coming\s*back|see\s*you\s*again|be\s*back|return\s*again|my\s*favourite|my\s*favorite|only\s*place|tell\s*(my\s*)?friends|spread\s*the\s*word|every\s*time|again\s*and\s*again|loyal\s*customer|your\s*service\s*again)\b/i;
 const COMPLAINT_RE  = /\b(bad|terrible|awful|horrible|disappoint|not\s*good|wrong|cold|late|missing|never|complain|refund|cheat|fraud|angry|upset|poor|issue|problem|unsatisfied|unhappy|rubbish|disgusting|unacceptable|worst)\b/i;
 const QUESTION_RE   = /[?]|^(how|when|where|what|why|can\s*you|do\s*you|is\s*there|will\s*you|could\s*you)\b/i;
-/** Greetings during post-flow should show the main/booking menu â€” not a bare AI one-liner. */
+/** Greetings during post-flow should show the main/booking menu — not a bare AI one-liner. */
 const GREETING_RE   = /^(hi|hello|hey|hiya|howdy|yo|good\s*(morning|afternoon|evening|night)|greetings|salaam|salam)\b/i;
 
 export const isPostFlowGreeting = (msg) => {
@@ -74,9 +74,9 @@ export const isPostFlowGreeting = (msg) => {
 
 // [PFH-8] A lone ACK/COMPLIMENT regex match sitting next to a negation ("not amazing"),
 // a hedge ("hardly", "barely"), or a sarcasm marker (quoted word, clapping emoji, "lol")
-// is exactly the gap a tone-testing customer exploits â€” the regex sees the positive
+// is exactly the gap a tone-testing customer exploits — the regex sees the positive
 // word and ignores the qualifier flipping its meaning. Demote those to the AI tiebreak.
-const NEGATION_SARCASM_RE = /\b(not|never|hardly|barely|isn't|wasn't|aren't|weren't|no\s*way|yeah\s*right)\b|['"][^'"]{2,}['"]|ðŸ‘|ðŸ™„|ðŸ˜|\blol\b|\blmao\b/i;
+const NEGATION_SARCASM_RE = /\b(not|never|hardly|barely|isn't|wasn't|aren't|weren't|no\s*way|yeah\s*right)\b|['"][^'"]{2,}['"]|👏|🙄|😏|\blol\b|\blmao\b/i;
 const SENTIMENT_LABELS = ['ACK', 'COMPLIMENT', 'COMPLAINT', 'QUESTION', 'UNRELATED'];
 
 /**
@@ -84,7 +84,7 @@ const SENTIMENT_LABELS = ['ACK', 'COMPLIMENT', 'COMPLAINT', 'QUESTION', 'UNRELAT
  *
  * Trusts a single confident regex match (fast path, zero added latency/cost),
  * UNLESS that lone match is an ACK/COMPLIMENT sitting next to a negation or
- * sarcasm hint ("not bad", "wow, real 'impressive' service ðŸ‘") â€” that's the
+ * sarcasm hint ("not bad", "wow, real 'impressive' service 👏") — that's the
  * exact gap a tone-testing customer exploits, so it's demoted to the AI
  * tiebreak instead. Zero or conflicting regex matches also go to the AI
  * tiebreak. Falls back to the safe 'UNRELATED' bucket if the AI call fails.
@@ -99,7 +99,7 @@ async function classifyPostFlowSentiment(msg, business) {
   if (QUESTION_RE.test(msg))   matches.push('QUESTION');
 
   // [AUDIT-FIX-LIVE-3] A regex can't tell "impressive" from "'impressive'" or
-  // "bad" from "not bad" â€” a negation word or sarcasm marker next to a lone
+  // "bad" from "not bad" — a negation word or sarcasm marker next to a lone
   // positive match means the fast path can't be trusted.
   const hasNegationOrSarcasm = NEGATION_SARCASM_RE.test(msg);
   const soleMatchIsGameable = matches.length === 1 &&
@@ -118,13 +118,13 @@ async function classifyPostFlowSentiment(msg, business) {
   }
 }
 
-// â”€â”€ Post-flow expression turn budget â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── Post-flow expression turn budget ─────────────────────────────────────────
 // [PFH-9] After order/booking completes, customers get a bounded number of
 // expression replies (thanks, compliments, complaints, questions) before normal
 // routing resumes. Active flows (ORDER/BOOKING mid-checkout) are never touched.
 //
 // Budget of 2 = two human replies, then the third message falls through to
-// intent detection / order-status cards / welcome menu â€” not an open-ended loop.
+// intent detection / order-status cards / welcome menu — not an open-ended loop.
 export const EXPRESSION_TURN_BUDGET = 2;
 
 /** Max chars for a single post-flow expression reply (WhatsApp-friendly, not an essay). */
@@ -135,12 +135,12 @@ const EXPRESSION_CLOSING = `\n\n_Message us anytime._`;
 export const trimExpressionReply = (text) => {
   if (!text) return text;
   let s = String(text).replace(/\s+/g, ' ').trim();
-  s = s.replace(/^[-*â€¢]\s+/gm, '').replace(/\n{2,}/g, ' ').trim();
+  s = s.replace(/^[-*•]\s+/gm, '').replace(/\n{2,}/g, ' ').trim();
   if (s.length <= EXPRESSION_MAX_CHARS) return s;
   const cut = s.slice(0, EXPRESSION_MAX_CHARS);
   const lastStop = Math.max(cut.lastIndexOf('.'), cut.lastIndexOf('!'), cut.lastIndexOf('?'));
   if (lastStop > 30) return cut.slice(0, lastStop + 1).trim();
-  return `${cut.trim()}â€¦`;
+  return `${cut.trim()}…`;
 }
 
 /** Append a soft close line on the last budgeted expression turn. */
@@ -167,7 +167,7 @@ export const isExpressionSentiment = (sentiment) => {
     sentiment === 'COMPLAINT' || sentiment === 'QUESTION';
 }
 
-/** Finer-grained tone for post-flow replies â€” loyalty vs praise vs thanks, etc. */
+/** Finer-grained tone for post-flow replies — loyalty vs praise vs thanks, etc. */
 export const detectExpressionSubType = (msg, sentiment) => {
   const lower = String(msg || '').toLowerCase();
   if (sentiment === 'COMPLAINT' || COMPLAINT_RE.test(lower)) return 'COMPLAINT';
@@ -192,7 +192,7 @@ export const buildExpressionSessionContext = ({ business, subType, lastBotReply,
       ? `Their earlier message: "${lastCustomerMsg}".`
       : null,
     lastBotReply
-      ? `Your last reply: "${lastBotReply}" â€” do NOT repeat it or say the same thing differently.`
+      ? `Your last reply: "${lastBotReply}" — do NOT repeat it or say the same thing differently.`
       : null,
     `Optional tone hint: ${subType}. Let the customer's own words guide your reply, not order details.`,
   ];
@@ -200,10 +200,10 @@ export const buildExpressionSessionContext = ({ business, subType, lastBotReply,
 }
 
 const EXPRESSION_FALLBACK_BY_SUBTYPE = {
-  LOYALTY:    (custName) => `We'd love to see you again${custName}! ðŸ™`,
-  COMPLIMENT: (custName) => `That means a lot${custName}! ðŸ˜Š`,
-  ACK:        (custName) => `Anytime${custName}! ðŸ™`,
-  GENERAL:    (custName) => `Thank you${custName}! ðŸ˜Š`,
+  LOYALTY:    (custName) => `We'd love to see you again${custName}! 🙏`,
+  COMPLIMENT: (custName) => `That means a lot${custName}! 😊`,
+  ACK:        (custName) => `Anytime${custName}! 🙏`,
+  GENERAL:    (custName) => `Thank you${custName}! 😊`,
 };
 
 export async function buildPostFlowExpressionReply({
@@ -238,7 +238,7 @@ export async function buildPostFlowExpressionReply({
 
   const fallbackFn = EXPRESSION_FALLBACK_BY_SUBTYPE[subType] || EXPRESSION_FALLBACK_BY_SUBTYPE.GENERAL;
   const fallback = subType === 'LOYALTY'
-    ? `We can't wait to welcome you back${custName}! ðŸ™`
+    ? `We can't wait to welcome you back${custName}! 🙏`
     : fallbackFn(custName);
 
   return formatExpressionReply(aiReply || fallback, flowData);
@@ -296,7 +296,7 @@ async function sendPostFlowExpression({
   await finishExpressionTurn({ from, tenantId, ackCtx, flowData, lastReply: body, lastCustomerMsg: msg });
 }
 
-/** AI reply for post-flow expressions â€” one short sentence, hard cap on length. */
+/** AI reply for post-flow expressions — one short sentence, hard cap on length. */
 async function getPostFlowAIReply({ customerMessage, business, session, intent, orderContext, sessionContext }) {
   const { getAIReply } = await import('../core/ai/providers/aiRouter.js');
   const raw = await getAIReply({
@@ -307,19 +307,19 @@ async function getPostFlowAIReply({ customerMessage, business, session, intent, 
 }
 
 /**
- * handlePostFlowMessage â€” main entry point called from webhookController.
+ * handlePostFlowMessage — main entry point called from webhookController.
  *
  * @param {object} params
- * @param {string}  params.ackCtx       â€” session.postFlowAck value
- * @param {object}  params.flowData     â€” session.postFlowData
- * @param {object}  params.session      â€” full session document
- * @param {string}  params.messageText  â€” raw customer message text
- * @param {boolean} params.isInteractive â€” whether message was a button tap
- * @param {object}  params.business     â€” BusinessConfig document
- * @param {object}  params.tenantDoc    â€” Tenant document (for dispatchMessage)
- * @param {string}  params.from         â€” customer phone number
- * @param {string}  params.tenantId     â€” tenant ID string
- * @param {object}  params.custCtx      â€” from getCustomerContext()
+ * @param {string}  params.ackCtx       — session.postFlowAck value
+ * @param {object}  params.flowData     — session.postFlowData
+ * @param {object}  params.session      — full session document
+ * @param {string}  params.messageText  — raw customer message text
+ * @param {boolean} params.isInteractive — whether message was a button tap
+ * @param {object}  params.business     — BusinessConfig document
+ * @param {object}  params.tenantDoc    — Tenant document (for dispatchMessage)
+ * @param {string}  params.from         — customer phone number
+ * @param {string}  params.tenantId     — tenant ID string
+ * @param {object}  params.custCtx      — from getCustomerContext()
  *
  * @returns {Promise<boolean>} true if handled (caller should return), false to fall through
  */
@@ -331,8 +331,8 @@ export async function handlePostFlowMessage({
   const bizName   = business?.name || 'us';
   const mode      = (business?.businessMode || 'RETAIL').toUpperCase();
   const welcomeBtns = (cfg.ui?.welcomeButtons || [
-    { id: 'ORDER',    title: 'ðŸ›’ Place an Order'   },
-    { id: 'QUESTION', title: 'â“ Ask a Question'   },
+    { id: 'ORDER',    title: '🛒 Place an Order'   },
+    { id: 'QUESTION', title: '❓ Ask a Question'   },
   ]).slice(0, 3);
 
   // Resolve customer name safely
@@ -347,14 +347,14 @@ export async function handlePostFlowMessage({
 
   // [PFH-GREET] "Hello" after booking/order completion must show the menu (or
   // booking-status card), not a plain AI welcome with no buttons. Fall through
-  // to intent detection â†’ GREET, which already gates on active bookings/orders.
+  // to intent detection → GREET, which already gates on active bookings/orders.
   if (!isInteractive && isPostFlowGreeting(msg)) {
     await updateSession(from, tenantId, { postFlowAck: null, postFlowData: null });
     return false;
   }
 
   // [PFH-STATUS] "Track my order/booking" during post-flow must reach the real
-  // status lookup â€” not the generic "What would you like to do next?" menu.
+  // status lookup — not the generic "What would you like to do next?" menu.
   if (!isInteractive && isStatusCommand(msg)) {
     await updateSession(from, tenantId, { postFlowAck: null, postFlowData: null });
     return false;
@@ -366,7 +366,7 @@ export async function handlePostFlowMessage({
   const isComplaint  = sentiment === 'COMPLAINT';
   const isQuestion   = sentiment === 'QUESTION';
 
-  // [PFH-2] Clear postFlowAck first â€” consumed regardless of path taken below.
+  // [PFH-2] Clear postFlowAck first — consumed regardless of path taken below.
   // Each handler that needs to KEEP the ack context restores it explicitly.
   await updateSession(from, tenantId, { postFlowAck: null, postFlowData: null });
 
@@ -394,7 +394,7 @@ export async function handlePostFlowMessage({
         cfg, bizName, custName,
       });
 
-    // [FIX-SALON-19] QUESTION postFlowAck â€” set by completeFlow('QUESTION') in
+    // [FIX-SALON-19] QUESTION postFlowAck — set by completeFlow('QUESTION') in
     // handleSalonQuestion, handleServicesQuestion, handleGeneralQuestion, and
     // handleRestaurantQuestion. Previously fell to the default "unknown ackCtx"
     // branch which showed a generic "How can I help?" menu. This meant any follow-up
@@ -412,8 +412,8 @@ export async function handlePostFlowMessage({
         const _r = await getPostFlowAIReply({ customerMessage: msg, business, intent: 'COMPLAINT' });
         await dispatchMessage(from, {
           type:    'buttons',
-          body:    formatExpressionReply(_r || `Sorry to hear that${custName}. ðŸ˜”`, flowData),
-          buttons: [{ id: 'SUPPORT', title: 'ðŸ’¬ Speak to Team' }],
+          body:    formatExpressionReply(_r || `Sorry to hear that${custName}. 😔`, flowData),
+          buttons: [{ id: 'SUPPORT', title: '💬 Speak to Team' }],
         }, tenantDoc);
         await finishExpressionTurn({ from, tenantId, ackCtx, flowData });
         return true;
@@ -421,29 +421,29 @@ export async function handlePostFlowMessage({
       const _followUp = await getPostFlowAIReply({ customerMessage: msg, business, intent: 'QUESTION' });
       await dispatchMessage(from, {
         type: 'text',
-        body: formatExpressionReply(_followUp || `Happy to help${custName}! ðŸ˜Š`, flowData),
+        body: formatExpressionReply(_followUp || `Happy to help${custName}! 😊`, flowData),
       }, tenantDoc);
       await finishExpressionTurn({ from, tenantId, ackCtx, flowData });
       return true;
     }
 
-    // [AUDIT-FIX-SPEC-WARRANTY] SPEC_REQUEST/WARRANTY postFlowAck â€” set by
+    // [AUDIT-FIX-SPEC-WARRANTY] SPEC_REQUEST/WARRANTY postFlowAck — set by
     // completeFlow() calls in modules/electronics/flows/orderFlow.js's
     // handleSpecRequest()/handleWarranty(). Previously fell to the generic
     // `default` branch and logged a spurious "Unknown ackCtx" warning for an
-    // entirely expected, legitimate state â€” any follow-up after a spec or
+    // entirely expected, legitimate state — any follow-up after a spec or
     // warranty answer (a "thanks", another question, or a buy-now tap) got the
     // generic menu with zero context, same class of gap as QUESTION above.
     case 'SPEC_REQUEST': {
       const { getAIReply: _specAI } = await import('../core/ai/providers/aiRouter.js');
       const _specBtns = [
-        { id: 'SPEC_REQUEST', title: 'â“ Another Question' },
+        { id: 'SPEC_REQUEST', title: '❓ Another Question' },
         ...welcomeBtns.slice(0, 2),
       ].slice(0, 3);
       if (isAck || isCompliment) {
         await dispatchMessage(from, {
           type:    'buttons',
-          body:    `You're welcome${custName}! ðŸ˜Š Let us know if you have any other questions about the product.`,
+          body:    `You're welcome${custName}! 😊 Let us know if you have any other questions about the product.`,
           buttons: _specBtns,
         }, tenantDoc);
         return true;
@@ -452,15 +452,15 @@ export async function handlePostFlowMessage({
         const _r = await _specAI({ customerMessage: msg, business, intent: 'COMPLAINT' });
         await dispatchMessage(from, {
           type:    'buttons',
-          body:    _r || `We're sorry to hear that${custName}. ðŸ˜” Please speak to our team directly.`,
-          buttons: [{ id: 'SUPPORT', title: 'ðŸ’¬ Speak to Team' }],
+          body:    _r || `We're sorry to hear that${custName}. 😔 Please speak to our team directly.`,
+          buttons: [{ id: 'SUPPORT', title: '💬 Speak to Team' }],
         }, tenantDoc);
         return true;
       }
       const _followUp = await _specAI({ customerMessage: msg, business, session, intent: 'SPEC_REQUEST' });
       await dispatchMessage(from, {
         type:    'buttons',
-        body:    _followUp || `Happy to help${custName}! ðŸ˜Š`,
+        body:    _followUp || `Happy to help${custName}! 😊`,
         buttons: _specBtns,
       }, tenantDoc);
       return true;
@@ -469,14 +469,14 @@ export async function handlePostFlowMessage({
     case 'WARRANTY': {
       const { getAIReply: _warAI } = await import('../core/ai/providers/aiRouter.js');
       const _warBtns = [
-        { id: 'WARRANTY',     title: 'â“ Another Question' },
-        { id: 'SPEC_REQUEST', title: 'ðŸ›’ Tech Help'         },
-        { id: 'SUPPORT',      title: 'ðŸ’¬ Speak to Team'      },
+        { id: 'WARRANTY',     title: '❓ Another Question' },
+        { id: 'SPEC_REQUEST', title: '🛒 Tech Help'         },
+        { id: 'SUPPORT',      title: '💬 Speak to Team'      },
       ];
       if (isAck || isCompliment) {
         await dispatchMessage(from, {
           type:    'buttons',
-          body:    `You're welcome${custName}! ðŸ˜Š Let us know if you need anything else on warranty or after-sales.`,
+          body:    `You're welcome${custName}! 😊 Let us know if you need anything else on warranty or after-sales.`,
           buttons: _warBtns,
         }, tenantDoc);
         return true;
@@ -485,15 +485,15 @@ export async function handlePostFlowMessage({
         const _r = await _warAI({ customerMessage: msg, business, intent: 'COMPLAINT' });
         await dispatchMessage(from, {
           type:    'buttons',
-          body:    _r || `We're sorry to hear that${custName}. ðŸ˜” Please speak to our team directly.`,
-          buttons: [{ id: 'SUPPORT', title: 'ðŸ’¬ Speak to Team' }],
+          body:    _r || `We're sorry to hear that${custName}. 😔 Please speak to our team directly.`,
+          buttons: [{ id: 'SUPPORT', title: '💬 Speak to Team' }],
         }, tenantDoc);
         return true;
       }
       const _followUp = await _warAI({ customerMessage: msg, business, session, intent: 'WARRANTY' });
       await dispatchMessage(from, {
         type:    'buttons',
-        body:    _followUp || `Happy to help${custName}! ðŸ˜Š`,
+        body:    _followUp || `Happy to help${custName}! 😊`,
         buttons: _warBtns,
       }, tenantDoc);
       return true;
@@ -514,15 +514,15 @@ export async function handlePostFlowMessage({
         custName,
       });
 
-    // [FIX-SALON-13] WALKIN postFlowAck â€” set by completeFlow('WALKIN') in
+    // [FIX-SALON-13] WALKIN postFlowAck — set by completeFlow('WALKIN') in
     // handleSalonWalkIn CONFIRM step. Previously fell to the default "unknown ackCtx"
     // branch (generic "How can I help?" menu) because no case existed here. Any
     // follow-up message after joining the queue (a "thanks", emoji, or question)
     // showed the generic menu instead of a warm queue-context reply.
     //
     // WALKIN_CONFIRMED is set by adminCommandService.confirmBooking() when the admin
-    // taps "âœ… Confirm Queue" on the walk-in alert. It's the counterpart to
-    // BOOKING_CONFIRMED for the walk-in path â€” without it every follow-up after
+    // taps "✅ Confirm Queue" on the walk-in alert. It's the counterpart to
+    // BOOKING_CONFIRMED for the walk-in path — without it every follow-up after
     // admin queue confirmation hit the default branch.
     // [v14-POSTFLOW] APPOINTMENT_REMINDER: set by schedulerService when a reminder is sent.
     // When the customer replies to their appointment reminder, show confirm/reschedule/cancel
@@ -530,27 +530,27 @@ export async function handlePostFlowMessage({
     case 'APPOINTMENT_REMINDER': {
       const mode       = (business?.businessMode || '').toUpperCase();
       const isSalon    = mode === 'SALON' || mode === 'BARBERSHOP';
-      const emoji      = mode === 'BARBERSHOP' ? 'âœ‚ï¸' : 'ðŸ’‡';
+      const emoji      = mode === 'BARBERSHOP' ? '✂️' : '💇';
       const serviceStr = flowData?.service ? ` for *${flowData.service}*` : '';
       const whenStr    = flowData?.date
         ? ` on *${flowData.date}${flowData.time ? ` at ${flowData.time}` : ''}*`
         : '';
 
       const reminderBtns = [
-        { id: 'CONFIRM',        title: 'âœ… I\'ll be there'     },
-        { id: 'RESCHEDULE',     title: 'ðŸ“… Reschedule'         },
-        { id: 'CANCEL_BOOKING', title: 'âŒ Cancel Appointment'  },
+        { id: 'CONFIRM',        title: '✅ I\'ll be there'     },
+        { id: 'RESCHEDULE',     title: '📅 Reschedule'         },
+        { id: 'CANCEL_BOOKING', title: '❌ Cancel Appointment'  },
       ];
 
       // [v15-REMINDER-BTNS] Handle the three explicit reminder buttons first, before
       // running sentiment classifiers. Previously RESCHEDULE and CANCEL_BOOKING were
-      // shown as buttons but not handled here â€” they fell through to the default
+      // shown as buttons but not handled here — they fell through to the default
       // dispatchMessage at the bottom, showing the reminder options again in a loop.
       if (upper === 'CONFIRM') {
         await dispatchMessage(from, {
           type:    'buttons',
-          body:    `âœ… Perfect${custName}! ${emoji} We look forward to seeing you${serviceStr}${whenStr}. See you soon! ðŸ™`,
-          buttons: [{ id: 'QUESTION', title: 'â“ Ask a Question' }, { id: 'CANCEL_BOOKING', title: 'âŒ Cancel' }],
+          body:    `✅ Perfect${custName}! ${emoji} We look forward to seeing you${serviceStr}${whenStr}. See you soon! 🙏`,
+          buttons: [{ id: 'QUESTION', title: '❓ Ask a Question' }, { id: 'CANCEL_BOOKING', title: '❌ Cancel' }],
         }, tenantDoc);
         return true;
       }
@@ -577,7 +577,7 @@ export async function handlePostFlowMessage({
       if (isAck || isCompliment) {
         await dispatchMessage(from, {
           type:    'buttons',
-          body:    `Great${custName}! ${emoji} We're looking forward to seeing you${serviceStr}${whenStr}. See you soon! ðŸ™`,
+          body:    `Great${custName}! ${emoji} We're looking forward to seeing you${serviceStr}${whenStr}. See you soon! 🙏`,
           buttons: reminderBtns,
         }, tenantDoc);
         return true;
@@ -586,30 +586,30 @@ export async function handlePostFlowMessage({
       if (isComplaint) {
         await dispatchMessage(from, {
           type:    'buttons',
-          body:    `We're sorry to hear that${custName}. ðŸ˜” Would you like to reschedule or speak to our team?`,
+          body:    `We're sorry to hear that${custName}. 😔 Would you like to reschedule or speak to our team?`,
           buttons: [
-            { id: 'RESCHEDULE', title: 'ðŸ“… Reschedule'      },
-            { id: 'SUPPORT',    title: 'ðŸ’¬ Speak to Team'   },
+            { id: 'RESCHEDULE', title: '📅 Reschedule'      },
+            { id: 'SUPPORT',    title: '💬 Speak to Team'   },
           ],
         }, tenantDoc);
         return true;
       }
 
       // [FIX-REMINDER-Q] isQuestion (computed once for the whole function, same as
-      // ORDER_READY/handleWalkInQueueAck below) was never checked in this case â€” a
+      // ORDER_READY/handleWalkInQueueAck below) was never checked in this case — a
       // customer replying to an appointment reminder with a genuine question ("what
       // should I bring?", "do I need to pay in advance?") fell straight through to
       // the generic "What would you like to do?" default below, which doesn't answer
       // anything and just re-shows the same three buttons. This is the exact
       // "questioning system silently breaks" shape already fixed for MFQ_RESUME
-      // (AUDIT-FIX-15) â€” same fix here: answer via AI, then re-arm postFlowAck so a
+      // (AUDIT-FIX-15) — same fix here: answer via AI, then re-arm postFlowAck so a
       // further typed question or a button tap both keep working afterwards.
       if (isQuestion) {
         const { getAIReply: _reminderQA } = await import('../core/ai/providers/aiRouter.js');
         const aiReply = await _reminderQA({ customerMessage: msg, business, intent: 'QUESTION' }).catch(() => null);
         await dispatchMessage(from, {
           type:    'buttons',
-          body:    (aiReply || `Happy to help${custName}! ðŸ˜Š`)
+          body:    (aiReply || `Happy to help${custName}! 😊`)
                  + `\n\n_Just a reminder: your appointment${serviceStr}${whenStr} is coming up._`,
           buttons: reminderBtns,
         }, tenantDoc);
@@ -617,7 +617,7 @@ export async function handlePostFlowMessage({
         return true;
       }
 
-      // Default â€” show options
+      // Default — show options
       await dispatchMessage(from, {
         type:    'buttons',
         body:    `${emoji} Your appointment${serviceStr}${whenStr} is coming up! What would you like to do?`,
@@ -634,36 +634,36 @@ export async function handlePostFlowMessage({
         custName, bizName, ackCtx,
       });
 
-    // [FIX-PFH-SKIN] SKINCARE_ADVICE postFlowAck â€” set by cosmetics/flows/index.js
+    // [FIX-PFH-SKIN] SKINCARE_ADVICE postFlowAck — set by cosmetics/flows/index.js
     // after the AI beauty advice is delivered. Without this case every follow-up tap
-    // (ðŸ’„ Shop Now, â“ Another Question, ðŸ”„ Start Over) landed in the default branch,
+    // (💄 Shop Now, ❓ Another Question, 🔄 Start Over) landed in the default branch,
     // which sent a generic "How can I help?" menu instead of a warm contextual reply.
     case 'SKINCARE_ADVICE': {
       if (isAck || isCompliment) {
-        await dispatchMessage(from, buildOptionsReply(cfg, `You're welcome${custName}! ðŸ˜Š Ready to explore our range?`), tenantDoc);
+        await dispatchMessage(from, buildOptionsReply(cfg, `You're welcome${custName}! 😊 Ready to explore our range?`), tenantDoc);
         return true;
       }
       if (isQuestion) {
         const { getAIReply } = await import('../core/ai/providers/aiRouter.js');
         const aiReply = await getAIReply({ customerMessage: msg, business, session, intent: 'SKINCARE_ADVICE' });
-        await dispatchMessage(from, buildOptionsReply(cfg, aiReply || `Happy to help${custName}! ðŸ˜Š`), tenantDoc);
+        await dispatchMessage(from, buildOptionsReply(cfg, aiReply || `Happy to help${custName}! 😊`), tenantDoc);
         return true;
       }
-      // Any other message â€” show welcome menu
-      await dispatchMessage(from, buildOptionsReply(cfg, `What else can I help you with${custName}? ðŸ’„`), tenantDoc);
+      // Any other message — show welcome menu
+      await dispatchMessage(from, buildOptionsReply(cfg, `What else can I help you with${custName}? 💄`), tenantDoc);
       return true;
     }
 
-    // [FIX-ACK-COLLECT] ORDER_COLLECTED: set after the customer taps "Collected â€“ Thanks!"
+    // [FIX-ACK-COLLECT] ORDER_COLLECTED: set after the customer taps "Collected – Thanks!"
     // in the ORDER_READY flow. Any follow-up (thank you, emoji, compliment) gets a warm
-    // farewell reply instead of going to AI â†’ SUPPORT escalation.
+    // farewell reply instead of going to AI → SUPPORT escalation.
     case 'ORDER_COLLECTED': {
       if (isComplaint) {
         const aiReply = await getPostFlowAIReply({ customerMessage: msg, business, session, intent: 'COMPLAINT' });
         await dispatchMessage(from, {
           type:    'buttons',
-          body:    formatExpressionReply(aiReply || `Sorry to hear that${custName}. ðŸ˜”`, flowData),
-          buttons: [{ id: 'SUPPORT', title: 'ðŸ’¬ Speak to Team' }],
+          body:    formatExpressionReply(aiReply || `Sorry to hear that${custName}. 😔`, flowData),
+          buttons: [{ id: 'SUPPORT', title: '💬 Speak to Team' }],
         }, tenantDoc);
         await finishExpressionTurn({ from, tenantId, ackCtx, flowData, lastReply: aiReply, lastCustomerMsg: msg });
         return true;
@@ -675,11 +675,11 @@ export async function handlePostFlowMessage({
         });
         return true;
       }
-      await dispatchMessage(from, buildOptionsReply(cfg, `ðŸ˜Š What would you like to do next${custName}?`), tenantDoc);
+      await dispatchMessage(from, buildOptionsReply(cfg, `😊 What would you like to do next${custName}?`), tenantDoc);
       return true;
     }
 
-    // [FIX-26] ENQUIRY postFlowAck â€” set by completeFlow('ENQUIRY') in services/general flows.
+    // [FIX-26] ENQUIRY postFlowAck — set by completeFlow('ENQUIRY') in services/general flows.
     // Previously fell to 'default' (generic "How can I help?") after any enquiry submission.
     // A customer who just submitted a detailed enquiry and replies "thanks" now gets warmth.
     case 'ENQUIRY': {
@@ -694,8 +694,8 @@ export async function handlePostFlowMessage({
         const _r = await getPostFlowAIReply({ customerMessage: msg, business, intent: 'COMPLAINT' });
         await dispatchMessage(from, {
           type:    'buttons',
-          body:    formatExpressionReply(_r || `Sorry to hear that${custName}. ðŸ˜”`, flowData),
-          buttons: [{ id: 'SUPPORT', title: 'ðŸ’¬ Speak to Team' }],
+          body:    formatExpressionReply(_r || `Sorry to hear that${custName}. 😔`, flowData),
+          buttons: [{ id: 'SUPPORT', title: '💬 Speak to Team' }],
         }, tenantDoc);
         await finishExpressionTurn({ from, tenantId, ackCtx, flowData });
         return true;
@@ -703,45 +703,45 @@ export async function handlePostFlowMessage({
       const _enqFollowUp = await getPostFlowAIReply({ customerMessage: msg, business, intent: 'QUESTION' });
       await dispatchMessage(from, {
         type: 'text',
-        body: formatExpressionReply(_enqFollowUp || `Happy to help${custName}! ðŸ˜Š`, flowData),
+        body: formatExpressionReply(_enqFollowUp || `Happy to help${custName}! 😊`, flowData),
       }, tenantDoc);
       await finishExpressionTurn({ from, tenantId, ackCtx, flowData });
       return true;
     }
 
-    // [FIX-26] QUOTE_FOLLOW postFlowAck â€” set by completeFlow('QUOTE_FOLLOW') in services flow.
+    // [FIX-26] QUOTE_FOLLOW postFlowAck — set by completeFlow('QUOTE_FOLLOW') in services flow.
     case 'QUOTE_FOLLOW': {
       if (isAck || isCompliment) {
-        await dispatchMessage(from, buildOptionsReply(cfg, `You're welcome${custName}! ðŸ˜Š We'll have your quote ready shortly. We'll reach out as soon as it's prepared.`), tenantDoc);
+        await dispatchMessage(from, buildOptionsReply(cfg, `You're welcome${custName}! 😊 We'll have your quote ready shortly. We'll reach out as soon as it's prepared.`), tenantDoc);
         return true;
       }
       // [AUDIT-FIX-EXPRESSION-WINDOW-2] A complaint here previously fell into the
       // generic "else" branch below and got the same upbeat "Thanks! Our team
-      // will be in touch" reply as an ordinary follow-up â€” ignoring the
+      // will be in touch" reply as an ordinary follow-up — ignoring the
       // complaint entirely. Now escalates like every other ackCtx case.
       if (isComplaint) {
         const { getAIReply: _qfAI } = await import('../core/ai/providers/aiRouter.js');
         const _qfReply = await _qfAI({ customerMessage: msg, business, intent: 'COMPLAINT' });
         await dispatchMessage(from, {
           type:    'buttons',
-          body:    _qfReply || `We're sorry to hear that${custName}. ðŸ˜” Let us know how we can help.`,
-          buttons: [{ id: 'SUPPORT', title: 'ðŸ’¬ Speak to Team' }],
+          body:    _qfReply || `We're sorry to hear that${custName}. 😔 Let us know how we can help.`,
+          buttons: [{ id: 'SUPPORT', title: '💬 Speak to Team' }],
         }, tenantDoc);
         return true;
       }
-      // Question or other â€” show warm menu
-      await dispatchMessage(from, buildOptionsReply(cfg, `Thanks${custName}! ðŸ˜Š Our team will be in touch with your quote. Is there anything else we can help with?`), tenantDoc);
+      // Question or other — show warm menu
+      await dispatchMessage(from, buildOptionsReply(cfg, `Thanks${custName}! 😊 Our team will be in touch with your quote. Is there anything else we can help with?`), tenantDoc);
       return true;
     }
 
-    // [FIX-26] ABOUT postFlowAck â€” set by completeFlow('ABOUT') in general/handleAbout.
+    // [FIX-26] ABOUT postFlowAck — set by completeFlow('ABOUT') in general/handleAbout.
     case 'ABOUT': {
       if (isAck || isCompliment) {
-        await dispatchMessage(from, buildOptionsReply(cfg, `Glad to share! ðŸ˜Š Let us know if you'd like to get started.`), tenantDoc);
+        await dispatchMessage(from, buildOptionsReply(cfg, `Glad to share! 😊 Let us know if you'd like to get started.`), tenantDoc);
         return true;
       }
       // [AUDIT-FIX-EXPRESSION-WINDOW-2] A complaint here previously went through
-      // the generic AI QUESTION-intent reply below with no escalation path â€”
+      // the generic AI QUESTION-intent reply below with no escalation path —
       // the AI would improvise an answer without ever offering to connect the
       // customer to a human. Now escalates like every other ackCtx case.
       if (isComplaint) {
@@ -749,18 +749,18 @@ export async function handlePostFlowMessage({
         const _aboutComplaintReply = await _aboutComplaintAI({ customerMessage: msg, business, intent: 'COMPLAINT' });
         await dispatchMessage(from, {
           type:    'buttons',
-          body:    _aboutComplaintReply || `We're sorry to hear that${custName}. ðŸ˜” Let us know how we can help.`,
-          buttons: [{ id: 'SUPPORT', title: 'ðŸ’¬ Speak to Team' }],
+          body:    _aboutComplaintReply || `We're sorry to hear that${custName}. 😔 Let us know how we can help.`,
+          buttons: [{ id: 'SUPPORT', title: '💬 Speak to Team' }],
         }, tenantDoc);
         return true;
       }
       const { getAIReply: _aboutAI } = await import('../core/ai/providers/aiRouter.js');
       const _aboutReply = await _aboutAI({ customerMessage: msg, business, intent: 'QUESTION' });
-      await dispatchMessage(from, buildOptionsReply(cfg, _aboutReply || `Happy to help${custName}! ðŸ˜Š`), tenantDoc);
+      await dispatchMessage(from, buildOptionsReply(cfg, _aboutReply || `Happy to help${custName}! 😊`), tenantDoc);
       return true;
     }
 
-    // [PFH-9] Bounded expression window â€” up to EXPRESSION_TURN_BUDGET replies
+    // [PFH-9] Bounded expression window — up to EXPRESSION_TURN_BUDGET replies
     // (thanks, compliments, complaints, questions) before normal routing resumes.
     // Active ORDER/BOOKING flows are never touched; this only runs post-completion.
     case 'ORDER': {
@@ -769,10 +769,10 @@ export async function handlePostFlowMessage({
         await dispatchMessage(from, {
           type:    'buttons',
           body:    formatExpressionReply(
-            aiReply || `Sorry to hear that${custName}. ðŸ˜” We'll look into it.`,
+            aiReply || `Sorry to hear that${custName}. 😔 We'll look into it.`,
             flowData,
           ),
-          buttons: [{ id: 'SUPPORT', title: 'ðŸ’¬ Speak to Team' }],
+          buttons: [{ id: 'SUPPORT', title: '💬 Speak to Team' }],
         }, tenantDoc);
         await finishExpressionTurn({ from, tenantId, ackCtx, flowData });
         return true;
@@ -788,7 +788,7 @@ export async function handlePostFlowMessage({
         const aiReply = await getPostFlowAIReply({ customerMessage: msg, business, session, intent: 'QUESTION' });
         await dispatchMessage(from, {
           type: 'text',
-          body: formatExpressionReply(aiReply || `Happy to help${custName}! ðŸ˜Š`, flowData),
+          body: formatExpressionReply(aiReply || `Happy to help${custName}! 😊`, flowData),
         }, tenantDoc);
         await finishExpressionTurn({ from, tenantId, ackCtx, flowData });
         return true;
@@ -806,10 +806,10 @@ export async function handlePostFlowMessage({
         await dispatchMessage(from, {
           type:    'buttons',
           body:    formatExpressionReply(
-            aiReply || `Sorry to hear that${custName}. ðŸ˜” We'll look into it.`,
+            aiReply || `Sorry to hear that${custName}. 😔 We'll look into it.`,
             flowData,
           ),
-          buttons: [{ id: 'SUPPORT', title: 'ðŸ’¬ Speak to Team' }],
+          buttons: [{ id: 'SUPPORT', title: '💬 Speak to Team' }],
         }, tenantDoc);
         await finishExpressionTurn({ from, tenantId, ackCtx, flowData });
         return true;
@@ -825,7 +825,7 @@ export async function handlePostFlowMessage({
         const aiReply = await getPostFlowAIReply({ customerMessage: msg, business, session, intent: 'QUESTION' });
         await dispatchMessage(from, {
           type: 'text',
-          body: formatExpressionReply(aiReply || `Happy to help${custName}! ðŸ˜Š`, flowData),
+          body: formatExpressionReply(aiReply || `Happy to help${custName}! 😊`, flowData),
         }, tenantDoc);
         await finishExpressionTurn({ from, tenantId, ackCtx, flowData });
         return true;
@@ -837,24 +837,24 @@ export async function handlePostFlowMessage({
       return true;
     }
 
-    // â”€â”€ [MFQ] Mid-Flow Question Resume â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ── [MFQ] Mid-Flow Question Resume ────────────────────────────────────
     // Set when the customer paused a flow (booking/order) to ask a question.
     // The question has been answered. Now offer to take them back to the flow.
     case 'MFQ_RESUME': {
       // [AUDIT-FIX-13] The MFQ_SWITCH_YES answer screen (webhookController step 15.1a)
-      // offers THREE buttons â€” "â†©ï¸ Continue", "â“ Ask Another", "ðŸ”„ Main Menu" â€” and sets
+      // offers THREE buttons — "↩️ Continue", "❓ Ask Another", "🔄 Main Menu" — and sets
       // postFlowAck='MFQ_RESUME' so a plain typed follow-up gets this "Hope that helped!"
       // prompt. But webhookController's postFlowAck guard only exempted the "Continue"
-      // button id (MFQ_RESUME_FLOW) from being intercepted here â€” NOT "Ask Another"
+      // button id (MFQ_RESUME_FLOW) from being intercepted here — NOT "Ask Another"
       // (button id 'QUESTION') or "Main Menu" (button id 'SHOW_MENU'). So tapping either
       // of those two buttons was swallowed by this case and just re-showed "Hope that
       // helped! Would you like to continue with your booking?" instead of doing what the
-      // button said â€” opening a new question, or going to the main menu. Root-caused via
-      // the WhatsApp Web screenshots: tapping "â“ Ask Another" produced the resume prompt
+      // button said — opening a new question, or going to the main menu. Root-caused via
+      // the WhatsApp Web screenshots: tapping "❓ Ask Another" produced the resume prompt
       // instead of a fresh "what would you like to know?" screen.
       //
       // Fix: if the incoming message IS one of those two button taps, don't show the
-      // resume prompt at all â€” return false (postFlowAck was already cleared by [PFH-2]
+      // resume prompt at all — return false (postFlowAck was already cleared by [PFH-2]
       // above) so the caller falls through to normal button/intent routing, which sends
       // 'QUESTION' to the real Ask-a-Question flow and 'SHOW_MENU' to the real main menu.
       if (isInteractive && (upper === 'QUESTION' || upper === 'SHOW_MENU')) {
@@ -865,12 +865,12 @@ export async function handlePostFlowMessage({
       const resumeStep = flowData?.resumeStep || null;
 
       // [AUDIT-FIX-15] This case previously ignored the CONTENT of the customer's
-      // message entirely â€” isAck/isCompliment/isComplaint/isQuestion are computed at
+      // message entirely — isAck/isCompliment/isComplaint/isQuestion are computed at
       // the top of this function for every other ackCtx case, but MFQ_RESUME never
       // looked at them. That meant: after the bot answered one mid-flow question and
       // showed "Hope that helped! Continue?", if the customer typed ANOTHER question
-      // directly (instead of tapping "â“ Ask Another" first), that question text was
-      // silently discarded â€” the bot just re-showed the same generic prompt, never
+      // directly (instead of tapping "❓ Ask Another" first), that question text was
+      // silently discarded — the bot just re-showed the same generic prompt, never
       // answering it. Only a SINGLE mid-flow question could ever be asked; any further
       // typed follow-up broke the "questioning system" entirely.
       //
@@ -885,8 +885,8 @@ export async function handlePostFlowMessage({
         const _r = await _mfqComplaintAI({ customerMessage: msg, business, intent: 'COMPLAINT' }).catch(() => null);
         await dispatchMessage(from, {
           type:    'buttons',
-          body:    _r || `We're sorry to hear that${custName}. ðŸ˜” Please speak to our team directly.`,
-          buttons: [{ id: 'SUPPORT', title: 'ðŸ’¬ Speak to Team' }],
+          body:    _r || `We're sorry to hear that${custName}. 😔 Please speak to our team directly.`,
+          buttons: [{ id: 'SUPPORT', title: '💬 Speak to Team' }],
         }, tenantDoc);
         if (resumeFlow) await updateSession(from, tenantId, { postFlowAck: 'MFQ_RESUME', postFlowData: flowData });
         return true;
@@ -898,13 +898,13 @@ export async function handlePostFlowMessage({
 
         const resumeButtons = resumeFlow
           ? [
-              { id: 'MFQ_RESUME_FLOW', title: 'â†©ï¸ Continue'    },
-              { id: 'QUESTION',        title: 'â“ Ask Another'   },
-              { id: 'SHOW_MENU',       title: 'ðŸ”„ Main Menu'     },
+              { id: 'MFQ_RESUME_FLOW', title: '↩️ Continue'    },
+              { id: 'QUESTION',        title: '❓ Ask Another'   },
+              { id: 'SHOW_MENU',       title: '🔄 Main Menu'     },
             ]
           : [
-              { id: 'QUESTION',  title: 'â“ Ask Another' },
-              { id: 'SHOW_MENU', title: 'ðŸ”„ Main Menu'   },
+              { id: 'QUESTION',  title: '❓ Ask Another' },
+              { id: 'SHOW_MENU', title: '🔄 Main Menu'   },
             ];
 
         let dataReply = null;
@@ -930,7 +930,7 @@ export async function handlePostFlowMessage({
           for (const p of payloads) await dispatchMessage(from, p, tenantDoc);
           await dispatchMessage(from, {
             type:    'buttons',
-            body:    resumeFlow ? `_Tap below to continue where you left off, or ask another question._` : `ðŸ‘‡ Anything else?`,
+            body:    resumeFlow ? `_Tap below to continue where you left off, or ask another question._` : `👇 Anything else?`,
             buttons: resumeButtons,
           }, tenantDoc);
         } else {
@@ -938,7 +938,7 @@ export async function handlePostFlowMessage({
           const aiText = await _mfqFollowUpAI({ customerMessage: msg, business, session, intent: 'QUESTION' }).catch(() => null);
           await dispatchMessage(from, {
             type:    'buttons',
-            body:    aiText || 'Let me check that for you! ðŸ˜Š',
+            body:    aiText || 'Let me check that for you! 😊',
             buttons: resumeButtons,
           }, tenantDoc);
         }
@@ -958,10 +958,10 @@ export async function handlePostFlowMessage({
 
         await dispatchMessage(from, {
           type:    'buttons',
-          body:    `ðŸ˜Š Hope that helped! Would you like to continue with *${flowLabel}*?`,
+          body:    `😊 Hope that helped! Would you like to continue with *${flowLabel}*?`,
           buttons: [
-            { id: 'MFQ_RESUME_FLOW', title: `â†©ï¸ Continue ${resumeFlow === 'BOOKING' ? 'Booking' : resumeFlow === 'ORDER' ? 'Order' : 'Flow'}` },
-            { id: 'SHOW_MENU',       title: 'ðŸ”„ Main Menu' },
+            { id: 'MFQ_RESUME_FLOW', title: `↩️ Continue ${resumeFlow === 'BOOKING' ? 'Booking' : resumeFlow === 'ORDER' ? 'Order' : 'Flow'}` },
+            { id: 'SHOW_MENU',       title: '🔄 Main Menu' },
           ],
         }, tenantDoc);
         // [FIX-MFQ-LOOP] Do NOT restore postFlowAck here. Previously we set
@@ -969,31 +969,31 @@ export async function handlePostFlowMessage({
         // loop where every customer message showed "Hope that helped!" repeatedly.
         // The MFQ_RESUME_FLOW button tap is intercepted in webhookController step 15.1b
         // which reads postFlowData directly from the session (already set by updateSession
-        // at step 15.1a). We only need to keep postFlowData for the button to work â€”
+        // at step 15.1a). We only need to keep postFlowData for the button to work —
         // postFlowAck was already cleared by [PFH-2] at the top of this function, which
         // is correct: one "Hope that helped!" message per Q&A session, not per message.
         await updateSession(from, tenantId, { postFlowData: flowData });
         return true;
       }
 
-      // No resume context â€” just show the menu
-      await dispatchMessage(from, buildOptionsReply(cfg, `ðŸ˜Š Hope that helped! What would you like to do next?`), tenantDoc);
+      // No resume context — just show the menu
+      await dispatchMessage(from, buildOptionsReply(cfg, `😊 Hope that helped! What would you like to do next?`), tenantDoc);
       return true;
     }
 
     default: {
-      // [PFH-2] Unknown ackCtx â€” stale session or unhandled future state.
+      // [PFH-2] Unknown ackCtx — stale session or unhandled future state.
       // Clear it and show a gentle menu. Without this, the caller's intent detection
       // would route the customer into a fresh flow, silently wiping their context.
-      logger.warn('[PostFlow] Unknown ackCtx â€” clearing and showing menu', { ackCtx, from });
+      logger.warn('[PostFlow] Unknown ackCtx — clearing and showing menu', { ackCtx, from });
       await updateSession(from, tenantId, { postFlowAck: null, postFlowData: null });
-      await dispatchMessage(from, buildOptionsReply(cfg, `ðŸ˜Š How can I help you?`), tenantDoc);
+      await dispatchMessage(from, buildOptionsReply(cfg, `😊 How can I help you?`), tenantDoc);
       return true;
     }
   }
 }
 
-// â”€â”€ ORDER_CONFIRMED â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── ORDER_CONFIRMED ──────────────────────────────────────────────────────────
 async function handleOrderConfirmed({
   msg, upper, isAck, isCompliment, isComplaint, isQuestion, sentiment,
   flowData, session, business, tenantDoc, from, tenantId,
@@ -1002,7 +1002,7 @@ async function handleOrderConfirmed({
 }) {
   const { default: Order } = await import('../models/Order.js');
 
-  // [SPEC-4H] Cancel intent â€” show confirmation prompt before doing anything
+  // [SPEC-4H] Cancel intent — show confirmation prompt before doing anything
   const CANCEL_RE = /^(cancel|cancel\s*(my\s*)?order|stop|nevermind|never\s*mind|abort)$/i;
   if (CANCEL_RE.test(msg) || upper === 'CANCEL' || upper === 'CANCEL_ORDER') {
     const activeOrd = await Order.findOne({
@@ -1011,7 +1011,7 @@ async function handleOrderConfirmed({
       paymentStatus: { $nin: ['cancelled', 'rejected'] },
     }).select('item quantity shortId').sort({ createdAt: -1 }).lean().catch(() => null);
 
-    const itemLine  = activeOrd ? `\n\nðŸ“¦  *${activeOrd.item}* Ã— ${activeOrd.quantity} â€” _paid_` : '';
+    const itemLine  = activeOrd ? `\n\n📦  *${activeOrd.item}* × ${activeOrd.quantity} — _paid_` : '';
     const shortRef  = activeOrd?.shortId || flowData.shortId || '';
     await updateSession(from, tenantId, {
       postFlowAck:  ackCtx,
@@ -1023,10 +1023,10 @@ async function handleOrderConfirmed({
       body:
         `Are you sure you want to cancel order *#${shortRef}*?` +
         itemLine +
-        `\n\nâš ï¸ Cancellations at this stage may be subject to our refund policy.`,
+        `\n\n⚠️ Cancellations at this stage may be subject to our refund policy.`,
       buttons: [
-        { id: 'SWITCH_YES', title: 'âœ… Yes, Cancel'       },
-        { id: 'SWITCH_NO',  title: 'âŒ No, Keep My Order' },
+        { id: 'SWITCH_YES', title: '✅ Yes, Cancel'       },
+        { id: 'SWITCH_NO',  title: '❌ No, Keep My Order' },
       ],
     }, tenantDoc);
     return true;
@@ -1043,8 +1043,8 @@ async function handleOrderConfirmed({
     await updateSession(from, tenantId, { postFlowAck: null, postFlowData: null, data: {} });
     await dispatchMessage(from, buildOptionsReply(
       cfg,
-      `âŒ Your order has been cancelled.\n\nWhat would you like to do next?`,
-      [{ id: 'ORDER', title: 'ðŸ›’ Place New Order' }]
+      `❌ Your order has been cancelled.\n\nWhat would you like to do next?`,
+      [{ id: 'ORDER', title: '🛒 Place New Order' }]
     ), tenantDoc);
     return true;
   }
@@ -1054,12 +1054,12 @@ async function handleOrderConfirmed({
     await rearmPostFlowAck({ from, tenantId, ackCtx, flowData });
     await dispatchMessage(from, {
       type: 'text',
-      body: `ðŸ‘ No problem â€” ${itemRef} is still being prepared. We'll let you know when it's ready!`,
+      body: `👍 No problem — ${itemRef} is still being prepared. We'll let you know when it's ready!`,
     }, tenantDoc);
     return true;
   }
 
-  // [SPEC-4G] "What did I order?" â€” show order summary
+  // [SPEC-4G] "What did I order?" — show order summary
   const MY_ORDER_RE = /\b(what\s*(did\s*i|have\s*i)\s*order(ed)?|my\s*order|my\s*ref(erence)?|show\s*my\s*order|order\s*details?|what\s*am\s*i\s*(getting|having)|remind\s*me)\b/i;
   if (MY_ORDER_RE.test(msg)) {
     const ord = await Order.findOne({
@@ -1068,23 +1068,23 @@ async function handleOrderConfirmed({
     }).select('item quantity totalPrice shortId paymentStatus status').sort({ createdAt: -1 }).lean().catch(() => null);
 
     const currency  = business?.payment?.currency || 'D';
-    const ordItem   = ord?.item      || flowData.item     || 'â€”';
-    const ordQty    = ord?.quantity  || flowData.quantity || 'â€”';
-    const ordTotal  = ord?.totalPrice ? `${currency}${formatMoney(ord.totalPrice)}` : 'â€”';
-    const ordRef    = ord?.shortId   || flowData.shortId || 'â€”';
-    const ordStatus = (ord?.status === 'confirmed') ? 'Being Prepared ðŸ³' : 'â³ Pending';
+    const ordItem   = ord?.item      || flowData.item     || '—';
+    const ordQty    = ord?.quantity  || flowData.quantity || '—';
+    const ordTotal  = ord?.totalPrice ? `${currency}${formatMoney(ord.totalPrice)}` : '—';
+    const ordRef    = ord?.shortId   || flowData.shortId || '—';
+    const ordStatus = (ord?.status === 'confirmed') ? 'Being Prepared 🍳' : '⏳ Pending';
 
     await rearmPostFlowAck({ from, tenantId, ackCtx, flowData });
     await dispatchMessage(from, {
       type: 'text',
       body:
-        `ðŸ“¦ *${ordItem}* Ã— ${ordQty} Â· *${ordTotal}*\n` +
-        `ðŸ”– #${ordRef} Â· ${ordStatus}`,
+        `📦 *${ordItem}* × ${ordQty} · *${ordTotal}*\n` +
+        `🔖 #${ordRef} · ${ordStatus}`,
     }, tenantDoc);
     return true;
   }
 
-  // [SPEC-4F] "When will it be ready?" â€” ETA
+  // [SPEC-4F] "When will it be ready?" — ETA
   const ETA_RE = /\b(when\s*(will\s*(it|my\s*order)\s*be\s*ready|is\s*(it|my\s*order)\s*ready)?|how\s*long|any\s*update|update(\s*please)?|status\s*(please)?|how\s*soon|is\s*(it|my\s*order)\s*ready|still\s*waiting|ready\s*yet)\b/i;
   if (ETA_RE.test(msg)) {
     await rearmPostFlowAck({ from, tenantId, ackCtx, flowData });
@@ -1092,8 +1092,8 @@ async function handleOrderConfirmed({
     await dispatchMessage(from, {
       type: 'text',
       body: etaMins
-        ? `â³ Still preparing â€” about *${etaMins} mins*. We'll ping you when it's ready!`
-        : `â³ Still preparing â€” we'll ping you when it's ready!`,
+        ? `⏳ Still preparing — about *${etaMins} mins*. We'll ping you when it's ready!`
+        : `⏳ Still preparing — we'll ping you when it's ready!`,
     }, tenantDoc);
     return true;
   }
@@ -1101,11 +1101,11 @@ async function handleOrderConfirmed({
   if (isComplaint) {
     const orderContext = flowData.item ? { item: flowData.item, shortId: flowData.shortId } : null;
     const aiReply = await getPostFlowAIReply({ customerMessage: msg, business, session, intent: 'COMPLAINT', orderContext });
-    const body = formatExpressionReply(aiReply || `Really sorry about that${custName}. ðŸ˜”`, flowData);
+    const body = formatExpressionReply(aiReply || `Really sorry about that${custName}. 😔`, flowData);
     await dispatchMessage(from, {
       type:    'buttons',
       body,
-      buttons: [{ id: 'SUPPORT', title: 'ðŸ’¬ Speak to Team' }],
+      buttons: [{ id: 'SUPPORT', title: '💬 Speak to Team' }],
     }, tenantDoc);
     await finishExpressionTurn({ from, tenantId, ackCtx, flowData, lastReply: body, lastCustomerMsg: msg });
     return true;
@@ -1122,7 +1122,7 @@ async function handleOrderConfirmed({
   if (isQuestion) {
     const orderContext = flowData.item ? { item: flowData.item, shortId: flowData.shortId } : null;
     const aiReply = await getPostFlowAIReply({ customerMessage: msg, business, session, intent: 'QUESTION', orderContext });
-    const body = formatExpressionReply(aiReply || `Happy to help${custName}! ðŸ˜Š`, flowData);
+    const body = formatExpressionReply(aiReply || `Happy to help${custName}! 😊`, flowData);
     await dispatchMessage(from, { type: 'text', body }, tenantDoc);
     await finishExpressionTurn({ from, tenantId, ackCtx, flowData, lastReply: body, lastCustomerMsg: msg });
     return true;
@@ -1138,17 +1138,17 @@ async function handleOrderConfirmed({
     if (isFoodMode) {
       await dispatchMessage(from, {
         type:    'buttons',
-        body:    `Your ${itemRef2} is still being prepared â€” we'll notify you! ðŸ˜Š`,
+        body:    `Your ${itemRef2} is still being prepared — we'll notify you! 😊`,
         buttons: [
-          { id: 'QUESTION',     title: 'â“ Ask a Question' },
-          { id: 'CANCEL_ORDER', title: 'âŒ Cancel Order'   },
+          { id: 'QUESTION',     title: '❓ Ask a Question' },
+          { id: 'CANCEL_ORDER', title: '❌ Cancel Order'   },
         ],
       }, tenantDoc);
     } else {
       await dispatchMessage(from, {
         type:    'buttons',
-        body:    `Order *#${flowData.shortId || ''}* is processing. Need anything else? ðŸ˜Š`,
-        buttons: (cfg.ui?.welcomeButtons || []).slice(0, 2).concat([{ id: 'QUESTION', title: 'â“ Ask a Question' }]),
+        body:    `Order *#${flowData.shortId || ''}* is processing. Need anything else? 😊`,
+        buttons: (cfg.ui?.welcomeButtons || []).slice(0, 2).concat([{ id: 'QUESTION', title: '❓ Ask a Question' }]),
       }, tenantDoc);
     }
     return true;
@@ -1165,7 +1165,7 @@ async function handleOrderConfirmed({
   return false;
 }
 
-// â”€â”€ ORDER_REJECTED â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── ORDER_REJECTED ───────────────────────────────────────────────────────────
 async function handleOrderRejected({
   msg, isAck, isCompliment, isComplaint,
   flowData, business, tenantDoc, from, tenantId,
@@ -1182,10 +1182,10 @@ async function handleOrderRejected({
     await dispatchMessage(from, {
       type:    'buttons',
       body:    formatExpressionReply(
-        aiReply || `Sorry about that${custName}. ðŸ˜”`,
+        aiReply || `Sorry about that${custName}. 😔`,
         flowData,
       ),
-      buttons: [{ id: 'SUPPORT', title: 'ðŸ’¬ Speak to Team' }],
+      buttons: [{ id: 'SUPPORT', title: '💬 Speak to Team' }],
     }, tenantDoc);
     await finishExpressionTurn({ from, tenantId, ackCtx, flowData });
     return true;
@@ -1195,7 +1195,7 @@ async function handleOrderRejected({
     await dispatchMessage(from, {
       type: 'text',
       body: formatExpressionReply(
-        `Sorry your order${itemStr} didn't go through${custName}. ðŸ™${reasonLine}`,
+        `Sorry your order${itemStr} didn't go through${custName}. 🙏${reasonLine}`,
         flowData,
       ),
     }, tenantDoc);
@@ -1206,13 +1206,13 @@ async function handleOrderRejected({
   const aiReply = await getPostFlowAIReply({ customerMessage: msg, business, intent: 'SUPPORT' });
   await dispatchMessage(from, {
     type: 'text',
-    body: formatExpressionReply(aiReply || `We're here to help${custName}. ðŸ˜Š`, flowData),
+    body: formatExpressionReply(aiReply || `We're here to help${custName}. 😊`, flowData),
   }, tenantDoc);
   await finishExpressionTurn({ from, tenantId, ackCtx, flowData });
   return true;
 }
 
-// â”€â”€ ORDER_READY â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── ORDER_READY ──────────────────────────────────────────────────────────────
 async function handleOrderReady({
   msg, upper, isAck, isQuestion,
   flowData, business, tenantDoc, from, tenantId,
@@ -1227,7 +1227,7 @@ async function handleOrderReady({
     const { default: Order } = await import('../models/Order.js');
     const shortIdRef = flowData.shortId || upper.replace('COLLECTED_', '');
     if (shortIdRef) {
-      // [AUDIT-FIX-TRACE-5] Was missing `customerPhone: from` â€” same gap as the
+      // [AUDIT-FIX-TRACE-5] Was missing `customerPhone: from` — same gap as the
       // COLLECTED_* handler in webhookController.js and the SWITCH_YES cancel above.
       await Order.findOneAndUpdate(
         { shortId: shortIdRef, tenantId, customerPhone: from, status: 'ready' },
@@ -1236,11 +1236,11 @@ async function handleOrderReady({
     }
     await dispatchMessage(from, {
       type: 'text',
-      body: `ðŸŽ‰ Enjoy! See you again soon. â€” *${bizName}*`,
+      body: `🎉 Enjoy! See you again soon. — *${bizName}*`,
     }, tenantDoc);
     // [FIX-ACK-COLLECT] Set postFlowAck so that any immediate follow-up from the customer
     // ("thank you", "was delicious", emoji) is handled with warm contextual reply instead
-    // of falling through to AI classify â†’ SUPPORT and triggering an unintended escalation.
+    // of falling through to AI classify → SUPPORT and triggering an unintended escalation.
     await updateSession(from, tenantId, {
       postFlowAck:  'ORDER_COLLECTED',
       postFlowData: { item: flowData.item, shortId: shortIdRef, _exprTurnsLeft: EXPRESSION_TURN_BUDGET },
@@ -1252,10 +1252,10 @@ async function handleOrderReady({
     const collectedBtnId = flowData.shortId ? `COLLECTED_${flowData.shortId}` : null;
     await dispatchMessage(from, {
       type:    'buttons',
-      body:    `You're welcome${custName}! ${itemRef} is ready at the counter. ðŸ˜Š`,
+      body:    `You're welcome${custName}! ${itemRef} is ready at the counter. 😊`,
       buttons: collectedBtnId
-        ? [{ id: collectedBtnId, title: 'âœ… Collected â€” Thanks!' }]
-        : [{ id: 'SUPPORT',      title: 'âœ… Collected â€” Thanks!' }],
+        ? [{ id: collectedBtnId, title: '✅ Collected — Thanks!' }]
+        : [{ id: 'SUPPORT',      title: '✅ Collected — Thanks!' }],
     }, tenantDoc);
     return true;
   }
@@ -1264,21 +1264,21 @@ async function handleOrderReady({
     const aiReply = await getPostFlowAIReply({ customerMessage: msg, business, intent: 'QUESTION' });
     await dispatchMessage(from, {
       type:    'buttons',
-      body:    aiReply || `Happy to help${custName}! Ready at the counter. ðŸ˜Š`,
-      buttons: [{ id: 'SUPPORT', title: 'â“ Need Help' }],
+      body:    aiReply || `Happy to help${custName}! Ready at the counter. 😊`,
+      buttons: [{ id: 'SUPPORT', title: '❓ Need Help' }],
     }, tenantDoc);
     return true;
   }
 
   await dispatchMessage(from, {
     type:    'buttons',
-    body:    `${itemRef} is ready at the counter! ðŸ˜Š`,
-    buttons: [{ id: 'SUPPORT', title: 'â“ Need Help' }],
+    body:    `${itemRef} is ready at the counter! 😊`,
+    buttons: [{ id: 'SUPPORT', title: '❓ Need Help' }],
   }, tenantDoc);
   return true;
 }
 
-// â”€â”€ WALKIN / WALKIN_CONFIRMED â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── WALKIN / WALKIN_CONFIRMED ────────────────────────────────────────────────
 // Handles customer follow-up messages after joining the walk-in queue (WALKIN)
 // or after the admin confirms their queue entry (WALKIN_CONFIRMED).
 //
@@ -1292,16 +1292,16 @@ async function handleWalkInQueueAck({
 }) {
   const mode       = (business?.businessMode || '').toUpperCase();
   const isBarbershop = mode === 'BARBERSHOP';
-  const emoji      = isBarbershop ? 'âœ‚ï¸' : 'ðŸ’‡';
+  const emoji      = isBarbershop ? '✂️' : '💇';
   const staffStr   = flowData?.staff ? ` with *${flowData.staff}*` : '';
   const serviceStr = flowData?.service ? ` for *${flowData.service}*` : '';
 
-  // Contextual buttons â€” customers in the walk-in queue can book a proper
+  // Contextual buttons — customers in the walk-in queue can book a proper
   // appointment for next time, ask a question, or see the main menu.
   const queueBtns = [
-    { id: 'QUESTION',  title: 'â“ Ask a Question'   },
-    { id: 'BOOK',      title: 'ðŸ“… Book Next Time'   },
-    { id: 'SHOW_MENU', title: 'ðŸ”„ Main Menu'         },
+    { id: 'QUESTION',  title: '❓ Ask a Question'   },
+    { id: 'BOOK',      title: '📅 Book Next Time'   },
+    { id: 'SHOW_MENU', title: '🔄 Main Menu'         },
   ];
 
   if (upper === 'CANCEL_BOOKING' || upper === 'CANCEL') {
@@ -1314,8 +1314,8 @@ async function handleWalkInQueueAck({
   if (isCompliment || isAck || shouldHandleAsPostFlowExpression(msg, sentiment)) {
     const isConfirmed = ackCtx === 'WALKIN_CONFIRMED';
     const suffix = isConfirmed
-      ? 'Customer is confirmed in the walk-in queue â€” acknowledge warmly, they should head over soon.'
-      : 'Customer is in the walk-in queue â€” acknowledge warmly.';
+      ? 'Customer is confirmed in the walk-in queue — acknowledge warmly, they should head over soon.'
+      : 'Customer is in the walk-in queue — acknowledge warmly.';
     await sendPostFlowExpression({
       from, tenantId, ackCtx, flowData, msg, sentiment, business, session,
       custName, bizName, tenantDoc, sessionContextSuffix: suffix,
@@ -1327,8 +1327,8 @@ async function handleWalkInQueueAck({
     const aiReply = await getPostFlowAIReply({ customerMessage: msg, business, intent: 'COMPLAINT' });
     await dispatchMessage(from, {
       type:    'buttons',
-      body:    formatExpressionReply(aiReply || `Sorry to hear that${custName}. ðŸ˜”`, flowData),
-      buttons: [{ id: 'SUPPORT', title: 'ðŸ’¬ Speak to Team' }],
+      body:    formatExpressionReply(aiReply || `Sorry to hear that${custName}. 😔`, flowData),
+      buttons: [{ id: 'SUPPORT', title: '💬 Speak to Team' }],
     }, tenantDoc);
     await finishExpressionTurn({ from, tenantId, ackCtx, flowData });
     return true;
@@ -1348,7 +1348,7 @@ async function handleWalkInQueueAck({
   return true;
 }
 
-// â”€â”€ BOOKING_CONFIRMED â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── BOOKING_CONFIRMED ────────────────────────────────────────────────────────
 async function handleBookingConfirmed({
   msg, upper, isAck, isCompliment, isComplaint, isQuestion, sentiment,
   flowData, business, tenantDoc, from, tenantId, session,
@@ -1368,11 +1368,11 @@ async function handleBookingConfirmed({
 
   const _salonConfirmBtns = isSalon
     ? [
-        { id: 'RESCHEDULE',     title: 'ðŸ“… Reschedule'      },
-        { id: 'QUESTION',       title: 'â“ Ask a Question'  },
-        { id: 'CANCEL_BOOKING', title: 'âŒ Cancel Booking'  },
+        { id: 'RESCHEDULE',     title: '📅 Reschedule'      },
+        { id: 'QUESTION',       title: '❓ Ask a Question'  },
+        { id: 'CANCEL_BOOKING', title: '❌ Cancel Booking'  },
       ]
-    : [{ id: 'CANCEL_BOOKING', title: 'âŒ Cancel Booking' }];
+    : [{ id: 'CANCEL_BOOKING', title: '❌ Cancel Booking' }];
 
   if (upper === 'CANCEL_BOOKING' || upper === 'CANCEL') {
     const { cancelFlow } = await import('../core/conversations/flowEngine.js');
@@ -1404,8 +1404,8 @@ async function handleBookingConfirmed({
     const aiReply = await getPostFlowAIReply({ customerMessage: msg, business, intent: 'COMPLAINT' });
     await dispatchMessage(from, {
       type:    'buttons',
-      body:    formatExpressionReply(aiReply || `Sorry to hear that${custName}. ðŸ˜”`, flowData),
-      buttons: [{ id: 'SUPPORT', title: 'ðŸ’¬ Speak to Team' }],
+      body:    formatExpressionReply(aiReply || `Sorry to hear that${custName}. 😔`, flowData),
+      buttons: [{ id: 'SUPPORT', title: '💬 Speak to Team' }],
     }, tenantDoc);
     await finishExpressionTurn({ from, tenantId, ackCtx, flowData });
     return true;
@@ -1425,14 +1425,14 @@ async function handleBookingConfirmed({
   const aiReply = await getPostFlowAIReply({ customerMessage: msg, business, intent: 'QUESTION' });
   await dispatchMessage(from, {
     type:    'buttons',
-    body:    formatExpressionReply(aiReply || `Happy to help${custName}! ðŸ˜Š`, flowData),
+    body:    formatExpressionReply(aiReply || `Happy to help${custName}! 😊`, flowData),
     buttons: _salonConfirmBtns,
   }, tenantDoc);
   await finishExpressionTurn({ from, tenantId, ackCtx, flowData });
   return true;
 }
 
-// â”€â”€ BOOKING_DECLINED â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── BOOKING_DECLINED ─────────────────────────────────────────────────────────
 async function handleBookingDeclined({
   msg, isAck, isComplaint,
   flowData, business, tenantDoc, from, tenantId,
@@ -1442,25 +1442,25 @@ async function handleBookingDeclined({
   const isSalon   = mode === 'SALON' || mode === 'BARBERSHOP';
   const isWalkIn  = flowData.bookingType === 'walkin';
 
-  // [FIX-SALON-12] Walk-in declined â†’ offer to BOOK an appointment or WALKIN again later.
-  // Regular booking declined â†’ offer to BOOK another time.
+  // [FIX-SALON-12] Walk-in declined → offer to BOOK an appointment or WALKIN again later.
+  // Regular booking declined → offer to BOOK another time.
   // Salon/barbershop gets WALKIN as a second-chance option; restaurant just gets BOOK.
   const _declinedBtns = isSalon
     ? [
-        { id: 'BOOK',    title: 'ðŸ“… Book Appointment' },
-        { id: 'WALKIN',  title: 'ðŸš¶ Walk-In Queue'    },
-        { id: 'SUPPORT', title: 'ðŸ’¬ Speak to Team'    },
+        { id: 'BOOK',    title: '📅 Book Appointment' },
+        { id: 'WALKIN',  title: '🚶 Walk-In Queue'    },
+        { id: 'SUPPORT', title: '💬 Speak to Team'    },
       ]
     : [
-        { id: 'BOOK',    title: 'ðŸ“… Book Another Time' },
-        { id: 'SUPPORT', title: 'ðŸ’¬ Speak to Team'     },
+        { id: 'BOOK',    title: '📅 Book Another Time' },
+        { id: 'SUPPORT', title: '💬 Speak to Team'     },
       ];
 
   if (isComplaint) {
     const aiReply = await getPostFlowAIReply({ customerMessage: msg, business, intent: 'COMPLAINT' });
     await dispatchMessage(from, {
       type:    'buttons',
-      body:    trimExpressionReply(aiReply || `Sorry about that${custName}. ðŸ˜”`),
+      body:    trimExpressionReply(aiReply || `Sorry about that${custName}. 😔`),
       buttons: _declinedBtns,
     }, tenantDoc);
     return true;
@@ -1468,8 +1468,8 @@ async function handleBookingDeclined({
 
   if (isAck) {
     const retryMsg = isWalkIn
-      ? `Sorry the queue's full${custName}. ðŸ™ Try again later or book below.`
-      : `Sorry we couldn't fit you in${custName}. ðŸ™ Tap below to try another time.`;
+      ? `Sorry the queue's full${custName}. 🙏 Try again later or book below.`
+      : `Sorry we couldn't fit you in${custName}. 🙏 Tap below to try another time.`;
     await dispatchMessage(from, {
       type:    'buttons',
       body:    retryMsg,
@@ -1481,7 +1481,7 @@ async function handleBookingDeclined({
   const aiReply = await getPostFlowAIReply({ customerMessage: msg, business, intent: 'SUPPORT' });
   await dispatchMessage(from, {
     type:    'buttons',
-    body:    trimExpressionReply(aiReply || `We're here to help${custName}. ðŸ˜Š`),
+    body:    trimExpressionReply(aiReply || `We're here to help${custName}. 😊`),
     buttons: _declinedBtns,
   }, tenantDoc);
   return true;

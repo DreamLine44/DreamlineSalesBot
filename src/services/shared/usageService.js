@@ -18,8 +18,8 @@
  * as a side effect of an audit pass. This only tracks and reports; whether
  * to gate on it is a separate decision for later.
  */
-import Tenant from '../models/Tenant.js';
-import logger from '../config/logger.js';
+import Tenant from '../../models/Tenant.js';
+import logger from '../../config/logger.js';
 
 /** True if `resetDate` falls in a different calendar month than `now`. */
 const isPastResetWindow = (resetDate, now) => {

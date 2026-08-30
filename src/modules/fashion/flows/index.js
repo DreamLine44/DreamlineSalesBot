@@ -1,6 +1,6 @@
-﻿/**
+/**
  * modules/fashion/flows/index.js
- * Fashion module â€” product catalog + variants + recommendations
+ * Fashion module — product catalog + variants + recommendations
  */
 import { updateSession }  from '../../../core/sessions/sessionService.js';
 import { getAIReply }     from '../../../core/ai/providers/aiRouter.js';
@@ -21,20 +21,20 @@ export const FASHION_CONFIG = {
   },
   ui: {
     welcomeButtons: [
-      { id: 'ORDER',    title: 'ðŸ‘— Shop Collection' },
-      { id: 'QUESTION', title: 'â“ Style Help'       },
+      { id: 'ORDER',    title: '👗 Shop Collection' },
+      { id: 'QUESTION', title: '❓ Style Help'       },
     ],
     fallbackButtons: [
-      { id: 'ORDER',    title: 'ðŸ‘— Shop'     },
-      { id: 'QUESTION', title: 'â“ Question' },
+      { id: 'ORDER',    title: '👗 Shop'     },
+      { id: 'QUESTION', title: '❓ Question' },
     ],
-    confirmButtons: [{ id: 'CONFIRM', title: 'âœ… Confirm Order' }, { id: 'CANCEL', title: 'âŒ Cancel' }],
-    upsellButtons:  [{ id: 'UPSELL_YES', title: 'âœ… Yes please' }, { id: 'UPSELL_NO', title: 'âŒ No thanks' }],
+    confirmButtons: [{ id: 'CONFIRM', title: '✅ Confirm Order' }, { id: 'CANCEL', title: '❌ Cancel' }],
+    upsellButtons:  [{ id: 'UPSELL_YES', title: '✅ Yes please' }, { id: 'UPSELL_NO', title: '❌ No thanks' }],
   },
   messages: {
-    welcome:     "âœ¨ Welcome! Let's find something perfect for you.",
-    orderPrompt: 'ðŸ‘— Our latest collection â€” choose an item:',
-    cancelMsg: 'âœ… No problem! Browse our collection anytime. ðŸ‘—',
+    welcome:     "✨ Welcome! Let's find something perfect for you.",
+    orderPrompt: '👗 Our latest collection — choose an item:',
+    cancelMsg: '✅ No problem! Browse our collection anytime. 👗',
     fallback:    'Would you like to *browse our collection*, or do you have a *style question*?',
   },
 };
@@ -57,7 +57,7 @@ export async function handleFashionOrder({ session, message, business, tenant, i
       });
       return buildCatalogUI(business);
     }
-    // [FEAT-FASHION-CATEGORY] Category-first browsing â€” only shown when the
+    // [FEAT-FASHION-CATEGORY] Category-first browsing — only shown when the
     // tenant has actually set 2+ distinct categories on their items (real
     // data, not a forced step). Mirrors retail's exact pattern.
     const categories = _getCategories(menu);
@@ -72,7 +72,7 @@ export async function handleFashionOrder({ session, message, business, tenant, i
   }
 
   switch (step) {
-    // â”€â”€ BROWSE_CATEGORY â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ── BROWSE_CATEGORY ─────────────────────────────────────────────────────
     case 'BROWSE_CATEGORY': {
       const categories = _getCategories(menu);
       const catMatch = categories.find(c => raw.toUpperCase() === `CAT_${c.toUpperCase().replace(/\s+/g, '_')}`);
@@ -86,7 +86,7 @@ export async function handleFashionOrder({ session, message, business, tenant, i
         return buildCatalogUI(business, filtered, catMatch);
       }
       if (clean.length >= 2) {
-        // Typed text while browsing categories â€” treat as a full-catalogue
+        // Typed text while browsing categories — treat as a full-catalogue
         // search. Recurse into SELECT_ITEM with the same message so its
         // existing fuzzy-match + variant-picker logic runs unchanged instead
         // of duplicating it here.
@@ -103,7 +103,7 @@ export async function handleFashionOrder({ session, message, business, tenant, i
 
     case 'SELECT_ITEM': {
       // [FEAT-FASHION-CATEGORY] Scope numeric/interactive taps to the same
-      // filtered list that was rendered â€” same fix class as
+      // filtered list that was rendered — same fix class as
       // [AUDIT-FIX-RETAIL-SCOPEDINDEX], applied here from the start so
       // category browsing never ships with the mismatch bug.
       const scopedMenu = data.category
@@ -114,7 +114,7 @@ export async function handleFashionOrder({ session, message, business, tenant, i
         await updateSession(session.customerPhone, session.tenantId, { menuViewed: true });
         return buildCatalogUI(business, scopedMenu, data.category || null);
       }
-      // [AUDIT-FIX-PARSEINT] parseInt("2 red shirts", 10) === 2, NOT NaN â€” so any
+      // [AUDIT-FIX-PARSEINT] parseInt("2 red shirts", 10) === 2, NOT NaN — so any
       // message merely STARTING with a digit silently hijacked the menu index
       // once menuViewed was true (the normal case). Only trust the parsed index
       // for a bare number or an interactive tap; everything else falls through
@@ -127,7 +127,7 @@ export async function handleFashionOrder({ session, message, business, tenant, i
         if (confidenceLevel === 'HIGH') item = matched;
         else if (confidenceLevel === 'LOW') {
           return { type: 'buttons', body: `Did you mean *${matched.name}*?`,
-            buttons: [{ id: 'CONFIRM', title: `âœ… Yes, ${matched.name}` }, { id: 'SHOW_MENU', title: 'ðŸ”„ Start Over' }] };
+            buttons: [{ id: 'CONFIRM', title: `✅ Yes, ${matched.name}` }, { id: 'SHOW_MENU', title: '🔄 Start Over' }] };
         }
       }
       if (!item) return buildCatalogUI(business, scopedMenu, data.category || null);
@@ -144,32 +144,32 @@ export async function handleFashionOrder({ session, message, business, tenant, i
         if (item.variants.length > 3) {
           nextPrompt = {
             type: 'list',
-            body: `âœ¨ *${item.name}*${item.price ? ` â€” ${business?.payment?.currency || 'D'}${formatMoney(item.price)}` : ''}\n\nWhat *size* would you like?`,
+            body: `✨ *${item.name}*${item.price ? ` — ${business?.payment?.currency || 'D'}${formatMoney(item.price)}` : ''}\n\nWhat *size* would you like?`,
             button: 'Choose size',
             sections: [{ title: 'Available Sizes', rows: item.variants.map(v => ({ id: `SIZE_${String(v).toUpperCase().replace(/\s+/g, '_')}`, title: String(v) })) }],
           };
         } else {
           nextPrompt = {
             type: 'buttons',
-            body: `âœ¨ *${item.name}*${item.price ? ` â€” ${business?.payment?.currency || 'D'}${formatMoney(item.price)}` : ''}\n\nWhat *size* would you like?`,
-            buttons: [...variantButtons, { id: 'CANCEL', title: 'âŒ Cancel' }].slice(0, 3),
+            body: `✨ *${item.name}*${item.price ? ` — ${business?.payment?.currency || 'D'}${formatMoney(item.price)}` : ''}\n\nWhat *size* would you like?`,
+            buttons: [...variantButtons, { id: 'CANCEL', title: '❌ Cancel' }].slice(0, 3),
           };
         }
       } else {
         await updateSession(session.customerPhone, session.tenantId, { step: 'QUANTITY', data: { item } });
         nextPrompt = {
           type: 'buttons',
-          body: `âœ¨ *${item.name}* selected!\n\nHow many would you like?`,
+          body: `✨ *${item.name}* selected!\n\nHow many would you like?`,
           buttons: [
-            { id: 'QTY_1', title: '1ï¸âƒ£  1' },
-            { id: 'QTY_2', title: '2ï¸âƒ£  2' },
-            { id: 'QTY_3', title: '3ï¸âƒ£  3' },
+            { id: 'QTY_1', title: '1️⃣  1' },
+            { id: 'QTY_2', title: '2️⃣  2' },
+            { id: 'QTY_3', title: '3️⃣  3' },
           ],
           footer: 'Or type any number e.g. 4, 5',
         };
       }
 
-      // [FEAT-CATALOG-IMAGES] Same pattern as restaurant/flows/orderFlow.js â€”
+      // [FEAT-CATALOG-IMAGES] Same pattern as restaurant/flows/orderFlow.js —
       // the tenant's uploaded photo is stored correctly regardless of
       // vertical, but fashion never actually sent it to the customer before.
       const imageUrl = item?.image?.url;
@@ -178,7 +178,7 @@ export async function handleFashionOrder({ session, message, business, tenant, i
           {
             type:    'image',
             url:     buildWhatsAppImageUrl(imageUrl),
-            caption: `*${item.name}*${item.price ? ` â€” ${business?.payment?.currency || 'D'}${formatMoney(item.price)}` : ''}`,
+            caption: `*${item.name}*${item.price ? ` — ${business?.payment?.currency || 'D'}${formatMoney(item.price)}` : ''}`,
           },
           nextPrompt,
         ];
@@ -215,7 +215,7 @@ export async function handleFashionOrder({ session, message, business, tenant, i
         if (colorButtons.length > 3) {
           return {
             type: 'list',
-            body: `Size *${size}* â€” perfect! âœ…\n\nWhat *colour* would you like?`,
+            body: `Size *${size}* — perfect! ✅\n\nWhat *colour* would you like?`,
             button: 'Choose colour',
             sections: [{
               title: 'Available Colours',
@@ -228,13 +228,13 @@ export async function handleFashionOrder({ session, message, business, tenant, i
         }
         return {
           type: 'buttons',
-          body: `Size *${size}* â€” perfect! âœ…\n\nWhat *colour* would you like?`,
+          body: `Size *${size}* — perfect! ✅\n\nWhat *colour* would you like?`,
           buttons: [
             ...colorButtons.slice(0, 2).map(c => ({
               id:    `COLOR_${String(c).toUpperCase().replace(/\s+/g, '_')}`,
               title: String(c),
             })),
-            { id: 'COLOR_SKIP', title: 'â­ No preference' },
+            { id: 'COLOR_SKIP', title: '⏭ No preference' },
           ],
         };
       }
@@ -242,17 +242,17 @@ export async function handleFashionOrder({ session, message, business, tenant, i
       await updateSession(session.customerPhone, session.tenantId, { step: 'QUANTITY', data: { ...data, size } });
       return {
         type: 'buttons',
-        body: `Size *${size}* â€” got it! âœ…\n\nHow many would you like?`,
+        body: `Size *${size}* — got it! ✅\n\nHow many would you like?`,
         buttons: [
-          { id: 'QTY_1', title: '1ï¸âƒ£  1' },
-          { id: 'QTY_2', title: '2ï¸âƒ£  2' },
-          { id: 'QTY_3', title: '3ï¸âƒ£  3' },
+          { id: 'QTY_1', title: '1️⃣  1' },
+          { id: 'QTY_2', title: '2️⃣  2' },
+          { id: 'QTY_3', title: '3️⃣  3' },
         ],
         footer: 'Or type any number',
       };
     }
 
-    // [UX-4] SELECT_COLOR â€” was declared in config steps but never implemented.
+    // [UX-4] SELECT_COLOR — was declared in config steps but never implemented.
     // Customers would silently skip colour selection; orders had no colour recorded.
     case 'SELECT_COLOR': {
       let color;
@@ -273,14 +273,14 @@ export async function handleFashionOrder({ session, message, business, tenant, i
       await updateSession(session.customerPhone, session.tenantId, {
         step: 'QUANTITY', data: { ...data, color: color || null },
       });
-      const colorConfirm = color ? `Colour *${color}* â€” ` : '';
+      const colorConfirm = color ? `Colour *${color}* — ` : '';
       return {
         type: 'buttons',
-        body: `${colorConfirm}got it! âœ…\n\nHow many would you like?`,
+        body: `${colorConfirm}got it! ✅\n\nHow many would you like?`,
         buttons: [
-          { id: 'QTY_1', title: '1ï¸âƒ£  1' },
-          { id: 'QTY_2', title: '2ï¸âƒ£  2' },
-          { id: 'QTY_3', title: '3ï¸âƒ£  3' },
+          { id: 'QTY_1', title: '1️⃣  1' },
+          { id: 'QTY_2', title: '2️⃣  2' },
+          { id: 'QTY_3', title: '3️⃣  3' },
         ],
         footer: 'Or type any number',
       };
@@ -294,43 +294,43 @@ export async function handleFashionOrder({ session, message, business, tenant, i
       if (!qty || qty < 1) {
         return {
           type:    'buttons',
-          body:    `Please enter a number â€” e.g. *1*, *2*, *three*\n\n_(Maximum: ${MAX_QTY} per order)_`,
-          buttons: [{ id: 'CANCEL', title: 'âŒ Cancel' }],
+          body:    `Please enter a number — e.g. *1*, *2*, *three*\n\n_(Maximum: ${MAX_QTY} per order)_`,
+          buttons: [{ id: 'CANCEL', title: '❌ Cancel' }],
         };
       }
       if (qty > MAX_QTY) {
         return {
           type:    'buttons',
-          body:    `âš ï¸ Maximum order quantity is *${MAX_QTY}*. Please enter a number between *1* and *${MAX_QTY}*.`,
-          buttons: [{ id: 'CANCEL', title: 'âŒ Cancel' }],
+          body:    `⚠️ Maximum order quantity is *${MAX_QTY}*. Please enter a number between *1* and *${MAX_QTY}*.`,
+          buttons: [{ id: 'CANCEL', title: '❌ Cancel' }],
         };
       }
       const total = (data.item?.price || 0) * qty;
       await updateSession(session.customerPhone, session.tenantId, { step: 'CONFIRM', data: { ...data, quantity: qty, totalPrice: total } });
       const sizeStr  = data.size  ? ` (${data.size})`  : '';
-      const colorStr = data.color ? ` â€” ${data.color}` : '';
+      const colorStr = data.color ? ` — ${data.color}` : '';
       return {
         type: 'buttons',
-        body: `ðŸ§¾ *Order Summary*\n\nðŸ‘— *${qty}Ã— ${data.item?.name}${sizeStr}${colorStr}*${total ? `\nðŸ’° ${business?.payment?.currency || 'D'}${formatMoney(total)}` : ''}\n\nConfirm?`,
-        buttons: [{ id: 'CONFIRM', title: 'âœ… Confirm Order' }, { id: 'CANCEL', title: 'âŒ Cancel' }],
+        body: `🧾 *Order Summary*\n\n👗 *${qty}× ${data.item?.name}${sizeStr}${colorStr}*${total ? `\n💰 ${business?.payment?.currency || 'D'}${formatMoney(total)}` : ''}\n\nConfirm?`,
+        buttons: [{ id: 'CONFIRM', title: '✅ Confirm Order' }, { id: 'CANCEL', title: '❌ Cancel' }],
       };
     }
 
     case 'CONFIRM': {
-      // [FIX-DUALLAYER-CONFIRM] See core/shared/confirmationMatcher.js â€”
+      // [FIX-DUALLAYER-CONFIRM] See core/shared/confirmationMatcher.js —
       // widened from a 4-word exact-match regex so "yes please"/"go ahead"/
       // "sounds good" also register, not just a bare "yes"/"y"/"confirm"/"ok".
       const { isAffirmative: _isAffirmativeConfirm } = await import('../../../core/shared/confirmationMatcher.js');
       if (!(/^(yes|y|confirm|ok)$/i.test(clean) || _isAffirmativeConfirm(raw))) {
         return {
           type: 'buttons',
-          body: 'ðŸ‘— Ready to place your order?',
-          buttons: [{ id: 'CONFIRM', title: 'âœ… Confirm Order' }, { id: 'CANCEL', title: 'âŒ Cancel' }],
+          body: '👗 Ready to place your order?',
+          buttons: [{ id: 'CONFIRM', title: '✅ Confirm Order' }, { id: 'CANCEL', title: '❌ Cancel' }],
         };
       }
       let savedOrder = null;
       try {
-        savedOrder = await saveOrder({ item: `${data.item?.name}${data.size ? ` (${data.size})` : ''}${data.color ? ` â€” ${data.color}` : ''}`,
+        savedOrder = await saveOrder({ item: `${data.item?.name}${data.size ? ` (${data.size})` : ''}${data.color ? ` — ${data.color}` : ''}`,
           quantity: data.quantity, totalPrice: data.totalPrice,
           customerName: session.customerName || null, // [FIX-SAVE-2]
           customerPhone: session.customerPhone, tenantId: session.tenantId, businessId: business._id });
@@ -343,22 +343,22 @@ export async function handleFashionOrder({ session, message, business, tenant, i
         });
         return {
           type:    'buttons',
-          body:    `âš ï¸ *Something went wrong saving your order.*\n\nPlease try again â€” tap below to start over.`,
+          body:    `⚠️ *Something went wrong saving your order.*\n\nPlease try again — tap below to start over.`,
           buttons: [
-            { id: 'ORDER',    title: 'ðŸ›’ Try Again'   },
-            { id: 'SUPPORT',  title: 'ðŸ’¬ Contact Us'  },
+            { id: 'ORDER',    title: '🛒 Try Again'   },
+            { id: 'SUPPORT',  title: '💬 Contact Us'  },
           ],
         };
       }
 
-      // [FIX-5] Payment flow â€” fashion was skipping payment even when payment.enabled=true
+      // [FIX-5] Payment flow — fashion was skipping payment even when payment.enabled=true
       const payment = business?.payment;
       if (payment?.enabled && data.totalPrice) {
         const { buildPaymentInstructionsUI } = await import('../../../services/paymentService.js');
         await updateSession(session.customerPhone, session.tenantId, {
           step: 'PAYMENT_PROOF', currentFlow: 'ORDER',
         });
-        // [FIX-PAYREF-FASHION] Generate and persist paymentReference â€” mirrors restaurant/bakery pattern.
+        // [FIX-PAYREF-FASHION] Generate and persist paymentReference — mirrors restaurant/bakery pattern.
         const shortIdRef = savedOrder?.shortId || '';
         let ref = null;
         if (shortIdRef) {
@@ -374,9 +374,9 @@ export async function handleFashionOrder({ session, message, business, tenant, i
         return buildPaymentInstructionsUI(business, data.totalPrice, shortIdRef || null, ref);
       }
 
-      // No payment â€” notify admin with interactive APPROVE/REJECT buttons
+      // No payment — notify admin with interactive APPROVE/REJECT buttons
       // [FIX-FASHION-ADMIN] Upgraded from dispatchText (no buttons) to dispatchMessage
-      // with APPROVE_/REJECT_ buttons â€” admin can confirm or cancel with one tap.
+      // with APPROVE_/REJECT_ buttons — admin can confirm or cancel with one tap.
       // Also parks session at AWAIT_ADMIN_CONFIRM so the customer waits for confirmation.
       try {
         const adminPhone = business?.adminPhone || tenant?.adminPhone;
@@ -393,8 +393,8 @@ export async function handleFashionOrder({ session, message, business, tenant, i
             type:    'buttons',
             body:    alertBody,
             buttons: [
-              { id: `APPROVE_${savedOrder.shortId}`, title: 'âœ… Confirm Order' },
-              { id: `REJECT_${savedOrder.shortId}`,  title: 'âŒ Cancel Order'  },
+              { id: `APPROVE_${savedOrder.shortId}`, title: '✅ Confirm Order' },
+              { id: `REJECT_${savedOrder.shortId}`,  title: '❌ Cancel Order'  },
             ],
           }, tenant).catch(() => {});
         }
@@ -405,7 +405,7 @@ export async function handleFashionOrder({ session, message, business, tenant, i
         `${data.item?.name}${data.size ? ` (${data.size})` : ''}`,
         null, data.quantity, data.totalPrice || 0, session.tenantId
       ).catch(() => {});
-      // [AUDIT-FIX-4] recordRevenue() moved to adminCommandService.confirmPayment() â€”
+      // [AUDIT-FIX-4] recordRevenue() moved to adminCommandService.confirmPayment() —
       // recording it here at placement time counted unconfirmed/later-rejected orders
       // as revenue. See adminCommandService.js AUDIT-FIX-4 for full rationale.
 
@@ -415,12 +415,12 @@ export async function handleFashionOrder({ session, message, business, tenant, i
         data: { ...data },
       });
 
-      // [FIX-FASHION-WAIT] Do NOT call completeFlow here â€” that clears currentFlow/step
+      // [FIX-FASHION-WAIT] Do NOT call completeFlow here — that clears currentFlow/step
       // and contradicts the AWAIT_ADMIN_CONFIRM park above. The session stays parked until
       // the admin confirms/rejects via APPROVE_/REJECT_ buttons. Customer gets a waiting message.
       return {
         type: 'text',
-        body: `âœ… *Order received!*\n\nðŸ‘— *${data.quantity}Ã— ${data.item?.name}${data.size ? ` (${data.size})` : ''}*\n\nâ³ Our team will confirm your order shortly. We'll send you a message when it's ready! ðŸ™`,
+        body: `✅ *Order received!*\n\n👗 *${data.quantity}× ${data.item?.name}${data.size ? ` (${data.size})` : ''}*\n\n⏳ Our team will confirm your order shortly. We'll send you a message when it's ready! 🙏`,
       };
     }
 
@@ -434,22 +434,22 @@ function _getCategories(menu) {
 
 function buildCategoryUI(categories, business) {
   // [FEAT-FASHION-CATEGORY] Single "Categories" section capped at 9 rows +
-  // one reserved "Browse All" row â€” mirrors retail's _buildCategoryUI cap.
+  // one reserved "Browse All" row — mirrors retail's _buildCategoryUI cap.
   const shown    = categories.slice(0, 9);
   const overflow = categories.length > 9;
   return {
     type:   'list',
-    body:   `âœ¨ *${business?.name || 'Our Collection'}*\n\nWhat are you shopping for today?`,
+    body:   `✨ *${business?.name || 'Our Collection'}*\n\nWhat are you shopping for today?`,
     button: 'Choose category',
     sections: [{
       title: 'Categories',
       rows: shown.map(c => ({
         id:    `CAT_${c.toUpperCase().replace(/\s+/g, '_')}`,
         title: c,
-      })).concat([{ id: 'SHOW_MENU', title: 'ðŸ“‹ Browse All' }]),
+      })).concat([{ id: 'SHOW_MENU', title: '📋 Browse All' }]),
     }],
     footer: overflow
-      ? `Showing ${shown.length} of ${categories.length} categories â€” tap "Browse All" or type what you're looking for`
+      ? `Showing ${shown.length} of ${categories.length} categories — tap "Browse All" or type what you're looking for`
       : 'Tap a category or type what you\'re looking for',
   };
 }
@@ -459,15 +459,15 @@ function buildCatalogUI(business, itemsOverride = null, category = null) {
   if (!items.length) {
     return {
       type:    'buttons',
-      body:    'âš ï¸ Our collection is being updated. Please contact us or check back soon.',
-      buttons: [{ id: 'SUPPORT', title: 'ðŸ’¬ Contact Us' }],
+      body:    '⚠️ Our collection is being updated. Please contact us or check back soon.',
+      buttons: [{ id: 'SUPPORT', title: '💬 Contact Us' }],
     };
   }
   const rows = items.map((item, i) => ({
     id: String(i + 1), title: item.name.slice(0, 24),
-    description: [item.description, item.price ? `${business?.payment?.currency || 'D'}${formatMoney(item.price)}` : ''].filter(Boolean).join(' â€” ').slice(0, 72),
+    description: [item.description, item.price ? `${business?.payment?.currency || 'D'}${formatMoney(item.price)}` : ''].filter(Boolean).join(' — ').slice(0, 72),
   }));
-  const header = category ? `âœ¨ ${category}` : (business?.name || 'Collection');
-  return { type: 'list', header, body: "Our latest collection â€” choose an item:", button: 'View Collection', rows };
+  const header = category ? `✨ ${category}` : (business?.name || 'Collection');
+  return { type: 'list', header, body: "Our latest collection — choose an item:", button: 'View Collection', rows };
 }
 
