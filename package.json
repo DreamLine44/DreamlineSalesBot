@@ -15,7 +15,9 @@
     "health": "node src/scripts/health.js",
     "genKey": "node src/scripts/genKey.js",
     "migrate": "node src/scripts/migrate_remove_raw_api_keys.js",
-    "publish:booking-date-flow": "node src/scripts/publishBookingDateFlow.mjs"
+    "publish:booking-date-flow": "node src/scripts/publishBookingDateFlow.mjs",
+    "cleanup:barrels": "node src/scripts/cleanup-barrels.js",
+    "modernize:services": "node src/scripts/modernize-services.mjs"
   },
   "dependencies": {
     "cloudinary": "^2.5.1",

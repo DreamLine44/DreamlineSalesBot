@@ -1301,11 +1301,11 @@ const _customerLocks = new Map(); // key `${tenantId}:${from}` → tail Promise 
 // This preserves the [FIX-RACE-1] ordering guarantee for the common case
 // (fast messages) while capping the worst-case delay for everyone behind a
 // slow one.
-const CUSTOMER_LOCK_MAX_HOLD_MS = 12000; // 12s — comfortably covers a single
-// full dispatchMessage() fallback chain (worst case ~3×10s Meta timeouts is
-// still possible for a single attempt, but the common slow case — one Meta
-// call succeeding on retry — resolves well within this) without leaving a
-// customer's other messages stuck for anywhere near the multi-attempt worst case.
+// [AUDIT-FIX-6] Extended from 12s → 20s to allow for slower operations (database writes,
+// multiple Meta retries, image uploads) without releasing the lock prematurely and
+// causing concurrent updates to the same customer's session/order state.
+const CUSTOMER_LOCK_MAX_HOLD_MS = 20000; // 20s — covers full Meta retry chains and DB writes
+// without leaving a customer's other messages stuck for anywhere near the multi-attempt worst case.
 
 function _runSerialized(key, task) {
   const prior = _customerLocks.get(key) || Promise.resolve();
@@ -1409,13 +1409,13 @@ async function _handleIncomingMessageSerialized({ tenantId, tenantDoc, from, msg
   // actually called from anywhere — the schema field was pure dead weight and
   // every tenant's usage stayed at 0 forever, regardless of plan or traffic.
   // Fire-and-forget per the service's own contract: never awaited, errors are
-  // swallowed inside the service itself, so a tracking failure can never
+  // logged inside the service itself, so a tracking failure can never
   // delay or break the actual customer-facing reply. Placed here — past the
   // dedup and empty-message guards, with a confirmed BusinessConfig — so it
   // only counts genuine inbound customer messages, not retries or no-ops.
   import('../services/shared/usageService.js')
     .then(({ incrementTenantUsage }) => incrementTenantUsage(tenantId))
-    .catch(() => {});
+    .catch(err => logger.warn('[Webhook] Usage tracking import failed', { err: err.message, tenantId }));
 
   // ── 4. Session ────────────────────────────────────────────────────────────
   let session = await getSession(from, tenantId);

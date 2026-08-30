@@ -1,7 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 
-const dir = 'c:\\Users\\DreamLineKing YM\\OneDrive\\Desktop\\WhatSalesAgent_(Normal)\\src\\services';
+const dir = path.join(__dirname, '..', 'services');
 
 const barrels = [
   'activeOrderResolver.js',
