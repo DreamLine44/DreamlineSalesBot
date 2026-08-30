@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
 import { buildPaymentInstructionsUI } from '../services/payment/paymentService.js';
+import { buildPaymentInstructionsUI as buildPaymentInstructionsUIFromRoot } from '../services/paymentService.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const webhookSrc = readFileSync(join(__dirname, '../controllers/webhookController.js'), 'utf8');
@@ -26,6 +27,15 @@ test('buildPaymentInstructionsUI keeps requireProof=false unchanged', () => {
   const ui = buildPaymentInstructionsUI({ payment: { currency: 'D', requireProof: false, channels: [{ provider: 'Wave', accountNo: '0551234567' }] } }, 1250, 'A1B2C3');
   assert.ok(!ui.buttons.some(button => button.id === 'REQUEST_CASH_PAYMENT'));
   assert.ok(ui.buttons.some(button => button.id === 'DONE'));
+});
+
+test('root paymentService export uses the same payment button order as the nested service', () => {
+  const ui = buildPaymentInstructionsUIFromRoot(baseBusiness, 1250, 'A1B2C3', 'DSB-0830-A1B2C3');
+  assert.deepEqual(ui.buttons.map(button => ({ id: button.id, title: button.title })), [
+    { id: 'REQUEST_CASH_PAYMENT', title: '💵 Pay with Cash' },
+    { id: 'SUPPORT', title: '❓ Need Help' },
+    { id: 'CANCEL', title: '❌ Cancel Order' },
+  ]);
 });
 
 test('PAYMENT_PROOF gate accepts the cash-request button id and admin approval prefixes', () => {
