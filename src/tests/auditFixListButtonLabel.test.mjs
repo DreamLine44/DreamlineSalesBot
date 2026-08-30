@@ -82,7 +82,7 @@ test('no `type: \'list\'` return block anywhere in the flow modules is missing a
     '../modules/fashion/flows/index.js',
     '../modules/general/flows/index.js',
     '../modules/retail/flows/index.js',
-    '../services/order/activeOrderResolver.js',
+    '../services/activeOrderResolver.js',
     '../core/conversations/moduleRouter.js',
     '../core/conversations/bookingFlow.js',
   ];

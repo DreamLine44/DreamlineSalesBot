@@ -19,7 +19,7 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mergeCartLines, formatCartSummary, cartItemCount, parseNaturalOrderMessage, cartTotal, resolveDirectOrderParse } from '../core/shared/cartEngine.js';
+import { mergeCartLines, formatCartSummary, cartItemCount, parseNaturalOrderMessage, cartTotal } from '../core/shared/cartEngine.js';
 import { formatPhoneDisplay } from '../utils/formatPhone.js';
 import { buildCartReviewUI } from '../modules/restaurant/handlers/uiBuilders.js';
 import { handleOrderFlow } from '../modules/restaurant/flows/orderFlow.js';

@@ -35,7 +35,7 @@ test('postFlowHandler.js: RESCHEDULE uses buildRescheduleDatePicker', () => {
 });
 
 test('adminCommandService.js: confirmed booking offers reschedule button', () => {
-  const src = read('../services/admin/adminCommandService.js');
+  const src = read('../services/adminCommandService.js');
   const block = src.slice(src.indexOf('confirmBooking'), src.indexOf('// [v14-UPSELL]'));
   assert.match(block, /RESCHEDULE/);
 });

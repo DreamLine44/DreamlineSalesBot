@@ -8,7 +8,7 @@
 import {
   getLocalNow,
   formatBookingDateLabel,
-  validateBookingDate,
+  resolveBookingDateInput,
   MAX_BOOKING_MONTHS_AHEAD,
 } from './bookingDateParser.js';
 
@@ -17,53 +17,54 @@ const MONTH_NAMES = [
   'July', 'August', 'September', 'October', 'November', 'December',
 ];
 
-export const toDayId = (d) => {
+export function toDayId(d) {
   const y = d.getUTCFullYear();
   const m = String(d.getUTCMonth() + 1).padStart(2, '0');
   const day = String(d.getUTCDate()).padStart(2, '0');
   return `DATE_D_${y}${m}${day}`;
 }
 
-export const parseDayId = (raw) => {
+export function parseDayId(raw) {
   const m = String(raw || '').toUpperCase().match(/^DATE_D_(\d{4})(\d{2})(\d{2})$/);
   if (!m) return null;
   return new Date(Date.UTC(parseInt(m[1], 10), parseInt(m[2], 10) - 1, parseInt(m[3], 10)));
 }
 
-export const parseMonthId = (raw) => {
+export function parseMonthId(raw) {
   const m = String(raw || '').toUpperCase().match(/^DATE_M_(\d{4})(\d{2})$/);
   if (!m) return null;
   return { year: parseInt(m[1], 10), month: parseInt(m[2], 10) - 1 };
 }
 
-const addDays = (base, n) => {
+function addDays(base, n) {
   return new Date(Date.UTC(base.getUTCFullYear(), base.getUTCMonth(), base.getUTCDate() + n));
 }
 
-const localMidnight = (now) => {
+function localMidnight(now) {
   return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
 }
 
-const maxBookableDate = (now) => {
+function maxBookableDate(now) {
   const max = localMidnight(now);
   max.setUTCMonth(max.getUTCMonth() + MAX_BOOKING_MONTHS_AHEAD);
   return max;
 }
 
-const shortWeekday = (d) => {
+function shortWeekday(d) {
   return d.toLocaleDateString('en-GB', { weekday: 'short', timeZone: 'UTC' });
 }
 
-const shortMonthDay = (d) => {
+function shortMonthDay(d) {
   return d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', timeZone: 'UTC' });
 }
 
 /** Simple one-step picker: next 10 bookable days in a single list. */
-export const buildSimpleDayList = (tz, headingOrError = null) => {
+export function buildSimpleDayList(tz, headingOrError = null) {
   const now = getLocalNow(tz);
   const today = localMidnight(now);
   const maxDate = maxBookableDate(now);
-  const cursor = today;
+  let cursor = today;
+  if (now.getUTCHours() >= 20) cursor = addDays(today, 1);
 
   const rows = [];
   for (let i = 0; rows.length < 10; i++) {
@@ -95,7 +96,7 @@ export const buildSimpleDayList = (tz, headingOrError = null) => {
 }
 
 /** Hub: This week / Next week / Choose month (3 buttons — legacy fallback). */
-export const buildDatePickerHub = (headingOrError = null) => {
+export function buildDatePickerHub(headingOrError = null) {
   const body = headingOrError
     ? `${headingOrError}\n\nPlease select how you'd like to choose your date.`
     : `What date would you like? 📅\n\nPlease select how you'd like to choose your date.`;
@@ -112,11 +113,12 @@ export const buildDatePickerHub = (headingOrError = null) => {
 }
 
 /** Week slice as a dropdown-style list (7 days). */
-export const buildWeekDayList = (weekOffset, tz, heading = null) => {
+export function buildWeekDayList(weekOffset, tz, heading = null) {
   const now = getLocalNow(tz);
   const today = localMidnight(now);
   const maxDate = maxBookableDate(now);
-  const start = addDays(today, weekOffset * 7);
+  let start = addDays(today, weekOffset * 7);
+  if (weekOffset === 0 && now.getUTCHours() >= 20) start = addDays(today, 1);
 
   const rows = [];
   for (let i = 0; i < 7 && rows.length < 10; i++) {
@@ -149,7 +151,7 @@ export const buildWeekDayList = (weekOffset, tz, heading = null) => {
 }
 
 /** Month dropdown — next bookable months (max 10 rows). */
-export const buildMonthPickerList = (tz, heading = null) => {
+export function buildMonthPickerList(tz, heading = null) {
   const now = getLocalNow(tz);
   const today = localMidnight(now);
   const maxDate = maxBookableDate(now);
@@ -185,7 +187,7 @@ export const buildMonthPickerList = (tz, heading = null) => {
 }
 
 /** Day dropdown for a chosen month (paginated, 9 days + nav row). */
-export const buildMonthDayList = ({ year, month, tz, page = 0, heading = null }) => {
+export function buildMonthDayList({ year, month, tz, page = 0, heading = null }) {
   const now = getLocalNow(tz);
   const today = localMidnight(now);
   const maxDate = maxBookableDate(now);
@@ -249,16 +251,12 @@ export const buildMonthDayList = ({ year, month, tz, page = 0, heading = null })
   };
 }
 
-export const resolveDayPick = async (raw, tz) => {
+export async function resolveDayPick(raw, tz) {
   const parsed = parseDayId(raw);
   if (!parsed) return null;
-  // List row ids (DATE_D_YYYYMMDD) are already normalized — do not re-parse via NL.
-  const validation = validateBookingDate(parsed, tz);
-  if (validation.error || !validation.parsed) return null;
-  return {
-    ok:    true,
-    raw,
-    parsed: validation.parsed,
-    label: formatBookingDateLabel(validation.parsed, tz),
-  };
+  const resolved = await resolveBookingDateInput(
+    `${parsed.getUTCDate()} ${MONTH_NAMES[parsed.getUTCMonth()]} ${parsed.getUTCFullYear()}`,
+    tz,
+  );
+  return resolved.ok ? resolved : null;
 }

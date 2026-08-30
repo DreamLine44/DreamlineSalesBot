@@ -8,8 +8,7 @@
 import crypto from 'crypto';
 import {
   getLocalNow,
-  parsedFromIso,
-  validateBookingDate,
+  resolveBookingDateInput,
   formatBookingDateLabel,
   MAX_BOOKING_MONTHS_AHEAD,
 } from './bookingDateParser.js';
@@ -17,7 +16,7 @@ import {
 export const BOOKING_DATE_FLOW_SCREEN = 'BOOKING_DATE';
 
 /** Resolve Flow ID: per-business config → tenant → env fallback. */
-export const resolveBookingDateFlowId = (business, tenant) => {
+export function resolveBookingDateFlowId(business, tenant) {
   return (
     business?.whatsappFlows?.bookingDateFlowId?.trim() ||
     tenant?.whatsapp?.bookingDateFlowId?.trim() ||
@@ -27,17 +26,17 @@ export const resolveBookingDateFlowId = (business, tenant) => {
 }
 
 /** Flow calendar is opt-in — default is the standard list + typed-date picker. */
-export const shouldUseBookingDateFlow = (business, tenant) => {
+export function shouldUseBookingDateFlow(business, tenant) {
   if (process.env.BOOKING_DATE_FLOW_ENABLED !== 'true') return false;
   return Boolean(resolveBookingDateFlowId(business, tenant));
 }
 
-export const isBookingDateFlowConfigured = (business, tenant) => {
+export function isBookingDateFlowConfigured(business, tenant) {
   return shouldUseBookingDateFlow(business, tenant);
 }
 
 /** YYYY-MM-DD bounds for Flow DatePicker (v5.0+). */
-export const getBookingDateFlowBounds = (tz = 'UTC') => {
+export function getBookingDateFlowBounds(tz = 'UTC') {
   const now = getLocalNow(tz);
   const min = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
   const max = new Date(min);
@@ -53,7 +52,7 @@ export const getBookingDateFlowBounds = (tz = 'UTC') => {
   return { min_date: fmt(min), max_date: fmt(max) };
 }
 
-export const buildBookingDateFlowToken = (customerPhone) => {
+export function buildBookingDateFlowToken(customerPhone) {
   const safe = String(customerPhone || 'guest').replace(/\W/g, '').slice(-12);
   return `bkdt_${safe}_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`;
 }
@@ -62,13 +61,13 @@ export const buildBookingDateFlowToken = (customerPhone) => {
  * Build interactive Flow message UI for dispatcher.
  * Opens a calendar grid when the customer taps the CTA button.
  */
-export const buildBookingDateFlowMessage = ({
+export function buildBookingDateFlowMessage({
   heading = null,
   tz = 'UTC',
   flowId,
   customerPhone,
   flowToken = null,
-} = {}) => {
+} = {}) {
   if (!flowId) return null;
 
   const bounds = getBookingDateFlowBounds(tz);
@@ -92,7 +91,7 @@ export const buildBookingDateFlowMessage = ({
 }
 
 /** Parse nfm_reply payload from WhatsApp Flow completion. */
-export const parseBookingDateFlowReply = (flowReply) => {
+export function parseBookingDateFlowReply(flowReply) {
   if (!flowReply || typeof flowReply !== 'object') return null;
   const iso = flowReply.booking_date || flowReply.date;
   if (!iso) return null;
@@ -102,22 +101,15 @@ export const parseBookingDateFlowReply = (flowReply) => {
 /**
  * Turn Flow YYYY-MM-DD into the same resolved shape as typed date input.
  */
-export const resolveFlowBookingDate = async (isoDate, tz = 'UTC') => {
+export async function resolveFlowBookingDate(isoDate, tz = 'UTC') {
   const iso = String(isoDate || '').trim();
-  const parsed = parsedFromIso(iso);
-  if (!parsed) {
+  const m = iso.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!m) {
     return { ok: false, error: 'invalid', message: `Invalid date from calendar: *${iso}*` };
   }
 
-  const validation = validateBookingDate(parsed, tz);
-  if (validation.error) {
-    return { ok: false, error: 'invalid', message: validation.error, parsed: null };
-  }
+  const parsed = new Date(Date.UTC(parseInt(m[1], 10), parseInt(m[2], 10) - 1, parseInt(m[3], 10)));
+  const human = `${parsed.getUTCDate()} ${parsed.toLocaleDateString('en-GB', { month: 'long', timeZone: 'UTC' })} ${parsed.getUTCFullYear()}`;
 
-  return {
-    ok: true,
-    raw: iso,
-    parsed: validation.parsed,
-    label: formatBookingDateLabel(validation.parsed, tz),
-  };
+  return resolveBookingDateInput(human, tz);
 }

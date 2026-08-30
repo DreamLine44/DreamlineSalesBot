@@ -18,7 +18,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { detectIntent } from '../core/intents/intentEngine.js';
 import { INTENT_PATTERNS } from '../core/intents/patterns.js';
-import { STATUS_CMD_RE } from '../services/activity/activityStatusService.js';
+import { STATUS_CMD_RE } from '../services/activityStatusService.js';
 
 // ── TRACK_ORDER keyword coverage ──────────────────────────────────────────
 

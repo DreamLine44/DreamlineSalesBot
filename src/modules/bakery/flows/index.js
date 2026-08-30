@@ -6,8 +6,8 @@ import { updateSession }  from '../../../core/sessions/sessionService.js';
 import { completeFlow }   from '../../../core/conversations/flowEngine.js';
 import { handleBookingFlow } from '../../../core/conversations/bookingFlow.js';
 import { findBestMatch }  from '../../../utils/matchEngine.js';
-import { saveOrder }      from '../../../services/order/orderService.js';
-import { saveBooking }    from '../../../services/booking/bookingService.js';
+import { saveOrder }      from '../../../services/orderService.js';
+import { saveBooking }    from '../../../services/bookingService.js';
 import logger             from '../../../config/logger.js';
 
 export const BAKERY_CONFIG = {

@@ -65,33 +65,7 @@ export function hasFlow(mode, flowName) {
  * Returns a UIResponse object for dispatch.
  */
 export async function advance({ session, message, business, tenant, isInteractive = false, flowReply = null }) {
-  // [AUDIT-FIX-RECOVERY-2] Both fallback branches below hand the customer a
-  // "🔄 Start Over" (SHOW_MENU) button as the only way forward, but previously
-  // neither branch touched the database — the session document (and whatever
-  // stale `step` it still held from before the flow/session was lost) was left
-  // completely untouched. webhookController.js's STEP_VALID_BUTTONS stale-tap
-  // gate validates every button tap against that same stale `step`, so if that
-  // step's allowed-button set didn't happen to include SHOW_MENU (true for
-  // several steps — CONFIRM, ITEM_ADDED, EDIT_CART_MENU, UPSELL, etc.), tapping
-  // the bot's OWN recovery button produced a second, unrelated "that option is
-  // no longer available" rejection — a hard dead end with literally no way out
-  // short of leaving the chat. Persisting the reset here (mirrors the exact
-  // reset every other SHOW_MENU/CANCEL handler in the codebase already does)
-  // means the very next tap — including a tap on this message's own button —
-  // is validated against a clean step, not a stale one. See webhookController.js
-  // [AUDIT-FIX-RECOVERY-1] for the companion fix (SHOW_MENU/CANCEL/etc. are also
-  // now globally exempt from the stale-button gate regardless of step, so this
-  // dead end is closed even if a session update ever races or fails).
-  const _resetStaleSession = async () => {
-    if (session?.customerPhone && session?.tenantId) {
-      await updateSession(session.customerPhone, session.tenantId, {
-        currentFlow: null, step: null, data: {},
-      }).catch(() => {});
-    }
-  };
-
   if (!session?.currentFlow) {
-    await _resetStaleSession();
     return {
       type:    'buttons',
       body:    '⚠️ No active session. Please tap below to get started.',
@@ -109,7 +83,6 @@ export async function advance({ session, message, business, tenant, isInteractiv
 
   if (!handler) {
     logger.warn(`[FlowEngine] No handler for ${specificKey}`);
-    await _resetStaleSession();
     return {
       type:    'buttons',
       body:    '⚠️ This option is not available right now.',
@@ -182,22 +155,11 @@ export async function startFlow({ flowName, session, business, tenant, message =
     upsellSent:  false,
     menuViewed:  false,
     lastAorInterceptAt: null,  // [FIX-AOR-5] Reset throttle so next order confirms show fresh card
-    postFlowAck:  null,
-    postFlowData: null,
   };
   if (flowUpper === 'ORDER') {
     sessionPatch.orderChannel = session?.orderChannel === 'catalog' || orderViaCatalog
       ? 'catalog'
       : 'menu';
-  }
-  if (flowUpper === 'BOOKING') {
-    const hasServices = (business?.services || []).length > 0;
-    const isRestaurant = (business?.businessMode || '').toUpperCase() === 'RESTAURANT';
-    if (!hasServices && isRestaurant) {
-      sessionPatch.step = 'PARTY_SIZE';
-    } else if (!hasServices) {
-      sessionPatch.step = 'DATE';
-    }
   }
 
   const updated = await updateSession(session.customerPhone, session.tenantId, sessionPatch);
@@ -250,9 +212,8 @@ export async function cancelFlow(session, business) {
   // failure should never block the session reset / reply to the customer.
   try {
     const { default: Booking } = await import('../../models/Booking.js');
-    const { buildActiveBookingFilter } = await import('../../services/activity/activityLifecycleService.js');
     await Booking.findOneAndUpdate(
-      buildActiveBookingFilter(session.customerPhone, session.tenantId),
+      { customerPhone: session.customerPhone, tenantId: session.tenantId, status: { $in: ['pending', 'confirmed'] } },
       { $set: { status: 'cancelled', cancelledBy: 'customer', cancelledAt: new Date() } },
       { sort: { createdAt: -1 } }
     );
@@ -289,16 +250,13 @@ export async function cancelFlow(session, business) {
  * gets a warm reply instead of the full welcome menu.
  * When business is provided, checks if lead capture should fire.
  */
-export async function completeFlow(session, completedFlow, business = null, tenant = null, { postFlowSnapshot = null } = {}) {
+export async function completeFlow(session, completedFlow, business = null, tenant = null) {
   await updateSession(session.customerPhone, session.tenantId, {
     currentFlow:  null,
     step:         null,
     data:         {},
     postFlowAck:  completedFlow.toUpperCase(),
-    postFlowData: {
-      ...(postFlowSnapshot || {}),
-      _exprTurnsLeft: EXPRESSION_TURN_BUDGET,
-    },
+    postFlowData: { _exprTurnsLeft: EXPRESSION_TURN_BUDGET },
   });
 
   // Lead capture trigger — fire after ORDER or BOOKING if configured.

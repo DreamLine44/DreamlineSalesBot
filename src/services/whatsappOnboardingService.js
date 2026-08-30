@@ -30,11 +30,11 @@
  *   Activation (status → ACTIVE) happens via PATCH /admin/tenants/:id/status
  *   or the ONE-SHOT activate:true path.
  */
-import Tenant from '../../models/Tenant.js';
-import WhatsAppConnectionRequest from '../../models/WhatsAppConnectionRequest.js';
-import { encryptToken, decryptToken } from '../../controllers/tenantController.js';
+import Tenant from '../models/Tenant.js';
+import WhatsAppConnectionRequest from '../models/WhatsAppConnectionRequest.js';
+import { encryptToken, decryptToken } from '../controllers/tenantController.js';
 import { notifyStatusChange } from './whatsappNotificationService.js';
-import logger from '../../config/logger.js';
+import logger from '../config/logger.js';
 
 // ── Meta Graph API verification ──────────────────────────────────────────────
 
@@ -57,7 +57,7 @@ import logger from '../../config/logger.js';
  *   details?: object
  * }>}
  */
-export const verifyCredentials = async ({ phoneNumberId, wabaId, accessToken, apiVersion = 'v21.0' }) => {
+export async function verifyCredentials({ phoneNumberId, wabaId, accessToken, apiVersion = 'v21.0' }) {
   // Pre-flight: reject SIM_ placeholders immediately
   if (!phoneNumberId || phoneNumberId.startsWith('SIM_')) {
     return {
@@ -148,7 +148,7 @@ export const verifyCredentials = async ({ phoneNumberId, wabaId, accessToken, ap
  * @param {object} credentials  { phoneNumberId, wabaId, accessToken, verifyToken, apiVersion }
  * @returns {Promise<{ ok: boolean, tenant?: object, error?: string }>}
  */
-export const saveCredentials = async (tenantId, credentials) => {
+export async function saveCredentials(tenantId, credentials) {
   const { phoneNumberId, wabaId, accessToken, verifyToken, apiVersion } = credentials;
 
   try {
@@ -189,7 +189,7 @@ export const saveCredentials = async (tenantId, credentials) => {
  * @param {string} tenantId
  * @returns {Promise<{ ok: boolean, tenant?: object, error?: string }>}
  */
-export const markConnected = async (tenantId) => {
+export async function markConnected(tenantId) {
   try {
     const now = new Date();
 
@@ -217,7 +217,7 @@ export const markConnected = async (tenantId) => {
     if (process.env.BOOKING_DATE_FLOW_ENABLED === 'true') {
       (async () => {
         try {
-          const { ensureBookingDateFlow } = await import('../booking/bookingDateFlowProvisioner.js');
+          const { ensureBookingDateFlow } = await import('./bookingDateFlowProvisioner.js');
           await ensureBookingDateFlow({ tenant: tenant.toObject() });
         } catch { /* non-fatal */ }
       })();
@@ -241,7 +241,7 @@ export const markConnected = async (tenantId) => {
  * @param {object} [meta]
  * @returns {Promise<{ ok: boolean, request?: object, error?: string }>}
  */
-export const updateStatus = async (requestId, newStatus, meta = {}) => {
+export async function updateStatus(requestId, newStatus, meta = {}) {
   try {
     const update = {
       status:     newStatus,

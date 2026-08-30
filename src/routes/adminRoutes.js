@@ -28,7 +28,7 @@ import { dispatchText, dispatchMessage } from '../core/whatsapp/dispatcher.js';
 import { humanModeLimiter, overviewLimiter } from '../middleware/rateLimiter.js';
 import logger from '../config/logger.js';
 import BusinessConfig from '../models/BusinessConfig.js';
-import { formatOrderItemsForMessage } from '../services/order/orderService.js';
+import { formatOrderItemsForMessage } from '../services/orderService.js';
 
 const r = Router();
 

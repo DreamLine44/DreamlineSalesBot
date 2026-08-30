@@ -78,12 +78,6 @@ const orderSchema = new mongoose.Schema({
 
   totalPrice: { type: Number, default: null },
 
-  // [AUDIT-FIX-PROMO-SCHEMA] Set by saveOrder() when a caller supplies a valid
-  // promoCode (see promoService.js). null/0 for every order that doesn't use one —
-  // zero behavior or schema change for existing callers.
-  promoCode:      { type: String, default: null },
-  discountAmount: { type: Number, default: 0 },
-
   status: {
     type: String,
     // [FIX-4] Added 'ready', 'preparing', 'out_for_delivery', 'delivered' — all four were
@@ -214,18 +208,6 @@ const orderSchema = new mongoose.Schema({
   // expect to see who cancelled an order and when got null/undefined forever.
   cancelledBy: { type: String, default: null }, // 'customer' | admin phone
   cancelledAt: { type: Date,   default: null },
-
-  // Customer-initiated cash payment request (PAYMENT_PROOF step, requireProof=true).
-  // cashRequestStatus tracks admin review; paymentStatus stays 'unpaid' until
-  // payment is actually received (admin APPROVE_ on AWAIT_ADMIN_CONFIRM).
-  cashRequestStatus: {
-    type: String,
-    enum: ['pending', 'approved', 'rejected', null],
-    default: null,
-  },
-  cashRequestRequestedAt: { type: Date, default: null },
-  cashRequestReviewedBy:  { type: String, default: null },
-  cashRequestReviewedAt:  { type: Date, default: null },
 
   shortId: { type: String, index: true, default: null },
 

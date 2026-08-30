@@ -76,8 +76,9 @@ test('moduleRouter.js: has a dedicated RESCHEDULE case that cancels the previous
     'RESCHEDULE case should only ever target a real appointment, never a walk-in queue entry'
   );
   assert.match(
-    block, /buildRescheduleDatePicker/,
-    "RESCHEDULE case should open the shared DATE picker via buildRescheduleDatePicker"
+    block, /step:\s*'DATE'/,
+    "RESCHEDULE case should land the customer on step 'DATE', consistent with the " +
+    'postFlowHandler.js RESCHEDULE handlers'
   );
   assert.doesNotMatch(
     block, /data:\s*\{\s*\}/,

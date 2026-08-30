@@ -31,10 +31,10 @@ import { fileURLToPath } from 'node:url';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const read = (rel) => fs.readFileSync(path.join(__dirname, rel), 'utf8');
 
-const adminCmdSrc = read('../services/admin/adminCommandService.js');
+const adminCmdSrc = read('../services/adminCommandService.js');
 
 test('rejectPayment cash-cancel branch routes the customer notice through buildOptionsReply(), not a raw welcomeButtons array', () => {
-  assert.match(adminCmdSrc, /import \{ buildOptionsReply \} from '\.\.\/\.\.\/core\/shared\/uiOptionsHelper\.js'/);
+  assert.match(adminCmdSrc, /import \{ buildOptionsReply \} from '\.\.\/core\/shared\/uiOptionsHelper\.js'/);
   assert.match(adminCmdSrc, /await dispatchMessage\(order\.customerPhone, buildOptionsReply\(\s*modeCfg,/);
   // Guard against the old raw-buttons leak creeping back in.
   assert.doesNotMatch(adminCmdSrc, /const custBtns = \(modeCfg\.ui\?\.welcomeButtons/);

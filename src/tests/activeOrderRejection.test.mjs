@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import Order from '../models/Order.js';
-import { resolveActiveOrder, ACTIVE_ORDER_STATES } from '../services/order/activeOrderResolver.js';
+import { resolveActiveOrder, ACTIVE_ORDER_STATES } from '../services/activeOrderResolver.js';
 
 // [FIX-AOR-REJECT] regression: adminCommandService.rejectPayment() never actually writes
 // paymentStatus:'rejected' (it writes status:'pending', paymentStatus:'unpaid',

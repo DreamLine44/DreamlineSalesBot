@@ -19,8 +19,8 @@
  * (dashboard-created order, future flow step, admin tool) supplies one.
  */
 
-import BusinessConfig from '../../models/BusinessConfig.js';
-import logger from '../../config/logger.js';
+import BusinessConfig from '../models/BusinessConfig.js';
+import logger from '../config/logger.js';
 
 /**
  * validatePromoCode
@@ -32,7 +32,7 @@ import logger from '../../config/logger.js';
  * @returns {{ valid: true, promotion, discountAmount, newTotal }}
  *        | { valid: false, reason }
  */
-export const validatePromoCode = async (tenantId, code, subtotal) => {
+export async function validatePromoCode(tenantId, code, subtotal) {
   if (!code || typeof code !== 'string') {
     return { valid: false, reason: 'No promo code provided' };
   }
@@ -98,7 +98,7 @@ export const validatePromoCode = async (tenantId, code, subtotal) => {
  * gets its usedCount bumped, and only when maxUses is null/unset or
  * usedCount is still strictly below it.
  */
-export const applyPromoUsage = async (tenantId, code) => {
+export async function applyPromoUsage(tenantId, code) {
   if (!code) return;
   const normalizedCode = code.trim().toUpperCase();
   try {

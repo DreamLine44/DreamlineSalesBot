@@ -5,21 +5,15 @@
  * Used by status tracking, Q&A mode, and admin commands.
  */
 
-import Order from '../../models/Order.js';
-import Booking from '../../models/Booking.js';
-import { resolveActiveOrder } from '../order/activeOrderResolver.js';
-import { getActiveBookings, getBookingByShortId } from '../booking/bookingService.js';
-import { customerPhoneQueryVariants } from '../../utils/customerPhone.js';
+import Order from '../models/Order.js';
+import Booking from '../models/Booking.js';
+import { resolveActiveOrder } from './activeOrderResolver.js';
+import { getActiveBookings, getBookingByShortId } from './bookingService.js';
 
 const SHORT_ID_RE = /#?([A-Z0-9]{4,24})\b/i;
 
-/** Words that must never be parsed as activity reference IDs. */
-const RESERVED_REF_WORDS = new Set([
-  'CANCEL', 'ORDER', 'BOOKING', 'BOOK', 'STATUS', 'TRACK', 'REF', 'ACTIVITY', 'ALL',
-]);
-
 /** Extract a shortId from customer or admin text (#F921EB or F921EB). */
-export const extractShortId = (message, session = null) => {
+export function extractShortId(message) {
   const raw = String(message || '').trim();
   if (!raw) return null;
 
@@ -38,25 +32,18 @@ export const extractShortId = (message, session = null) => {
 
   const bare = raw.match(SHORT_ID_RE);
   if (bare && /\b(track|status|cancel|order|booking|ref)\b/i.test(raw)) {
-    const candidate = bare[1].toUpperCase();
-    if (!RESERVED_REF_WORDS.has(candidate)) return candidate;
-  }
-
-  // Bare ref reply while in tracking context (e.g. customer sends "F921EB" after prompt).
-  const ctx = session?.data?._questionCtx;
-  if (ctx?.lastTopic?.includes('TRACKING') && /^[A-Z0-9]{4,24}$/i.test(raw)) {
-    return raw.toUpperCase();
+    return bare[1].toUpperCase();
   }
 
   return null;
 }
 
-export const isValidShortIdFormat = (shortId) => {
+export function isValidShortIdFormat(shortId) {
   return Boolean(shortId && /^[A-Z0-9]{4,24}$/.test(String(shortId).toUpperCase()));
 }
 
 /** Lookup order by shortId within tenant. */
-export const getOrderByShortId = async (shortId, tenantId) => {
+export async function getOrderByShortId(shortId, tenantId) {
   if (!shortId || !tenantId) return null;
   return Order.findOne({ shortId: String(shortId).toUpperCase(), tenantId }).lean();
 }
@@ -65,12 +52,12 @@ export const getOrderByShortId = async (shortId, tenantId) => {
  * Search for an activity by reference with phone-based recovery.
  * @returns {{ order, booking, checks: string[], scope: 'ORDER'|'BOOKING'|'BOTH' }}
  */
-export const lookupActivityByReference = async ({
+export async function lookupActivityByReference({
   shortId,
   tenantId,
   customerPhone = null,
   scope = 'BOTH',
-}) => {
+}) {
   const checks = [];
   const ref = String(shortId || '').toUpperCase();
   let order = null;
@@ -103,12 +90,8 @@ export const lookupActivityByReference = async ({
   }
 
   if (customerPhone && !booking && (scope === 'BOOKING' || scope === 'BOTH')) {
-    const variants = customerPhoneQueryVariants(customerPhone);
-    const phoneClause = variants.length > 1
-      ? { customerPhone: { $in: variants } }
-      : { customerPhone: variants[0] || customerPhone };
     const phoneBooking = await Booking.findOne({
-      ...phoneClause,
+      customerPhone,
       tenantId,
       shortId: ref,
     }).lean().catch(() => null);
@@ -124,7 +107,7 @@ export const lookupActivityByReference = async ({
 /**
  * Broader recovery when reference lookup fails — recent phone-scoped activities.
  */
-export const recoverRecentActivities = async ({ customerPhone, tenantId, scope = 'BOTH' }) => {
+export async function recoverRecentActivities({ customerPhone, tenantId, scope = 'BOTH' }) {
   const checks = [];
   let orderResolution = null;
   let bookings = [];
@@ -139,6 +122,7 @@ export const recoverRecentActivities = async ({ customerPhone, tenantId, scope =
         .lean()
         .catch(() => []);
       if (recent.length) checks.push(`recent orders (${recent.length})`);
+      return { orderResolution, recentOrders: recent, bookings, checks };
     }
   }
 
@@ -151,7 +135,7 @@ export const recoverRecentActivities = async ({ customerPhone, tenantId, scope =
 }
 
 /** Build a human-readable summary of lookup attempts. */
-export const formatLookupFailureMessage = ({ shortId, checks = [], adminPhone = null }) => {
+export function formatLookupFailureMessage({ shortId, checks = [], adminPhone = null }) {
   const ref = shortId ? `#${shortId}` : 'that reference';
   const checked = checks.length
     ? checks.join(', ')

@@ -5,8 +5,6 @@
  * then past-date / far-future validation in the business timezone.
  */
 
-import { parseQuantity } from '../../utils/parseQuantity.js';
-
 const WEEKDAYS = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
 
 const MONTH_MAP = {
@@ -27,7 +25,7 @@ const MONTH_MAP = {
 /** Max booking horizon — reject dates beyond this many months from today. */
 export const MAX_BOOKING_MONTHS_AHEAD = 12;
 
-export const getLocalNow = (tz) => {
+export function getLocalNow(tz) {
   const safeZone = (() => {
     if (!tz) return 'UTC';
     try { Intl.DateTimeFormat(undefined, { timeZone: tz }); return tz; }
@@ -45,20 +43,20 @@ export const getLocalNow = (tz) => {
   return new Date(Date.UTC(get('year'), get('month') - 1, get('day'), get('hour'), get('minute'), get('second')));
 }
 
-const toUtcMidnight = (y, m, d) => {
+function toUtcMidnight(y, m, d) {
   return new Date(Date.UTC(y, m, d));
 }
 
-const addLocalDays = (now, n) => {
+function addLocalDays(now, n) {
   return toUtcMidnight(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + n);
 }
 
-const resolveMonthToken = (token) => {
+function resolveMonthToken(token) {
   if (!token) return null;
   return MONTH_MAP[String(token).toLowerCase().trim()] ?? null;
 }
 
-const parseNumericDate = (raw, now) => {
+function parseNumericDate(raw, now) {
   const m = String(raw).trim().match(/^(\d{1,2})[\/\.\-](\d{1,2})(?:[\/\.\-](\d{2,4}))?$/);
   if (!m) return null;
 
@@ -73,7 +71,7 @@ const parseNumericDate = (raw, now) => {
   return d;
 }
 
-const parseDayOfMonthInMonth = (day, month, year, now) => {
+function parseDayOfMonthInMonth(day, month, year, now) {
   if (day < 1 || day > 31 || month < 0 || month > 11) return null;
   let y = year ?? now.getUTCFullYear();
   let d = toUtcMidnight(y, month, day);
@@ -87,7 +85,7 @@ const parseDayOfMonthInMonth = (day, month, year, now) => {
   return d;
 }
 
-const parseWeekday = (lower, now) => {
+function parseWeekday(lower, now) {
   const normalized = lower
     .replace(/^on\s+(?:the\s+)?/, '')
     .replace(/^this\s+/, '')
@@ -103,17 +101,17 @@ const parseWeekday = (lower, now) => {
   return addLocalDays(now, diff);
 }
 
-const containsWeekdayName = (s) => {
+function containsWeekdayName(s) {
   return /\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/i.test(String(s || ''));
 }
 
-const looksLikeNativeDateFragment = (s) => {
+function looksLikeNativeDateFragment(s) {
   return /\d/.test(s)
     || /\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)/i.test(s);
 }
 
-const parseOrdinalDayPhrase = (lower, now) => {
-  const m = lower.match(/^(?:on\s+the\s+|the\s+)?(\d{1,2})(?:st|nd|rd|th)?(?:\s+of\s+(?:this\s+)?month)?$/);
+function parseOrdinalDayPhrase(lower, now) {
+  const m = lower.match(/(?:on\s+the\s+|the\s+)?(\d{1,2})(?:st|nd|rd|th)?(?:\s+of\s+(?:this\s+)?month)?$/);
   if (!m) return null;
 
   const day = parseInt(m[1], 10);
@@ -127,7 +125,7 @@ const parseOrdinalDayPhrase = (lower, now) => {
   return d;
 }
 
-const parseDayMonthPhrase = (lower, now) => {
+function parseDayMonthPhrase(lower, now) {
   const dayFirst = lower.match(/^(\d{1,2})(?:st|nd|rd|th)?\s+(?:of\s+)?([a-z]+)(?:\s+(\d{4}))?$/);
   if (dayFirst) {
     const day = parseInt(dayFirst[1], 10);
@@ -149,54 +147,17 @@ const parseDayMonthPhrase = (lower, now) => {
   return null;
 }
 
-const parseRelativeOffsetDays = (lower, now) => {
-  const inDays = lower.match(/^in\s+(\d+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)\s+days?$/);
-  if (inDays) {
-    const n = parseQuantity(inDays[1]);
-    if (n) return addLocalDays(now, n);
-  }
-  const inWeeks = lower.match(/^in\s+(\d+|one|two|three|four)\s+weeks?$/);
-  if (inWeeks) {
-    const n = parseQuantity(inWeeks[1]);
-    if (n) return addLocalDays(now, n * 7);
-  }
-  return null;
-}
-
-const parseRelativeMonthDay = (lower, now) => {
+function parseRelativeMonthDay(lower, now) {
   const s = lower.replace(/['']/g, '').replace(/\s+/g, ' ').trim();
 
   if (/^next\s+months?\s+(?:first|1st)(?:\s+day)?$/.test(s)) {
     return toUtcMidnight(now.getUTCFullYear(), now.getUTCMonth() + 1, 1);
   }
-  // "first day of next month" OR "first of next month" / "the first of next month"
-  if (/^(?:the\s+)?(?:first|1st)(?:\s+day)?\s+of\s+next\s+month$/.test(s)) {
+  if (/^(?:the\s+)?(?:first|1st)\s+day\s+of\s+next\s+month$/.test(s)) {
     return toUtcMidnight(now.getUTCFullYear(), now.getUTCMonth() + 1, 1);
   }
   if (/^next\s+month(?:'?s)?\s+(?:first|1st)(?:\s+day)?$/.test(s)) {
     return toUtcMidnight(now.getUTCFullYear(), now.getUTCMonth() + 1, 1);
-  }
-  // last day of next month
-  if (/^(?:the\s+)?last\s+day\s+of\s+next\s+month$/.test(s)) {
-    return toUtcMidnight(now.getUTCFullYear(), now.getUTCMonth() + 2, 0);
-  }
-  // end of (this) month
-  if (/^end\s+of\s+(?:this\s+)?month$/.test(s)) {
-    return toUtcMidnight(now.getUTCFullYear(), now.getUTCMonth() + 1, 0);
-  }
-  // first of September / the first of September 2026
-  const firstOfNamedMonth = s.match(/^(?:the\s+)?(?:first|1st)\s+of\s+([a-z]+)(?:\s+(\d{4}))?$/);
-  if (firstOfNamedMonth) {
-    const month = resolveMonthToken(firstOfNamedMonth[1]);
-    const year = firstOfNamedMonth[2] ? parseInt(firstOfNamedMonth[2], 10) : null;
-    if (month !== null) return parseDayOfMonthInMonth(1, month, year, now);
-  }
-  // September first / September the first
-  const namedMonthFirst = s.match(/^([a-z]+)\s+(?:the\s+)?(?:first|1st)(?:\s+(\d{4}))?$/);
-  if (namedMonthFirst) {
-    const month = resolveMonthToken(namedMonthFirst[1]);
-    const year = namedMonthFirst[2] ? parseInt(namedMonthFirst[2], 10) : null;
-    if (month !== null) return parseDayOfMonthInMonth(1, month, year, now);
   }
   return null;
 }
@@ -204,7 +165,7 @@ const parseRelativeMonthDay = (lower, now) => {
 /**
  * tryParseDate — deterministic parse only (no AI).
  */
-export const tryParseDate = (dateStr, tz) => {
+export function tryParseDate(dateStr, tz) {
   if (!dateStr) return null;
   try {
     const now = getLocalNow(tz);
@@ -212,17 +173,9 @@ export const tryParseDate = (dateStr, tz) => {
     let lower = raw.toLowerCase().trim();
     if (lower.startsWith('on next ')) lower = lower.replace(/^on\s+/, '');
 
-    // Labels from formatBookingDateLabel — e.g. "Friday, 25 June 2027"
-    const weekdayLabel = lower.match(/^(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday),?\s+(.+)$/);
-    if (weekdayLabel) lower = weekdayLabel[1].trim();
-
-    if (lower === 'today' || lower === 'tonight') return toUtcMidnight(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
+    if (lower === 'today') return toUtcMidnight(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
     if (lower === 'yesterday') return addLocalDays(now, -1);
     if (lower === 'tomorrow') return addLocalDays(now, 1);
-    if (lower === 'day after tomorrow' || lower === 'the day after tomorrow') return addLocalDays(now, 2);
-
-    const offsetDays = parseRelativeOffsetDays(lower, now);
-    if (offsetDays) return offsetDays;
 
     const relativeMonth = parseRelativeMonthDay(lower, now);
     if (relativeMonth) return relativeMonth;
@@ -280,12 +233,10 @@ export const tryParseDate = (dateStr, tz) => {
   }
 }
 
-export const looksLikeDate = (input) => {
+export function looksLikeDate(input) {
   if (!input || input.length < 2) return false;
   const s = input.toLowerCase().trim();
-  if (['today', 'tomorrow', 'yesterday', 'tonight'].includes(s)) return true;
-  if (/^day after tomorrow$/i.test(s)) return true;
-  if (/^in\s+(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)\s+(?:days?|weeks?)$/i.test(s)) return true;
+  if (['today', 'tomorrow', 'yesterday'].includes(s)) return true;
   if (/^(this\s+)?(monday|tuesday|wednesday|thursday|friday|saturday|sunday)$/i.test(s)) return true;
   if (/^on\s+(?:the\s+)?(monday|tuesday|wednesday|thursday|friday|saturday|sunday)$/i.test(s)) return true;
   if (/^on\s+next\s+(monday|tuesday|wednesday|thursday|friday|saturday|sunday)$/i.test(s)) return true;
@@ -300,49 +251,14 @@ export const looksLikeDate = (input) => {
   return false;
 }
 
-const DATE_PHRASE_RES = [
-  /\b(?:today|tomorrow|yesterday|tonight)\b/i,
-  /\bin\s+(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)\s+days?\b/i,
-  /\bin\s+(?:\d+|one|two|three|four)\s+weeks?\b/i,
-  /\b(?:this|next)\s+(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/i,
-  /\b(?:on\s+)?next\s+(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/i,
-  /\b(?:the\s+)?(?:first|1st)(?:\s+(?:day\s+of|of))?\s+next\s+month\b/i,
-  /\b(?:the\s+)?last\s+day\s+of\s+next\s+month\b/i,
-  /\bend\s+of\s+(?:this\s+)?month\b/i,
-  /\bday after tomorrow\b/i,
-  /\b(?:the\s+)?(?:first|1st)\s+of\s+(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\b/i,
-  /\bnext\s+month(?:'?s)?\s+(?:first|1st)(?:\s+day)?\b/i,
-  /\b\d{1,2}(?:st|nd|rd|th)?\s+(?:of\s+)?(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)(?:\s+\d{4})?\b/i,
-  /\b(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\s+\d{1,2}(?:st|nd|rd|th)?(?:\s+\d{4})?\b/i,
-  /\b\d{1,2}[\/\-\.]\d{1,2}(?:[\/\-\.]\d{2,4})?\b/,
-  /\b\d{4}-\d{2}-\d{2}\b/,
-];
-
-/** Pull a date phrase from a longer booking message. */
-export const extractBookingDatePhraseFromText = (text) => {
-  const raw = String(text || '');
-  for (const re of DATE_PHRASE_RES) {
-    const m = raw.match(re);
-    if (m) return m[0].trim();
-  }
-  return null;
-}
-
-const stripBookingCorrectionPrefix = (input) => {
-  let s = String(input || '').trim();
-  const re = /^(?:actually|make it|change(?: it)? to|i meant|instead|no,?)\s+/i;
-  while (re.test(s)) s = s.replace(re, '').trim();
-  return s;
-}
-
-export const formatBookingDateLabel = (parsed, tz = 'UTC') => {
+export function formatBookingDateLabel(parsed, tz = 'UTC') {
   if (!parsed) return '';
   return parsed.toLocaleDateString('en-GB', {
     weekday: 'long', day: 'numeric', month: 'long', year: 'numeric', timeZone: 'UTC',
   });
 }
 
-export const validateBookingDate = (parsed, tz) => {
+export function validateBookingDate(parsed, tz) {
   if (!parsed) return { error: null, parsed: null };
 
   const localNow = getLocalNow(tz);
@@ -368,14 +284,14 @@ export const validateBookingDate = (parsed, tz) => {
   return { parsed, error: null };
 }
 
-const isoFromParsed = (parsed) => {
+function isoFromParsed(parsed) {
   const y = parsed.getUTCFullYear();
   const m = String(parsed.getUTCMonth() + 1).padStart(2, '0');
   const d = String(parsed.getUTCDate()).padStart(2, '0');
   return `${y}-${m}-${d}`;
 }
 
-export const parsedFromIso = (iso) => {
+function parsedFromIso(iso) {
   const m = String(iso || '').trim().match(/^(\d{4})-(\d{2})-(\d{2})$/);
   if (!m) return null;
   const d = toUtcMidnight(parseInt(m[1], 10), parseInt(m[2], 10) - 1, parseInt(m[3], 10));
@@ -383,7 +299,7 @@ export const parsedFromIso = (iso) => {
   return d;
 }
 
-const parseDateWithAI = async (raw, tz) => {
+async function parseDateWithAI(raw, tz) {
   const now = getLocalNow(tz);
   const todayIso = isoFromParsed(toUtcMidnight(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
   const maxFuture = new Date(toUtcMidnight(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
@@ -391,7 +307,7 @@ const parseDateWithAI = async (raw, tz) => {
   const maxIso = isoFromParsed(maxFuture);
 
   try {
-    const { parseBookingDate } = await import('../../core/ai/providers/groqProvider.js');
+    const { parseBookingDate } = await import('../core/ai/providers/groqProvider.js');
     const iso = await parseBookingDate({
       message: raw,
       todayIso,
@@ -408,8 +324,8 @@ const parseDateWithAI = async (raw, tz) => {
  * resolveBookingDateInput — deterministic parse, AI fallback, then validation.
  * Returns { ok, parsed, label, raw, error? }
  */
-export const resolveBookingDateInput = async (raw, tz) => {
-  const trimmed = stripBookingCorrectionPrefix(String(raw || '').trim());
+export async function resolveBookingDateInput(raw, tz) {
+  const trimmed = String(raw || '').trim();
   if (!trimmed) {
     return { ok: false, raw: trimmed, error: 'empty' };
   }

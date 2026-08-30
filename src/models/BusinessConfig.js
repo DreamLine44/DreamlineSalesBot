@@ -113,24 +113,6 @@ const faqSchema = new mongoose.Schema({
   reply:   { type: String, required: true, trim: true, maxlength: 1000 },
 }, { _id: true });
 
-// [AUDIT-FIX-PROMO-SCHEMA] promoService.js's validatePromoCode()/applyPromoUsage()
-// were fully built and already read/write `business.promotions`, but this field
-// never existed on the schema — every validatePromoCode() call returned
-// { valid: false, reason: 'Invalid promo code' } no matter what, because
-// .select('promotions').lean() had nothing to select. Field names below match
-// promoService.js exactly: code, type ('PERCENT' | 'FIXED'), value, active,
-// expiresAt, maxUses, usedCount, minOrderValue.
-const promotionSchema = new mongoose.Schema({
-  code:          { type: String, required: true, trim: true, uppercase: true, maxlength: 30 },
-  type:          { type: String, enum: ['PERCENT', 'FIXED'], required: true },
-  value:         { type: Number, required: true, min: 0 },
-  active:        { type: Boolean, default: true },
-  expiresAt:     { type: Date, default: null },
-  maxUses:       { type: Number, default: null, min: 1 },
-  usedCount:     { type: Number, default: 0, min: 0 },
-  minOrderValue: { type: Number, default: 0, min: 0 },
-}, { _id: true });
-
 const businessConfigSchema = new mongoose.Schema({
 
   tenantId: {
@@ -237,9 +219,6 @@ const businessConfigSchema = new mongoose.Schema({
   // strict mode silently dropped every write and returned [] on every read.
   menuItems: [menuItemSchema],
   services:  [serviceSchema],
-
-  // [AUDIT-FIX-PROMO-SCHEMA] see promotionSchema above — backs promoService.js.
-  promotions: [promotionSchema],
 
   // ── Staff (salon / barbershop) ────────────────────────────────────────────
   // Used by salon/flows/index.js _getStaff() for stylist selection.

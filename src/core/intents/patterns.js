@@ -171,8 +171,6 @@ export const BUTTON_ID_MAP = {
   'PARTY_2':            'CONTINUE_FLOW',
   'PARTY_4':            'CONTINUE_FLOW',
   'PARTY_6':            'CONTINUE_FLOW',
-  'PARTY_8':            'CONTINUE_FLOW',
-  'PARTY_10':           'CONTINUE_FLOW',
 };
 
 // ── Emoji → Intent map ────────────────────────────────────────────────────────
@@ -362,8 +360,6 @@ export const INTENT_PATTERNS = {
     'need the admin', 'need admin', 'talk to a human', 'talk to human',
     'talk to a person', 'talk to a real person', 'human please', 'human agent',
     'talk to owner', 'talk to the owner', 'speak to owner', 'speak to the owner',
-    'talk to boss', 'talk to the boss', 'speak to boss', 'speak to the boss',
-    'want to talk to boss', 'i want to talk to boss', 'want to talk to the boss',
     'talk to staff', 'talk to someone else',
   ],
 
@@ -382,26 +378,10 @@ export const INTENT_PATTERNS = {
   VIEW_MENU: [
     'menu', 'show menu', 'view menu', 'see menu', 'back to menu',
     // [FIX-PIDGIN-VIEWMENU] Common exact-typed pidgin phrasings for this
-    // platform's Gambian customer base — see menuIntentDetector.js for the
-    // broader token-based catch of the same intent embedded in a longer
-    // sentence (superseded the old single-regex VIEW_MENU_DIRECT_RE).
+    // platform's Gambian customer base — see VIEW_MENU_DIRECT_RE in
+    // intentEngine.js for the broader regex-based catch of the same intent
+    // embedded in a longer sentence.
     'wetin una get', 'wetin you get', 'una get wetin',
-    // [FIX-MENU-COVERAGE] Short exact phrasings that are worth resolving at
-    // this free, zero-regex step-4 layer rather than always falling through
-    // to menuIntentDetector.js at step 4.5.
-    // [FIX-MENU-QUESTION-COLLISION] Deliberately does NOT include 'what do
-    // you have/sell/offer/serve' — those four phrases already live in the
-    // QUESTION array below (added earlier specifically so businesses without
-    // a product catalog, e.g. SERVICES/GENERAL, get a text answer instead of
-    // a broken catalog/order-flow redirect). Since Object.entries() iterates
-    // this object in declaration order and VIEW_MENU is declared before
-    // QUESTION, duplicating them here would have silently made VIEW_MENU win
-    // for every business mode, undoing that earlier fix.
-    'what to eat', 'what should i eat', 'what can i eat', 'what could i eat',
-    'whats good', "what's good", 'whats popular', "what's popular",
-    'any recommendations', 'recommend something', 'suggest something', 'surprise me',
-    'price list', 'pricelist', 'food list', 'item list',
-    'whats available', "what's available", 'what is available',
   ],
 
   SHOW_MENU: [

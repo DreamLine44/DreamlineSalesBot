@@ -30,7 +30,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import Order from '../models/Order.js';
-import { resolveActiveOrder, ACTIVE_ORDER_STATES } from '../services/order/activeOrderResolver.js';
+import { resolveActiveOrder, ACTIVE_ORDER_STATES } from '../services/activeOrderResolver.js';
 
 function withCapturedFilter(fakeOrders, run) {
   const original = Order.find;
@@ -55,17 +55,6 @@ test('resolveActiveOrder: query includes a clause matching admin-rejected orders
       !clause.createdAt // must NOT be bounded by the abandoned-cart 24h cutoff
     );
     assert.ok(hasUnboundedRejectClause, 'expected an age-unbounded clause for pending/unpaid/paymentReviewedAt-set orders');
-  });
-});
-
-test('resolveActiveOrder: in-progress orders are bounded to 24 hours', async () => {
-  await withCapturedFilter([], async (getFilter) => {
-    await resolveActiveOrder('2207000000', 'tenant1', null, null);
-    const filter = getFilter();
-    const inProgress = filter.$or.find(clause =>
-      clause.status?.$in?.includes('confirmed') && clause.createdAt?.$gte
-    );
-    assert.ok(inProgress, 'confirmed/preparing/ready orders must age out after 24h');
   });
 });
 

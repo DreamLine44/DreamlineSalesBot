@@ -61,7 +61,7 @@ test('bookingFlow.js: BOOKING_CONFIRM step accepts "yeah" and "yep" like DATE_CO
   const src = read('../core/conversations/bookingFlow.js');
   const start = src.indexOf("case 'BOOKING_CONFIRM': {");
   assert.ok(start !== -1, 'BOOKING_CONFIRM case not found');
-  const body = src.slice(start, start + 3200);
+  const body = src.slice(start, start + 1800);
 
   // [FIX-DUALLAYER-CONFIRM] the guard is now computed into a named
   // `isBookingConfirm` variable (bare-word regex || clean === 'confirm' ||

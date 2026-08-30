@@ -39,8 +39,6 @@ import BusinessConfig from '../models/BusinessConfig.js';
 import { decryptToken } from '../controllers/tenantController.js';
 import logger from '../config/logger.js';
 import { formatMoney } from '../utils/formatCurrency.js';
-import { formatOrderItemsForMessage, formatOrderItemSummary } from './order/orderService.js';
-import { logAudit } from './admin/auditService.js';
 
 const PROOF_WINDOW_HOURS = Number(process.env.PROOF_ELIGIBLE_HOURS || 4);
 
@@ -77,22 +75,9 @@ export async function receiveProof(customerPhone, tenantId, imageId, tenantDoc) 
     },
   });
 
-  // [AUDIT-FIX-AUDITLOG-WIRE] payment_submitted — documented in AuditLog.js as
-  // "customer sent payment proof (paymentService.receiveProof)" but logAudit()
-  // was never actually called from here.
-  logAudit({
-    tenantId,
-    orderId: order._id,
-    actor: 'customer',
-    actorId: customerPhone || null,
-    action: 'payment_submitted',
-    metadata: { imageId: imageId || null },
-  });
-
   // Notify admin
   const business  = await BusinessConfig.findOne({ tenantId }).lean();
   const adminPhone = business?.adminPhone || tenantDoc?.adminPhone;
-  const itemsBlock = formatOrderItemsForMessage(order, business || { payment: { currency: 'D' } });
   if (adminPhone && tenantDoc) {
     const { dispatchMessage } = await import('../core/whatsapp/dispatcher.js');
     const currency = business?.payment?.currency || 'D';
@@ -158,7 +143,7 @@ export async function receiveProof(customerPhone, tenantId, imageId, tenantDoc) 
         `💳 *New Payment Submission*\n\n` +
         `🆔 Order: *#${order.shortId}*\n` +
         `👤 Customer: *${customerPhone}*\n` +
-        `${itemsBlock}\n` +
+        `🛒 Items: *${order.item}* × ${order.quantity}\n` +
         `💰 Amount: *${currency}${order.totalPrice ? formatMoney(order.totalPrice) : '—'}*\n\n` +
         (imageForwarded
           ? `Screenshot sent above ↑\nPlease approve or reject:`
@@ -172,8 +157,7 @@ export async function receiveProof(customerPhone, tenantId, imageId, tenantDoc) 
 
   return (
     `✅ *Payment proof received!*\n\n` +
-    `⏳ Your order is now awaiting verification:\n\n` +
-    `${itemsBlock}\n\n` +
+    `⏳ Your order *${order.item}* × ${order.quantity} is now awaiting verification.\n\n` +
     `We'll confirm shortly 🙏`
   );
 }
@@ -207,7 +191,6 @@ export async function handleDonePayment(customerPhone, tenantId, tenantDoc) {
     try {
       const business   = await BusinessConfig.findOne({ tenantId }).lean();
       const adminPhone = business?.adminPhone || tenantDoc?.adminPhone;
-      const itemsBlock = formatOrderItemsForMessage(order, business || { payment: { currency: 'D' } });
       if (adminPhone) {
         const { dispatchMessage } = await import('../core/whatsapp/dispatcher.js');
         const currency = business?.payment?.currency || 'D';
@@ -216,7 +199,7 @@ export async function handleDonePayment(customerPhone, tenantId, tenantDoc) {
           body:
             `✅ *Self-Confirmed Order*\n\n` +
             `👤 Customer: *${customerPhone}*\n` +
-            `${itemsBlock}\n` +
+            `🛒 Item: *${order.item}* × ${order.quantity}\n` +
             `💰 Total: *${currency}${order.totalPrice ? formatMoney(order.totalPrice) : '—'}*\n` +
             `🔖 Ref: \`${order.shortId}\`\n\n` +
             `Customer confirmed (cash/no-proof). Tap ✅ to confirm, then 🍽️ Mark Ready when done.`,
@@ -231,7 +214,7 @@ export async function handleDonePayment(customerPhone, tenantId, tenantDoc) {
     }
   }
 
-  return `✅ *Thank you!* Your order (${formatOrderItemSummary(order)}) has been received.\n\nWe'll process it shortly. 🙏`;
+  return `✅ *Thank you!* Your order of *${order.item}* has been received.\n\nWe'll process it shortly. 🙏`;
 }
 
 /**
@@ -304,9 +287,8 @@ export function buildPaymentInstructionsUI(business, totalPrice, shortId, stored
   const requireProof = payment?.requireProof !== false; // default true
   const actionButtons = requireProof
     ? [
-        { id: 'REQUEST_CASH', title: '💵 Request Cash'  },
-        { id: 'SUPPORT',      title: '❓ Need Help'     },
-        { id: 'CANCEL',       title: '❌ Cancel Order'  },
+        { id: 'SUPPORT', title: '❓ Need Help'    },
+        { id: 'CANCEL',  title: '❌ Cancel Order' },
       ]
     : [
         { id: 'DONE',    title: '✅ Sent Payment'  },
@@ -331,105 +313,4 @@ export function buildPaymentInstructionsUI(business, totalPrice, shortId, stored
       instructions,
     buttons: actionButtons,
   };
-}
-
-/** Free-text cash-payment request phrases — PAYMENT_PROOF step only (webhookController). */
-const CASH_PAYMENT_REQUEST_TEXT_RE = /\b(?:pay\s+cash|cash\s+payment|pay\s+when\s+delivered|pay\s+on\s+delivery|can\s+i\s+pay\s+cash|pay\s+in\s+cash|request\s+cash|pay\s+with\s+cash|don'?t\s+have\s+wave|do\s+not\s+have\s+wave|no\s+wave|can'?t\s+pay\s+with|cannot\s+pay\s+with)\b/i;
-
-export function isCashPaymentRequestText(message) {
-  const raw = String(message || '').trim();
-  if (!raw || raw.length < 4) return false;
-  return CASH_PAYMENT_REQUEST_TEXT_RE.test(raw);
-}
-
-function formatOrderRef(order) {
-  if (order?.paymentReference) return order.paymentReference;
-  if (order?.shortId) return `#${order.shortId}`;
-  return '';
-}
-
-/**
- * requestCashPayment — customer asks to pay cash at PAYMENT_PROOF (requireProof=true).
- * Ties to the same unpaid order lookup as receiveProof(); atomic duplicate guard.
- */
-export async function requestCashPayment(customerPhone, tenantId, tenantDoc, business) {
-  const updated = await Order.findOneAndUpdate(
-    {
-      customerPhone, tenantId,
-      paymentStatus: 'unpaid',
-      $or: [
-        { cashRequestStatus: null },
-        { cashRequestStatus: 'rejected' },
-      ],
-    },
-    {
-      $set: {
-        cashRequestStatus:     'pending',
-        cashRequestRequestedAt: new Date(),
-        cashRequestReviewedBy:  null,
-        cashRequestReviewedAt:  null,
-      },
-    },
-    { new: true, sort: { createdAt: -1 } },
-  ).lean();
-
-  if (!updated) {
-    const existing = await Order.findOne({ customerPhone, tenantId, paymentStatus: 'unpaid' })
-      .sort({ createdAt: -1 })
-      .select('cashRequestStatus shortId paymentReference')
-      .lean();
-    if (!existing) {
-      return `⚠️ We couldn't find a pending order to attach this request to.\n\nIf you believe this is an error, please contact us directly.`;
-    }
-    if (existing.cashRequestStatus === 'pending') {
-      const ref = formatOrderRef(existing);
-      return (
-        `⏳ *Cash payment request already submitted*${ref ? ` for order *${ref}*` : ''}.\n\n` +
-        `Please wait — a team member will review your request shortly. 🙏`
-      );
-    }
-    if (existing.cashRequestStatus === 'approved') {
-      const ref = formatOrderRef(existing);
-      return (
-        `✅ Your cash payment request${ref ? ` for order *${ref}*` : ''} has already been approved.\n\n` +
-        `Please wait — we'll confirm your order shortly. 🙏`
-      );
-    }
-    return `⚠️ We couldn't find a pending order to attach this request to.\n\nIf you believe this is an error, please contact us directly.`;
-  }
-
-  const adminPhone = business?.adminPhone || tenantDoc?.adminPhone;
-  const currency   = business?.payment?.currency || 'D';
-  const ref        = formatOrderRef(updated);
-
-  if (adminPhone && tenantDoc) {
-    const { dispatchMessage } = await import('../core/whatsapp/dispatcher.js');
-    // [AUDIT-FIX-CASH-ITEMS] Was `*${updated.item}* × ${updated.quantity}`, which only
-    // ever mirrors items[0] on a multi-item cart order — the admin's cash-approval card
-    // silently dropped every item after the first (confirmed against a live multi-item
-    // order: card showed only the first line item even though the total reflected all
-    // of them). Use the same formatOrderItemsForMessage() helper already used by the
-    // receiveProof()/handleDonePayment() admin cards above for consistency.
-    const itemsBlock = formatOrderItemsForMessage(updated, business);
-    await dispatchMessage(adminPhone, {
-      type:    'buttons',
-      body:
-        `💵 *Cash Payment Request*\n\n` +
-        `🆔 Order: *${ref || `#${updated.shortId}`}*\n` +
-        `👤 Customer: *${customerPhone}*\n` +
-        `${itemsBlock}\n` +
-        `💰 Amount: *${currency}${updated.totalPrice ? formatMoney(updated.totalPrice) : '—'}*\n\n` +
-        `Customer wants to pay cash instead of mobile money. Approve or reject:`,
-      buttons: [
-        { id: `APPROVE_CASH_${updated.shortId}`, title: '✅ Approve Cash' },
-        { id: `REJECT_CASH_${updated.shortId}`,  title: '❌ Reject'       },
-      ],
-    }, tenantDoc).catch(() => {});
-  }
-
-  return (
-    `💵 *Cash payment request received!*\n\n` +
-    `Your request${ref ? ` for order *${ref}*` : ''} has been sent to our team.\n\n` +
-    `⏳ Please wait — we'll let you know once it's reviewed. 🙏`
-  );
 }

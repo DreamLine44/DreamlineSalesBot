@@ -50,7 +50,7 @@ test('START_BOOKING has a direct all-in-one booking path for party, date, and ti
   const end = src.indexOf("registerAction('WALKIN'", start);
   const block = src.slice(start, end);
   assert.match(block, /parseDirectBookingRequest/);
-  assert.match(block, /resolveDirectBookingStep/);
+  assert.match(block, /step: 'BOOKING_CONFIRM'/);
   assert.match(block, /advance\(/);
 });
 
@@ -97,7 +97,7 @@ test('postFlowHandler: status commands fall through instead of generic menu', ()
 });
 
 test('activityStatusService: isStatusCommand recognises track phrases', async () => {
-  const { isStatusCommand } = await import('../services/activity/activityStatusService.js');
+  const { isStatusCommand } = await import('../services/activityStatusService.js');
   assert.equal(isStatusCommand('track my order'), true);
   assert.equal(isStatusCommand('track my booking'), true);
   assert.equal(isStatusCommand('hello'), false);

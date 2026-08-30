@@ -48,11 +48,10 @@ async function handleQuestionAction({ session, message, business, tenant, isInte
     // Answer the real question right now instead of waiting for the next
     // message — mirrors the AWAITING_QUESTION handling webhookController
     // runs for the *following* message, so the first one isn't wasted.
-    const { processQuestionMessage, persistQuestionSession, recordQuestionHistory, toWhatsAppPayload } = await import('../../services/question/questionAnswerService.js');
+    const { processQuestionMessage, persistQuestionSession } = await import('../../services/questionAnswerService.js');
     const reply = await processQuestionMessage({ session, message: typedQuestion, business, tenant, intent: 'FAQ' });
     await persistQuestionSession(session, tenant, reply.context || { lastMessage: typedQuestion });
-    await recordQuestionHistory(session, typedQuestion, reply);
-    return toWhatsAppPayload(reply) || { type: 'text', body: '' };
+    return { type: reply.type, body: reply.body };
   }
   return {
     type: 'text',
@@ -90,50 +89,28 @@ async function startFlowOrAnswerQuestion({ flowName, session, message, business,
   return handleQuestionAction({ session, message, business, tenant, isInteractive });
 }
 
-export async function parseDirectBookingRequest(message, business) {
+async function parseDirectBookingRequest(message, business) {
   const raw = String(message || '').trim();
-  const { parsePartySizeFromText } = await import('../../utils/parsePartySize.js');
-  const { extractBookingTimeFromText } = await import('../../utils/parseBookingTime.js');
-  const { resolveBookingDateInput, extractBookingDatePhraseFromText } = await import('../../services/booking/bookingDateParser.js');
+  const partyMatch = raw.match(/\b(?:table|party)\s*(?:for|of)?\s*(\d{1,2})\b/i)
+    || raw.match(/\bfor\s+(\d{1,2})\b/i);
+  const timeMatch = raw.match(/\b(\d{1,2}(?::\d{2})?\s*(?:am|pm))\b/i);
+  const dateMatch = raw.match(/\b(?:today|tomorrow|next\s+(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday))\b/i)
+    || raw.match(/\b\d{1,2}(?:st|nd|rd|th)?\s+(?:of\s+)?(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)(?:\s+\d{4})?\b/i);
+  if (!partyMatch || !timeMatch || !dateMatch) return null;
 
-  const partySize = parsePartySizeFromText(raw);
+  const { resolveBookingDateInput } = await import('../../services/bookingDateParser.js');
   const tz = business?.hours?.timezone || 'UTC';
+  const resolved = await resolveBookingDateInput(dateMatch[0], tz);
+  if (!resolved.ok) return null;
 
-  let date = null;
-  let parsedDate = null;
-  let dateRaw = null;
-
-  const datePhrase = extractBookingDatePhraseFromText(raw);
-  if (datePhrase) {
-    const resolved = await resolveBookingDateInput(datePhrase, tz);
-    if (resolved.ok) {
-      date = resolved.label;
-      parsedDate = resolved.parsed;
-      dateRaw = resolved.raw;
-    }
-  }
-
-  const timeResolved = extractBookingTimeFromText(raw);
-  const time = timeResolved?.label || null;
-
-  if (!partySize && !date && !time) return null;
-
-  return { partySize, date, parsedDate, dateRaw, time };
-}
-
-export function resolveDirectBookingStep({ partySize, date, time, isRestaurant }) {
-  // Full NL input still passes through TIME_CONFIRM so closed-day and past-time checks run.
-  if (partySize && date && time) return 'TIME_CONFIRM';
-  if (!isRestaurant) {
-    return (date && time) ? 'TIME_CONFIRM' : null;
-  }
-  // NL-provided dates go through DATE_CONFIRM (same as typing a date in the DATE step).
-  if (partySize && date) return 'DATE_CONFIRM';
-  if (partySize && time) return 'DATE';
-  if (date && time) return 'PARTY_SIZE';
-  if (partySize) return 'DATE';
-  if (date || time) return 'PARTY_SIZE';
-  return null;
+  const time = timeMatch[1].replace(/\s+/g, ' ').trim();
+  return {
+    partySize: Number(partyMatch[1]),
+    date: resolved.label,
+    parsedDate: resolved.parsed,
+    dateRaw: resolved.raw,
+    time,
+  };
 }
 
 function directOrderHandoff(mode, lines) {
@@ -294,13 +271,10 @@ export async function registerAllModules() {
   //   API error, thrown exception) still falls back to the exact same
   //   startFlow('ORDER') call PATH A uses — WA Catalog can never become a
   //   dead end for a customer, even for tenants who opted into it.
-  registerAction('START_ORDER', async ({ session, message, business, tenant, intent, isInteractive = false }) => {
+  registerAction('START_ORDER', async ({ session, message, business, tenant, intent }) => {
     const { startFlow } = await import('../conversations/flowEngine.js');
     const { advance } = await import('../conversations/flowEngine.js');
     const { updateSession } = await import('../sessions/sessionService.js');
-    const { resolveSessionPhone } = await import('../../utils/customerPhone.js');
-    const orderPhone = resolveSessionPhone(session);
-    session = { ...session, customerPhone: orderPhone };
     const normalizedIntent = intent === 'START_ORDER' ? 'ORDER' : (intent || 'ORDER');
     const msgUpper = String(message || '').trim().toUpperCase();
     const explicitOrderTap = msgUpper === 'ORDER' || msgUpper === 'NEW_ORDER';
@@ -353,7 +327,7 @@ export async function registerAllModules() {
     const nluProducts = session?.data?._nluPending?.products;
     const {
       mergeCartLines, parseMultiItemMessage, parseNaturalOrderMessage,
-      parseCartModification, applyCartModification, resolveDirectOrderParse,
+      parseCartModification, applyCartModification,
     } = await import('../shared/cartEngine.js');
     const menu = (business?.menuItems || []).filter(item => item.available !== false);
     const existingCart = Array.isArray(session?.data?.cart) ? session.data.cart : [];
@@ -371,7 +345,7 @@ export async function registerAllModules() {
         message: null, business, tenant,
       });
     }
-    const parsedDirect = resolveDirectOrderParse(menu, message) || null;
+    const parsedDirect = parseMultiItemMessage(menu, message) || parseNaturalOrderMessage(menu, message);
     if (parsedDirect?.ambiguous && parsedDirect.candidates?.length) {
       const pendingData = {
         ...(session.data || {}),
@@ -524,48 +498,19 @@ export async function registerAllModules() {
     // every direct-booking request for a service-less business threw
     // "updateSession is not defined" instead of confirming the booking.
     const { updateSession } = await import('../sessions/sessionService.js');
-    const { bookingDateIsoFromParsed } = await import('../../services/booking/bookingState.js');
-    const { resolveSessionPhone } = await import('../../utils/customerPhone.js');
     const directBooking = await parseDirectBookingRequest(message, business).catch(() => null);
-    const isRestaurant = (business?.businessMode || '').toUpperCase() === 'RESTAURANT';
-    const noServices = !(business?.services || []).length;
-
-    if (directBooking && (isRestaurant || noServices)) {
-      const { partySize, date, parsedDate, dateRaw, time } = directBooking;
-      const step = resolveDirectBookingStep({ partySize, date, time, isRestaurant });
-      if (step) {
-        const mergedData = {
-          ...(session.data || {}),
-          ...(partySize ? { partySize } : {}),
-          ...(date ? {
-            date,
-            parsedDate,
-            dateRaw,
-            bookingDateIso: bookingDateIsoFromParsed(parsedDate),
-          } : {}),
-          ...(time ? { time } : {}),
-        };
-        const phone = resolveSessionPhone(session);
-        const updated = await updateSession(phone, session.tenantId, {
-          currentFlow: 'BOOKING',
-          step,
-          data: mergedData,
-        });
-        return advance({
-          session: {
-            ...(typeof session.toObject === 'function' ? session.toObject() : session),
-            ...(updated && typeof updated.toObject === 'function' ? updated.toObject() : updated),
-            customerPhone: phone,
-            tenantId:      session.tenantId,
-            currentFlow:   'BOOKING',
-            step,
-            data:          mergedData,
-          },
-          message: null,
-          business,
-          tenant,
-        });
-      }
+    if (directBooking && !(business?.services || []).length) {
+      const updated = await updateSession(session.customerPhone, session.tenantId, {
+        currentFlow: 'BOOKING',
+        step: 'BOOKING_CONFIRM',
+        data: { ...(session.data || {}), ...directBooking },
+      });
+      return advance({
+        session: { ...session, ...updated, currentFlow: 'BOOKING', step: 'BOOKING_CONFIRM', data: { ...(session.data || {}), ...directBooking } },
+        message: null,
+        business,
+        tenant,
+      });
     }
     return startFlow({ flowName: 'BOOKING', session, business, tenant });
   });
@@ -682,7 +627,7 @@ export async function registerAllModules() {
   });
 
   registerAction('REPEAT_ORDER', async ({ session, message, business, tenant }) => {
-    const { getLastOrderItem } = await import('../../services/order/orderService.js');
+    const { getLastOrderItem } = await import('../../services/orderService.js');
     const { startFlow }        = await import('../conversations/flowEngine.js');
     const { updateSession }    = await import('../sessions/sessionService.js');
 
@@ -718,7 +663,7 @@ export async function registerAllModules() {
   });
 
   registerAction('TRACK_ORDER', async ({ session, business, message }) => {
-    const { buildStatusReply } = await import('../../services/activity/activityStatusService.js');
+    const { buildStatusReply } = await import('../../services/activityStatusService.js');
     return buildStatusReply({ session, business, message });
   });
 

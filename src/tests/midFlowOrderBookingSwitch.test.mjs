@@ -35,7 +35,6 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { ORDER_DIRECT_RE, BOOKING_DIRECT_RE, DIRECT_INTENT_EXCLUDE_RE, QUESTION_LEADIN_RE, normalise } from '../core/intents/intentEngine.js';
-import { isInformationalActivityQuestion } from '../services/question/questionModeHelper.js';
 
 function read(relPath) {
   return fs.readFileSync(new URL(relPath, import.meta.url), 'utf8');
@@ -113,7 +112,7 @@ function loadRealDetectMidFlowSwitchRequest() {
   // eslint-disable-next-line no-new-func
   const factory = new Function(
     'ORDER_DIRECT_RE', 'BOOKING_DIRECT_RE', 'DIRECT_INTENT_EXCLUDE_RE', 'QUESTION_LEADIN_RE', 'normaliseFsi',
-    'findBestMatch', 'getModeConfig', 'isInformationalActivityQuestion',
+    'findBestMatch', 'getModeConfig',
     `
     ${freeTextMatch[0]}
     ${dateTimeMatch[0]}
@@ -123,7 +122,7 @@ function loadRealDetectMidFlowSwitchRequest() {
   );
   return factory(
     ORDER_DIRECT_RE, BOOKING_DIRECT_RE, DIRECT_INTENT_EXCLUDE_RE, QUESTION_LEADIN_RE, normalise,
-    stubFindBestMatch, stubGetModeConfig, isInformationalActivityQuestion
+    stubFindBestMatch, stubGetModeConfig
   );
 }
 
@@ -343,19 +342,15 @@ test('webhookController.js: mid-flow switch intercept is wired in after the MFQ 
   );
 });
 
-test('webhookController.js: FSI_SWITCH_YES routes via action or starts target flow fresh', () => {
+test('webhookController.js: FSI_SWITCH_YES starts the target flow fresh via startFlow()', () => {
   const src = read('../controllers/webhookController.js');
+  // Target the actual handler block (`if (upperMsg === 'FSI_SWITCH_YES') {`), not
+  // the earlier bypass-condition list mention or the button-definition mention.
   const idx = src.indexOf("if (upperMsg === 'FSI_SWITCH_YES') {");
   assert.ok(idx > -1, 'FSI_SWITCH_YES handler not found');
-  const slice = src.slice(idx, idx + 1400);
-  assert.ok(
-    slice.includes('route({') && slice.includes('_fsiTargetAction'),
-    'FSI_SWITCH_YES should route through _fsiTargetAction when a direct order/booking was parsed'
-  );
-  assert.ok(
-    slice.includes('startFlow({') && slice.includes('_fsiTargetFlow'),
-    'FSI_SWITCH_YES should fall back to startFlow() when only a target flow was captured'
-  );
+  const slice = src.slice(idx, idx + 1200);
+  assert.ok(slice.includes('startFlow({'), 'FSI_SWITCH_YES should hand off to startFlow(), the same entry point START_ORDER/START_BOOKING use');
+  assert.ok(slice.includes('_fsiTargetFlow'), 'FSI_SWITCH_YES should read the target flow captured at intercept time');
 });
 
 test('webhookController.js: FSI_SWITCH_NO restores the original flow and re-sends the current step', () => {
@@ -438,15 +433,4 @@ test('_detectMidFlowSwitchRequest: genuine order/booking phrases containing "i w
   const questionSession = { currentFlow: 'QUESTION', step: 'AWAITING_QUESTION', data: {} };
   assert.equal(detectMidFlowSwitchRequest('i want to order two burgers', questionSession, RESTAURANT_BIZ), 'ORDER');
   assert.equal(detectMidFlowSwitchRequest('i want to book a table for tonight', questionSession, RESTAURANT_BIZ), 'BOOKING');
-});
-
-test('_detectMidFlowSwitchRequest: informational "what can I book?" stays in Q&A — no switch prompt', () => {
-  const questionSession = { currentFlow: 'QUESTION', step: 'AWAITING_QUESTION', data: {} };
-  for (const message of ['what can i book', 'what i can o book', 'what do you offer for booking']) {
-    assert.equal(
-      detectMidFlowSwitchRequest(message, questionSession, RESTAURANT_BIZ),
-      null,
-      `"${message}" should be answered in Q&A, not trigger a booking switch`
-    );
-  }
 });

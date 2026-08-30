@@ -13,10 +13,10 @@ import {
   isNoPaymentOrder,
   formatOrderItemsForMessage,
   formatOrderItemSummary,
-} from '../services/order/orderService.js';
+} from '../services/orderService.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const adminSrc = readFileSync(join(__dirname, '../services/admin/adminCommandService.js'), 'utf8');
+const adminSrc = readFileSync(join(__dirname, '../services/adminCommandService.js'), 'utf8');
 
 test('isNoPaymentOrder: payment disabled → order wording', () => {
   assert.equal(isNoPaymentOrder({ payment: { enabled: false } }, { paymentStatus: 'unpaid' }), true);
@@ -66,7 +66,7 @@ test('adminCommandService.confirmPayment uses isNoPaymentOrder, not session step
   assert.match(adminSrc, /isNoPaymentOrder\(business, order, custSession2\)/);
   assert.match(adminSrc, /formatOrderItemsForMessage\(order, business\)/);
   assert.doesNotMatch(
-    adminSrc.slice(adminSrc.indexOf('confirmPayment = async'), adminSrc.indexOf('rejectPayment = async')),
+    adminSrc.slice(adminSrc.indexOf('async function confirmPayment'), adminSrc.indexOf('async function rejectPayment')),
     /isCashConfirm\s*=\s*custSession2\?\.step\s*===\s*'AWAIT_ADMIN_CONFIRM'/,
   );
 });

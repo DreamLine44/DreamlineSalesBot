@@ -48,7 +48,7 @@ import { updateSession }  from '../../../core/sessions/sessionService.js';
 import { completeFlow, startFlow } from '../../../core/conversations/flowEngine.js';
 import { getAIReply }     from '../../../core/ai/providers/aiRouter.js';
 import { findBestMatch }  from '../../../utils/matchEngine.js';
-import { saveOrder }      from '../../../services/order/orderService.js';
+import { saveOrder }      from '../../../services/orderService.js';
 import { parseQuantity }  from '../../../utils/parseQuantity.js';
 import { trackOrderAnalytics } from '../../../core/analytics/analyticsService.js';
 import { buildPaymentInstructionsUI } from '../../../services/paymentService.js';

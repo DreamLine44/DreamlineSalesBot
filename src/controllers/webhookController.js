@@ -123,19 +123,12 @@
  */
 
 import { getSession, createSession, updateSession } from '../core/sessions/sessionService.js';
-import { normalizeCustomerPhone } from '../utils/customerPhone.js';
-import { detectIntent, extractCustomerName, normalise } from '../core/intents/intentEngine.js';
-// [FIX-MENU-COVERAGE] Replaces the old VIEW_MENU_DIRECT_RE single-regex import —
-// this mid-flow "menu" re-render check must use the same token-based detector
-// as the pre-flow path (intentEngine.js step 4.5), or the two paths silently
-// diverge again every time one gets a new phrasing added and the other doesn't.
-import { isMenuBrowsingIntent } from '../core/intents/menuIntentDetector.js';
+import { detectIntent, extractCustomerName, normalise, VIEW_MENU_DIRECT_RE } from '../core/intents/intentEngine.js';
 import { INTENT_PATTERNS }                           from '../core/intents/patterns.js';
 // [FSI] Direct ORDER/BOOKING phrase regexes — same single source of truth
 // intentEngine.js's own pre-flow step 4.5 uses, reused here so the mid-flow
 // switch intercept below can never silently drift from the pre-flow behavior.
 import { ORDER_DIRECT_RE, BOOKING_DIRECT_RE, DIRECT_INTENT_EXCLUDE_RE, QUESTION_LEADIN_RE } from '../core/intents/intentEngine.js';
-import { isInformationalActivityQuestion, isStayInQuestionMessage, isGreetingMessage, isHumanHandoffRequest } from '../services/question/questionModeHelper.js';
 import { findBestMatch }                             from '../utils/matchEngine.js';
 import { updateName as persistCustomerName }         from '../core/memory/customerMemory.js';
 import { advance, startFlow }                        from '../core/conversations/flowEngine.js';
@@ -143,7 +136,7 @@ import { route }                                     from '../core/conversations
 import { dispatchMessage }                           from '../core/whatsapp/dispatcher.js';
 import { getModeConfig }                             from '../config/modes.js';
 import { buildOptionsReply }                         from '../core/shared/uiOptionsHelper.js';
-import { parseNaturalOrderMessage, resolveDirectOrderParse } from '../core/shared/cartEngine.js';
+import { parseNaturalOrderMessage }                  from '../core/shared/cartEngine.js';
 // [AUDIT-FIX-XZ-REMOVE-2] Static import — used synchronously in the hot-path
 // _detectMidFlowQuestion() helper on every typed mid-flow message, so this
 // mirrors the dynamic-import usage elsewhere in this file without paying an
@@ -160,8 +153,8 @@ import { handlePostFlowMessage }                     from '../services/postFlowH
 // hit intent detection (GREET → welcome screen, ACKNOWLEDGE → micro-reply with no order
 // context) instead of the correct context-aware order-state card. This also caused the
 // "Ok/Hello after payment confirmation gets no order-aware response" bug seen in production.
-import { resolveActiveOrder }                        from '../services/order/activeOrderResolver.js';
-import { isStatusCommand }                           from '../services/activity/activityStatusService.js';
+import { resolveActiveOrder }                        from '../services/activeOrderResolver.js';
+import { isStatusCommand }                           from '../services/activityStatusService.js';
 import Tenant           from '../models/Tenant.js';
 import BusinessConfig   from '../models/BusinessConfig.js';
 import ProcessedMessage from '../models/ProcessedMessage.js';
@@ -173,7 +166,6 @@ import ProcessedMessage from '../models/ProcessedMessage.js';
 import Order            from '../models/Order.js';
 import logger           from '../config/logger.js';
 import { formatMoney }  from '../utils/formatCurrency.js';
-import { logAudit }     from '../services/admin/auditService.js';
 import crypto           from 'crypto';
 
 // [DEPLOY-VERIFY] Bumped whenever the signature-verification or catalog-gate logic in
@@ -393,7 +385,6 @@ function isFlowPassthroughId(id) {
     // of the order details the customer tapped to see.
     /^ORDER_STATUS_[A-Z0-9]+$/.test(upper) || // multiple-order picker (ORDER_STATUS_<shortId>)
     /^BOOKING_STATUS_[A-Z0-9]+$/.test(upper) || // multiple-booking picker (BOOKING_STATUS_<shortId>)
-    /^TIME_M_\d+$/.test(upper)       ||  // hours-aware booking slots (TIME_M_<minutes>)
     /^DATE_D_\d{8}$/.test(upper) ||              // booking month/day picker (DATE_D_YYYYMMDD)
     /^DATE_M_\d{6}$/.test(upper) ||              // booking month picker (DATE_M_YYYYMM)
     /^DATE_DAY_MORE_\d{6}_\d+$/.test(upper) ||  // booking day list pagination
@@ -408,7 +399,7 @@ function isFlowPassthroughId(id) {
 const FLOW_PASSTHROUGH_IDS = new Set([
   // ── Time slots (booking + delivery scheduled) ─────────────────────────────
   'TIME_9AM','TIME_10AM','TIME_11AM','TIME_12PM',
-  'TIME_1PM','TIME_2PM','TIME_3PM','TIME_4PM','TIME_5PM','TIME_6PM','TIME_7PM','TIME_8PM','TIME_9PM',
+  'TIME_1PM','TIME_2PM','TIME_3PM','TIME_4PM','TIME_5PM','TIME_6PM','TIME_7PM',
   // ── Quantity quick-picks ──────────────────────────────────────────────────
   'QTY_1','QTY_2','QTY_3','QTY_4','QTY_5',
   // ── Service selection — SVC_0..SVC_99; isFlowPassthroughId() regex covers ≥100 ──
@@ -431,7 +422,7 @@ const FLOW_PASSTHROUGH_IDS = new Set([
   ...Array.from({ length: 10 }, (_, i) => `DATE_PICK_${i}`),
   'DATE_BACK','TIME_BACK',
   // ── Booking: party size ───────────────────────────────────────────────────
-  'PARTY_2','PARTY_4','PARTY_6','PARTY_8','PARTY_10',
+  'PARTY_2','PARTY_4','PARTY_6',
   // ── Upsell ───────────────────────────────────────────────────────────────
   'UPSELL_YES','UPSELL_NO',
   // ── Delivery slots ────────────────────────────────────────────────────────
@@ -778,7 +769,6 @@ function extractMessage(msgObj) {
 const MFQ_ORDER_INPUT_STEPS = new Set([
   'QUANTITY', 'ITEM_ADDED', 'SUGGESTION_CONFIRM', 'UPSELL',
   'EDIT_CART_MENU', 'EDIT_CART_PICK',
-  'CONFIRM', // order summary — confirm/done/cart edits must reach orderFlow
 ]);
 
 // Steps that accept ANY free text as a valid answer — must NEVER be intercepted.
@@ -1021,7 +1011,6 @@ function _detectMidFlowSwitchRequest(text, session, business, isInteractive = fa
     if (questionFlows.has(flow)) {
       if (id === 'ORDER') return 'ORDER';
       if (id === 'BOOK' || id === 'BOOK_NOW') return 'BOOKING';
-      if (['VIEW_MENU', 'SHOW_MENU', 'MENU', 'BROWSE_CATALOG'].includes(id)) return 'ORDER';
     }
     if ((flow === 'ORDER' || flow === 'BOOKING') && id === 'QUESTION') return 'QUESTION';
     if (flow === 'ORDER' && (id === 'BOOK' || id === 'BOOK_NOW')) return 'BOOKING';
@@ -1067,8 +1056,8 @@ function _detectMidFlowSwitchRequest(text, session, business, isInteractive = fa
   // "asking" framing and routes/keeps the customer in QUESTION instead.
   let targetFlow = null;
   if (QUESTION_LEADIN_RE.test(clean)) targetFlow = 'QUESTION';
-  else if (!isInformationalActivityQuestion(raw) && BOOKING_DIRECT_RE.test(clean)) targetFlow = 'BOOKING';
-  else if (!isInformationalActivityQuestion(raw) && ORDER_DIRECT_RE.test(clean)) targetFlow = 'ORDER';
+  else if (BOOKING_DIRECT_RE.test(clean)) targetFlow = 'BOOKING';
+  else if (ORDER_DIRECT_RE.test(clean)) targetFlow = 'ORDER';
   if (!targetFlow || targetFlow === flow) return null;
 
   // Item-name collision guard — only for ORDER/BOOKING switches.
@@ -1088,104 +1077,6 @@ function _detectMidFlowSwitchRequest(text, session, business, isInteractive = fa
   return targetFlow;
 }
 
-const _QUESTION_MODE_FLOWS  = new Set(['QUESTION', 'ENQUIRY', 'SPEC_REQUEST']);
-const _QUESTION_MODE_STEPS  = new Set(['AWAITING_QUESTION', 'SPEC_QUESTION']);
-const _QA_SWITCH_ACTIONS    = new Set(['START_ORDER', 'START_BOOKING', 'CANCEL', 'CANCEL_ALL', 'BROWSE_CATALOG', 'WALKIN']);
-
-/** True when the customer is inside dedicated Ask-a-Question mode. */
-function _isActiveQuestionMode(session) {
-  const flow = (session.currentFlow || '').toUpperCase();
-  const step = (session.step || '').toUpperCase();
-  return _QUESTION_MODE_FLOWS.has(flow) && _QUESTION_MODE_STEPS.has(step);
-}
-
-/**
- * Detect a clear activity-switch request while in Q&A mode.
- * Returns { targetFlow, action, intent, suggestion?, nlu? } or null to stay in Q&A.
- */
-function _resolveQuestionModeSwitch({ messageText, session, business, isInteractive, intentResult = null }) {
-  if (isStayInQuestionMessage(messageText)) return null;
-  if (isInformationalActivityQuestion(messageText)) return null;
-
-  const targetFlow = _detectMidFlowSwitchRequest(messageText, session, business, isInteractive);
-  if (targetFlow === 'ORDER') {
-    const id = String(messageText || '').trim().toUpperCase();
-    if (isInteractive && id === 'BROWSE_CATALOG') {
-      return { targetFlow: 'ORDER', action: 'BROWSE_CATALOG', intent: 'BROWSE_CATALOG' };
-    }
-    return { targetFlow: 'ORDER', action: 'START_ORDER', intent: 'ORDER' };
-  }
-  if (targetFlow === 'BOOKING') {
-    return { targetFlow: 'BOOKING', action: 'START_BOOKING', intent: 'BOOKING' };
-  }
-
-  if (intentResult?.confidence === 'HIGH' && _QA_SWITCH_ACTIONS.has(intentResult.action)) {
-    if (isInformationalActivityQuestion(messageText)) return null;
-    const action = intentResult.action;
-    const flowByAction = {
-      START_ORDER: 'ORDER', START_BOOKING: 'BOOKING', BROWSE_CATALOG: 'ORDER',
-      WALKIN: 'BOOKING', CANCEL: null, CANCEL_ALL: null,
-    };
-    return {
-      targetFlow: flowByAction[action] || 'ORDER',
-      action,
-      intent:     intentResult.intent,
-      suggestion: intentResult.suggestion,
-      nlu:        intentResult.nlu,
-    };
-  }
-  return null;
-}
-
-/** Build mode-aware label for a Q&A → activity switch confirmation prompt. */
-function _questionModeSwitchLabel(business, targetFlow, action) {
-  const cfg = getModeConfig(business);
-  if (action === 'BROWSE_CATALOG') return '📋 Browse Catalog';
-  if (action === 'CANCEL' || action === 'CANCEL_ALL') return '❌ Cancel';
-  const targetBtnId = targetFlow === 'BOOKING' ? 'BOOK'
-    : targetFlow === 'QUESTION' ? 'QUESTION' : 'ORDER';
-  const targetBtn = (cfg.ui?.welcomeButtons || []).find(b => b.id === targetBtnId);
-  return targetBtn?.title || (
-    targetFlow === 'BOOKING' ? '📅 Book'
-      : targetFlow === 'QUESTION' ? '❓ Ask Questions'
-        : '🛍 Order'
-  );
-}
-
-function _looksLikeDirectOrderMessage(messageText) {
-  const clean = normalise(messageText);
-  return clean.length >= 4
-    && !DIRECT_INTENT_EXCLUDE_RE.test(clean)
-    && !QUESTION_LEADIN_RE.test(clean)
-    && ORDER_DIRECT_RE.test(clean);
-}
-
-function _hasResolvableDirectOrder(messageText, business) {
-  const liveMenu = (business?.menuItems || []).filter(i => i.available !== false);
-  const parsed = resolveDirectOrderParse(liveMenu, messageText);
-  return Boolean(parsed?.lines?.length || parsed?.ambiguous);
-}
-
-async function _dispatchDirectOrderRoute({ from, tenantId, session, messageText, business, tenantDoc, isInteractive = false }) {
-  const { route } = await import('../core/conversations/moduleRouter.js');
-  const reply = await route({
-    action: 'START_ORDER',
-    intent: 'ORDER',
-    session,
-    message: messageText,
-    business,
-    tenant: tenantDoc,
-    isInteractive,
-  });
-  if (!reply) return false;
-  const payloads = Array.isArray(reply) ? reply : [reply];
-  for (const payload of payloads) await dispatchMessage(from, payload, tenantDoc);
-  const lastPayload = payloads[payloads.length - 1];
-  const body = typeof lastPayload === 'string' ? lastPayload : lastPayload?.body;
-  if (body) updateSession(from, tenantId, { lastBotMessage: body }).catch(() => {});
-  return true;
-}
-
 function _detectMidFlowQuestion(text, session, business) {
   const step  = (session.step  || '').toUpperCase();
   const flow  = (session.currentFlow || '').toUpperCase();
@@ -1193,9 +1084,6 @@ function _detectMidFlowQuestion(text, session, business) {
 
   // 1. Free-text steps — never intercept (these accept any text as the expected answer)
   if (MFQ_FREE_TEXT_STEPS.has(step)) return false;
-
-  // Party-size step accepts typed counts and relational NL — not a question intercept.
-  if (step === 'PARTY_SIZE') return false;
 
   // 2. Date/time steps — never intercept (customer is typing a date/time, not a question)
   if (MFQ_DATE_TIME_STEPS.has(step)) return false;
@@ -1434,13 +1322,12 @@ function _runSerialized(key, task) {
 }
 
 export async function handleIncomingMessage({ tenantId, tenantDoc, from, msgObj, phoneNumberId }) {
-  const _lockKey = `${tenantId}:${normalizeCustomerPhone(from)}`;
+  const _lockKey = `${tenantId}:${from}`;
   return _runSerialized(_lockKey, () =>
     _handleIncomingMessageSerialized({ tenantId, tenantDoc, from, msgObj, phoneNumberId }));
 }
 
 async function _handleIncomingMessageSerialized({ tenantId, tenantDoc, from, msgObj, phoneNumberId }) {
-  from = normalizeCustomerPhone(from);
   const { text: messageText, imageUrl, isInteractive, isListReply, isFlowReply, flowReply } = extractMessage(msgObj);
   const wamid = msgObj?.id;
 
@@ -1575,9 +1462,6 @@ async function _handleIncomingMessageSerialized({ tenantId, tenantDoc, from, msg
     phoneNumberId: phoneNumberId || session.phoneNumberId,
   }, { messageCount: 1 }).catch(err => logger.warn('[Webhook] Non-critical session update failed', { err: err.message, from }));
 
-  const { expireStaleActivities } = await import('../services/activity/activityLifecycleService.js');
-  await expireStaleActivities(from, tenantId).catch(() => {});
-
   // ── 4.6 [CATALOG-ORDER-WIRE] WA Catalog checkout ("order" message) ─────────
   // Meta sends msg.type === 'order' with an `order` payload
   // ({ catalog_id, product_items: [...] }) when a customer completes checkout
@@ -1645,8 +1529,11 @@ async function _handleIncomingMessageSerialized({ tenantId, tenantDoc, from, msg
     // [PFH-3 / BIZ-HOURS] Exempt customers with active confirmed orders from the closed gate.
     // A customer who just paid and is waiting for their order must not receive "we're closed"
     // — it's confusing, alarming, and wrong. We let their message through to postFlowAck.
-    const { hasVisibleActiveOrder } = await import('../services/activity/activityLifecycleService.js');
-    const hasActiveOrder = await hasVisibleActiveOrder(from, tenantId);
+    const hasActiveOrder = await Order.exists({
+      customerPhone: from, tenantId,
+      status:        { $in: ['confirmed', 'pending', 'ready'] },
+      paymentStatus: { $nin: ['cancelled', 'rejected'] },
+    }).catch(() => false);
 
     if (!hasActiveOrder) {
       const closedMsg = business?.customMessages?.closed
@@ -1717,7 +1604,7 @@ async function _handleIncomingMessageSerialized({ tenantId, tenantDoc, from, msg
       upper.startsWith('MARK READY ')   ||
       upper === 'RESUME BOT' || upper.startsWith('RESUME BOT ')
     ) {
-      const { handleAdminTextCommand, isAdminPhone } = await import('../services/admin/adminCommandService.js');
+      const { handleAdminTextCommand, isAdminPhone } = await import('../services/adminCommandService.js');
       // [FIX-X2] Pass pre-fetched business and tenantDoc so isAdminPhone skips both DB queries.
       const isAdmin = await isAdminPhone(from, tenantId, business, tenantDoc).catch(() => false);
       if (isAdmin) {
@@ -1749,7 +1636,7 @@ async function _handleIncomingMessageSerialized({ tenantId, tenantDoc, from, msg
       upper.startsWith('CONFIRM_BOOK_') || upper.startsWith('DECLINE_BOOK_') ||
       upper.startsWith('READY_') || upper.startsWith('RESUME_BOT_')
     )) {
-      const { handleAdminButtonReply, isAdminPhone } = await import('../services/admin/adminCommandService.js');
+      const { handleAdminButtonReply, isAdminPhone } = await import('../services/adminCommandService.js');
       // [FIX-X2] Pass pre-fetched business and tenantDoc so isAdminPhone skips both DB queries.
       const isAdmin = await isAdminPhone(from, tenantId, business, tenantDoc).catch(() => false);
       if (isAdmin) {
@@ -1771,18 +1658,6 @@ async function _handleIncomingMessageSerialized({ tenantId, tenantDoc, from, msg
         body: "Sorry, that action isn't available. How can I help you? 😊",
       }, tenantDoc);
       return;
-    }
-
-    // Customer cancel — bare "cancel" or "cancel #F93217"
-    if (/\bcancel\b/i.test(messageText)) {
-      const { tryCustomerCancelRequest } = await import('../services/activity/activityLifecycleService.js');
-      const cancelReply = await tryCustomerCancelRequest({
-        message: messageText, customerPhone: from, tenantId, business, tenant: tenantDoc, session,
-      }).catch(() => null);
-      if (cancelReply) {
-        await dispatchMessage(from, cancelReply, tenantDoc);
-        return;
-      }
     }
   }
 
@@ -1884,9 +1759,8 @@ async function _handleIncomingMessageSerialized({ tenantId, tenantDoc, from, msg
         body:    '📸 *Please send a screenshot image* of your payment confirmation.\n\n' +
                  'Open your Wave (or payment) app, take a screenshot of the successful transfer, and send the image here.',
         buttons: [
-          { id: 'REQUEST_CASH', title: '💵 Request Cash'  },
-          { id: 'SUPPORT',      title: '❓ Need Help'     },
-          { id: 'CANCEL',       title: '❌ Cancel Order'  },
+          { id: 'SUPPORT', title: '❓ Need Help'    },
+          { id: 'CANCEL',  title: '❌ Cancel Order' },
         ],
       }, tenantDoc);
       return;
@@ -1916,21 +1790,15 @@ async function _handleIncomingMessageSerialized({ tenantId, tenantDoc, from, msg
     }
 
     // [FIX-SUPPORT-PROOF] Allow SUPPORT escape from PAYMENT_PROOF step.
+    // Previously step 10.5 intercepted ALL text including SUPPORT, showing "awaiting
+    // screenshot" in response to the customer tapping the "❓ Need Help" button — which
+    // is shown on the payment instructions card. The customer was stuck: they couldn't
+    // escalate to a human without cancelling. Now SUPPORT falls through to intent
+    // detection which routes to the SUPPORT case in moduleRouter → human handoff.
     if (upper === 'SUPPORT') {
       // Don't return — fall through to intent detection at step 16
-    } else if (upper === 'REQUEST_CASH') {
-      const { requestCashPayment } = await import('../services/paymentService.js');
-      const reply = await requestCashPayment(from, tenantId, tenantDoc, business).catch(() => null);
-      if (reply) await dispatchMessage(from, { type: 'text', body: reply }, tenantDoc);
-      return;
+      // (no session currentFlow clear needed; the SUPPORT case in moduleRouter does it)
     } else {
-      const { isCashPaymentRequestText, requestCashPayment } = await import('../services/paymentService.js');
-      if (!isInteractive && isCashPaymentRequestText(messageText)) {
-        const reply = await requestCashPayment(from, tenantId, tenantDoc, business).catch(() => null);
-        if (reply) await dispatchMessage(from, { type: 'text', body: reply }, tenantDoc);
-        return;
-      }
-
       // [FIX-PROOF-ACK] If the customer has a pending ORDER_REJECTED postFlowAck
       // (set by adminCommandService.rejectPayment for the payment retry window), an
       // acknowledgement message like "ok", "thanks" would be caught here and shown
@@ -2044,10 +1912,12 @@ async function _handleIncomingMessageSerialized({ tenantId, tenantDoc, from, msg
     const isSuppPOL = upperPOL === 'SUPPORT';
 
     // [FIX-IMPORT-2] Order now a top-level import — removed redundant dynamic import
-    const { buildPendingOrderLockFilter } = await import('../services/activity/activityLifecycleService.js');
-    const pendingOrder = await Order.findOne(
-      buildPendingOrderLockFilter(from, tenantId),
-    ).select('_id item quantity shortId paymentStatus').sort({ createdAt: -1 }).lean().catch(() => null);
+    const pendingOrder = await Order.findOne({
+      customerPhone: from,
+      tenantId,
+      paymentStatus: { $in: ['proof_received', 'unpaid', 'self_confirmed'] },
+      status:        { $nin: ['cancelled', 'confirmed', 'completed'] },
+    }).select('_id item quantity shortId paymentStatus').sort({ createdAt: -1 }).lean().catch(() => null);
 
     if (pendingOrder) {
       // ── Cancel escape ────────────────────────────────────────────────────
@@ -2157,215 +2027,69 @@ async function _handleIncomingMessageSerialized({ tenantId, tenantDoc, from, msg
     return;
   }
 
-  // ── 13. Question Mode (ENQUIRY / QUESTION / SPEC_REQUEST) ───────────────
-  // Answer-only while the customer asks questions. When they clearly want another
-  // activity, confirm first — never yank them out of Q&A without consent.
-  if (_isActiveQuestionMode(session)) {
-    const qaUpperMsg = (messageText || '').trim().toUpperCase();
+  // ── 13. ENQUIRY active flow (Question Mode) ───────────────────────────────
+  if (session.currentFlow === 'ENQUIRY') {
+    if (session.step === 'AWAITING_QUESTION') {
+      const { processQuestionMessage, persistQuestionSession } = await import('../services/questionAnswerService.js');
+      const { detectIntent } = await import('../core/intents/intentEngine.js');
+      const { buildStatusReply } = await import('../services/activityStatusService.js');
 
-    // Handle switch-confirmation button taps (step 13 runs before the step-15 FSI block).
-    if (isInteractive && qaUpperMsg === 'FSI_SWITCH_YES') {
-      const switchAction = session.data?._fsiTargetAction || null;
-      const switchIntent = session.data?._fsiTargetIntent || switchAction;
-      const switchMessage = session.data?._fsiSwitchMessage || messageText;
-      const targetFlow = session.data?._fsiTargetFlow || null;
-
-      await updateSession(from, tenantId, {
-        currentFlow: null, step: null, data: {}, postFlowAck: null, postFlowData: null,
-      }).catch(() => {});
-
-      let switchReply = null;
-      if (switchAction) {
-        const { route } = await import('../core/conversations/moduleRouter.js');
-        switchReply = await route({
-          action: switchAction,
-          intent: switchIntent || switchAction,
-          session: { ...session, currentFlow: null, step: null, data: {} },
-          message: switchMessage, business, tenant: tenantDoc,
-          isInteractive: false,
-          suggestion: session.data?._fsiSuggestion,
-          nlu: session.data?._fsiNlu,
-        });
-      } else if (targetFlow) {
-        const freshSess = await getSession(from, tenantId) || session;
-        switchReply = await startFlow({
-          flowName: targetFlow, session: freshSess, business, tenant: tenantDoc,
-        });
-      }
-
-      if (switchReply) {
-        const payloads = Array.isArray(switchReply) ? switchReply : [switchReply];
-        for (const payload of payloads) await dispatchMessage(from, payload, tenantDoc);
-      }
-      return;
-    }
-
-    if (isInteractive && qaUpperMsg === 'FSI_SWITCH_NO') {
-      const resumeFlow = session.data?._fsiResumeFlow || session.currentFlow;
-      const resumeStep = session.data?._fsiResumeStep || session.step;
-      const resumeData = { ...(session.data?._fsiResumeData || session.data || {}) };
-      delete resumeData._fsiTargetFlow;
-      delete resumeData._fsiTargetAction;
-      delete resumeData._fsiTargetIntent;
-      delete resumeData._fsiSwitchMessage;
-      delete resumeData._fsiSuggestion;
-      delete resumeData._fsiNlu;
-      delete resumeData._fsiResumeFlow;
-      delete resumeData._fsiResumeStep;
-      delete resumeData._fsiResumeData;
-
-      await updateSession(from, tenantId, {
-        currentFlow: resumeFlow, step: resumeStep, data: resumeData,
-      });
-      await dispatchMessage(from, {
-        type: 'text',
-        body: '👍 No problem! What else would you like to know?',
-      }, tenantDoc);
-      return;
-    }
-
-    const { resolveQuestionReply, persistQuestionSession, recordQuestionHistory, toWhatsAppPayload } = await import('../services/question/questionAnswerService.js');
-    const { tryShowCatalogForMenuRequest } = await import('../modules/catalog/waCatalogFlow.js');
-
-    // Human-handoff requests must escalate immediately — "i want to talk to human"
-    // contains "i want" (ORDER_DIRECT_RE) and must not open the WA Catalog.
-    if (!isInteractive && isHumanHandoffRequest(messageText)) {
-      await updateSession(from, tenantId, {
-        currentFlow: null, step: null, postFlowAck: null, postFlowData: null,
-      }).catch(() => {});
-      const { route } = await import('../core/conversations/moduleRouter.js');
-      const supportReply = await route({
-        action: 'SUPPORT', intent: 'SUPPORT',
-        session: { ...session, currentFlow: null, step: null, data: {} },
-        message: messageText, business, tenant: tenantDoc, isInteractive: false,
-      });
-      if (supportReply) {
-        const payloads = Array.isArray(supportReply) ? supportReply : [supportReply];
-        for (const payload of payloads) await dispatchMessage(from, payload, tenantDoc);
-      }
-      return;
-    }
-
-    // Menu/food browse requests open the native catalog immediately — no switch prompt.
-    const earlyCatalog = await tryShowCatalogForMenuRequest({
-      message: messageText, session, business, tenant: tenantDoc,
-    });
-    if (earlyCatalog?.handled) {
-      if (earlyCatalog.reply) await dispatchMessage(from, earlyCatalog.reply, tenantDoc);
-      await persistQuestionSession(session, tenantDoc, { lastMessage: messageText, lastTopic: 'MENU' });
-      await recordQuestionHistory(session, messageText, { type: 'text', body: '🛍 Menu' }).catch(() => {});
-      return;
-    }
-
-    if (!isInteractive && isStayInQuestionMessage(messageText)) {
-      await persistQuestionSession(session, tenantDoc, { lastMessage: messageText });
-      await dispatchMessage(from, {
-        type: 'text',
-        body: '👍 No problem! What else would you like to know?',
-      }, tenantDoc);
-      return;
-    }
-
-    const { detectIntent } = await import('../core/intents/intentEngine.js');
-
-    let intentResult = null;
-    try {
-      intentResult = await detectIntent({
-        message: messageText, isInteractive, session: { ...session, currentFlow: null }, business,
-      });
-    } catch (_) { /* non-fatal */ }
-
-    const switchReq = _resolveQuestionModeSwitch({
-      messageText, session, business, isInteractive, intentResult,
-    });
-
-    if (switchReq) {
-      const targetLabel = _questionModeSwitchLabel(business, switchReq.targetFlow, switchReq.action);
-      let switchBody =
-        `👋 It looks like you'd like to *${targetLabel}*.\n\n` +
-        `Would you like to switch now, or keep asking questions?`;
-      let confirmLabel = `✅ ${targetLabel}`;
-
-      if (switchReq.action === 'START_ORDER' || switchReq.targetFlow === 'ORDER') {
-        const { formatCartSummary } = await import('../core/shared/cartEngine.js');
-        const liveMenu = (business?.menuItems || []).filter(i => i.available !== false);
-        const parsed = resolveDirectOrderParse(liveMenu, messageText);
-        if (parsed?.lines?.length) {
-          switchBody =
-            `👋 *Order preview:*\n\n${formatCartSummary(parsed.lines, business)}\n\n` +
-            `Would you like to confirm this order, or keep asking questions?`;
-          confirmLabel = '✅ Confirm Order';
+      let statusReply = null;
+      let switchIntent = null;
+      try {
+        const intentResult = await detectIntent({ message: messageText, isInteractive: false, session: { ...session, currentFlow: null }, business });
+        if (intentResult.action === 'TRACK_ORDER' && intentResult.confidence === 'HIGH') {
+          statusReply = await buildStatusReply({ session, business, message: messageText });
+        } else if (
+          intentResult.confidence === 'HIGH' &&
+          ['START_ORDER', 'START_BOOKING', 'CANCEL', 'CANCEL_ALL'].includes(intentResult.action)
+        ) {
+          // [ENHANCED-QA-SWITCH] Spec: "should not automatically push the customer
+          // into ordering or other workflows unless the customer's intent clearly
+          // changes." Only HIGH confidence — same bar the TRACK_ORDER escape above
+          // already uses — so a vague message never yanks the customer out of Q&A.
+          // Handled locally (route() called directly, same as buildStatusReply
+          // above) rather than falling through the rest of the webhook pipeline,
+          // so nothing else about message handling (postFlowAck, active-order
+          // resolver, etc.) is touched by this change.
+          switchIntent = intentResult;
         }
+      } catch (_) { /* non-fatal */ }
+
+      if (statusReply) {
+        await persistQuestionSession(session, tenantDoc, { lastMessage: messageText, lastTopic: 'ORDER_TRACKING' });
+        await dispatchMessage(from, statusReply, tenantDoc);
+        return;
       }
 
-      await updateSession(from, tenantId, {
-        data: {
-          ...(session.data || {}),
-          _fsiTargetFlow:    switchReq.targetFlow,
-          _fsiTargetAction:  switchReq.action,
-          _fsiTargetIntent:  switchReq.intent,
-          _fsiSwitchMessage: messageText,
-          _fsiSuggestion:    switchReq.suggestion || null,
-          _fsiNlu:           switchReq.nlu || null,
-          _fsiResumeFlow:    session.currentFlow,
-          _fsiResumeStep:    session.step,
-          _fsiResumeData:    { ...(session.data || {}) },
-        },
-      });
+      if (switchIntent) {
+        await updateSession(from, tenantId, { currentFlow: null, step: null }).catch(() => {});
+        const { route } = await import('../core/conversations/moduleRouter.js');
+        const switchReply = await route({
+          action: switchIntent.action, intent: switchIntent.intent,
+          session: { ...session, currentFlow: null, step: null },
+          message: messageText, business, tenant: tenantDoc,
+          isInteractive: false, suggestion: switchIntent.suggestion, nlu: switchIntent.nlu,
+        });
+        if (switchReply) {
+          const payloads = Array.isArray(switchReply) ? switchReply : [switchReply];
+          for (const payload of payloads) await dispatchMessage(from, payload, tenantDoc);
+        }
+        return;
+      }
+
+      // Answer-only: stay in Question Mode and wait — no buttons. Switching to
+      // another activity is already detected above (switchIntent) from the
+      // customer's own words, not offered as a tap target on every answer.
+      const reply = await processQuestionMessage({ session, message: messageText, business, tenant: tenantDoc, intent: 'FAQ' });
+      await persistQuestionSession(session, tenantDoc, reply.context || { lastMessage: messageText });
       await dispatchMessage(from, {
-        type:    'buttons',
-        body:    switchBody,
-        buttons: [
-          { id: 'FSI_SWITCH_YES', title: confirmLabel },
-          { id: 'FSI_SWITCH_NO',  title: '❓ Keep Asking'   },
-        ],
+        type: reply.type || 'text',
+        body: reply.body,
       }, tenantDoc);
       return;
     }
-
-    // Bare hi/hello while in Q&A → full welcome menu with options (not text-only AI).
-    if (!isInteractive && (isGreetingMessage(messageText) || intentResult?.action === 'GREET')) {
-      await updateSession(from, tenantId, {
-        currentFlow: null, step: null, postFlowAck: null, postFlowData: null,
-      }).catch(() => {});
-      const { route } = await import('../core/conversations/moduleRouter.js');
-      const greetReply = await route({
-        action: 'GREET',
-        intent: 'GREETING',
-        session: { ...session, currentFlow: null, step: null, data: {} },
-        message: messageText,
-        business,
-        tenant: tenantDoc,
-        isInteractive: false,
-      });
-      if (greetReply) {
-        const payloads = Array.isArray(greetReply) ? greetReply : [greetReply];
-        for (const payload of payloads) await dispatchMessage(from, payload, tenantDoc);
-      }
-      return;
-    }
-
-    const reply = await resolveQuestionReply({
-      session, message: messageText, business, tenant: tenantDoc, intent: 'FAQ',
-      initPayload: {
-        type: 'text',
-        body: '❓ What would you like to know? Ask about our menu, hours, orders, or bookings.',
-      },
-    });
-
-    if (reply?.type === 'welcome_sequence' && Array.isArray(reply.sequence)) {
-      await updateSession(from, tenantId, {
-        currentFlow: null, step: null, postFlowAck: null, postFlowData: null,
-      }).catch(() => {});
-      for (const payload of reply.sequence) await dispatchMessage(from, payload, tenantDoc);
-      return;
-    }
-
-    await persistQuestionSession(session, tenantDoc, reply.context || { lastMessage: messageText });
-    await recordQuestionHistory(session, messageText, reply);
-    const payload = toWhatsAppPayload(reply);
-    if (payload) await dispatchMessage(from, payload, tenantDoc);
-    return;
+    await updateSession(from, tenantId, { currentFlow: null, step: null });
   }
 
   // ── 14. Post-flow acknowledgement — context-aware + customer-aware ───────────
@@ -2393,7 +2117,7 @@ async function _handleIncomingMessageSerialized({ tenantId, tenantDoc, from, msg
     _step14UpperMsg === 'MFQ_SWITCH_YES'  ||
     _step14UpperMsg === 'MFQ_SWITCH_NO'
   );
-  if (session.postFlowAck && !session.currentFlow && messageText && !_isMfqButtonTap) {
+  if (session.postFlowAck && messageText && !_isMfqButtonTap) {
     const { getCustomerContext } = await import('../core/memory/customerMemory.js');
     const custCtxPFA = await getCustomerContext(from, tenantId).catch(() => ({
       name: null, topItem: null, lastItem: null, lastOrderAt: null, orderCount: 0, isReturning: false,
@@ -2405,7 +2129,6 @@ async function _handleIncomingMessageSerialized({ tenantId, tenantDoc, from, msg
       session,
       messageText,
       isInteractive,
-      isFlowReply,
       business,
       tenantDoc,
       from,
@@ -2539,7 +2262,7 @@ async function _handleIncomingMessageSerialized({ tenantId, tenantDoc, from, msg
       }).lean().catch(() => null);
 
       if (pickedOrder) {
-        const { formatOrderStatusCard } = await import('../services/activity/activityStatusService.js');
+        const { formatOrderStatusCard } = await import('../services/activityStatusService.js');
         await dispatchMessage(from, {
           type: 'buttons',
           body: formatOrderStatusCard(pickedOrder, business),
@@ -2558,7 +2281,7 @@ async function _handleIncomingMessageSerialized({ tenantId, tenantDoc, from, msg
     const pickedShortId = messageText.trim().toUpperCase().replace('BOOKING_STATUS_', '');
     if (pickedShortId) {
       const { default: Booking } = await import('../models/Booking.js');
-      const { formatBookingStatusCard } = await import('../services/activity/activityStatusService.js');
+      const { formatBookingStatusCard } = await import('../services/activityStatusService.js');
       const pickedBooking = await Booking.findOne({
         shortId: pickedShortId, tenantId, customerPhone: from,
         status: { $in: ['pending', 'confirmed'] },
@@ -2592,24 +2315,10 @@ async function _handleIncomingMessageSerialized({ tenantId, tenantDoc, from, msg
       // order as completed, even though it wasn't theirs. Scoped to match the same
       // customerPhone + tenantId pattern used by every other customer-triggered
       // order write in this file.
-      const completedOrder = await Order.findOneAndUpdate(
+      await Order.findOneAndUpdate(
         { shortId: shortIdCollect, tenantId, customerPhone: from, status: { $in: ['ready', 'confirmed'] } },
-        { $set: { status: 'completed', completedAt: new Date() } },
-        { new: true },
-      ).select('_id').lean().catch(() => null);
-
-      // [AUDIT-FIX-AUDITLOG-WIRE] order_completed — documented in AuditLog.js but
-      // logAudit() was never called from this COLLECTED_<shortId> button-tap path.
-      if (completedOrder) {
-        logAudit({
-          tenantId,
-          orderId: completedOrder._id,
-          actor: 'customer',
-          actorId: from,
-          action: 'order_completed',
-          metadata: { shortId: shortIdCollect },
-        });
-      }
+        { $set: { status: 'completed', completedAt: new Date() } }
+      ).catch(() => {});
     }
     const bizName = business?.name || 'us';
     await dispatchMessage(from, {
@@ -2649,7 +2358,7 @@ async function _handleIncomingMessageSerialized({ tenantId, tenantDoc, from, msg
   // no-flow fast path and the mid-flow STATUS escape share one definition.)
   if (messageText && isStatusCommand(messageText) && !session.currentFlow) {
     try {
-      const { buildStatusReply } = await import('../services/activity/activityStatusService.js');
+      const { buildStatusReply } = await import('../services/activityStatusService.js');
       const statusReply = await buildStatusReply({
         session: { ...session, customerPhone: from },
         business,
@@ -2663,61 +2372,7 @@ async function _handleIncomingMessageSerialized({ tenantId, tenantDoc, from, msg
     }
   }
 
-  // ── 14.7. Direct natural-language order — skip menu/qty when fully resolved ─
-  // e.g. "I want to order two plates of Domoda" → Order Summary / CONFIRM.
-  if (!session.currentFlow && !isInteractive && messageText?.trim().length >= 4) {
-    if (_looksLikeDirectOrderMessage(messageText) && _hasResolvableDirectOrder(messageText, business)) {
-      const handled = await _dispatchDirectOrderRoute({
-        from, tenantId, session, messageText, business, tenantDoc, isInteractive: false,
-      });
-      if (handled) return;
-    }
-  }
-
-  // ── 14.75. Recover lost booking/order session on flow-internal taps ─────────
-  // When session.currentFlow was cleared but the customer taps a button from a
-  // prompt still visible in chat, route() would map to CONFIRM/CONTINUE_FLOW and
-  // show the welcome menu mid-flow.
-  if (!session.currentFlow && messageText) {
-    const {
-      recoverLostBookingPassthrough,
-      shouldRecoverLostBookingPassthrough,
-      recoverLostOrderPassthrough,
-      shouldRecoverLostOrderPassthrough,
-    } = await import('../core/conversations/flowPassthroughRecovery.js');
-
-    const recoveryArgs = {
-      from, tenantId, session, messageText, business, tenant: tenantDoc, isInteractive,
-    };
-
-    if (shouldRecoverLostBookingPassthrough({
-      messageText, session, business, isInteractive,
-    })) {
-      const recovered = await recoverLostBookingPassthrough(recoveryArgs).catch(() => null);
-      if (recovered) {
-        const payloads = Array.isArray(recovered) ? recovered : [recovered];
-        for (const payload of payloads) await dispatchMessage(from, payload, tenantDoc);
-        return;
-      }
-    }
-
-    if (shouldRecoverLostOrderPassthrough({ messageText, session, isInteractive })) {
-      const recovered = await recoverLostOrderPassthrough(recoveryArgs).catch(() => null);
-      if (recovered) {
-        const payloads = Array.isArray(recovered) ? recovered : [recovered];
-        for (const payload of payloads) await dispatchMessage(from, payload, tenantDoc);
-        const lastPayload = payloads[payloads.length - 1];
-        const body = typeof lastPayload === 'string' ? lastPayload : lastPayload?.body;
-        if (body) updateSession(from, tenantId, { lastBotMessage: body }).catch(() => {});
-        return;
-      }
-    }
-  }
-
   // ── 15. Active flow ───────────────────────────────────────────────────────
-  // Re-read session — a prior message in this serialized queue may have just
-  // started BOOKING while this handler loaded a stale snapshot at step 1.
-  session = await getSession(from, tenantId) || session;
   if (session.currentFlow) {
     // Natural-order ambiguity continuation: the clarification buttons use the
     // live menu item's name as their ID. Consume that selection before any
@@ -2917,7 +2572,7 @@ async function _handleIncomingMessageSerialized({ tenantId, tenantDoc, from, msg
       CONFIRM:              new Set(['CONFIRM', 'CANCEL', 'ADD_MORE_ITEMS', 'ADD_ANOTHER_ITEM', 'EDIT_CART']),
       EDIT_CART_MENU:       new Set(['EDIT_ADD', 'EDIT_REMOVE', 'EDIT_INCREASE', 'EDIT_DECREASE', 'EDIT_CLEAR', 'EDIT_BACK']),
       EDIT_CART_PICK:       new Set([]), // expects free text (line number) or "back"
-      PAYMENT_PROOF:        new Set(['DONE', 'REQUEST_CASH', 'SUPPORT', 'CANCEL', 'CANCEL_ORDER']),
+      PAYMENT_PROOF:        new Set(['DONE', 'SUPPORT', 'CANCEL', 'CANCEL_ORDER']),
       AWAIT_ADMIN_CONFIRM:  new Set(['CANCEL', 'CANCEL_ORDER']),
       // ── Electronics-specific steps ─────────────────────────────────────────
       // Steps with no entry are NOT validated — any button passes through to the
@@ -2951,24 +2606,6 @@ async function _handleIncomingMessageSerialized({ tenantId, tenantDoc, from, msg
       // SELECT_SERVICE and SELECT_STYLIST use dynamic SVC_* / STYLIST_* IDs covered by
       // isFlowPassthroughId() regex — no static set needed. Omitting them is correct.
     };
-    // [AUDIT-FIX-RECOVERY-1] Global escape button IDs — must always be actionable
-    // no matter which step's allowed-button set they're validated against. These
-    // are exactly the recovery/reset affordances the bot itself hands the customer
-    // from system-level fallback messages (flowEngine's "No active session" / "not
-    // available right now" replies, loop-guard hints, etc.), so rejecting a tap on
-    // one of them as "stale" is always wrong — there is no step at which "start
-    // over" or "cancel" should ever be an invalid response.
-    //
-    // Previously each STEP_VALID_BUTTONS entry had to explicitly list SHOW_MENU/
-    // CANCEL for a tap to succeed, and several steps didn't (CONFIRM, ITEM_ADDED,
-    // EDIT_CART_MENU, UPSELL, EDIT_CART_PICK's guarded steps, etc.). Concretely: a
-    // customer whose session/flow was lost (e.g. TTL expiry) and who tapped the
-    // bot's own "🔄 Start Over" button in response got THIS gate's "⚠️ That option
-    // is no longer available at this stage of your order" instead of actually
-    // starting over — a permanent dead end, since every subsequent tap hit the
-    // exact same stale step. Exempting these IDs here closes that loop for good,
-    // independent of whether any single step's allow-list happens to include them.
-    const GLOBAL_ESCAPE_BUTTON_IDS = new Set(['SHOW_MENU', 'CANCEL', 'CANCEL_ORDER', 'CANCEL_BOOKING', 'SUPPORT']);
     const upperMsg = messageText.trim().toUpperCase();
     const currentStep = session.step;
     const pendingNaturalQuantity = session.data?.pendingNaturalQuantity;
@@ -2984,8 +2621,7 @@ async function _handleIncomingMessageSerialized({ tenantId, tenantDoc, from, msg
     if (isInteractive && !isListReply && currentStep && STEP_VALID_BUTTONS[currentStep] !== undefined) {
       const validSet = STEP_VALID_BUTTONS[currentStep];
       // Only enforce when the set is non-empty (empty means free-text step, no valid buttons)
-        if (validSet.size > 0 && !validSet.has(upperMsg) && !GLOBAL_ESCAPE_BUTTON_IDS.has(upperMsg)
-          && upperMsg !== 'BROWSE_CATALOG'
+        if (validSet.size > 0 && !validSet.has(upperMsg) && upperMsg !== 'BROWSE_CATALOG'
           && !isFlowPassthroughId(upperMsg) && !pendingNaturalCandidate) {
         await dispatchMessage(from, {
           type: 'text',
@@ -3001,11 +2637,7 @@ async function _handleIncomingMessageSerialized({ tenantId, tenantDoc, from, msg
     // the isInteractive block, so the final advance() call (outside that block)
     // hit a ReferenceError on every non-passthrough, non-escape in-flow tap,
     // causing the bot to go completely silent for typed messages inside active flows.
-    const freshSession = {
-      ...(await getSession(from, tenantId) || session),
-      customerPhone: from,
-      tenantId,
-    };
+    const freshSession = await getSession(from, tenantId) || session;
 
     if (isInteractive && upperMsg === 'BROWSE_CATALOG') {
       const { route } = await import('../core/conversations/moduleRouter.js');
@@ -3134,13 +2766,7 @@ async function _handleIncomingMessageSerialized({ tenantId, tenantDoc, from, msg
     if (upperMsg === 'VIEW_MENU' || upperMsg === 'SHOW_MENU' || upperMsg === 'MENU' || upperMsg === 'SHOW MENU'
         || upperMsg === 'VIEW MENU' || upperMsg === 'SEE MENU' || upperMsg === 'MAIN MENU'
       || upperMsg === 'BACK TO MENU'
-      // [FIX-MENU-COVERAGE] Was VIEW_MENU_DIRECT_RE — a single hand-written
-      // regex that only matched sentence shapes it was explicitly written
-      // for (e.g. missed "what to eat" while matching "what can I eat").
-      // isMenuBrowsingIntent uses the same token-based verb+noun detector as
-      // the pre-flow check in intentEngine.js, so a customer mid-ORDER-flow
-      // gets identical menu-phrase coverage to a customer with no active flow.
-      || (!isInteractive && isMenuBrowsingIntent(normalise(messageText)))
+      || (!isInteractive && VIEW_MENU_DIRECT_RE.test(normalise(messageText)))
       // [FIX-STUCK-ORDER-GENERIC] A generic re-order phrase with no actual
       // product name ("I want to order food", "I want to order") gets the
       // exact same treatment as an explicit "view menu" request — see
@@ -3441,16 +3067,31 @@ async function _handleIncomingMessageSerialized({ tenantId, tenantDoc, from, msg
     }
 
     // [DIRECT-ORDER-SHORTCUT] A resolved natural-language order is a stronger
-    // signal than the active flow's current prompt — except mid-BOOKING, where
-    // FSI must offer switch/continue instead of silently wiping booking state.
+    // signal than the active flow's current prompt. Reuse START_ORDER so the
+    // shared parser, cart merge, pricing, and confirmation summary remain the
+    // single implementation for both fresh and mid-flow orders.
     if (!isInteractive && session.currentFlow && messageText.length >= 4) {
-      const activeFlow = (session.currentFlow || '').toUpperCase();
-      if (activeFlow !== 'BOOKING') {
-        if (_looksLikeDirectOrderMessage(messageText) && _hasResolvableDirectOrder(messageText, business)) {
-          const handled = await _dispatchDirectOrderRoute({
-            from, tenantId, session: freshSession, messageText, business, tenantDoc, isInteractive: false,
+      const cleanDirectOrder = normalise(messageText);
+      if (!DIRECT_INTENT_EXCLUDE_RE.test(cleanDirectOrder) && !QUESTION_LEADIN_RE.test(cleanDirectOrder) && ORDER_DIRECT_RE.test(cleanDirectOrder)) {
+        const { parseMultiItemMessage, parseNaturalOrderMessage } = await import('../core/shared/cartEngine.js');
+        const liveMenu = (business?.menuItems || []).filter(item => item.available !== false);
+        const parsedDirectOrder = parseMultiItemMessage(liveMenu, messageText)
+          || parseNaturalOrderMessage(liveMenu, messageText);
+        if (parsedDirectOrder?.lines?.length || parsedDirectOrder?.ambiguous) {
+          const directReply = await route({
+            action: 'START_ORDER',
+            intent: 'ORDER',
+            session: freshSession,
+            message: messageText,
+            business,
+            tenant: tenantDoc,
+            isInteractive: false,
           });
-          if (handled) return;
+          if (directReply) {
+            const directPayloads = Array.isArray(directReply) ? directReply : [directReply];
+            for (const directPayload of directPayloads) await dispatchMessage(from, directPayload, tenantDoc);
+          }
+          return;
         }
       }
     }
@@ -3539,24 +3180,16 @@ async function _handleIncomingMessageSerialized({ tenantId, tenantDoc, from, msg
 
         // Use the DB-first question layer here too. It resolves contextual menu
         // references against the current catalog before falling back to Groq.
-        const { processQuestionMessage, recordQuestionHistory, toWhatsAppPayload } = await import('../services/question/questionAnswerService.js');
+        const { processQuestionMessage } = await import('../services/questionAnswerService.js');
         const questionReply = await processQuestionMessage({
           session: flowlessSession, message: messageText, business, tenant: tenantDoc, intent: 'QUESTION',
         }).catch(() => null);
-        if (questionReply?.type === 'welcome_sequence' && Array.isArray(questionReply.sequence)) {
-          for (const payload of questionReply.sequence) await dispatchMessage(from, payload, tenantDoc);
-          return;
-        }
-        if (questionReply) {
-          await recordQuestionHistory(flowlessSession, messageText, questionReply).catch(() => {});
-        }
-        const mfqPayload = questionReply ? toWhatsAppPayload(questionReply) : null;
-        if (mfqPayload) await dispatchMessage(from, mfqPayload, tenantDoc);
+        const aiText = questionReply?.body || null;
+
         await dispatchMessage(from, {
           type:    'buttons',
-          body:    questionReply?.catalogDispatched
-            ? `_When you're done browsing, tap below to continue where you left off._`
-            : `${questionReply?.body || 'Let me check that for you! 😊'}\n\n_When you're done, tap below to continue where you left off._`,
+          body:    (aiText || 'Let me check that for you! 😊') +
+                    `\n\n_When you're done, tap below to continue where you left off._`,
           buttons: resumeButtons,
         }, tenantDoc);
         return;
@@ -3566,39 +3199,21 @@ async function _handleIncomingMessageSerialized({ tenantId, tenantDoc, from, msg
     // ── 15.1d: Handle FSI switch-prompt button responses ────────────────────
     if (isInteractive) {
       if (upperMsg === 'FSI_SWITCH_YES') {
-        const switchAction = session.data?._fsiTargetAction || null;
-        const switchIntent = session.data?._fsiTargetIntent || switchAction;
-        const switchMessage = session.data?._fsiSwitchMessage || messageText;
+        // Customer confirmed — abandon the current flow and start the requested one fresh.
         const _fsiTargetFlow = session.data?._fsiTargetFlow || null;
-
         await updateSession(from, tenantId, {
           currentFlow: null, step: null, data: {}, postFlowAck: null, postFlowData: null,
         });
-
-        let switchReply = null;
-        if (switchAction) {
+        if (_fsiTargetFlow) {
           const freshSessFsi = await getSession(from, tenantId) || session;
-          switchReply = await route({
-            action: switchAction,
-            intent: switchIntent || switchAction,
-            session: { ...freshSessFsi, currentFlow: null, step: null, data: {} },
-            message: switchMessage,
-            business,
-            tenant: tenantDoc,
-            isInteractive: false,
-            suggestion: session.data?._fsiSuggestion,
-            nlu: session.data?._fsiNlu,
-          });
-        } else if (_fsiTargetFlow) {
-          const freshSessFsi = await getSession(from, tenantId) || session;
-          switchReply = await startFlow({
+          const switchReply = await startFlow({
             flowName: _fsiTargetFlow, session: freshSessFsi, business, tenant: tenantDoc,
           });
-        }
-        if (switchReply) {
-          const switchPayloads = Array.isArray(switchReply) ? switchReply : [switchReply];
-          for (const payload of switchPayloads) await dispatchMessage(from, payload, tenantDoc);
-          return;
+          if (switchReply) {
+            const switchPayloads = Array.isArray(switchReply) ? switchReply : [switchReply];
+            for (const payload of switchPayloads) await dispatchMessage(from, payload, tenantDoc);
+            return;
+          }
         }
         const cfgFsiYes = getModeConfig(business);
         await dispatchMessage(from, buildOptionsReply(cfgFsiYes, '👇 What would you like to do?'), tenantDoc);
@@ -3646,17 +3261,13 @@ async function _handleIncomingMessageSerialized({ tenantId, tenantDoc, from, msg
         const fsiSwitchFlow = session.currentFlow;
         const fsiSwitchStep = session.step;
         const fsiSwitchData = { ...(session.data || {}) };
-        const { snapshotActivityData } = await import('../services/question/questionModeHelper.js');
+        const { snapshotActivityData } = await import('../services/questionModeHelper.js');
         const activitySnapshot = snapshotActivityData(session, session.currentFlow);
-        const fsiActionByFlow = { ORDER: 'START_ORDER', BOOKING: 'START_BOOKING', QUESTION: 'QUESTION' };
 
         await updateSession(from, tenantId, {
           data: {
             ...fsiSwitchData,
             _fsiTargetFlow,
-            _fsiTargetAction: fsiActionByFlow[_fsiTargetFlow] || null,
-            _fsiTargetIntent: _fsiTargetFlow === 'BOOKING' ? 'BOOKING' : _fsiTargetFlow === 'QUESTION' ? 'QUESTION' : 'ORDER',
-            _fsiSwitchMessage: messageText,
             _fsiResumeFlow: fsiSwitchFlow,
             _fsiResumeStep: fsiSwitchStep,
             _fsiResumeData: { ...fsiSwitchData, _activitySnapshot: activitySnapshot },
@@ -3832,11 +3443,7 @@ async function _handleIncomingMessageSerialized({ tenantId, tenantDoc, from, msg
   }
 
   let reply = await route({
-    action: effectiveAction, intent: effectiveIntent, session: {
-      ...session,
-      customerPhone: normalizeCustomerPhone(from),
-      tenantId,
-    },
+    action: effectiveAction, intent: effectiveIntent, session,
     message: messageText, business,
     tenant: tenantDoc, isInteractive, suggestion, nlu,
   });
@@ -3868,7 +3475,7 @@ async function _handleIncomingMessageSerialized({ tenantId, tenantDoc, from, msg
   // path already answers this exact message) or when there's nothing to add.
   if (reply && effectiveAction !== 'QUESTION' && nlu?.entities?.questions?.length) {
     try {
-      const { tryDatabaseAnswer } = await import('../services/question/questionAnswerService.js');
+      const { tryDatabaseAnswer } = await import('../services/questionAnswerService.js');
       const secondaryQuestion = nlu.entities.questions[0];
       const dbAnswer = await tryDatabaseAnswer({ message: secondaryQuestion, business, session });
       if (dbAnswer?.handled && dbAnswer.body) {

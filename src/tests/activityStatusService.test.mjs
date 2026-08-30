@@ -5,7 +5,7 @@ import {
   detectStatusScope,
   formatOrderStatusCard,
   formatBookingStatusCard,
-} from '../services/activity/activityStatusService.js';
+} from '../services/activityStatusService.js';
 
 test('detectStatusScope: booking-only phrases query bookings only', () => {
   assert.equal(detectStatusScope('track my booking'), 'BOOKING');
@@ -25,7 +25,7 @@ test('detectStatusScope: generic status checks both', () => {
 });
 
 test('isStatusCommand: exact status phrases match', async () => {
-  const { isStatusCommand } = await import('../services/activity/activityStatusService.js');
+  const { isStatusCommand } = await import('../services/activityStatusService.js');
   assert.equal(isStatusCommand('track my order'), true);
   assert.equal(isStatusCommand('track my booking'), true);
   assert.equal(isStatusCommand('order food'), false);

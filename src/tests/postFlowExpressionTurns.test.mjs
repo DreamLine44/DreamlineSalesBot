@@ -97,7 +97,7 @@ test('postFlowHandler.js: ORDER_CONFIRMED expression paths consume turns without
 });
 
 test('flowEngine.completeFlow seeds postFlowData._exprTurnsLeft', () => {
-  assert.match(flowSrc, /postFlowData:\s*\{[\s\S]*_exprTurnsLeft:\s*EXPRESSION_TURN_BUDGET/);
+  assert.match(flowSrc, /postFlowData:\s*\{\s*_exprTurnsLeft:\s*EXPRESSION_TURN_BUDGET\s*\}/);
 });
 
 test('detectExpressionSubType: loyalty vs praise vs thanks', () => {
@@ -144,30 +144,6 @@ test('postFlowHandler.js: greetings during post-flow fall through to GREET (menu
 
 test('postFlowHandler.js: status commands during post-flow fall through to TRACK_ORDER', () => {
   assert.match(pfhSrc, /isStatusCommand\(msg\)/);
-});
-
-test('postFlowHandler.js: flow-start phrases during post-flow fall through to intent routing', () => {
-  assert.match(pfhSrc, /isPostFlowFlowStartIntent\(msg, business/);
-  assert.match(pfhSrc, /isPostFlowBookingInput\(msg/);
-  assert.match(pfhSrc, /\[PFH-FLOW-START\]/);
-  assert.match(pfhSrc, /\[PFH-BOOKING-INPUT\]/);
-});
-
-test('isPostFlowFlowStartIntent: book/order after order collection', async () => {
-  const { isPostFlowFlowStartIntent, isPostFlowBookingInput } = await import('../services/postFlowHandler.js');
-  const restaurant = { businessMode: 'RESTAURANT' };
-  assert.equal(isPostFlowFlowStartIntent('book a table', restaurant), true);
-  assert.equal(isPostFlowFlowStartIntent('I want to order food', restaurant), true);
-  assert.equal(isPostFlowFlowStartIntent('BOOK', restaurant, { isInteractive: true }), true);
-  assert.equal(isPostFlowFlowStartIntent('what can I book', restaurant), false);
-  assert.equal(isPostFlowFlowStartIntent('thank you', restaurant), false);
-  assert.equal(isPostFlowBookingInput('today', { business: restaurant }), true);
-  assert.equal(isPostFlowBookingInput('DATE_D_20260824', { isInteractive: true }), true);
-  assert.equal(isPostFlowBookingInput('5', {
-    session: { lastBotMessage: 'How many guests will be dining?' },
-    business: restaurant,
-  }), true);
-  assert.equal(isPostFlowBookingInput('thank you', { business: restaurant }), false);
 });
 
 test('postFlowHandler.js: ORDER_COLLECTED uses smart expression replies, not hardcoded loop text', () => {

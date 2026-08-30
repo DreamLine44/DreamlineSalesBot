@@ -125,8 +125,8 @@ import { handleBookingFlow } from '../../../core/conversations/bookingFlow.js';
 import { getAIReply }        from '../../../core/ai/providers/aiRouter.js';
 import { findBestMatch }     from '../../../utils/matchEngine.js';
 import { parseQuantity }     from '../../../utils/parseQuantity.js';
-import { saveOrder }         from '../../../services/order/orderService.js';
-import { saveBooking }       from '../../../services/booking/bookingService.js';
+import { saveOrder }         from '../../../services/orderService.js';
+import { saveBooking }       from '../../../services/bookingService.js';
 import { trackOrderAnalytics } from '../../../core/analytics/analyticsService.js';
 import { itemLabel }         from '../../../utils/itemLabel.js';
 import { formatMoney }       from '../../../utils/formatCurrency.js';
@@ -449,7 +449,7 @@ export async function handleSalonWalkIn({ session, message, business, tenant, is
         const adminPhone = business?.adminPhone || tenant?.adminPhone;
         if (adminPhone && tenant && savedBooking) {
           const { dispatchMessage } = await import('../../../core/whatsapp/dispatcher.js');
-          const { buildAdminBookingAlertBody } = await import('../../../services/admin/adminCommandService.js');
+          const { buildAdminBookingAlertBody } = await import('../../../services/adminCommandService.js');
           const alertBody = buildAdminBookingAlertBody({
             customerPhone: session.customerPhone,
             date:          null,
@@ -1275,22 +1275,21 @@ export async function handleSalonQuestion({ session, message, business, tenant }
       ? (isBarbershop ? 'BARBERSHOP_QUESTION' : 'SALON_CONSULTATION')
       : (isBarbershop ? 'BARBERSHOP_QUESTION' : 'SALON_QUESTION');
 
-  const { resolveQuestionReply, persistQuestionSession, recordQuestionHistory, finalizeQuestionHandlerReply } = await import('../../../services/question/questionAnswerService.js');
-  const reply = await resolveQuestionReply({ session, message: raw, business, tenant, intent });
-  if (reply?.type === 'welcome_sequence') {
-    await recordQuestionHistory(session, raw, reply.sequence?.[0] || reply).catch(() => {});
-    return finalizeQuestionHandlerReply({ session, tenant, reply });
-  }
+  const { processQuestionMessage, persistQuestionSession } = await import('../../../services/questionAnswerService.js');
+  const reply = await processQuestionMessage({ session, message: raw, business, tenant, intent });
   await persistQuestionSession(session, tenant, reply.context || { lastMessage: raw });
-  await recordQuestionHistory(session, raw, reply);
 
-  const questionResponse = await finalizeQuestionHandlerReply({ session, tenant, reply });
-  if (reply?.type === 'welcome_sequence' || Array.isArray(questionResponse)) return questionResponse;
+  // Answer-only: stay in QUESTION mode and wait — no buttons. Switching activity
+  // is picked up upstream from the customer's own words, not from a tap target.
+  const questionResponse = {
+    type: reply.type || 'text',
+    body: reply.body || `Great question! For detailed information please contact us directly.`,
+  };
 
   // [text type ignores the footer field — fold the same hint into the body]
-  if (isAftercare && reply.body && questionResponse?.body) {
+  if (isAftercare && reply.body) {
     questionResponse.body += `\n\n_We hope to see you again soon! 🙏_`;
-  } else if (isConsultation && reply.body && questionResponse?.body) {
+  } else if (isConsultation && reply.body) {
     questionResponse.body += `\n\n_Just say the word when you're ready to book that service._`;
   }
 

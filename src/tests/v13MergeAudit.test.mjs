@@ -44,7 +44,7 @@ function read(relPath) {
 // ── STATUS_CMD_RE single source of truth in activityStatusService ─────────
 
 test('activityStatusService.js: STATUS_CMD_RE is declared exactly once', () => {
-  const svcSrc = read('../services/activity/activityStatusService.js');
+  const svcSrc = read('../services/activityStatusService.js');
   const matches = svcSrc.match(/export const STATUS_CMD_RE = /g) || [];
   assert.equal(matches.length, 1, 'STATUS_CMD_RE should live in activityStatusService as the single source of truth');
   const whSrc = read('../controllers/webhookController.js');
@@ -53,7 +53,7 @@ test('activityStatusService.js: STATUS_CMD_RE is declared exactly once', () => {
 });
 
 test('activityStatusService.js: STATUS_CMD_RE recognises active order/booking phrasing', async () => {
-  const { STATUS_CMD_RE } = await import('../services/activity/activityStatusService.js');
+  const { STATUS_CMD_RE } = await import('../services/activityStatusService.js');
   const mustMatch = [
     'active order', 'active orders', 'active booking', 'active bookings',
     'do i have any active orders', 'do i have any active bookings',

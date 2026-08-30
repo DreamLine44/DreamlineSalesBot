@@ -111,17 +111,12 @@ test('detectIntent: typed "menu" / "view menu" resolve to the explicit catalog a
   }
 });
 
-test('intentEngine.js/menuIntentDetector.js: natural browse phrases are available to the active-flow webhook escape path', () => {
-  // [FIX-MENU-COVERAGE] webhookController.js's mid-flow "menu" re-render check
-  // was migrated off the single-regex VIEW_MENU_DIRECT_RE onto the shared
-  // token-based isMenuBrowsingIntent detector, so the pre-flow and mid-flow
-  // paths can never silently diverge again. VIEW_MENU_DIRECT_RE itself is
-  // kept exported for reference but is no longer wired into the webhook.
-  const detectorSrc = readSource('../core/intents/menuIntentDetector.js');
-  assert.match(detectorSrc, /export function isMenuBrowsingIntent/);
+test('intentEngine.js: natural browse phrases are available to the active-flow webhook escape path', () => {
+  const src = readSource('../core/intents/intentEngine.js');
+  assert.match(src, /export const VIEW_MENU_DIRECT_RE\s*=\s*\//);
 
   const webhook = readSource('../controllers/webhookController.js');
-  assert.match(webhook, /isMenuBrowsingIntent\(normalise\(messageText\)\)/,
+  assert.match(webhook, /VIEW_MENU_DIRECT_RE\.test\(normalise\(messageText\)\)/,
     'Active ORDER flows must reuse the same natural browse matcher as fresh conversations');
 });
 
@@ -188,13 +183,13 @@ test('webhookController.js: SELECT_ITEM no longer advertises VIEW_MENU as an ord
 
 test('webhookController.js: active-flow direct orders route through the shared START_ORDER handoff', () => {
   const src = readSource('../controllers/webhookController.js');
-  const directBlock = src.match(/DIRECT-ORDER-SHORTCUT[\s\S]{0,1200}_dispatchDirectOrderRoute/);
+  const directBlock = src.match(/DIRECT-ORDER-SHORTCUT[\s\S]{0,1800}route\(\{[\s\S]*?action: 'START_ORDER'/);
   assert.ok(
     directBlock,
-    'Active-flow direct orders should route through _dispatchDirectOrderRoute → START_ORDER.'
+    'Active-flow direct orders should route through START_ORDER instead of the current menu step.'
   );
   assert.ok(
-    directBlock[0].includes('resolveDirectOrderParse') || src.includes('_hasResolvableDirectOrder'),
+    directBlock[0].includes('parseNaturalOrderMessage') && directBlock[0].includes('parseMultiItemMessage'),
     'The active-flow shortcut must resolve against the live menu before routing.'
   );
 });

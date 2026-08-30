@@ -39,46 +39,12 @@ import UserProfile    from '../models/UserProfile.js';
 import BusinessConfig from '../models/BusinessConfig.js';
 import Tenant         from '../models/Tenant.js';
 import { getAnalyticsSummary, getAnalyticsTimeseries } from '../core/analytics/analyticsService.js';
-import { updateSession } from '../core/sessions/sessionService.js';
+import { getTenantUsageSummary } from '../services/usageService.js';
+import { updateSession }       from '../core/sessions/sessionService.js';
 import { dispatchText, dispatchMessage } from '../core/whatsapp/dispatcher.js';
 import { scheduleWaCatalogSync } from '../modules/catalog/waCatalogSyncScheduler.js';
 import logger from '../config/logger.js';
-import { formatMoney } from '../utils/formatCurrency.js';
-import { logAudit } from '../services/admin/auditService.js';
-
-// Inlined service functions
-export async function getTenantUsageSummary(tenantId) {
-  const tenant = await Tenant.findById(tenantId).select('plan limits usage').lean();
-  if (!tenant) return null;
-  return {
-    plan:   tenant.plan || 'FREE',
-    limits: tenant.limits || { messagesPerMonth: 500, maxMenuItems: 10, maxAdmins: 1 },
-    usage:  {
-      messagesThisMonth: tenant.usage?.messagesThisMonth || 0,
-      resetDate:         tenant.usage?.resetDate || null,
-    },
-  };
-}
-
-function formatOrderItemsForMessage(order, business) {
-  const currency = business?.payment?.currency || 'GMD';
-  const cartLines = Array.isArray(order?.items) && order.items.length > 0 ? order.items : null;
-
-  if (!cartLines) {
-    return `📦  Order: *${order.item}* × ${order.quantity}`;
-  }
-
-  if (cartLines.length === 1) {
-    return `📦  Order: *${cartLines[0].item}* × ${cartLines[0].quantity}`;
-  }
-
-  return cartLines.map((i) => {
-    const qty = i.quantity ?? 1;
-    const lineTotal = typeof i.unitPrice === 'number' ? i.unitPrice * qty : null;
-    const pricePart = lineTotal != null ? ` — ${currency}${formatMoney(lineTotal)}` : '';
-    return `📦  ${qty}× ${i.item}${pricePart}`;
-  }).join('\n');
-}
+import { formatOrderItemsForMessage } from '../services/orderService.js';
 
 // [AUDIT-FIX-9] User-supplied search strings were interpolated directly into
 // $regex filters (getCustomers below, and the equivalent pattern in
@@ -199,35 +165,6 @@ export async function updateOrderStatus(req, res) {
       { new: true },
     );
     if (!order) return res.status(404).json({ error: 'Order not found' });
-
-    // [AUDIT-FIX-AUDITLOG-WIRE] This is the single generic admin status endpoint the
-    // dashboard uses for every order transition, so it maps the resulting status to
-    // whichever documented AuditLog.js action actually matches it, rather than
-    // logging a bare 'status_changed' for outcomes that have their own dedicated
-    // action (order_cancelled / order_completed / rejection_noted).
-    const auditActorId = req.adminUser?.id || req.adminUser?.name || (req.isSuperAdmin ? 'superadmin' : null);
-    if (status === 'cancelled' || status === 'rejected') {
-      logAudit({
-        tenantId, orderId: order._id, actor: 'admin', actorId: auditActorId,
-        action: 'order_cancelled', metadata: { status, notes: notes || null },
-      });
-      if (notes) {
-        logAudit({
-          tenantId, orderId: order._id, actor: 'admin', actorId: auditActorId,
-          action: 'rejection_noted', metadata: { status, notes },
-        });
-      }
-    } else if (status === 'completed') {
-      logAudit({
-        tenantId, orderId: order._id, actor: 'admin', actorId: auditActorId,
-        action: 'order_completed', metadata: { status },
-      });
-    } else {
-      logAudit({
-        tenantId, orderId: order._id, actor: 'admin', actorId: auditActorId,
-        action: 'status_changed', metadata: { to: status },
-      });
-    }
 
     // [FIX-6a] Notify customer — all significant status transitions
     try {

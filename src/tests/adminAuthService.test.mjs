@@ -23,7 +23,7 @@ const {
   hashPassword, verifyPassword,
   generateInviteToken, hashInviteToken,
   createSessionToken, verifySessionToken,
-} = await import('../services/admin/adminAuthService.js');
+} = await import('../services/adminAuthService.js');
 
 // ── Passwords ────────────────────────────────────────────────────────────────
 

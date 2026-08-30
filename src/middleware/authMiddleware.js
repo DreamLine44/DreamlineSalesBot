@@ -12,7 +12,7 @@ import crypto from 'crypto';
 import Tenant     from '../models/Tenant.js';
 import AdminUser  from '../models/AdminUser.js';
 import logger     from '../config/logger.js';
-import { verifySessionToken } from '../services/admin/adminAuthService.js';
+import { verifySessionToken } from '../services/adminAuthService.js';
 
 /** Constant-time string comparison — prevents timing side-channel attacks.
  *

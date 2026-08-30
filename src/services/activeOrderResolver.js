@@ -32,15 +32,10 @@
  *   }
  */
 
-import Order  from '../../models/Order.js';
-import logger from '../../config/logger.js';
-import { formatMoney } from '../../utils/formatCurrency.js';
+import Order  from '../models/Order.js';
+import logger from '../config/logger.js';
+import { formatMoney } from '../utils/formatCurrency.js';
 import { formatOrderItemSummary } from './orderService.js';
-import {
-  buildActiveOrderFilter,
-  DELIVERED_CONTEXT_WINDOW_MS,
-  expireStaleActivities,
-} from '../activity/activityLifecycleService.js';
 
 // ── Active order state constants ───────────────────────────────────────────────
 export const ACTIVE_ORDER_STATES = {
@@ -57,8 +52,7 @@ export const ACTIVE_ORDER_STATES = {
 
 // How long after delivery do we still show a "your order was delivered" context
 // rather than the normal welcome menu? Default 2 hours.
-// Re-exported from activityLifecycleService for backward compatibility.
-export { DELIVERED_CONTEXT_WINDOW_MS } from '../activity/activityLifecycleService.js';
+const DELIVERED_CONTEXT_WINDOW_MS = 2 * 60 * 60 * 1000;
 
 /**
  * resolveActiveOrder
@@ -69,13 +63,54 @@ export { DELIVERED_CONTEXT_WINDOW_MS } from '../activity/activityLifecycleServic
  * @param {object} session   — current session (for customerName)
  * @returns {Promise<{order, orders, state, shouldIntercept, uiResponse}>}
  */
-export const resolveActiveOrder = async (customerPhone, tenantId, business = null, session = null) => {
+export async function resolveActiveOrder(customerPhone, tenantId, business = null, session = null) {
   try {
-    await expireStaleActivities(customerPhone, tenantId);
-
-    const activeOrders = await Order.find(buildActiveOrderFilter(customerPhone, tenantId))
+    // ── Query: all non-terminal orders for this customer / tenant ─────────
+    // Exclude orders that are definitively done and old:
+    //   cancelled / completed / payment_failed older than 24h
+    // Delivered orders within the last 2h are included so we can show context.
+    //
+    // [AUDIT-FIX-2] cutoff24h was declared but never wired into the query below —
+    // every 'pending' order was treated as active forever, regardless of age. A
+    // customer who started an order, abandoned it, and came back three weeks later
+    // would still have that stale pending order intercept every new message
+    // ("you have an active order...") instead of letting them start fresh. This is
+    // the exact "stale pending+unpaid orders older than 24h" bug from past audits —
+    // the fix was written (the cutoff variable) but never actually applied to the
+    // query. 'pending' orders are now only considered active if created within the
+    // last 24h; once past that window they're abandoned carts, not active orders,
+    // and should not block new intents. Other non-terminal statuses (confirmed,
+    // preparing, ready, out_for_delivery, payment verification states) are left
+    // unbounded since those represent orders genuinely in progress in the real
+    // world and a stale one is an admin/ops problem, not a "let the bot keep
+    // nagging the customer" problem.
+    const cutoff24h  = new Date(Date.now() - 24 * 60 * 60 * 1000);
+    const activeOrders = await Order.find({
+      customerPhone,
+      tenantId,
+      $or: [
+        // [AUDIT-FIX-2] 'pending' bounded to last 24h — abandoned carts age out.
+        { status: 'pending', createdAt: { $gte: cutoff24h } },
+        // Genuinely in-progress statuses — no age bound.
+        { status: { $in: ['payment_pending_verification', 'confirmed', 'preparing', 'ready', 'out_for_delivery'] } },
+        // Delivered within the context window
+        { status: 'delivered', updatedAt: { $gte: new Date(Date.now() - DELIVERED_CONTEXT_WINDOW_MS) } },
+        // Rejected payments (order.status may be 'pending' after a reject+retry window)
+        { paymentStatus: 'rejected' },
+        // Proof submitted, still awaiting admin decision
+        { paymentStatus: { $in: ['proof_received', 'payment_pending_verification'] } },
+        // [AUDIT-FIX-AOR-QUERY-REJECT] Admin-rejected orders are written back as
+        // status:'pending' + paymentStatus:'unpaid' + paymentReviewedAt set (see
+        // the wasAdminRejected check below) — the SAME shape as an abandoned cart,
+        // so they were silently caught by the 24h-bounded 'pending' clause above
+        // and dropped once the admin took more than a day to review. A rejection
+        // is an order awaiting explicit customer action, not an abandoned cart, so
+        // this clause is intentionally left age-unbounded.
+        { status: 'pending', paymentStatus: 'unpaid', paymentReviewedAt: { $ne: null } },
+      ],
+    })
       .sort({ createdAt: -1 })
-      .limit(10)
+      .limit(10)  // hard cap — no customer should have more than 10 unresolved orders
       .lean();
 
     if (!activeOrders.length) {
@@ -101,7 +136,7 @@ export const resolveActiveOrder = async (customerPhone, tenantId, business = nul
 
 // ── State resolution ──────────────────────────────────────────────────────────
 
-const _resolveState = (order, business, session) => {
+function _resolveState(order, business, session) {
   const { paymentStatus, status, updatedAt } = order;
 
   const currency    = business?.payment?.currency || 'D';
@@ -271,7 +306,7 @@ const _resolveState = (order, business, session) => {
 
 // ── UI builders ───────────────────────────────────────────────────────────────
 
-const _preparingCard = (order, business, session, stage) => {
+function _preparingCard(order, business, session, stage) {
   const currency   = business?.payment?.currency || 'D';
   const custName   = session?.customerName ? `, ${session.customerName}` : '';
   const shortId    = order.shortId || '???';
@@ -299,7 +334,7 @@ const _preparingCard = (order, business, session, stage) => {
   };
 }
 
-const _multipleOrders = (orders, business) => {
+function _multipleOrders(orders, business) {
   // [FIX-LIST-LIMIT] WhatsApp enforces a hard cap of 10 rows across ALL sections
   // in a single list message. We always include a CANCEL_ALL action row (1 row),
   // so order rows must be capped at 9. With .limit(10) in the query, up to 10 orders
@@ -341,7 +376,7 @@ const _multipleOrders = (orders, business) => {
           rows: [{
             id:          'CANCEL_ALL',
             title:       '❌ Cancel All Orders',
-            description: 'Cancel all your active orders and bookings',
+            description: 'Cancel all your pending and confirmed orders',
           }],
         },
       ],
@@ -349,7 +384,7 @@ const _multipleOrders = (orders, business) => {
   };
 }
 
-const _noActiveOrder = () => {
+function _noActiveOrder() {
   return {
     order:  null,
     orders: [],
@@ -361,7 +396,7 @@ const _noActiveOrder = () => {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-const _formatDate = (date) => {
+function _formatDate(date) {
   try {
     const d  = new Date(date);
     const dd = String(d.getDate()).padStart(2, '0');
@@ -374,7 +409,7 @@ const _formatDate = (date) => {
   }
 }
 
-const _statusLabel = (status) => {
+function _statusLabel(status) {
   const MAP = {
     pending:                     'Pending',
     payment_pending_verification:'Awaiting Payment',
@@ -391,7 +426,7 @@ const _statusLabel = (status) => {
   return MAP[status] || status || 'Unknown';
 }
 
-const _paymentLabel = (paymentStatus) => {
+function _paymentLabel(paymentStatus) {
   const MAP = {
     unpaid:                      'Unpaid',
     proof_received:              'Screenshot received',

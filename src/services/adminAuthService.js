@@ -15,11 +15,11 @@
  * matter here: tamper-evidence and an embedded expiry.
  */
 import crypto from 'crypto';
-import logger from '../../config/logger.js';
+import logger from '../config/logger.js';
 
 const SCRYPT_KEYLEN = 64;
 
-const getSessionSecret = () => {
+function getSessionSecret() {
   const secret = process.env.ADMIN_SESSION_SECRET;
   if (!secret) {
     // [FEATURE-MULTIADMIN-1] Fail loudly in a way that's easy to grep for in
@@ -37,14 +37,14 @@ const getSessionSecret = () => {
 // ── Passwords ──────────────────────────────────────────────────────────────
 
 /** Returns { salt, hash } — both hex strings. Store both on the AdminUser doc. */
-export const hashPassword = (password) => {
+export function hashPassword(password) {
   const salt = crypto.randomBytes(16).toString('hex');
   const hash = crypto.scryptSync(password, salt, SCRYPT_KEYLEN).toString('hex');
   return { salt, hash };
 }
 
 /** Constant-time verification against a stored { passwordSalt, passwordHash }. */
-export const verifyPassword = (password, passwordSalt, passwordHash) => {
+export function verifyPassword(password, passwordSalt, passwordHash) {
   if (!passwordSalt || !passwordHash) return false;
   const candidate  = crypto.scryptSync(password, passwordSalt, SCRYPT_KEYLEN);
   const storedBuf  = Buffer.from(passwordHash, 'hex');
@@ -56,13 +56,13 @@ export const verifyPassword = (password, passwordSalt, passwordHash) => {
 // Same "never store the raw secret" pattern as Tenant.apiKeyHash: the plaintext
 // token is shown once (in the invite link), only its SHA-256 hash is stored.
 
-export const generateInviteToken = () => {
+export function generateInviteToken() {
   const raw  = crypto.randomBytes(24).toString('hex');
   const hash = crypto.createHash('sha256').update(raw).digest('hex');
   return { raw, hash };
 }
 
-export const hashInviteToken = (raw) => {
+export function hashInviteToken(raw) {
   return crypto.createHash('sha256').update(raw).digest('hex');
 }
 
@@ -71,7 +71,7 @@ export const hashInviteToken = (raw) => {
 const DEFAULT_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 
 /** Creates a signed session token for a given AdminUser. */
-export const createSessionToken = (adminUser, ttlMs = DEFAULT_TTL_MS) => {
+export function createSessionToken(adminUser, ttlMs = DEFAULT_TTL_MS) {
   const payload = {
     sub:       String(adminUser._id),
     tenantId:  String(adminUser.tenantId),
@@ -89,7 +89,7 @@ export const createSessionToken = (adminUser, ttlMs = DEFAULT_TTL_MS) => {
  * ({ sub, tenantId, role, exp }) or null if invalid/expired/tampered.
  * Never throws — auth middleware treats null as "not authenticated".
  */
-export const verifySessionToken = (token) => {
+export function verifySessionToken(token) {
   try {
     if (!token || typeof token !== 'string' || !token.includes('.')) return null;
     const [payloadB64, sig] = token.split('.');

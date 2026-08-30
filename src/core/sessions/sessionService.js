@@ -50,7 +50,6 @@
 
 import Session from '../../models/Session.js';
 import logger from '../../config/logger.js';
-import { normalizeCustomerPhone } from '../../utils/customerPhone.js';
 
 // Standard conversation TTL (30 min default, configurable)
 const SESSION_TTL_MS = (parseInt(process.env.SESSION_TTL_MINUTES, 10) || 30) * 60 * 1000;
@@ -61,26 +60,6 @@ const PAYMENT_TTL_MS = (parseInt(process.env.PAYMENT_SESSION_TTL_HOURS, 10) || 4
 // Steps that warrant the extended payment TTL
 const PAYMENT_STEPS = new Set(['PAYMENT_PROOF', 'PAYMENT_CONFIRM', 'AWAITING_PAYMENT']);
 
-// [AUDIT-FIX-CART-TTL] Extended TTL for a customer sitting on an assembled,
-// not-yet-submitted cart/booking. The default 30-minute TTL was silently
-// deleting the session — and the customer's entire cart with it — if they
-// paused (got distracted, stepped away, compared prices elsewhere) before
-// tapping the final "✅ Confirm Order" button. The customer's own WhatsApp
-// chat still shows the order-summary card with a live-looking Confirm button
-// after this happens, so the next tap lands on a session/flow that no longer
-// exists — surfacing as flowEngine's "⚠️ No active session" reply on what the
-// customer experiences as a single, uninterrupted tap. Mirrors the exact
-// pattern PAYMENT_STEPS already established for payment-proof waiting.
-const CART_TTL_MS = (parseInt(process.env.CART_SESSION_TTL_HOURS, 10) || 2) * 60 * 60 * 1000;
-
-// Steps where the customer has a real, assembled cart/booking on the line —
-// covers every module's final-review step plus the cart-editing sub-flow
-// (a customer mid-edit has just as much on the line as one sitting at review).
-const CART_STEPS = new Set([
-  'CONFIRM', 'CART_REVIEW', 'ITEM_ADDED', 'EDIT_CART_MENU', 'EDIT_CART_PICK',
-  'BOOKING_CONFIRM',
-]);
-
 // [FIX-HM-2] Human-mode TTL — when an admin takes over, the session must survive
 // long enough for the conversation to finish. 24 hours default so overnight chats
 // don't auto-resume the bot without admin intent.
@@ -88,20 +67,7 @@ const HUMAN_MODE_TTL_MS = (parseInt(process.env.HUMAN_MODE_SESSION_TTL_HOURS, 10
 
 /** Build the composite lookup key stored in Session.phone */
 export function sessionKey(customerPhone, tenantId) {
-  return `${normalizeCustomerPhone(customerPhone)}_${tenantId}`;
-}
-
-/** Legacy keys that may exist before phone normalization (e.g. +220… vs 220…). */
-function sessionLookupKeys(customerPhone, tenantId) {
-  const norm = normalizeCustomerPhone(customerPhone);
-  const tid = String(tenantId);
-  const keys = [];
-  const add = (k) => { if (k && !keys.includes(k)) keys.push(k); };
-  add(`${norm}_${tid}`);
-  const raw = String(customerPhone || '').trim();
-  if (raw && raw !== norm) add(`${raw}_${tid}`);
-  if (norm) add(`+${norm}_${tid}`);
-  return keys;
+  return `${customerPhone}_${tenantId}`;
 }
 
 /**
@@ -112,9 +78,7 @@ function sessionLookupKeys(customerPhone, tenantId) {
  *   1. humanMode=true  → 24h TTL so the session survives the full admin-handled
  *      conversation without expiring and silently re-enabling the bot.
  *   2. PAYMENT_STEPS   → 4h TTL so the customer has time to send their screenshot.
- *   3. CART_STEPS      → 2h TTL so an assembled cart/booking sitting at final
- *      review (or mid-edit) survives a normal pause instead of silently vanishing.
- *   4. Default         → 30-minute standard session TTL.
+ *   3. Default         → 30-minute standard session TTL.
  *
  * humanMode=false is intentionally NOT given extended TTL — when the admin resumes
  * the bot the session should return to the normal 30-minute window.
@@ -125,8 +89,6 @@ function sessionLookupKeys(customerPhone, tenantId) {
 function resolveTTL(step, humanMode) {
   if (humanMode) return HUMAN_MODE_TTL_MS;
   if (step && PAYMENT_STEPS.has(step)) return PAYMENT_TTL_MS;
-  // [AUDIT-FIX-CART-TTL] See CART_STEPS/CART_TTL_MS above.
-  if (step && CART_STEPS.has(step)) return CART_TTL_MS;
   return SESSION_TTL_MS;
 }
 
@@ -148,8 +110,7 @@ function handleMongoUnavailable(label, error) {
  *         flow to restore the name after a GREET reset without re-asking.
  */
 export const createSession = async (customerPhone, tenantId, data = {}) => {
-  const phone = normalizeCustomerPhone(customerPhone);
-  const key = sessionKey(phone, tenantId);
+  const key = sessionKey(customerPhone, tenantId);
   // [FIX-SES-4] Pass both step AND humanMode to resolveTTL so that a session created
   // directly into humanMode (e.g. after TTL restore in webhookController) gets the 24h TTL
   // instead of the default 30-minute one. Previously humanMode was always undefined here.
@@ -170,7 +131,7 @@ export const createSession = async (customerPhone, tenantId, data = {}) => {
       {
         $set: {
           phone:         key,
-          customerPhone: phone,
+          customerPhone,
           tenantId:      String(tenantId),
           phoneNumberId: data.phoneNumberId  || null,
           currentFlow:   data.currentFlow    || null,
@@ -232,15 +193,12 @@ export const createSession = async (customerPhone, tenantId, data = {}) => {
 
 // ─── GET ──────────────────────────────────────────────────────────────────────
 export const getSession = async (customerPhone, tenantId) => {
-  const tid = String(tenantId);
+  const key = sessionKey(customerPhone, tenantId);
   try {
-    for (const key of sessionLookupKeys(customerPhone, tenantId)) {
-      const doc = await Session.findOne({
-        phone: key, tenantId: tid, expiresAt: { $gt: new Date() },
-      });
-      if (doc) return doc;
-    }
-    return null;
+    // Include tenantId as an explicit filter guard in addition to the composite key.
+    // The composite key already encodes tenantId, but an explicit filter prevents
+    // cross-tenant matches if a phone number ever contains an underscore.
+    return await Session.findOne({ phone: key, tenantId: String(tenantId), expiresAt: { $gt: new Date() } });
   } catch (error) {
     if (!handleMongoUnavailable('getSession', error)) throw error;
     return null;
@@ -265,12 +223,8 @@ export const getSession = async (customerPhone, tenantId) => {
  *         Callers pass inc as a second argument: updateSession(phone, tid, set, inc).
  */
 export const updateSession = async (customerPhone, tenantId, updates = {}, inc = {}) => {
-  const phone = normalizeCustomerPhone(customerPhone);
-  const key   = sessionKey(phone, tenantId);
+  const key   = sessionKey(customerPhone, tenantId);
   const patch = { ...updates };
-
-  // Keep customerPhone canonical whenever we touch the session.
-  if (phone) patch.customerPhone = phone;
 
   try {
     // Remove internal hint before writing to DB
@@ -326,12 +280,12 @@ export const updateSession = async (customerPhone, tenantId, updates = {}, inc =
 
 // ─── CLEAR ────────────────────────────────────────────────────────────────────
 export const clearSession = async (customerPhone, tenantId) => {
-  const tid = String(tenantId);
+  const key = sessionKey(customerPhone, tenantId);
   try {
-    for (const key of sessionLookupKeys(customerPhone, tenantId)) {
-      await Session.deleteOne({ phone: key, tenantId: tid });
-    }
-    return { acknowledged: true };
+    // [FIX-SES-3] Include tenantId as an explicit filter to match createSession /
+    // updateSession / getSession. Without it, a composite-key collision (e.g. a phone
+    // number containing an underscore) could delete a session for the wrong tenant.
+    return await Session.deleteOne({ phone: key, tenantId: String(tenantId) });
   } catch (error) {
     if (!handleMongoUnavailable('clearSession', error)) throw error;
     return null;

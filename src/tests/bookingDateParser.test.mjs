@@ -13,7 +13,7 @@ import {
   resolveBookingDateInput,
   getLocalNow,
   MAX_BOOKING_MONTHS_AHEAD,
-} from '../services/booking/bookingDateParser.js';
+} from '../services/bookingDateParser.js';
 
 const TZ = 'Africa/Banjul';
 
@@ -111,15 +111,6 @@ test('formatBookingDateLabel: human-readable confirmation label', () => {
   const label = formatBookingDateLabel(d, TZ);
   assert.match(label, /August/i);
   assert.match(label, /2026/);
-});
-
-test('tryParseDate: re-parses formatBookingDateLabel output', () => {
-  const d = toUtcMidnight(2027, 5, 25);
-  const label = formatBookingDateLabel(d, TZ);
-  const reparsed = tryParseDate(label, TZ);
-  assert.ok(reparsed, `expected to parse label "${label}"`);
-  assert.equal(reparsed.getUTCDate(), 25);
-  assert.equal(reparsed.getUTCMonth(), 5);
 });
 
 test('resolveBookingDateInput: returns label for "friday"', async () => {

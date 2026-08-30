@@ -140,7 +140,7 @@ test('buildCatalogCartItems sets unitPrice to null (not 0 or undefined) for a me
 // ── Combined: the exact shape resolveOrderFields()/saveOrder() will see ─────
 
 test('buildCatalogCartItems output is directly usable by orderService.resolveOrderFields (all items priced -> computed total)', async () => {
-  const { resolveOrderFields } = await import('../services/order/orderService.js');
+  const { resolveOrderFields } = await import('../services/orderService.js');
   const business = makeBusiness();
   const meta = makeMetaOrder([
     { product_retailer_id: 'item2', quantity: '2' },        // 10 x 2 = 20
