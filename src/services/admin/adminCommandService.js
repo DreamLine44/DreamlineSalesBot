@@ -157,6 +157,8 @@ export async function handleAdminButtonReply(buttonId, tenantId, adminPhone, ten
 
   if (upper.startsWith('APPROVE_'))      return confirmPayment(upper.replace('APPROVE_', ''),      tenantId, adminPhone, tenantDoc, business);
   if (upper.startsWith('REJECT_'))       return rejectPayment(upper.replace('REJECT_', ''),        tenantId, adminPhone, tenantDoc, business);
+  if (upper.startsWith('APPROVE_CASH_')) return approveCashRequest(upper.replace('APPROVE_CASH_', ''), tenantId, adminPhone, tenantDoc, business);
+  if (upper.startsWith('REJECT_CASH_'))  return rejectCashRequest(upper.replace('REJECT_CASH_', ''),  tenantId, adminPhone, tenantDoc, business);
   if (upper.startsWith('CONFIRM_BOOK_')) return confirmBooking(upper.replace('CONFIRM_BOOK_', ''), tenantId, adminPhone, tenantDoc);
   if (upper.startsWith('READY_'))        return markOrderReady(upper.replace('READY_', ''),        tenantId, adminPhone, tenantDoc, business);
   // [FIX-X3] RESUME_BOT_<phone> button — dispatched by the support escalation alert
@@ -195,6 +197,12 @@ export async function handleAdminTextCommand(text, tenantId, adminPhone, tenantD
 
   const rejectMatch = upper.match(/^REJECT\s+([A-Z0-9]{4,24})$/);
   if (rejectMatch) return rejectPayment(rejectMatch[1], tenantId, adminPhone, tenantDoc, business);
+
+  const approveCashMatch = upper.match(/^APPROVE\s+CASH\s+([A-Z0-9]{4,24})$/);
+  if (approveCashMatch) return approveCashRequest(approveCashMatch[1], tenantId, adminPhone, tenantDoc, business);
+
+  const rejectCashMatch = upper.match(/^REJECT\s+CASH\s+([A-Z0-9]{4,24})$/);
+  if (rejectCashMatch) return rejectCashRequest(rejectCashMatch[1], tenantId, adminPhone, tenantDoc, business);
 
   // [FIX-CMD-13] Widened shortId limit from {4,8} to {4,24} to match APPROVE/REJECT.
   // Booking shortIds may be longer than 8 characters depending on the ID scheme; the
@@ -685,6 +693,102 @@ async function rejectPayment(shortId, tenantId, adminPhone, tenantDoc, business,
     // instead of silent failure when a DB call throws mid-function.
     logger.error('[AdminCmd] rejectPayment failed', { shortId, adminPhone, err: err.message });
     return `⚠️ Something went wrong rejecting order #${shortId}. Please try again.`;
+  }
+}
+
+// ── Approve cash payment ──────────────────────────────────────────────────────
+async function approveCashRequest(shortId, tenantId, adminPhone, tenantDoc, business) {
+  try {
+    const order = await Order.findOneAndUpdate(
+      {
+        shortId,
+        tenantId,
+        cashRequestStatus: 'pending',
+        paymentStatus: { $ne: 'confirmed' },
+        status:        { $nin: ['cancelled', 'rejected'] },
+      },
+      { $set: {
+        paymentMethod: 'cash',
+        cashRequestStatus: 'approved',
+        cashRequestReviewedBy: adminPhone,
+        cashRequestReviewedAt: new Date(),
+      }},
+      { new: false }
+    ).select('_id customerPhone item shortId quantity totalPrice paymentStatus status paymentReference').lean();
+
+    if (!order) {
+      const existing = await Order.findOne({ shortId, tenantId }).select('status paymentStatus cashRequestStatus').lean().catch(() => null);
+      if (!existing) return `⚠️ No order found: ${shortId}`;
+      if (existing.cashRequestStatus === 'approved') return `ℹ️ Cash request for #${shortId} already approved.`;
+      if (existing.status === 'cancelled') return `ℹ️ Order #${shortId} already cancelled.`;
+      return `⚠️ Cash request for #${shortId} can't be approved right now.`;
+    }
+
+    await dispatchMessage(order.customerPhone, {
+      type: 'text',
+      body:
+        `✅ *Cash Payment Approved*\n\n` +
+        `Your request for order *#${order.shortId || shortId}* has been confirmed.\n\n` +
+        `You may now proceed with payment by cash. We're standing by to process your order.`,
+    }, tenantDoc).catch(err => logger.warn('[AdminCmd] approveCashRequest: customer dispatch failed', {
+      customerPhone: order.customerPhone, err: err.message,
+    }));
+
+    logger.info('[AdminCmd] Cash request approved', { shortId, adminPhone, tenantId });
+    return `✅ *Cash request approved*\n\nOrder #${shortId} — ${order.item}\nCustomer ${order.customerPhone} notified.`;
+  } catch (err) {
+    logger.error('[AdminCmd] approveCashRequest failed', { shortId, adminPhone, err: err.message });
+    return `⚠️ Something went wrong approving the cash request for #${shortId}. Please try again.`;
+  }
+}
+
+// ── Reject cash payment ───────────────────────────────────────────────────────
+async function rejectCashRequest(shortId, tenantId, adminPhone, tenantDoc, business) {
+  try {
+    const order = await Order.findOne({
+      shortId,
+      tenantId,
+      cashRequestStatus: 'pending',
+      status: { $ne: 'cancelled' },
+      paymentStatus: { $ne: 'confirmed' },
+    }).select('_id customerPhone item shortId totalPrice paymentReference paymentStatus status').lean();
+
+    if (!order) {
+      const existing = await Order.findOne({ shortId, tenantId }).select('status paymentStatus cashRequestStatus').lean().catch(() => null);
+      if (!existing) return `⚠️ No order found: ${shortId}`;
+      if (existing.status === 'cancelled') return `ℹ️ Order #${shortId} already cancelled.`;
+      return `⚠️ Cash request for #${shortId} can't be rejected right now.`;
+    }
+
+    const updated = await Order.findOneAndUpdate(
+      { _id: order._id, cashRequestStatus: { $ne: 'rejected' } },
+      { $set: {
+        cashRequestStatus: 'rejected',
+        cashRequestReviewedBy: adminPhone,
+        cashRequestReviewedAt: new Date(),
+      }},
+      { new: true }
+    ).lean();
+
+    if (!updated) return `ℹ️ Cash request for #${shortId} was already handled.`;
+
+    await updateSession(order.customerPhone, tenantId, {
+      currentFlow: 'ORDER',
+      step: 'PAYMENT_PROOF',
+      postFlowAck: null,
+    }).catch(() => {});
+
+    const { buildPaymentInstructionsUI } = await import('../../payment/paymentService.js');
+    const paymentUI = buildPaymentInstructionsUI(business, order.totalPrice, order.shortId || shortId, order.paymentReference || null);
+    await dispatchMessage(order.customerPhone, paymentUI, tenantDoc).catch(err => logger.warn('[AdminCmd] rejectCashRequest: customer dispatch failed', {
+      customerPhone: order.customerPhone, err: err.message,
+    }));
+
+    logger.info('[AdminCmd] Cash request rejected', { shortId, adminPhone, tenantId });
+    return `ℹ️ *Cash payment request declined*\n\nOrder #${shortId} — ${order.item}\nCustomer has been directed to other payment options.`;
+  } catch (err) {
+    logger.error('[AdminCmd] rejectCashRequest failed', { shortId, adminPhone, err: err.message });
+    return `⚠️ Something went wrong rejecting the cash request for #${shortId}. Please try again.`;
   }
 }
 

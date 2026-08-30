@@ -315,8 +315,9 @@ export const buildPaymentInstructionsUI = (business, totalPrice, shortId, stored
   const requireProof = payment?.requireProof !== false; // default true
   const actionButtons = requireProof
     ? [
-        { id: 'SUPPORT', title: '❓ Need Help'    },
-        { id: 'CANCEL',  title: '❌ Cancel Order' },
+        { id: 'SUPPORT', title: '❓ Need Help'          },
+        { id: 'REQUEST_CASH_PAYMENT', title: '💵 Pay with Cash' },
+        { id: 'CANCEL',  title: '❌ Cancel Order'       },
       ]
     : [
         { id: 'DONE',    title: '✅ Sent Payment'  },
@@ -341,4 +342,54 @@ export const buildPaymentInstructionsUI = (business, totalPrice, shortId, stored
       instructions,
     buttons: actionButtons,
   };
+};
+
+export async function requestCashPayment(customerPhone, tenantId, tenantDoc) {
+  const order = await Order.findOne({
+    customerPhone,
+    tenantId,
+    paymentStatus: 'unpaid',
+    status: 'pending',
+  }).sort({ createdAt: -1 }).lean().catch(() => null);
+
+  if (!order) {
+    return `⚠️ We couldn't find a pending order for this payment request. Please try again or contact us.`;
+  }
+
+  const updated = await Order.findOneAndUpdate(
+    { _id: order._id, cashRequestStatus: { $ne: 'pending' } },
+    { $set: { cashRequestStatus: 'pending', cashRequestedAt: new Date() } },
+    { new: true }
+  ).lean().catch(() => null);
+
+  if (!updated) {
+    return `ℹ️ *Cash payment request already pending.*\n\nYour order *#${order.shortId}* is awaiting confirmation from our team. We'll notify you as soon as there's an update.`;
+  }
+
+  try {
+    const business = await BusinessConfig.findOne({ tenantId }).lean();
+    const adminPhone = business?.adminPhone || tenantDoc?.adminPhone;
+    if (adminPhone && tenantDoc) {
+      const { dispatchMessage } = await import('../../core/whatsapp/dispatcher.js');
+      const currency = business?.payment?.currency || 'D';
+      await dispatchMessage(adminPhone, {
+        type: 'buttons',
+        body:
+          `💵 *Cash Payment Request*\n\n` +
+          `👤 Customer: *${customerPhone}*\n` +
+          `🛒 Order: *${order.item}* (${order.quantity}×)\n` +
+          `💰 Amount: *${currency}${order.totalPrice ? formatMoney(order.totalPrice) : '—'}*\n` +
+          `📋 Reference: *#${order.shortId}*\n\n` +
+          `Customer is requesting to pay by cash. Please review and respond.`,
+        buttons: [
+          { id: `APPROVE_CASH_${order.shortId}`, title: '✅ Approve' },
+          { id: `REJECT_CASH_${order.shortId}`,  title: '❌ Reject'  },
+        ],
+      }, tenantDoc).catch(() => {});
+    }
+  } catch (err) {
+    logger.warn('[PaymentService] Cash request admin alert failed (non-fatal)', { err: err.message, orderId: order._id });
+  }
+
+  return `✅ *Cash payment request received.*\n\nYour request for order *#${order.shortId}* has been submitted. Our team will review it and confirm shortly.`;
 }

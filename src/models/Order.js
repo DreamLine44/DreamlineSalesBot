@@ -157,6 +157,18 @@ const orderSchema = new mongoose.Schema({
   paymentInitiatedAt: { type: Date, default: null },
   proofReceivedAt:    { type: Date, default: null },
 
+  // [SPEC-CASH-REQ] Customer cash-payment request review; explicitly declared so
+  // Mongoose strict mode keeps the field/value writes instead of silently dropping them.
+  cashRequestStatus: {
+    type: String,
+    enum: ['pending', 'approved', 'rejected', null],
+    default: null,
+    index: true,
+  },
+  cashRequestedAt: { type: Date, default: null },
+  cashRequestReviewedBy: { type: String, default: null },
+  cashRequestReviewedAt: { type: Date, default: null },
+
   // Who reviewed the payment and when (set by admin confirm/reject)
   paymentReviewedBy: { type: String, default: null },
   paymentReviewedAt: { type: Date,   default: null },

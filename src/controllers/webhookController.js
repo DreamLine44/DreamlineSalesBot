@@ -1644,6 +1644,7 @@ async function _handleIncomingMessageSerialized({ tenantId, tenantDoc, from, msg
     // alert (moduleRouter). Without this, tapping "▶️ Resume Bot" produced "Sorry, that
     // action isn't available" rather than calling resumeBot() in adminCommandService.
     if (isInteractive && (
+      upper.startsWith('APPROVE_CASH_') || upper.startsWith('REJECT_CASH_') ||
       upper.startsWith('APPROVE_') || upper.startsWith('REJECT_') ||
       upper.startsWith('CONFIRM_BOOK_') || upper.startsWith('DECLINE_BOOK_') ||
       upper.startsWith('READY_') || upper.startsWith('RESUME_BOT_')
@@ -1798,6 +1799,14 @@ async function _handleIncomingMessageSerialized({ tenantId, tenantDoc, from, msg
         '❌ Your order has been cancelled.\n\nWhat would you like to do next?',
         [{ id: 'ORDER', title: '🛒 Place New Order' }]
       ), tenantDoc);
+      return;
+    }
+
+    const cashRequestPattern = /(?:can\s+i\s+pay\s+cash|i\s+can['’]?t\s+pay\s+with\s+(?:wave|bank)|pay\s+cash|pay\s+when\s+delivered|cash\s+payment|request\s+cash\s+payment)/i;
+    if (upper === 'REQUEST_CASH_PAYMENT' || cashRequestPattern.test(messageText.trim())) {
+      const { requestCashPayment } = await import('../services/payment/paymentService.js');
+      const reply = await requestCashPayment(from, tenantId, tenantDoc).catch(() => '⚠️ We could not process that cash-payment request. Please try again or contact us.');
+      if (reply) await dispatchMessage(from, { type: 'text', body: reply }, tenantDoc);
       return;
     }
 
@@ -2584,7 +2593,7 @@ async function _handleIncomingMessageSerialized({ tenantId, tenantDoc, from, msg
       CONFIRM:              new Set(['CONFIRM', 'CANCEL', 'ADD_MORE_ITEMS', 'ADD_ANOTHER_ITEM', 'EDIT_CART']),
       EDIT_CART_MENU:       new Set(['EDIT_ADD', 'EDIT_REMOVE', 'EDIT_INCREASE', 'EDIT_DECREASE', 'EDIT_CLEAR', 'EDIT_BACK']),
       EDIT_CART_PICK:       new Set([]), // expects free text (line number) or "back"
-      PAYMENT_PROOF:        new Set(['DONE', 'SUPPORT', 'CANCEL', 'CANCEL_ORDER']),
+      PAYMENT_PROOF:        new Set(['DONE', 'SUPPORT', 'CANCEL', 'CANCEL_ORDER', 'REQUEST_CASH_PAYMENT']),
       AWAIT_ADMIN_CONFIRM:  new Set(['CANCEL', 'CANCEL_ORDER']),
       // ── Electronics-specific steps ─────────────────────────────────────────
       // Steps with no entry are NOT validated — any button passes through to the
