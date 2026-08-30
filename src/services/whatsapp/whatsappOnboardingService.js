@@ -217,7 +217,7 @@ export async function markConnected(tenantId) {
     if (process.env.BOOKING_DATE_FLOW_ENABLED === 'true') {
       (async () => {
         try {
-          const { ensureBookingDateFlow } = await import('./bookingDateFlowProvisioner.js');
+          const { ensureBookingDateFlow } = await import('../booking/bookingDateFlowProvisioner.js');
           await ensureBookingDateFlow({ tenant: tenant.toObject() });
         } catch { /* non-fatal */ }
       })();

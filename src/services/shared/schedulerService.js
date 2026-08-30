@@ -248,7 +248,7 @@ async function runBookingReminderJob() {
       let prepLine = '';
       if (isSalon) {
         try {
-          const { getSalonPrepTip } = await import('../modules/salon/salonHelpers.js');
+          const { getSalonPrepTip } = await import('../../modules/salon/salonHelpers.js');
           const tip = getSalonPrepTip(booking.service, business);
           if (tip) prepLine = `\n\n💡 *Tip:* ${tip}`;
         } catch {}
@@ -273,7 +273,7 @@ async function runBookingReminderJob() {
       // confirm/reschedule/cancel buttons — not generic intent detection.
       // Without this, any reply to the reminder (even "ok 👍") would fall through to
       // AI classify and potentially trigger a SUPPORT escalation.
-      const { updateSession: _updateSess } = await import('../core/sessions/sessionService.js');
+      const { updateSession: _updateSess } = await import('../../core/sessions/sessionService.js');
       await _updateSess(booking.customerPhone, booking.tenantId, {
         postFlowAck:  'APPOINTMENT_REMINDER',
         postFlowData: {
@@ -434,7 +434,7 @@ async function runPostAppointmentFollowUpJob() {
         `Ready to book your next appointment? We're here whenever you are 🙏`;
 
       // [FIX-SCHED] Send interactive follow-up first (rebook button), fall back to template
-      const { dispatchMessage: _dispFU } = await import('../core/whatsapp/dispatcher.js');
+      const { dispatchMessage: _dispFU } = await import('../../core/whatsapp/dispatcher.js');
       const _isBarbershopFU = (business?.businessMode || '').toUpperCase() === 'BARBERSHOP';
       // [AUDIT-FIX-3] dispatchMessage() never rejects — it catches its own fetch/network
       // errors internally and, on a non-2xx Meta response (e.g. the 24h-window rejection
@@ -478,7 +478,7 @@ async function runPostAppointmentFollowUpJob() {
       );
 
       // Set postFlowAck so any reply is handled contextually
-      const { updateSession: _updSess } = await import('../core/sessions/sessionService.js');
+      const { updateSession: _updSess } = await import('../../core/sessions/sessionService.js');
       await _updSess(booking.customerPhone, booking.tenantId, {
         postFlowAck:  'BOOKING_CONFIRMED',
         postFlowData: {

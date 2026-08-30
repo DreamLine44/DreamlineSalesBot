@@ -171,7 +171,7 @@ async function finaliseLead({ session, lead, business, tenantDoc }) {
     try {
       const adminPhone = business?.adminPhone || tenantDoc?.adminPhone;
       if (adminPhone) {
-        const { dispatchText } = await import('../core/whatsapp/dispatcher.js');
+        const { dispatchText } = await import('../../core/whatsapp/dispatcher.js');
         const nameStr  = lead.name  ? `\n👤 Name: *${lead.name}*`    : '';
         const emailStr = lead.email ? `\n📧 Email: *${lead.email}*`   : '';
         dispatchText(
@@ -191,8 +191,8 @@ async function finaliseLead({ session, lead, business, tenantDoc }) {
     currentFlow: null, step: null, data: { leadCaptured: true }, postFlowAck: null, postFlowData: null,
   });
 
-  const { getModeConfig } = await import('../config/modes.js');
-  const { buildOptionsReply } = await import('../core/shared/uiOptionsHelper.js');
+  const { getModeConfig } = await import('../../config/modes.js');
+  const { buildOptionsReply } = await import('../../core/shared/uiOptionsHelper.js');
   const modeCfg = getModeConfig(business);
 
   const thankYou = cfg.thankYouMsg || `✅ All set! We'll remember you next time at *${bizName}*. 😊`;

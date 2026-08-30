@@ -431,7 +431,7 @@ export async function processQuestionMessage({ session, message, business, tenan
 
 /** Persist question-mode session state (stay in Q&A). */
 export async function persistQuestionSession(session, tenant, context = {}) {
-  const { updateSession } = await import('../core/sessions/sessionService.js');
+  const { updateSession } = await import('../../core/sessions/sessionService.js');
   const data = {
     ...(session.data || {}),
     _questionCtx: mergeQuestionContext(session, context),

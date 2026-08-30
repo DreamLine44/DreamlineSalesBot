@@ -76,83 +76,111 @@ export async function receiveProof(customerPhone, tenantId, imageId, tenantDoc) 
   });
 
   // Notify admin
-  const business  = await BusinessConfig.findOne({ tenantId }).lean();
-  const adminPhone = business?.adminPhone || tenantDoc?.adminPhone;
-  if (adminPhone && tenantDoc) {
-    const { dispatchMessage } = await import('../core/whatsapp/dispatcher.js');
-    const currency = business?.payment?.currency || 'D';
+  // [FIX-PROOF-NOTIFY-ISOLATION] This whole block is now wrapped in try/catch.
+  // Previously an uncaught error here (e.g. the dispatcher import path bug, or any
+  // other failure while notifying the admin) propagated straight out of receiveProof
+  // AFTER the Order.updateOne above had already flipped paymentStatus to
+  // 'proof_received'. webhookController's caller catches the throw and tells the
+  // customer "Could not process your screenshot — try again", but the proof WAS
+  // recorded — so on retry, the findOne at the top of this function (which only
+  // matches paymentStatus:'unpaid') can never find the order again, and the customer
+  // gets stuck seeing "we couldn't find a pending order to attach this payment to."
+  // The DB write already succeeded and is the source of truth for the customer-facing
+  // outcome, so a failure to notify the admin must degrade gracefully, not roll the
+  // customer's experience backward.
+  try {
+    const business  = await BusinessConfig.findOne({ tenantId }).lean();
+    const adminPhone = business?.adminPhone || tenantDoc?.adminPhone;
+    if (adminPhone && tenantDoc) {
+      const { dispatchMessage } = await import('../../core/whatsapp/dispatcher.js');
+      const currency = business?.payment?.currency || 'D';
 
-    // [FIX-IMG-ORDER] Forward the image FIRST (awaited), then the approval card.
-    // Previously both were fire-and-forget so the card often arrived before the image,
-    // making "Screenshot sent above ↑" incorrect.
-    // [FIX-SCOPE] imageForwarded is declared here (outer scope) so the approval card
-    // template literal below can always read it. Previously it was declared inside
-    // `if (token && phoneId)` — when token/phoneId was falsy the variable was undefined
-    // at the point of use, causing the card to incorrectly say "Screenshot delivery failed."
-    let imageForwarded = false;
-    if (imageId) {
-      // [FIX-PAY-2] decryptToken() must be called before using the stored access token.
-      // tenantDoc.whatsapp.accessToken is AES-256-GCM encrypted (enc:<iv>:<tag>:<ct>)
-      // in production. Sending the raw ciphertext to Meta results in a 400 auth error
-      // on every image forward. All other Meta calls route through dispatcher.js which
-      // calls decryptToken() — this direct fetch() was the only path that did not.
-      const token   = decryptToken(tenantDoc?.whatsapp?.accessToken);
-      const phoneId = tenantDoc?.whatsapp?.phoneNumberId;
-      const version = tenantDoc?.whatsapp?.apiVersion || process.env.META_API_VERSION || 'v21.0';
-      if (token && phoneId) {
-        const imgPayload = {
-          messaging_product: 'whatsapp', recipient_type: 'individual',
-          to: adminPhone, type: 'image',
-          image: { id: imageId, caption: `📸 Payment proof from ${customerPhone} — Order #${order.shortId}` },
-        };
-        // [FIX-PAY-3] Retry image forward up to 2 times on transient Meta 5xx.
-        // Previously a single failed fetch() silently dropped the image — the admin
-        // received the approval card with "Screenshot sent above ↑" but no image,
-        // causing blind approve/reject decisions. On persistent failure, include an
-        // explicit warning in the approval card body so the admin knows to ask the
-        // customer to resend.
-        for (let attempt = 0; attempt < 3; attempt++) {
-          try {
-            const imgRes = await fetch(`https://graph.facebook.com/${version}/${phoneId}/messages`, {
-              method:  'POST',
-              headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-              body:    JSON.stringify(imgPayload),
-            });
-            if (imgRes.ok) { imageForwarded = true; break; }
-            // Non-2xx from Meta — log and retry on 5xx only
-            const status = imgRes.status;
-            logger.warn('[PaymentService] Image forward non-OK', { attempt: attempt + 1, status, orderId: order._id });
-            if (status < 500) break; // 4xx (bad token, bad media ID) — retrying won't help
-          } catch (imgErr) {
-            logger.warn('[PaymentService] Image forward network error', { attempt: attempt + 1, err: imgErr.message });
+      // [FIX-IMG-ORDER] Forward the image FIRST (awaited), then the approval card.
+      // Previously both were fire-and-forget so the card often arrived before the image,
+      // making "Screenshot sent above ↑" incorrect.
+      // [FIX-SCOPE] imageForwarded is declared here (outer scope) so the approval card
+      // template literal below can always read it. Previously it was declared inside
+      // `if (token && phoneId)` — when token/phoneId was falsy the variable was undefined
+      // at the point of use, causing the card to incorrectly say "Screenshot delivery failed."
+      let imageForwarded = false;
+      if (imageId) {
+        // [FIX-PAY-2] decryptToken() must be called before using the stored access token.
+        // tenantDoc.whatsapp.accessToken is AES-256-GCM encrypted (enc:<iv>:<tag>:<ct>)
+        // in production. Sending the raw ciphertext to Meta results in a 400 auth error
+        // on every image forward. All other Meta calls route through dispatcher.js which
+        // calls decryptToken() — this direct fetch() was the only path that did not.
+        const token   = decryptToken(tenantDoc?.whatsapp?.accessToken);
+        const phoneId = tenantDoc?.whatsapp?.phoneNumberId;
+        const version = tenantDoc?.whatsapp?.apiVersion || process.env.META_API_VERSION || 'v21.0';
+        if (token && phoneId) {
+          const imgPayload = {
+            messaging_product: 'whatsapp', recipient_type: 'individual',
+            to: adminPhone, type: 'image',
+            image: { id: imageId, caption: `📸 Payment proof from ${customerPhone} — Order #${order.shortId}` },
+          };
+          // [FIX-PAY-3] Retry image forward up to 2 times on transient Meta 5xx.
+          // Previously a single failed fetch() silently dropped the image — the admin
+          // received the approval card with "Screenshot sent above ↑" but no image,
+          // causing blind approve/reject decisions. On persistent failure, include an
+          // explicit warning in the approval card body so the admin knows to ask the
+          // customer to resend.
+          for (let attempt = 0; attempt < 3; attempt++) {
+            try {
+              const imgRes = await fetch(`https://graph.facebook.com/${version}/${phoneId}/messages`, {
+                method:  'POST',
+                headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+                body:    JSON.stringify(imgPayload),
+              });
+              if (imgRes.ok) { imageForwarded = true; break; }
+              // Non-2xx from Meta — log and retry on 5xx only
+              const status = imgRes.status;
+              logger.warn('[PaymentService] Image forward non-OK', { attempt: attempt + 1, status, orderId: order._id });
+              if (status < 500) break; // 4xx (bad token, bad media ID) — retrying won't help
+            } catch (imgErr) {
+              logger.warn('[PaymentService] Image forward network error', { attempt: attempt + 1, err: imgErr.message });
+            }
+            if (attempt < 2) await new Promise(r => setTimeout(r, 1000 * (attempt + 1))); // 1s, 2s backoff
           }
-          if (attempt < 2) await new Promise(r => setTimeout(r, 1000 * (attempt + 1))); // 1s, 2s backoff
+          if (!imageForwarded) {
+            logger.error('[PaymentService] Image forward failed after 3 attempts — admin will be warned', { orderId: order._id });
+          }
+          // Brief gap so WhatsApp delivers the image before the interactive card
+          await new Promise(resolve => setTimeout(resolve, 500));
         }
-        if (!imageForwarded) {
-          logger.error('[PaymentService] Image forward failed after 3 attempts — admin will be warned', { orderId: order._id });
-        }
-        // Brief gap so WhatsApp delivers the image before the interactive card
-        await new Promise(resolve => setTimeout(resolve, 500));
       }
-    }
 
-    // Send interactive approval card — image guaranteed to be above this
-    await dispatchMessage(adminPhone, {
-      type: 'buttons',
-      body:
-        `💳 *New Payment Submission*\n\n` +
-        `🆔 Order: *#${order.shortId}*\n` +
-        `👤 Customer: *${customerPhone}*\n` +
-        `🛒 Items: *${order.item}* × ${order.quantity}\n` +
-        `💰 Amount: *${currency}${order.totalPrice ? formatMoney(order.totalPrice) : '—'}*\n\n` +
-        (imageForwarded
-          ? `Screenshot sent above ↑\nPlease approve or reject:`
-          : `⚠️ *Screenshot delivery failed* — ask the customer to resend.\nYou may still approve or reject based on other confirmation:`),
-      buttons: [
-        { id: `APPROVE_${order.shortId}`, title: '✅ Approve' },
-        { id: `REJECT_${order.shortId}`,  title: '❌ Reject'  },
-      ],
-    }, tenantDoc).catch(() => {});
+      // Send interactive approval card — image guaranteed to be above this
+      await dispatchMessage(adminPhone, {
+        type: 'buttons',
+        body:
+          `💳 *New Payment Submission*\n\n` +
+          `🆔 Order: *#${order.shortId}*\n` +
+          `👤 Customer: *${customerPhone}*\n` +
+          `🛒 Items: *${order.item}* × ${order.quantity}\n` +
+          `💰 Amount: *${currency}${order.totalPrice ? formatMoney(order.totalPrice) : '—'}*\n\n` +
+          (imageForwarded
+            ? `Screenshot sent above ↑\nPlease approve or reject:`
+            : `⚠️ *Screenshot delivery failed* — ask the customer to resend.\nYou may still approve or reject based on other confirmation:`),
+        buttons: [
+          { id: `APPROVE_${order.shortId}`, title: '✅ Approve' },
+          { id: `REJECT_${order.shortId}`,  title: '❌ Reject'  },
+        ],
+      }, tenantDoc).catch((cardErr) => {
+        // [FIX-PROOF-NOTIFY-ISOLATION] Previously `.catch(() => {})` — a failure
+        // sending the approval card (e.g. Meta API down) was silently dropped with
+        // no log at all, so the admin was never notified and no one would ever know.
+        logger.error('[PaymentService] Failed to send approval card to admin — order is saved but admin was NOT alerted; needs manual follow-up', {
+          err: cardErr.message, orderId: order._id, shortId: order.shortId, tenantId, customerPhone,
+        });
+      });
+    }
+  } catch (notifyErr) {
+    // Proof is already saved on the order — an admin-notify failure must not be
+    // surfaced to the customer as a processing failure, and must not throw past
+    // this point (that would re-trigger webhookController's generic error reply).
+    logger.error('[PaymentService] Failed to notify admin of payment proof — order is saved but admin was NOT alerted; needs manual follow-up', {
+      err: notifyErr.message, orderId: order._id, shortId: order.shortId, tenantId, customerPhone,
+    });
   }
 
   return (
@@ -192,7 +220,7 @@ export async function handleDonePayment(customerPhone, tenantId, tenantDoc) {
       const business   = await BusinessConfig.findOne({ tenantId }).lean();
       const adminPhone = business?.adminPhone || tenantDoc?.adminPhone;
       if (adminPhone) {
-        const { dispatchMessage } = await import('../core/whatsapp/dispatcher.js');
+        const { dispatchMessage } = await import('../../core/whatsapp/dispatcher.js');
         const currency = business?.payment?.currency || 'D';
         await dispatchMessage(adminPhone, {
           type: 'buttons',

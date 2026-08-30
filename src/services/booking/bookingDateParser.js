@@ -307,7 +307,7 @@ async function parseDateWithAI(raw, tz) {
   const maxIso = isoFromParsed(maxFuture);
 
   try {
-    const { parseBookingDate } = await import('../core/ai/providers/groqProvider.js');
+    const { parseBookingDate } = await import('../../core/ai/providers/groqProvider.js');
     const iso = await parseBookingDate({
       message: raw,
       todayIso,

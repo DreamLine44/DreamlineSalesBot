@@ -261,7 +261,7 @@ export async function handleAdminTextCommand(text, tenantId, adminPhone, tenantD
     // only one session was resumed with no indication that N-1 others remained, leaving
     // those customers silently stuck. The count is fetched BEFORE resumeBot() because
     // resumeBot() sets humanMode=false on the resumed session, changing the count.
-    const Session = (await import('../models/Session.js')).default;
+    const Session = (await import('../../models/Session.js')).default;
     const [latest, totalCount] = await Promise.all([
       Session.findOne({ tenantId, humanMode: true })
         .sort({ updatedAt: -1 })
@@ -403,7 +403,7 @@ async function confirmPayment(shortId, tenantId, adminPhone, tenantDoc, business
     // which expires with the session TTL (~30 min) — so an admin confirming a cash
     // order 30+ minutes later wrongly told the customer "Your payment has been verified"
     // even when payment.enabled is false and no proof was ever submitted.
-    const { getSession: _getSession } = await import('../core/sessions/sessionService.js');
+    const { getSession: _getSession } = await import('../../core/sessions/sessionService.js');
     const custSession2 = await _getSession(order.customerPhone, tenantId).catch(() => null);
     const isCashConfirm = isNoPaymentOrder(business, order, custSession2);
 
@@ -486,7 +486,7 @@ async function confirmPayment(shortId, tenantId, adminPhone, tenantDoc, business
     // [PFH-5 / MEM-FIX-1] Record confirmed order in customer memory — only fires on
     // actual admin confirmation, not on saveOrder(), so memory reflects real completed
     // orders rather than all abandoned attempts.
-    import('../core/memory/customerMemory.js')
+    import('../../core/memory/customerMemory.js')
       .then(m => m.recordConfirmedOrder(order.customerPhone, String(tenantId), order.item))
       .catch(() => {});
 
@@ -503,7 +503,7 @@ async function confirmPayment(shortId, tenantId, adminPhone, tenantDoc, business
     // self-confirm both funnel through this function) — makes revenue reflect money
     // actually confirmed, consistent with how totalOrders is already counted.
     if (order.totalPrice) {
-      import('../core/analytics/analyticsService.js')
+      import('../../core/analytics/analyticsService.js')
         .then(m => m.recordRevenue({
           item:          order.item,
           quantity:      order.quantity,
@@ -575,7 +575,7 @@ async function rejectPayment(shortId, tenantId, adminPhone, tenantDoc, business,
     // that also left the order briefly in the wrong state). We now write the correct
     // final state exactly once, via an atomic findOneAndUpdate keyed off the same
     // guard filter as the read above to close the double-tap TOCTOU race.
-    const { getSession } = await import('../core/sessions/sessionService.js');
+    const { getSession } = await import('../../core/sessions/sessionService.js');
     const custSession = await getSession(order.customerPhone, tenantId).catch(() => null);
     const isCashOrder = custSession?.step === 'AWAIT_ADMIN_CONFIRM';
 
@@ -759,7 +759,7 @@ async function confirmBooking(shortId, tenantId, adminPhone, tenantDoc) {
     // Only fires for salon/barbershop modes (not restaurant, retail, etc.) and only
     // when the business has non-service menuItems available.
     try {
-      const { default: _BizCfg } = await import('../models/BusinessConfig.js');
+      const { default: _BizCfg } = await import('../../models/BusinessConfig.js');
       const _bizFull = await _BizCfg.findOne({ tenantId }).select('businessMode menuItems settings').lean().catch(() => null);
       const _mode = (_bizFull?.businessMode || '').toUpperCase();
       const _isSalonUpsell = _mode === 'SALON' || _mode === 'BARBERSHOP';
