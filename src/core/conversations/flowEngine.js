@@ -65,7 +65,25 @@ export function hasFlow(mode, flowName) {
  * Returns a UIResponse object for dispatch.
  */
 export async function advance({ session, message, business, tenant, isInteractive = false, flowReply = null }) {
+  // [AUDIT-FIX-RECOVERY-2] Both fallback branches below hand the customer a
+  // "Start Over" (SHOW_MENU) button, but previously never wrote anything back
+  // to the DB — the session's old stale `step` (e.g. CONFIRM) survived, so
+  // when the customer actually tapped Start Over, webhookController's
+  // per-step button-validation gate checked that tap against the STALE step's
+  // allow-list (which doesn't include SHOW_MENU) and rejected it with "That
+  // option is no longer available" — a permanent dead end, since every
+  // subsequent tap hit the exact same stale step. Resetting the session here,
+  // before replying, means the next tap is validated against a clean (null)
+  // step instead.
+  const _resetStaleSession = async () => {
+    if (!session?.customerPhone || !session?.tenantId) return;
+    await updateSession(session.customerPhone, session.tenantId, {
+      currentFlow: null, step: null, data: {},
+    }).catch(err => logger.warn('[FlowEngine] _resetStaleSession failed', { err: err.message }));
+  };
+
   if (!session?.currentFlow) {
+    await _resetStaleSession();
     return {
       type:    'buttons',
       body:    '⚠️ No active session. Please tap below to get started.',
@@ -83,6 +101,7 @@ export async function advance({ session, message, business, tenant, isInteractiv
 
   if (!handler) {
     logger.warn(`[FlowEngine] No handler for ${specificKey}`);
+    await _resetStaleSession();
     return {
       type:    'buttons',
       body:    '⚠️ This option is not available right now.',
@@ -101,6 +120,10 @@ export async function advance({ session, message, business, tenant, isInteractiv
     }, business);
   } catch (err) {
     logger.error('[FlowEngine] Handler threw', { flow: specificKey, err: err.message });
+    // [AUDIT-FIX-RECOVERY-3] Same reset as the two fallback branches above —
+    // a handler throwing leaves the session on whatever step it was mid-processing,
+    // just as stale as the other two cases.
+    await _resetStaleSession();
     return {
       type:    'buttons',
       body:    '⚠️ Something went wrong. Please try again.',
