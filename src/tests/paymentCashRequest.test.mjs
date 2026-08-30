@@ -8,6 +8,7 @@ import { buildPaymentInstructionsUI } from '../services/payment/paymentService.j
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const webhookSrc = readFileSync(join(__dirname, '../controllers/webhookController.js'), 'utf8');
+const paymentServiceSrc = readFileSync(join(__dirname, '../services/payment/paymentService.js'), 'utf8');
 const adminSrc = readFileSync(join(__dirname, '../services/admin/adminCommandService.js'), 'utf8');
 
 const baseBusiness = { payment: { currency: 'D', requireProof: true, channels: [{ provider: 'Wave', accountNo: '0551234567' }] } };
@@ -31,6 +32,7 @@ test('PAYMENT_PROOF gate accepts the cash-request button id and admin approval p
   assert.match(webhookSrc, /REQUEST_CASH_PAYMENT/);
   assert.match(webhookSrc, /PAYMENT_PROOF.*REQUEST_CASH_PAYMENT|REQUEST_CASH_PAYMENT.*PAYMENT_PROOF/);
   assert.match(adminSrc, /APPROVE_CASH_|REJECT_CASH_/);
+  assert.match(paymentServiceSrc, /APPROVE_CASH_.*Approve Cash|Approve Cash.*APPROVE_CASH_/);
 });
 
 test('cash-request approval/rejection only operate on a pending request', () => {

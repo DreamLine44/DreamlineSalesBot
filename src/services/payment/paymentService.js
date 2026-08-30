@@ -382,8 +382,8 @@ export async function requestCashPayment(customerPhone, tenantId, tenantDoc) {
           `📋 Reference: *#${order.shortId}*\n\n` +
           `Customer is requesting to pay by cash. Please review and respond.`,
         buttons: [
-          { id: `APPROVE_CASH_${order.shortId}`, title: '✅ Approve' },
-          { id: `REJECT_CASH_${order.shortId}`,  title: '❌ Reject'  },
+          { id: `APPROVE_CASH_${order.shortId}`, title: '✅ Approve Cash' },
+          { id: `REJECT_CASH_${order.shortId}`,  title: '❌ Reject'      },
         ],
       }, tenantDoc).catch(() => {});
     }
