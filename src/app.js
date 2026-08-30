@@ -36,25 +36,25 @@ import crypto            from 'crypto';
 import { connectToDB }           from './config/database.js';
 import logger                    from './config/logger.js';
 import { CLOUDINARY_ENABLED }    from './config/cloudinary.js'; // initialise at boot, not on first request
-import { errorHandler }          from './middleware/errorHandler.js';
-import { createRateLimiter, webhookLimiter, adminLimiter } from './middleware/rateLimiter.js';
-import { requireApiKey, requireSuperAdminKey } from './middleware/authMiddleware.js';
-import { startScheduler, stopScheduler } from './services/schedulerService.js';
+import { errorHandler }          from './middleware/error/errorHandler.js';
+import { createRateLimiter, webhookLimiter, adminLimiter } from './middleware/rate-limiting/rateLimiter.js';
+import { requireApiKey, requireSuperAdminKey } from './middleware/auth/authMiddleware.js';
+import { startScheduler, stopScheduler } from './services/shared/sharedFeature.js';
 import { provisionBookingDateFlowsOnStartup } from './services/booking/bookingFeature.js';
 import { aiHealthCheck }         from './core/ai/providers/aiRouter.js';
 import { registerAllModules }    from './core/shared/moduleRegistry.js';
 import { getSupportedModes }     from './config/modes.js';
 
 // Routes
-import webhookRoutes     from './routes/webhookRoutes.js';
-import { WEBHOOK_BUILD_MARKER } from './controllers/webhookController.js';
-import simulateRoutes    from './routes/simulateRoutes.js';
-import businessRoutes    from './routes/businessRoutes.js';
-import dashboardRoutes   from './routes/dashboardRoutes.js';
-import adminUserRoutes   from './routes/adminUserRoutes.js';
-import tenantRoutes      from './routes/tenantRoutes.js';
-import adminRoutes                 from './routes/adminRoutes.js';
-import whatsappOnboardingRoutes from './routes/whatsappOnboardingRoutes.js';
+import webhookRoutes     from './routes/webhook/webhookRoutes.js';
+import { WEBHOOK_BUILD_MARKER } from './controllers/webhook/webhookController.js';
+import simulateRoutes    from './routes/simulate/simulateRoutes.js';
+import businessRoutes    from './routes/business/businessRoutes.js';
+import dashboardRoutes   from './routes/dashboard/dashboardRoutes.js';
+import adminUserRoutes   from './routes/admin/adminUserRoutes.js';
+import tenantRoutes      from './routes/tenant/tenantRoutes.js';
+import adminRoutes                 from './routes/admin/adminRoutes.js';
+import whatsappOnboardingRoutes from './routes/whatsapp/whatsappOnboardingRoutes.js';
 
 const app        = express();
 const isProduction = process.env.NODE_ENV === 'production';

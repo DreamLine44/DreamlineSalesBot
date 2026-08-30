@@ -146,7 +146,7 @@ import { decryptToken, fingerprintSecret }           from './tenantController.js
 // [FIX-IMPORT-1] handlePostFlowMessage was called at step 14 but never imported â€”
 // every postFlowAck message fell through to the default-case "unknown ackCtx" path in
 // postFlowHandler.js, sending a generic menu instead of the correct contextual reply.
-import { handlePostFlowMessage }                     from '../services/postFlowHandler.js';
+import { handlePostFlowMessage }                     from '../services/shared/sharedFeature.js';
 // [FIX-AOR-1] resolveActiveOrder is the single authoritative gate for "customer has an
 // active order" context. It was built and documented but never wired into the controller.
 // Without this import, every message from a customer with a confirmed/preparing order

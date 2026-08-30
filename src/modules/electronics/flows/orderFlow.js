@@ -51,7 +51,7 @@ import { findBestMatch }  from '../../../utils/matchEngine.js';
 import { saveOrder }      from '../../../services/order/orderService.js';
 import { parseQuantity }  from '../../../utils/parseQuantity.js';
 import { trackOrderAnalytics } from '../../../core/analytics/analyticsService.js';
-import { buildPaymentInstructionsUI } from '../../../services/paymentService.js';
+import { buildPaymentInstructionsUI } from '../../../services/payment/paymentFeature.js';
 import { dispatchMessage } from '../../../core/whatsapp/dispatcher.js';
 import Order from '../../../models/Order.js';
 import {

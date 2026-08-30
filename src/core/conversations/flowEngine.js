@@ -17,7 +17,7 @@
 
 import { updateSession, getSession } from '../sessions/sessionService.js';
 import logger from '../../config/logger.js';
-import { EXPRESSION_TURN_BUDGET } from '../../services/postFlowHandler.js';
+import { EXPRESSION_TURN_BUDGET } from '../../services/shared/sharedFeature.js';
 import { suppressLegacyMenuOption } from '../../modules/catalog/waCatalogConfig.js';
 
 // ── Registered flow handlers ──────────────────────────────────────────────────

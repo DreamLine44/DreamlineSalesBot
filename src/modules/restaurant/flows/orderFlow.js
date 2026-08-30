@@ -55,7 +55,7 @@ import { parseQuantity }    from '../../../utils/parseQuantity.js';
 import { saveOrder }        from '../../../services/order/orderService.js';
 import { trackOrderAnalytics } from '../../../core/analytics/analyticsService.js';
 import { dispatchText }     from '../../../core/whatsapp/dispatcher.js';
-import { buildPaymentInstructionsUI } from '../../../services/paymentService.js';
+import { buildPaymentInstructionsUI } from '../../../services/payment/paymentFeature.js';
 import { buildWhatsAppImageUrl }       from '../../../config/cloudinary.js';
 import { itemLabel }        from '../../../utils/itemLabel.js';
 // [AUDIT-FIX-XZ-REMOVE] isCatalogEnabled â€” see the two call sites below for
