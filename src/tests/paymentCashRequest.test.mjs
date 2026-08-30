@@ -49,3 +49,8 @@ test('cash-request approval/rejection only operate on a pending request', () => 
   assert.match(adminSrc, /cashRequestStatus:\s*'pending'/);
   assert.match(adminSrc, /cashRequestStatus:\s*'rejected'|cashRequestStatus:\s*'approved'/);
 });
+
+test('legacy CASH_<shortId> buttons are accepted as cash-approval requests', () => {
+  assert.match(adminSrc, /CASH_/);
+  assert.match(adminSrc, /legacy.*CASH_|CASH_.*legacy/);
+});

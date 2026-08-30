@@ -157,6 +157,10 @@ export async function handleAdminButtonReply(buttonId, tenantId, adminPhone, ten
 
   if (upper.startsWith('APPROVE_'))      return confirmPayment(upper.replace('APPROVE_', ''),      tenantId, adminPhone, tenantDoc, business);
   if (upper.startsWith('REJECT_'))       return rejectPayment(upper.replace('REJECT_', ''),        tenantId, adminPhone, tenantDoc, business);
+  // [LEGACY-CASH-BTN] Older builds dispatched CASH_<shortId> button IDs instead of
+  // APPROVE_CASH_<shortId>. Keep accepting that legacy alias so a stale queued button
+  // does not fall through to the generic 'No order found' branch.
+  if (upper.startsWith('CASH_'))         return approveCashRequest(upper.replace('CASH_', ''),      tenantId, adminPhone, tenantDoc, business);
   if (upper.startsWith('APPROVE_CASH_')) return approveCashRequest(upper.replace('APPROVE_CASH_', ''), tenantId, adminPhone, tenantDoc, business);
   if (upper.startsWith('REJECT_CASH_'))  return rejectCashRequest(upper.replace('REJECT_CASH_', ''),  tenantId, adminPhone, tenantDoc, business);
   if (upper.startsWith('CONFIRM_BOOK_')) return confirmBooking(upper.replace('CONFIRM_BOOK_', ''), tenantId, adminPhone, tenantDoc);

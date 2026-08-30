@@ -4,11 +4,11 @@
  * Single source of truth for "does this customer have an active order, and
  * if so, what should the bot say right now?"
  *
- * Called by webhookController at step 8.6 ÔÇö BEFORE intent detection,
+ * Called by webhookController at step 8.6 – BEFORE intent detection,
  * BEFORE AI responses, BEFORE welcome menus.
  *
  * Resolution priority (highest unresolved state wins):
- *   1. PAYMENT_REJECTED       ÔÇö paymentStatus = 'rejected'
+ *   1. PAYMENT_REJECTED       – paymentStatus = 'rejected'
  *   2. PAYMENT_PENDING        ÔÇö paymentStatus = 'proof_received' | 'payment_pending_verification'
  *   3. PAYMENT_VERIFIED       ÔÇö paymentStatus in ['confirmed','self_confirmed','paid'] + status = 'confirmed'
  *   4. PREPARING              ÔÇö status = 'preparing'
@@ -127,7 +127,7 @@ export async function resolveActiveOrder(customerPhone, tenantId, business = nul
     return _resolveState(order, business, session);
 
   } catch (err) {
-    logger.warn('[ActiveOrderResolver] DB error ÔÇö falling through to normal routing', {
+    logger.warn('[ActiveOrderResolver] DB error – falling through to normal routing', {
       customerPhone, err: err.message,
     });
     return _noActiveOrder();
@@ -171,15 +171,15 @@ const _resolveState = (order, business, session) => {
       uiResponse: {
         type: 'buttons',
         body:
-          `ÔØî *Payment Not Approved*\n\n` +
-          `Order *#${shortId}* ÔÇö ${itemSummary}` +
-          (priceStr ? `\n­ƒÆ░ Amount: *${priceStr}*` : '') +
+          `❌ *Payment Not Approved*\n\n` +
+          `Order *#${shortId}* – ${itemSummary}` +
+          (priceStr ? `\n💰 Amount: *${priceStr}*` : '') +
           (reason ? `\n\n*Reason:* ${reason}` : `\n\n_Please contact us for more details._`) +
           `\n\nWhat would you like to do?`,
         buttons: [
-          { id: 'RESEND_PROOF', title: '­ƒô© Upload New Proof' },
-          { id: 'SUPPORT',      title: '­ƒÆ¼ Contact Business' },
-          { id: 'CANCEL',       title: 'ÔØî Cancel Order'     },
+          { id: 'RESEND_PROOF', title: '📸 Upload New Proof' },
+          { id: 'SUPPORT',      title: '☎️ Contact Business' },
+          { id: 'CANCEL',       title: '❌ Cancel Order'     },
         ],
       },
     };
@@ -197,14 +197,14 @@ const _resolveState = (order, business, session) => {
       uiResponse: {
         type: 'buttons',
         body:
-          `ÔÅ│ *Payment Under Review*\n\n` +
-          `Order *#${shortId}* ÔÇö ${itemSummary}` +
-          (priceStr ? `\n­ƒÆ░ Amount: *${priceStr}*` : '') +
-          (submittedAt ? `\n­ƒôà Screenshot received: *${submittedAt}*` : '') +
-          `\n\nOur team is reviewing your payment. We'll notify you once it's confirmed. ­ƒÖÅ`,
+          `⏳ *Payment Under Review*\n\n` +
+          `Order *#${shortId}* – ${itemSummary}` +
+          (priceStr ? `\n💰 Amount: *${priceStr}*` : '') +
+          (submittedAt ? `\n📷 Screenshot received: *${submittedAt}*` : '') +
+          `\n\nOur team is reviewing your payment. We'll notify you once it's confirmed. 🎉`,
         buttons: [
-          { id: 'TRACK_ORDER', title: '­ƒöì Check Status'    },
-          { id: 'SUPPORT',     title: '­ƒÆ¼ Contact Business'},
+          { id: 'TRACK_ORDER', title: '📍 Check Status'    },
+          { id: 'SUPPORT',     title: '☎️ Contact Business'},
         ],
       },
     };
@@ -240,16 +240,16 @@ const _resolveState = (order, business, session) => {
       uiResponse: {
         type: 'buttons',
         body:
-          `Ô£à *Your order is ready${custName}!*\n\n` +
-          `Order *#${shortId}* ÔÇö ${itemSummary}` +
-          (priceStr ? `\n­ƒÆ░ Amount: *${priceStr}*` : '') +
-          `\n\nPlease come collect at the counter! ­ƒÿè`,
+          `✅ *Your order is ready${custName}!*\n\n` +
+          `Order *#${shortId}* – ${itemSummary}` +
+          (priceStr ? `\n💰 Amount: *${priceStr}*` : '') +
+          `\n\nPlease come collect at the counter! 🎉`,
         // [FIX-READY-CARD] COLLECTED_ button lets customer confirm pickup in one tap.
         // Previously only 'Contact Business' and 'Order Again' were shown ÔÇö no way to
         // acknowledge collection, so orders stayed in 'ready' state forever in the DB.
         buttons: [
-          { id: shortId ? `COLLECTED_${shortId}` : 'SUPPORT', title: 'Ô£à Collected ÔÇö Thanks!' },
-          { id: 'SUPPORT', title: '­ƒÆ¼ Contact Business' },
+          { id: shortId ? `COLLECTED_${shortId}` : 'SUPPORT', title: '✅ Collected – Thanks!' },
+          { id: 'SUPPORT', title: '☎️ Contact Business' },
         ],
       },
     };
@@ -264,12 +264,12 @@ const _resolveState = (order, business, session) => {
       uiResponse: {
         type: 'buttons',
         body:
-          `­ƒÜù *Your order is on its way${custName}!*\n\n` +
-          `Order *#${shortId}* ÔÇö ${itemSummary}` +
-          `\n\nSit tight ÔÇö your delivery is en route! ­ƒÖÅ`,
+          `🚚 *Your order is on its way${custName}!*\n\n` +
+          `Order *#${shortId}* – ${itemSummary}` +
+          `\n\nSit tight – your delivery is en route! 🎉`,
         buttons: [
-          { id: 'SUPPORT', title: '­ƒÆ¼ Contact Business' },
-          { id: 'ORDER',   title: '­ƒøÆ Order Again'      },
+          { id: 'SUPPORT', title: '☎️ Contact Business' },
+          { id: 'ORDER',   title: '🛒 Order Again'      },
         ],
       },
     };
@@ -289,12 +289,12 @@ const _resolveState = (order, business, session) => {
         uiResponse: {
           type: 'buttons',
           body:
-            `­ƒÄë *Your order has been delivered${custName}!*\n\n` +
-            `Order *#${shortId}* ÔÇö ${itemSummary}\n\n` +
-            `Thank you for ordering with us! We hope you enjoy it. ­ƒÿè`,
+            `✨ *Your order has been delivered${custName}!*\n\n` +
+            `Order *#${shortId}* – ${itemSummary}\n\n` +
+            `Thank you for ordering with us! We hope you enjoy it. 🎉`,
           buttons: [
-            { id: 'ORDER',   title: '­ƒøÆ Order Again'     },
-            { id: 'SUPPORT', title: '­ƒÆ¼ Contact Business' },
+            { id: 'ORDER',   title: '🛒 Order Again'     },
+            { id: 'SUPPORT', title: '☎️ Contact Business' },
           ],
         },
       };
@@ -314,22 +314,22 @@ const _preparingCard = (order, business, session, stage) => {
   const priceStr   = order.totalPrice ? `${currency}${formatMoney(order.totalPrice)}` : null;
 
   const statusLine = stage === 'preparing'
-    ? `­ƒƒí Status: *Preparing*`
-    : `Ô£à Status: *Payment Confirmed*`;
+    ? `🍽️ Status: *Preparing*`
+    : `✅ Status: *Payment Confirmed*`;
 
   return {
     type: 'buttons',
     body:
-      `­ƒæï *Welcome back${custName}!*\n\n` +
+      `👋 *Welcome back${custName}!*\n\n` +
       `Your order *#${shortId}* is currently in progress.\n\n` +
-      `­ƒì¢ ${itemSummary}` +
-      (priceStr ? `\n­ƒÆ░ *${priceStr}*` : '') +
+      `📦 ${itemSummary}` +
+      (priceStr ? `\n💰 *${priceStr}*` : '') +
       `\n${statusLine}\n\n` +
-      `We'll notify you when it's ready. ­ƒÖÅ`,
+      `We'll notify you when it's ready. 🎉`,
     buttons: [
-      { id: 'TRACK_ORDER', title: '­ƒöì Track Order'      },
-      { id: 'ORDER',       title: '­ƒøÆ Order Again'      },
-      { id: 'SUPPORT',     title: '­ƒÆ¼ Contact Business' },
+      { id: 'TRACK_ORDER', title: '📍 Track Order'      },
+      { id: 'ORDER',       title: '🛒 Order Again'      },
+      { id: 'SUPPORT',     title: '☎️ Contact Business' },
     ],
   };
 }
@@ -345,8 +345,8 @@ const _multipleOrders = (orders, business) => {
 
   const rows = displayOrders.map(o => ({
     id:          `ORDER_STATUS_${o.shortId || String(o._id).slice(-6).toUpperCase()}`,
-    title:       `#${o.shortId || '???'} ÔÇö ${(o.item || 'Order').slice(0, 24)}`,
-    description: `${_statusLabel(o.status)} ┬À ${_paymentLabel(o.paymentStatus)}`,
+    title:       `#${o.shortId || '???'} – ${(o.item || 'Order').slice(0, 24)}`,
+    description: `${_statusLabel(o.status)} • ${_paymentLabel(o.paymentStatus)}`,
   }));
 
   const overflowNote = orders.length > MAX_ORDER_ROWS
@@ -360,7 +360,7 @@ const _multipleOrders = (orders, business) => {
     shouldIntercept: true,
     uiResponse: {
       type: 'list',
-      body: `­ƒôª You have *${orders.length} active orders*.${overflowNote}\n\nWhich one would you like to check?`,
+      body: `📋 You have *${orders.length} active orders*.${overflowNote}\n\nWhich one would you like to check?`,
       // [FIX-AOR-BTNLABEL] Was 'buttonText' ÔÇö the dispatcher's list builder only reads
       // ui.button / ui.buttonLabel (see core/whatsapp/dispatcher.js), so this custom
       // label was silently ignored and every multiple-orders list rendered with the
@@ -375,7 +375,7 @@ const _multipleOrders = (orders, business) => {
           title: 'Actions',
           rows: [{
             id:          'CANCEL_ALL',
-            title:       'ÔØî Cancel All Orders',
+            title:       '❌ Cancel All Orders',
             description: 'Cancel all your pending and confirmed orders',
           }],
         },
