@@ -39,7 +39,13 @@ import { startFlow, cancelFlow } from './flowEngine.js';
 import { updateSession }         from '../sessions/sessionService.js';
 import { dispatchText, dispatchMessage }          from '../whatsapp/dispatcher.js';
 import { getModeConfig }         from '../../config/modes.js';
-import { withCatalogWelcomeOption, shouldShowCatalogButton, isCatalogEnabled, hasSellableProducts, suppressLegacyMenuOption } from '../../modules/catalog/waCatalogConfig.js';
+import {
+  withCatalogWelcomeOption,
+  shouldShowCatalogButton,
+  isCatalogEnabled,
+  hasSellableProducts,
+  suppressLegacyMenuOption,
+} from '../../modules/catalog/catalogFeature.js';
 import { buildOptionsReply } from '../shared/uiOptionsHelper.js';
 import logger from '../../config/logger.js';
 import { formatMoney } from '../../utils/formatCurrency.js';

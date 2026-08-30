@@ -1,37 +1,37 @@
-/**
+﻿/**
  * modules/electronics/flows/orderFlow.js
  *
  * Full ORDER, SPEC_REQUEST, COMPARE, and WARRANTY flows for the Electronics module.
  *
- * ── Why electronics is different ────────────────────────────────────────────
+ * â”€â”€ Why electronics is different â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
  * A restaurant customer knows what they want (jollof rice, a burger).
  * An electronics customer starts with a CATEGORY ("phones", "laptops") then
  * narrows to a model. They want to READ SPECS before committing, and often need
  * compatibility / warranty info. Pickup vs delivery is a real choice because
  * electronics can be heavy and customers want to inspect before collecting.
  *
- * ── Flow steps ────────────────────────────────────────────────────────────────
+ * â”€â”€ Flow steps â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
  *   ORDER:
- *     BROWSE_CATEGORY → SELECT_ITEM → SUGGEST_CONFIRM → ITEM_DETAIL
- *       → QUANTITY → FULFILMENT → CONFIRM → [PAYMENT?] → DONE
+ *     BROWSE_CATEGORY â†’ SELECT_ITEM â†’ SUGGEST_CONFIRM â†’ ITEM_DETAIL
+ *       â†’ QUANTITY â†’ FULFILMENT â†’ CONFIRM â†’ [PAYMENT?] â†’ DONE
  *   SPEC_REQUEST:
  *     SPEC_QUESTION (open AI Q&A, no purchase)
  *   COMPARE:
- *     SELECT_FIRST → SELECT_SECOND → SHOW_COMPARISON
+ *     SELECT_FIRST â†’ SELECT_SECOND â†’ SHOW_COMPARISON
  *   WARRANTY:
  *     WARRANTY_QUERY (AI-powered after-sales)
  *
- * ── Fixes applied ─────────────────────────────────────────────────────────────
+ * â”€â”€ Fixes applied â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
  * [FIX-1] All dynamic imports (uiBuilders, dispatcher, paymentService, Order, flowEngine)
  *         moved to static top-level imports. Dynamic imports inside switch cases created
  *         unnecessary async overhead and masked missing-export errors until runtime.
  *
  * [FIX-2] CONTACT_* button ID removed from handleWarranty. The webhookController
- *         has no CONTACT_* handler — tapping it produced a silent no-op. Replaced
+ *         has no CONTACT_* handler â€” tapping it produced a silent no-op. Replaced
  *         with SUPPORT which is already handled by the core moduleRouter.
  *
- * [FIX-3] QUESTION action not separately registered for ELECTRONICS — moduleRegistry
- *         now registers ELECTRONICS:QUESTION → handleSpecRequest so any "❓ Ask a
+ * [FIX-3] QUESTION action not separately registered for ELECTRONICS â€” moduleRegistry
+ *         now registers ELECTRONICS:QUESTION â†’ handleSpecRequest so any "â“ Ask a
  *         Question" tap or typed question in ELECTRONICS mode reaches the right handler.
  *         (Registration is in moduleRegistry.js, not here.)
  *
@@ -39,7 +39,7 @@
  *         flow's ITEM_DETAIL step using advance() instead of calling buildItemDetail
  *         manually. This ensures the flowEngine's step tracking stays in sync.
  *
- * [FIX-5] Warranty keyword routing — handleWarranty is now also reachable by the
+ * [FIX-5] Warranty keyword routing â€” handleWarranty is now also reachable by the
  *         SPEC_REQUEST flow via typed keywords ("warranty", "repair", "return").
  *         The SPEC_REQUEST handler detects these keywords and redirects to WARRANTY.
  */
@@ -48,7 +48,7 @@ import { updateSession }  from '../../../core/sessions/sessionService.js';
 import { completeFlow, startFlow } from '../../../core/conversations/flowEngine.js';
 import { getAIReply }     from '../../../core/ai/providers/aiRouter.js';
 import { findBestMatch }  from '../../../utils/matchEngine.js';
-import { saveOrder }      from '../../../services/orderService.js';
+import { saveOrder }      from '../../../services/order/orderService.js';
 import { parseQuantity }  from '../../../utils/parseQuantity.js';
 import { trackOrderAnalytics } from '../../../core/analytics/analyticsService.js';
 import { buildPaymentInstructionsUI } from '../../../services/paymentService.js';
@@ -67,16 +67,16 @@ import { itemLabel } from '../../../utils/itemLabel.js';
 import { formatMoney } from '../../../utils/formatCurrency.js';
 import logger from '../../../config/logger.js';
 
-// ── Normalise text for fuzzy comparisons ─────────────────────────────────────
+// â”€â”€ Normalise text for fuzzy comparisons â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 const norm = (s = '') =>
   s.toLowerCase().replace(/[^\w\s]/g, ' ').replace(/\s+/g, ' ').trim();
 
-// ── Keywords that should redirect to WARRANTY flow instead of spec Q&A ────────
+// â”€â”€ Keywords that should redirect to WARRANTY flow instead of spec Q&A â”€â”€â”€â”€â”€â”€â”€â”€
 const WARRANTY_RE = /\b(warrant(y|ies)|repair|service\s+cent(er|re)|return|refund|replace|broken|damaged|fault|defect|spare\s+parts?|after.?sales?)\b/i;
 
-// ─────────────────────────────────────────────────────────────────────────────
-// handleElectronicsOrder — main ORDER flow
-// ─────────────────────────────────────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// handleElectronicsOrder â€” main ORDER flow
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 export async function handleElectronicsOrder({
   session, message, business, tenant, isInteractive = false,
@@ -88,19 +88,19 @@ export async function handleElectronicsOrder({
   const menu  = (business?.menuItems || []).filter(i => i.available !== false);
   const currency = business?.payment?.currency || 'D';
 
-  // ── Empty catalogue guard ─────────────────────────────────────────────────
+  // â”€â”€ Empty catalogue guard â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   if (!menu.length) {
     await updateSession(session.customerPhone, session.tenantId, {
       currentFlow: null, step: null, data: {},
     });
     return {
       type:    'buttons',
-      body:    '⚠️ Our catalogue is currently being updated. Please check back soon or contact us directly.',
-      buttons: [{ id: 'SUPPORT', title: '💬 Contact Us' }],
+      body:    'âš ï¸ Our catalogue is currently being updated. Please check back soon or contact us directly.',
+      buttons: [{ id: 'SUPPORT', title: 'ðŸ’¬ Contact Us' }],
     };
   }
 
-  // ── INIT (message === null — startFlow called us with null to get first UI) ─
+  // â”€â”€ INIT (message === null â€” startFlow called us with null to get first UI) â”€
   if (message === null) {
     await updateSession(session.customerPhone, session.tenantId, {
       step: 'BROWSE_CATEGORY', data: {}, menuViewed: false,
@@ -109,7 +109,7 @@ export async function handleElectronicsOrder({
     if (categories.length > 1) {
       return buildCategoryUI(categories, business);
     }
-    // Single category or none — go straight to product list
+    // Single category or none â€” go straight to product list
     await updateSession(session.customerPhone, session.tenantId, {
       step: 'SELECT_ITEM', menuViewed: true,
     });
@@ -118,11 +118,11 @@ export async function handleElectronicsOrder({
 
   switch (step) {
 
-    // ── BROWSE_CATEGORY ──────────────────────────────────────────────────────
+    // â”€â”€ BROWSE_CATEGORY â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     case 'BROWSE_CATEGORY': {
       const categories = _getCategories(menu);
 
-      // CAT_PHONES, CAT_LAPTOPS, etc. — these are flow-internal button IDs
+      // CAT_PHONES, CAT_LAPTOPS, etc. â€” these are flow-internal button IDs
       // registered in FLOW_PASSTHROUGH_IDS so they always reach here
       if (/^CAT_/i.test(raw)) {
         const catKey  = raw.slice(4).replace(/_/g, ' ').toLowerCase();
@@ -138,7 +138,7 @@ export async function handleElectronicsOrder({
         return buildProductList(filtered.length ? filtered : menu, business, catName);
       }
 
-      // Typed text — product search or category name
+      // Typed text â€” product search or category name
       if (clean.length >= 2) {
         // Category name typed? (e.g. "phones", "accessories")
         const catMatch = categories.find(
@@ -156,7 +156,7 @@ export async function handleElectronicsOrder({
           return buildProductList(filtered, business, catMatch);
         }
 
-        // Product name typed — fuzzy match
+        // Product name typed â€” fuzzy match
         const { item, confidenceLevel } = findBestMatch(menu, clean);
         if (confidenceLevel === 'HIGH' || confidenceLevel === 'MEDIUM') {
           await updateSession(session.customerPhone, session.tenantId, {
@@ -167,7 +167,7 @@ export async function handleElectronicsOrder({
           return buildItemDetail(item, currency);
         }
 
-        // No confident match — AI fallback
+        // No confident match â€” AI fallback
         const aiReply = await getAIReply({
           customerMessage: raw, business, session, intent: 'PRODUCT_SEARCH',
         });
@@ -175,8 +175,8 @@ export async function handleElectronicsOrder({
           type:    'buttons',
           body:    aiReply || `I couldn't find *"${raw}"* in our catalogue. Browse by category:`,
           buttons: [
-            { id: 'ORDER',     title: '🛒 Browse Products' },
-            { id: 'SHOW_MENU', title: '🔄 Start Over'      },
+            { id: 'ORDER',     title: 'ðŸ›’ Browse Products' },
+            { id: 'SHOW_MENU', title: 'ðŸ”„ Start Over'      },
           ],
         };
       }
@@ -186,7 +186,7 @@ export async function handleElectronicsOrder({
         : buildProductList(menu, business);
     }
 
-    // ── SELECT_ITEM ──────────────────────────────────────────────────────────
+    // â”€â”€ SELECT_ITEM â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     case 'SELECT_ITEM': {
       const filteredMenu = data.category
         ? menu.filter(i => (i.category || 'General').toLowerCase() === data.category.toLowerCase())
@@ -200,7 +200,7 @@ export async function handleElectronicsOrder({
       }
 
       // Numeric selection from list
-      // [AUDIT-FIX-PARSEINT] parseInt("2 red shirts", 10) === 2, NOT NaN — so any
+      // [AUDIT-FIX-PARSEINT] parseInt("2 red shirts", 10) === 2, NOT NaN â€” so any
       // message merely STARTING with a digit silently hijacked the menu index
       // once menuViewed was true (the normal case). Only trust the parsed index
       // for a bare number or an interactive tap; everything else falls through
@@ -220,10 +220,10 @@ export async function handleElectronicsOrder({
           });
           return {
             type:    'buttons',
-            body:    `🤔 Did you mean *${matched.name}*?`,
+            body:    `ðŸ¤” Did you mean *${matched.name}*?`,
             buttons: [
-              { id: 'CONFIRM_SUGGESTION', title: `✅ Yes` },
-              { id: 'SHOW_MENU',          title: '🔄 Start Over' },
+              { id: 'CONFIRM_SUGGESTION', title: `âœ… Yes` },
+              { id: 'SHOW_MENU',          title: 'ðŸ”„ Start Over' },
             ],
           };
         }
@@ -237,8 +237,8 @@ export async function handleElectronicsOrder({
           type:    'buttons',
           body:    aiReply || `I couldn't find that product. Here's what we carry:`,
           buttons: [
-            { id: 'SHOW_MENU',    title: '📋 Browse Products' },
-            { id: 'SPEC_REQUEST', title: '❓ Ask a Question'  },
+            { id: 'SHOW_MENU',    title: 'ðŸ“‹ Browse Products' },
+            { id: 'SPEC_REQUEST', title: 'â“ Ask a Question'  },
           ],
         };
       }
@@ -251,9 +251,9 @@ export async function handleElectronicsOrder({
       return buildItemDetail(item, currency);
     }
 
-    // ── SUGGEST_CONFIRM ──────────────────────────────────────────────────────
+    // â”€â”€ SUGGEST_CONFIRM â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     // Customer is confirming or rejecting a fuzzy-matched product suggestion.
-    // CONFIRM_SUGGESTION button is in FLOW_PASSTHROUGH_IDS → always reaches here.
+    // CONFIRM_SUGGESTION button is in FLOW_PASSTHROUGH_IDS â†’ always reaches here.
     case 'SUGGEST_CONFIRM': {
       if (/^(yes|y|yep|yeah|confirm|ok|okay|confirm_suggestion)$/i.test(clean)) {
         const item = data.suggestedItem
@@ -267,7 +267,7 @@ export async function handleElectronicsOrder({
           return buildItemDetail(item, currency);
         }
       }
-      // Rejected or no item found — back to browse
+      // Rejected or no item found â€” back to browse
       const categories = _getCategories(menu);
       await updateSession(session.customerPhone, session.tenantId, {
         step: 'BROWSE_CATEGORY', data: { ...data, suggestedItem: undefined, suggestion: undefined },
@@ -277,13 +277,13 @@ export async function handleElectronicsOrder({
         : buildProductList(menu, business);
     }
 
-    // ── ITEM_DETAIL ──────────────────────────────────────────────────────────
+    // â”€â”€ ITEM_DETAIL â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     // Customer is viewing the spec card. CONFIRM_ITEM ("Order This") is in
     // FLOW_PASSTHROUGH_IDS so it always reaches here instead of intent detection.
     case 'ITEM_DETAIL': {
-      // [FIX-P2] SPEC_REQUEST / WARRANTY button taps — "❓ Ask a Question" / "🛡 Warranty"
+      // [FIX-P2] SPEC_REQUEST / WARRANTY button taps â€” "â“ Ask a Question" / "ðŸ›¡ Warranty"
       // on the item detail card. Previously the raw button ID string reached the text
-      // branch (length ≥ 3) and was sent verbatim to the AI, producing nonsense.
+      // branch (length â‰¥ 3) and was sent verbatim to the AI, producing nonsense.
       // Fix: detect and dispatch to the correct flow handler so item context is preserved.
       if (raw.toUpperCase() === 'SPEC_REQUEST') {
         return startFlow({ flowName: 'SPEC_REQUEST', session, business, tenant });
@@ -299,13 +299,13 @@ export async function handleElectronicsOrder({
         return {
           type: 'buttons',
           body:
-            `📱 *${data.item?.name}*\n\n` +
+            `ðŸ“± *${data.item?.name}*\n\n` +
             `How many units would you like?\n` +
             `_(Maximum: ${MAX_QTY} per order)_`,
           buttons: [
-            { id: 'QTY_1', title: '1️⃣  1 unit'  },
-            { id: 'QTY_2', title: '2️⃣  2 units' },
-            { id: 'QTY_3', title: '3️⃣  3 units' },
+            { id: 'QTY_1', title: '1ï¸âƒ£  1 unit'  },
+            { id: 'QTY_2', title: '2ï¸âƒ£  2 units' },
+            { id: 'QTY_3', title: '3ï¸âƒ£  3 units' },
           ],
           footer: 'Or type any number',
         };
@@ -318,37 +318,37 @@ export async function handleElectronicsOrder({
         });
         return {
           type: 'buttons',
-          body: aiReply || `Great question! Our team will be happy to assist. 📱`,
+          body: aiReply || `Great question! Our team will be happy to assist. ðŸ“±`,
           buttons: [
-            { id: 'CONFIRM_ITEM', title: '🛒 Order This'  },
-            { id: 'SHOW_MENU',    title: '🔄 Browse More' },
+            { id: 'CONFIRM_ITEM', title: 'ðŸ›’ Order This'  },
+            { id: 'SHOW_MENU',    title: 'ðŸ”„ Browse More' },
           ],
         };
       }
 
-      // Empty/emoji — re-show the spec card
+      // Empty/emoji â€” re-show the spec card
       return buildItemDetail(data.item || {}, currency);
     }
 
-    // ── QUANTITY ─────────────────────────────────────────────────────────────
+    // â”€â”€ QUANTITY â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     case 'QUANTITY': {
       const QTY_SHORTCUTS = { QTY_1: 1, QTY_2: 2, QTY_3: 3 };
-      // QTY_* IDs are in FLOW_PASSTHROUGH_IDS globally — they reach here correctly
+      // QTY_* IDs are in FLOW_PASSTHROUGH_IDS globally â€” they reach here correctly
       const qty     = QTY_SHORTCUTS[raw.toUpperCase()] ?? parseQuantity(raw);
       const MAX_QTY = business?.settings?.maxOrderQuantity || 10;
 
       if (!qty || qty < 1) {
         return {
           type:    'buttons',
-          body:    `Please type the number of units you'd like for *${data.item?.name}*.\n\n_(e.g. *1*, *2*, *three* — maximum ${MAX_QTY})_`,
-          buttons: [{ id: 'CANCEL', title: '❌ Cancel' }],
+          body:    `Please type the number of units you'd like for *${data.item?.name}*.\n\n_(e.g. *1*, *2*, *three* â€” maximum ${MAX_QTY})_`,
+          buttons: [{ id: 'CANCEL', title: 'âŒ Cancel' }],
         };
       }
       if (qty > MAX_QTY) {
         return {
           type:    'buttons',
-          body:    `⚠️ Maximum order quantity is *${MAX_QTY}*. Please enter a number between *1* and *${MAX_QTY}*.`,
-          buttons: [{ id: 'CANCEL', title: '❌ Cancel' }],
+          body:    `âš ï¸ Maximum order quantity is *${MAX_QTY}*. Please enter a number between *1* and *${MAX_QTY}*.`,
+          buttons: [{ id: 'CANCEL', title: 'âŒ Cancel' }],
         };
       }
 
@@ -380,17 +380,17 @@ export async function handleElectronicsOrder({
       return {
         type: 'buttons',
         body:
-          `📦 *${qty}× ${itemLabel(data.item, data.variant)}*\n` +
-          (total ? `💰 *${currency}${formatMoney(total)}*\n` : '') +
+          `ðŸ“¦ *${qty}Ã— ${itemLabel(data.item, data.variant)}*\n` +
+          (total ? `ðŸ’° *${currency}${formatMoney(total)}*\n` : '') +
           `\nHow would you like to receive your order?`,
         buttons: [
-          { id: 'PICKUP',   title: '🏪 Pick Up In-Store' },
-          { id: 'DELIVERY', title: '🚚 Delivery'          },
+          { id: 'PICKUP',   title: 'ðŸª Pick Up In-Store' },
+          { id: 'DELIVERY', title: 'ðŸšš Delivery'          },
         ],
       };
     }
 
-    // ── FULFILMENT ───────────────────────────────────────────────────────────
+    // â”€â”€ FULFILMENT â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     // PICKUP and DELIVERY button IDs are already in FLOW_PASSTHROUGH_IDS (retail module)
     case 'FULFILMENT': {
       let fulfilment = null;
@@ -402,8 +402,8 @@ export async function handleElectronicsOrder({
           type:    'buttons',
           body:    'Please choose how you\'d like to receive your order:',
           buttons: [
-            { id: 'PICKUP',   title: '🏪 Pick Up In-Store' },
-            { id: 'DELIVERY', title: '🚚 Delivery'          },
+            { id: 'PICKUP',   title: 'ðŸª Pick Up In-Store' },
+            { id: 'DELIVERY', title: 'ðŸšš Delivery'          },
           ],
         };
       }
@@ -417,12 +417,12 @@ export async function handleElectronicsOrder({
       });
     }
 
-    // ── CONFIRM ──────────────────────────────────────────────────────────────
+    // â”€â”€ CONFIRM â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     case 'CONFIRM': {
-      // [FIX-DUALLAYER-CONFIRM] See core/shared/confirmationMatcher.js — the
+      // [FIX-DUALLAYER-CONFIRM] See core/shared/confirmationMatcher.js â€” the
       // bare exact-word regex missed compound phrasing like "yes please" /
       // "sounds good" / "go ahead". Widened via the shared sync regex guard
-      // (no AI here — this step has no cart-modification path to protect,
+      // (no AI here â€” this step has no cart-modification path to protect,
       // but AI adds latency this simple gate doesn't need).
       const { isAffirmative: _isAffirmativeConfirm } = await import('../../../core/shared/confirmationMatcher.js');
       const isConfirm = /^(yes|y|confirm|ok|okay|sure|place|confirmed)$/i.test(clean) ||
@@ -436,7 +436,7 @@ export async function handleElectronicsOrder({
 
       const payment = business?.payment;
 
-      // ── Save order ────────────────────────────────────────────────────────
+      // â”€â”€ Save order â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
       let savedOrder = null;
       try {
         savedOrder = await saveOrder({
@@ -448,12 +448,12 @@ export async function handleElectronicsOrder({
           totalPrice:    data.totalPrice,
           // [AUDIT-FIX-ELEC-1] orderService.saveOrder() destructures a fixed set of
           // fields ({ item, quantity, totalPrice, addOns, notes, customerName,
-          // customerPhone, tenantId, businessId, status }) — `fulfilment` is not one
+          // customerPhone, tenantId, businessId, status }) â€” `fulfilment` is not one
           // of them, and the Order schema itself has no `fulfilment` column. Passing
           // fulfilment: data.fulfilment here was silently dropped at the destructuring
           // step before it ever reached Mongoose, so every electronics order's
           // pickup/delivery choice was visible in the live WhatsApp admin alert but
-          // permanently lost from the database — the dashboard order list and any
+          // permanently lost from the database â€” the dashboard order list and any
           // later lookup (e.g. after the chat alert scrolled away) showed nothing.
           // Every other module that captures fulfilment (bakery, retail, delivery)
           // persists it by folding it into the free-text `notes` field, which IS in
@@ -474,7 +474,7 @@ export async function handleElectronicsOrder({
           data.totalPrice || 0,
           session.tenantId
         ).catch(() => {});
-        // [AUDIT-FIX-4] recordRevenue() moved to adminCommandService.confirmPayment() —
+        // [AUDIT-FIX-4] recordRevenue() moved to adminCommandService.confirmPayment() â€”
         // recording it here at placement time counted unconfirmed/later-rejected orders
         // as revenue. See adminCommandService.js AUDIT-FIX-4 for full rationale.
       } catch (err) {
@@ -486,15 +486,15 @@ export async function handleElectronicsOrder({
         });
         return {
           type:    'buttons',
-          body:    `⚠️ *Something went wrong saving your order.*\n\nPlease try again — tap below to start over.`,
+          body:    `âš ï¸ *Something went wrong saving your order.*\n\nPlease try again â€” tap below to start over.`,
           buttons: [
-            { id: 'ORDER',    title: '🛒 Try Again'   },
-            { id: 'SUPPORT',  title: '💬 Contact Us'  },
+            { id: 'ORDER',    title: 'ðŸ›’ Try Again'   },
+            { id: 'SUPPORT',  title: 'ðŸ’¬ Contact Us'  },
           ],
         };
       }
 
-      // ── Payment configured? ───────────────────────────────────────────────
+      // â”€â”€ Payment configured? â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
       if (payment?.enabled && data.totalPrice) {
         const shortId = savedOrder?.shortId || '';
         const now  = new Date();
@@ -503,7 +503,7 @@ export async function handleElectronicsOrder({
         const ref  = `ELC-${mm}${dd}-${shortId}`;
 
         if (savedOrder?._id) {
-          // [FIX-1] Static import — no dynamic import needed
+          // [FIX-1] Static import â€” no dynamic import needed
           Order.updateOne({ _id: savedOrder._id }, { $set: { paymentReference: ref } }).catch(() => {});
         }
 
@@ -514,30 +514,30 @@ export async function handleElectronicsOrder({
         try {
           const adminPhone = business?.adminPhone || tenant?.adminPhone;
           if (adminPhone && tenant && savedOrder) {
-            // [FIX-1] Static import — dispatchMessage already imported at top of file
+            // [FIX-1] Static import â€” dispatchMessage already imported at top of file
             await dispatchMessage(adminPhone, {
               type: 'text',
               body:
-                `🔔 *New Order — ${business.name || 'Electronics Store'}*\n\n` +
-                `👤 Customer: *${session.customerPhone}*\n` +
-                `📱 *${data.quantity}× ${itemLabel(data.item, data.variant)}*\n` +
-                `💰 Total: *${currency}${formatMoney(data.totalPrice)}*\n` +
-                `📦 Fulfilment: *${data.fulfilment === 'DELIVERY' ? 'Delivery' : 'In-store pick-up'}*\n` +
-                `📝 Ref: *${ref}*\n\n` +
-                `⏳ Status: *Pending* — awaiting payment screenshot.`,
+                `ðŸ”” *New Order â€” ${business.name || 'Electronics Store'}*\n\n` +
+                `ðŸ‘¤ Customer: *${session.customerPhone}*\n` +
+                `ðŸ“± *${data.quantity}Ã— ${itemLabel(data.item, data.variant)}*\n` +
+                `ðŸ’° Total: *${currency}${formatMoney(data.totalPrice)}*\n` +
+                `ðŸ“¦ Fulfilment: *${data.fulfilment === 'DELIVERY' ? 'Delivery' : 'In-store pick-up'}*\n` +
+                `ðŸ“ Ref: *${ref}*\n\n` +
+                `â³ Status: *Pending* â€” awaiting payment screenshot.`,
             }, tenant).catch(() => {});
           }
         } catch { /* non-fatal */ }
 
-        // [FIX-1] Static import — buildPaymentInstructionsUI already imported at top of file
+        // [FIX-1] Static import â€” buildPaymentInstructionsUI already imported at top of file
         return buildPaymentInstructionsUI(business, data.totalPrice, shortId, ref);
       }
 
-      // ── No payment / cash / COD ────────────────────────────────────────────
+      // â”€â”€ No payment / cash / COD â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
       try {
         const adminPhone = business?.adminPhone || tenant?.adminPhone;
         if (adminPhone && tenant && savedOrder) {
-          // [FIX-1] Static import — dispatchMessage already imported at top of file
+          // [FIX-1] Static import â€” dispatchMessage already imported at top of file
           const alertBody = buildAdminOrderAlertBody({
             customerPhone: session.customerPhone,
             item:          itemLabel(data.item, data.variant),
@@ -551,8 +551,8 @@ export async function handleElectronicsOrder({
             type:    'buttons',
             body:    alertBody,
             buttons: [
-              { id: `APPROVE_${savedOrder.shortId}`, title: '✅ Confirm Order' },
-              { id: `REJECT_${savedOrder.shortId}`,  title: '❌ Cancel Order'  },
+              { id: `APPROVE_${savedOrder.shortId}`, title: 'âœ… Confirm Order' },
+              { id: `REJECT_${savedOrder.shortId}`,  title: 'âŒ Cancel Order'  },
             ],
           }, tenant).catch(() => {});
         }
@@ -560,7 +560,7 @@ export async function handleElectronicsOrder({
         logger.warn('[ElectronicsOrder] Admin notification failed (non-fatal)', { err: err.message });
       }
 
-      // Park session — wait for admin confirmation before customer can reorder
+      // Park session â€” wait for admin confirmation before customer can reorder
       await updateSession(session.customerPhone, session.tenantId, {
         step: 'AWAIT_ADMIN_CONFIRM', currentFlow: 'ORDER',
         data: { ...data },
@@ -568,29 +568,29 @@ export async function handleElectronicsOrder({
 
       const hasChannels = Array.isArray(payment?.channels) && payment.channels.length > 0;
       const cashBody =
-        `💳 *Payment*\n\n` +
-        `🛒 Total: *${currency}${formatMoney(data.totalPrice || 0)}*\n\n` +
+        `ðŸ’³ *Payment*\n\n` +
+        `ðŸ›’ Total: *${currency}${formatMoney(data.totalPrice || 0)}*\n\n` +
         (hasChannels
           ? (() => {
               const lines = (payment?.channels || []).map((ch, i) =>
-                `${i + 1}. *${ch.provider}* → \`${ch.accountNo}\`` +
+                `${i + 1}. *${ch.provider}* â†’ \`${ch.accountNo}\`` +
                 (ch.label ? ` (${ch.label})` : '') +
-                (ch.isDefault ? ' ⭐' : '')
+                (ch.isDefault ? ' â­' : '')
               ).join('\n');
-              return `📲 Please pay to any of the following:\n\n${lines}\n\nThen send your payment screenshot in this chat.`;
+              return `ðŸ“² Please pay to any of the following:\n\n${lines}\n\nThen send your payment screenshot in this chat.`;
             })()
-          : `💵 *Payment:* Cash on delivery / pick-up.\n\nPlease have *${currency}${formatMoney(data.totalPrice || 0)}* ready.`
+          : `ðŸ’µ *Payment:* Cash on delivery / pick-up.\n\nPlease have *${currency}${formatMoney(data.totalPrice || 0)}* ready.`
         );
 
       return {
         type: 'text',
         body:
           cashBody + '\n\n' +
-          '⏳ Your order has been received. Please wait for our team to confirm before placing a new one.',
+          'â³ Your order has been received. Please wait for our team to confirm before placing a new one.',
       };
     }
 
-    // ── Default ───────────────────────────────────────────────────────────────
+    // â”€â”€ Default â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     default: {
       const categories = _getCategories(menu);
       await updateSession(session.customerPhone, session.tenantId, {
@@ -603,9 +603,9 @@ export async function handleElectronicsOrder({
   }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// handleSpecRequest — AI-powered tech Q&A
-// ─────────────────────────────────────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// handleSpecRequest â€” AI-powered tech Q&A
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 export async function handleSpecRequest({ session, message, business, tenant }) {
   // INIT
@@ -616,12 +616,12 @@ export async function handleSpecRequest({ session, message, business, tenant }) 
     return {
       type: 'text',
       body:
-        `📋 *Tech Help*\n\n` +
+        `ðŸ“‹ *Tech Help*\n\n` +
         `Ask me anything about our products:\n` +
-        `  • Specs & features\n` +
-        `  • Compatibility questions\n` +
-        `  • Which model is right for you\n` +
-        `  • Accessories & add-ons\n\n` +
+        `  â€¢ Specs & features\n` +
+        `  â€¢ Compatibility questions\n` +
+        `  â€¢ Which model is right for you\n` +
+        `  â€¢ Accessories & add-ons\n\n` +
         `What would you like to know?`,
     };
   }
@@ -631,13 +631,13 @@ export async function handleSpecRequest({ session, message, business, tenant }) 
   if (!raw || raw.length < 2) {
     return {
       type: 'text',
-      body: 'What product or tech question can I help you with? 📱',
+      body: 'What product or tech question can I help you with? ðŸ“±',
     };
   }
 
   // [FIX-5] Redirect warranty/after-sales queries to the WARRANTY flow
   if (WARRANTY_RE.test(raw)) {
-    // [FIX-1] Static import — startFlow already imported at top of file
+    // [FIX-1] Static import â€” startFlow already imported at top of file
     return startFlow({ flowName: 'WARRANTY', session, business, tenant });
   }
 
@@ -646,7 +646,7 @@ export async function handleSpecRequest({ session, message, business, tenant }) 
   });
 
   // Answer-only: stay in Question Mode (step: SPEC_QUESTION) and wait for the next
-  // question — no buttons, and no completeFlow() reset. Switching to another
+  // question â€” no buttons, and no completeFlow() reset. Switching to another
   // activity (ordering, warranty, etc.) is detected upstream from the customer's
   // own words (webhookController's mid-flow switch detector), not from a tap target.
   await updateSession(session.customerPhone, session.tenantId, {
@@ -655,13 +655,13 @@ export async function handleSpecRequest({ session, message, business, tenant }) 
 
   return {
     type: 'text',
-    body: aiReply || `📋 Great question! Let me help you with that. 📱`,
+    body: aiReply || `ðŸ“‹ Great question! Let me help you with that. ðŸ“±`,
   };
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// handleCompare — side-by-side product comparison
-// ─────────────────────────────────────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// handleCompare â€” side-by-side product comparison
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 export async function handleCompare({ session, message, business, tenant }) {
   const raw   = String(message || '').trim();
@@ -679,7 +679,7 @@ export async function handleCompare({ session, message, business, tenant }) {
     return {
       type: 'text',
       body:
-        `⚖️ *Product Comparison*\n\n` +
+        `âš–ï¸ *Product Comparison*\n\n` +
         `I'll compare two products side-by-side so you can choose the right one.\n\n` +
         `Type the name of the *first* product you want to compare:`,
     };
@@ -700,8 +700,8 @@ export async function handleCompare({ session, message, business, tenant }) {
           type:    'buttons',
           body:    aiReply || `I couldn't find *"${raw}"* in our catalogue. Please try a different name:`,
           buttons: [
-            { id: 'ORDER',     title: '🛒 Browse Products' },
-            { id: 'SHOW_MENU', title: '🔄 Start Over'      },
+            { id: 'ORDER',     title: 'ðŸ›’ Browse Products' },
+            { id: 'SHOW_MENU', title: 'ðŸ”„ Start Over'      },
           ],
         };
       }
@@ -712,7 +712,7 @@ export async function handleCompare({ session, message, business, tenant }) {
       return {
         type: 'text',
         body:
-          `✅ Got it — *${item.name}*.\n\n` +
+          `âœ… Got it â€” *${item.name}*.\n\n` +
           `Now type the name of the *second* product to compare:`,
       };
     }
@@ -730,8 +730,8 @@ export async function handleCompare({ session, message, business, tenant }) {
           type:    'buttons',
           body:    aiReply || `I couldn't find *"${raw}"* in our catalogue. Please try another name:`,
           buttons: [
-            { id: 'SHOW_MENU', title: '🔄 Start Over' },
-            { id: 'CANCEL',    title: '❌ Cancel'      },
+            { id: 'SHOW_MENU', title: 'ðŸ”„ Start Over' },
+            { id: 'CANCEL',    title: 'âŒ Cancel'      },
           ],
         };
       }
@@ -749,7 +749,7 @@ export async function handleCompare({ session, message, business, tenant }) {
     }
 
     case 'SHOW_COMPARISON': {
-      // [FIX-4] PICK_A_* / PICK_B_* are in FLOW_PASSTHROUGH_IDS — they reach here.
+      // [FIX-4] PICK_A_* / PICK_B_* are in FLOW_PASSTHROUGH_IDS â€” they reach here.
       // Transition into ORDER:ITEM_DETAIL by updating session then calling the handler.
       const pickedA = /^PICK_A/i.test(raw) || norm(raw) === norm(data.compareA?.name || '');
       const pickedB = /^PICK_B/i.test(raw) || norm(raw) === norm(data.compareB?.name || '');
@@ -763,7 +763,7 @@ export async function handleCompare({ session, message, business, tenant }) {
         return buildItemDetail(chosenItem, currency);
       }
 
-      // Any other tap/text — re-show the comparison card
+      // Any other tap/text â€” re-show the comparison card
       return buildComparisonCard(data.compareA || {}, data.compareB || {}, currency);
     }
 
@@ -775,9 +775,9 @@ export async function handleCompare({ session, message, business, tenant }) {
   }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// handleWarranty — warranty and after-sales enquiries
-// ─────────────────────────────────────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// handleWarranty â€” warranty and after-sales enquiries
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 export async function handleWarranty({ session, message, business, tenant }) {
   // INIT
@@ -788,16 +788,16 @@ export async function handleWarranty({ session, message, business, tenant }) {
     return {
       type: 'buttons',
       body:
-        `🛡 *Warranty & After-Sales*\n\n` +
+        `ðŸ›¡ *Warranty & After-Sales*\n\n` +
         `I can help with:\n` +
-        `  • Warranty coverage for a product\n` +
-        `  • Repair / service requests\n` +
-        `  • Returns & exchanges\n` +
-        `  • Spare parts & accessories\n\n` +
+        `  â€¢ Warranty coverage for a product\n` +
+        `  â€¢ Repair / service requests\n` +
+        `  â€¢ Returns & exchanges\n` +
+        `  â€¢ Spare parts & accessories\n\n` +
         `What do you need help with?`,
       buttons: [
-        { id: 'ORDER',   title: '🛒 Shop Products'  },
-        { id: 'SUPPORT', title: '💬 Contact Support' },
+        { id: 'ORDER',   title: 'ðŸ›’ Shop Products'  },
+        { id: 'SUPPORT', title: 'ðŸ’¬ Contact Support' },
       ],
     };
   }
@@ -807,7 +807,7 @@ export async function handleWarranty({ session, message, business, tenant }) {
     return {
       type:    'buttons',
       body:    'Please describe your warranty or after-sales query:',
-      buttons: [{ id: 'SUPPORT', title: '💬 Contact Support' }],
+      buttons: [{ id: 'SUPPORT', title: 'ðŸ’¬ Contact Support' }],
     };
   }
 
@@ -825,20 +825,21 @@ export async function handleWarranty({ session, message, business, tenant }) {
 
   return {
     type: 'buttons',
-    // [FIX-2] Use SUPPORT button ID (handled by core) — not a dynamic CONTACT_* ID
-    body: aiReply || `🛡 For warranty matters, please contact our support team directly.`,
+    // [FIX-2] Use SUPPORT button ID (handled by core) â€” not a dynamic CONTACT_* ID
+    body: aiReply || `ðŸ›¡ For warranty matters, please contact our support team directly.`,
     buttons: [
-      { id: 'SUPPORT',      title: '💬 Contact Support' },
-      { id: 'ORDER',        title: '🛒 Shop Products'   },
-      { id: 'SPEC_REQUEST', title: '❓ Tech Help'        },
+      { id: 'SUPPORT',      title: 'ðŸ’¬ Contact Support' },
+      { id: 'ORDER',        title: 'ðŸ›’ Shop Products'   },
+      { id: 'SPEC_REQUEST', title: 'â“ Tech Help'        },
     ],
   };
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // Internal helpers
-// ─────────────────────────────────────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 function _getCategories(menu) {
   return [...new Set(menu.map(i => i.category).filter(Boolean))];
 }
+

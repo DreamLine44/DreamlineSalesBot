@@ -1,13 +1,13 @@
-/**
+﻿/**
  * modules/bakery/flows/index.js
- * Bakery module — order + collection booking + custom cake builder
+ * Bakery module â€” order + collection booking + custom cake builder
  */
 import { updateSession }  from '../../../core/sessions/sessionService.js';
 import { completeFlow }   from '../../../core/conversations/flowEngine.js';
 import { handleBookingFlow } from '../../../core/conversations/bookingFlow.js';
 import { findBestMatch }  from '../../../utils/matchEngine.js';
-import { saveOrder }      from '../../../services/orderService.js';
-import { saveBooking }    from '../../../services/bookingService.js';
+import { saveOrder }      from '../../../services/order/orderService.js';
+import { saveBooking }    from '../../../services/booking/bookingService.js';
 import logger             from '../../../config/logger.js';
 
 export const BAKERY_CONFIG = {
@@ -15,34 +15,34 @@ export const BAKERY_CONFIG = {
   flows: ['ORDER', 'BOOKING'],
   persona: 'warm bakery assistant who loves fresh baked goods and reminds customers about daily specials',
   steps: {
-    // [CART-AI] CART_REVIEW added — reached from SELECT_ITEM on a multi-item
+    // [CART-AI] CART_REVIEW added â€” reached from SELECT_ITEM on a multi-item
     // message, mirroring restaurant/salon's MULTICART-v39-PHASE2 pattern.
     ORDER:   ['BROWSE_CATEGORY', 'SELECT_ITEM', 'CART_REVIEW', 'QUANTITY', 'CONFIRM'],
     BOOKING: ['SELECT_SERVICE', 'DATE', 'DATE_CONFIRM', 'TIME', 'TIME_CONFIRM', 'CONFIRM'],
   },
   ui: {
     welcomeButtons: [
-      { id: 'ORDER',    title: '🧁 Place an Order'      },
-      { id: 'BOOK',     title: '📅 Schedule Collection' },
-      { id: 'QUESTION', title: '❓ Ask a Question'      },
+      { id: 'ORDER',    title: 'ðŸ§ Place an Order'      },
+      { id: 'BOOK',     title: 'ðŸ“… Schedule Collection' },
+      { id: 'QUESTION', title: 'â“ Ask a Question'      },
     ],
     fallbackButtons: [
-      { id: 'ORDER',    title: '🧁 Order'    },
-      { id: 'BOOK',     title: '📅 Collect'  },
-      { id: 'QUESTION', title: '❓ Question' },
+      { id: 'ORDER',    title: 'ðŸ§ Order'    },
+      { id: 'BOOK',     title: 'ðŸ“… Collect'  },
+      { id: 'QUESTION', title: 'â“ Question' },
     ],
-    confirmButtons: [{ id: 'CONFIRM', title: '✅ Confirm Order' }, { id: 'CANCEL', title: '❌ Cancel' }],
-    upsellButtons:  [{ id: 'UPSELL_YES', title: '✅ Add it' },    { id: 'UPSELL_NO', title: '❌ No thanks' }],
+    confirmButtons: [{ id: 'CONFIRM', title: 'âœ… Confirm Order' }, { id: 'CANCEL', title: 'âŒ Cancel' }],
+    upsellButtons:  [{ id: 'UPSELL_YES', title: 'âœ… Add it' },    { id: 'UPSELL_NO', title: 'âŒ No thanks' }],
   },
   messages: {
-    welcome:       '🥐 Welcome! Fresh baked just for you. What can we get you?',
-    orderPrompt:   "🎂 Here's what's fresh today — choose your item:",
-    cancelMsg:     '✅ Cancelled! Come back any time — we bake fresh daily 🥐',
+    welcome:       'ðŸ¥ Welcome! Fresh baked just for you. What can we get you?',
+    orderPrompt:   "ðŸŽ‚ Here's what's fresh today â€” choose your item:",
+    cancelMsg:     'âœ… Cancelled! Come back any time â€” we bake fresh daily ðŸ¥',
     fallback:      'Would you like to *order*, *schedule a collection*, or ask a *question*?',
   },
 };
 
-// ── Custom cake builder flow ───────────────────────────────────────────────────
+// â”€â”€ Custom cake builder flow â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 export async function handleCakeCustomization({ session, message, business, tenant }) {
   const raw  = String(message || '').trim();
   const step = session.step || 'CAKE_FLAVOR';
@@ -52,11 +52,11 @@ export async function handleCakeCustomization({ session, message, business, tena
     await updateSession(session.customerPhone, session.tenantId, { step: 'CAKE_FLAVOR', data: {} });
     return {
       type: 'buttons',
-      body: '🎂 *Custom Cake Builder*\n\nWhat *flavour* would you like?',
+      body: 'ðŸŽ‚ *Custom Cake Builder*\n\nWhat *flavour* would you like?',
       buttons: [
-        { id: 'FLAVOR_VANILLA',   title: '🍦 Vanilla'     },
-        { id: 'FLAVOR_CHOCOLATE', title: '🍫 Chocolate'   },
-        { id: 'FLAVOR_REDVELVET', title: '❤️ Red Velvet'  },
+        { id: 'FLAVOR_VANILLA',   title: 'ðŸ¦ Vanilla'     },
+        { id: 'FLAVOR_CHOCOLATE', title: 'ðŸ« Chocolate'   },
+        { id: 'FLAVOR_REDVELVET', title: 'â¤ï¸ Red Velvet'  },
       ],
     };
   }
@@ -76,11 +76,11 @@ export async function handleCakeCustomization({ session, message, business, tena
       });
       return {
         type: 'buttons',
-        body: `*${flavor}* — great choice! 🎂\n\nWhat *size* do you need?`,
+        body: `*${flavor}* â€” great choice! ðŸŽ‚\n\nWhat *size* do you need?`,
         buttons: [
-          { id: 'SIZE_SMALL',  title: '🎂 Small (6″)'   },
-          { id: 'SIZE_MEDIUM', title: '🎂 Medium (8″)'  },
-          { id: 'SIZE_LARGE',  title: '🎂 Large (10″)'  },
+          { id: 'SIZE_SMALL',  title: 'ðŸŽ‚ Small (6â€³)'   },
+          { id: 'SIZE_MEDIUM', title: 'ðŸŽ‚ Medium (8â€³)'  },
+          { id: 'SIZE_LARGE',  title: 'ðŸŽ‚ Large (10â€³)'  },
         ],
       };
     }
@@ -97,19 +97,19 @@ export async function handleCakeCustomization({ session, message, business, tena
       });
       return {
         type: 'buttons',
-        body: `*${size}* — perfect! 🎉\n\nWhat *date* do you need this cake for? 📅\n\n_(e.g. *25 June*, *next Saturday*)_`,
-        buttons: [{ id: 'CANCEL', title: '❌ Cancel' }],
+        body: `*${size}* â€” perfect! ðŸŽ‰\n\nWhat *date* do you need this cake for? ðŸ“…\n\n_(e.g. *25 June*, *next Saturday*)_`,
+        buttons: [{ id: 'CANCEL', title: 'âŒ Cancel' }],
       };
     }
     case 'CAKE_EVENT_DATE': {
-      // [FIX-TIME-2] Bakery cake event date had zero validation — a customer
+      // [FIX-TIME-2] Bakery cake event date had zero validation â€” a customer
       // could type "yesterday" and the order would confirm with a past date.
       // Import shared helpers to enforce the same rules as the booking flow.
       const { tryParseDate } = await import('../../../core/conversations/bookingFlow.js');
       // [FIX-TZ-BAKERY] business?.timezone was reading a non-existent top-level field.
       // timezone lives at business.hours.timezone (BusinessConfig schema). The silent
       // undefined caused tryParseDate and all local-midnight calculations to fall back
-      // to UTC, so "tomorrow" in West Africa Time was one hour ahead of UTC midnight —
+      // to UTC, so "tomorrow" in West Africa Time was one hour ahead of UTC midnight â€”
       // meaning an evening order for "tomorrow" would sometimes be rejected as "past".
       const cakeParsed = tryParseDate(raw, business?.hours?.timezone);
       if (cakeParsed) {
@@ -125,16 +125,16 @@ export async function handleCakeCustomization({ session, message, business, tena
           const fmt = cakeParsed.toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' });
           return {
             type: 'buttons',
-            body: `⚠️ *${fmt}* has already passed.\n\nPlease enter an *upcoming date* for your cake. 📅\n\n_(e.g. *25 June*, *next Saturday*)_`,
-            buttons: [{ id: 'CANCEL', title: '❌ Cancel' }],
+            body: `âš ï¸ *${fmt}* has already passed.\n\nPlease enter an *upcoming date* for your cake. ðŸ“…\n\n_(e.g. *25 June*, *next Saturday*)_`,
+            buttons: [{ id: 'CANCEL', title: 'âŒ Cancel' }],
           };
         }
         const maxFuture = new Date(localNow); maxFuture.setUTCMonth(maxFuture.getUTCMonth() + 18);
         if (cakeParsed > maxFuture) {
           return {
             type: 'buttons',
-            body: `⚠️ That date is too far ahead. Please choose a date within the next 18 months. 📅`,
-            buttons: [{ id: 'CANCEL', title: '❌ Cancel' }],
+            body: `âš ï¸ That date is too far ahead. Please choose a date within the next 18 months. ðŸ“…`,
+            buttons: [{ id: 'CANCEL', title: 'âŒ Cancel' }],
           };
         }
       }
@@ -142,28 +142,28 @@ export async function handleCakeCustomization({ session, message, business, tena
         step: 'CAKE_CONFIRM', data: { ...data, eventDate: raw },
       });
       const summary =
-        `🎂 *Custom Cake Summary*\n\n` +
-        `🍰 Flavour: *${data.flavor}*\n` +
-        `📏 Size: *${data.size}*\n` +
-        `📅 For: *${raw}*\n\nShall we proceed?`;
+        `ðŸŽ‚ *Custom Cake Summary*\n\n` +
+        `ðŸ° Flavour: *${data.flavor}*\n` +
+        `ðŸ“ Size: *${data.size}*\n` +
+        `ðŸ“… For: *${raw}*\n\nShall we proceed?`;
       return {
         type: 'buttons',
         body: summary,
-        buttons: [{ id: 'CONFIRM', title: '✅ Place Order' }, { id: 'CANCEL', title: '❌ Cancel' }],
+        buttons: [{ id: 'CONFIRM', title: 'âœ… Place Order' }, { id: 'CANCEL', title: 'âŒ Cancel' }],
       };
     }
     case 'CAKE_CONFIRM': {
       if (!/^(yes|y|confirm|ok|sure)$/i.test(raw.toLowerCase())) {
         return {
           type: 'buttons',
-          body: '🎂 Ready to place your cake order?',
-          buttons: [{ id: 'CONFIRM', title: '✅ Place Order' }, { id: 'CANCEL', title: '❌ Cancel' }],
+          body: 'ðŸŽ‚ Ready to place your cake order?',
+          buttons: [{ id: 'CONFIRM', title: 'âœ… Place Order' }, { id: 'CANCEL', title: 'âŒ Cancel' }],
         };
       }
       let savedOrder = null;
       try {
         savedOrder = await saveOrder({
-          item:         `Custom Cake — ${data.flavor} (${data.size})`,
+          item:         `Custom Cake â€” ${data.flavor} (${data.size})`,
           quantity:     1,
           totalPrice:   0,
           customerName:  session.customerName || null, // [FIX-SAVE-2]
@@ -180,57 +180,58 @@ export async function handleCakeCustomization({ session, message, business, tena
         });
         return {
           type:    'buttons',
-          body:    `⚠️ *Something went wrong saving your cake order.*\n\nPlease try again — tap below to start over.`,
+          body:    `âš ï¸ *Something went wrong saving your cake order.*\n\nPlease try again â€” tap below to start over.`,
           buttons: [
-            { id: 'ORDER',    title: '🎂 Try Again'   },
-            { id: 'SUPPORT',  title: '💬 Contact Us'  },
+            { id: 'ORDER',    title: 'ðŸŽ‚ Try Again'   },
+            { id: 'SUPPORT',  title: 'ðŸ’¬ Contact Us'  },
           ],
         };
       }
 
-      // [FIX-9] Notify admin — bakery cake orders were placed silently with no alert
+      // [FIX-9] Notify admin â€” bakery cake orders were placed silently with no alert
       try {
         const adminPhone = business?.adminPhone || tenant?.adminPhone;
         if (adminPhone && tenant && savedOrder) {
           const { dispatchText } = await import('../../../core/whatsapp/dispatcher.js');
           const alert =
-            `🎂 *Custom Cake Order — ${business?.name || 'Bakery'}*\n\n` +
-            `👤 Customer: ${session.customerPhone}\n` +
-            `🍰 Flavour: *${data.flavor}*\n` +
-            `📏 Size: *${data.size}*\n` +
-            `📅 For: *${data.eventDate}*\n` +
-            `🔖 Ref: \`${savedOrder.shortId}\`\n\n` +
+            `ðŸŽ‚ *Custom Cake Order â€” ${business?.name || 'Bakery'}*\n\n` +
+            `ðŸ‘¤ Customer: ${session.customerPhone}\n` +
+            `ðŸ° Flavour: *${data.flavor}*\n` +
+            `ðŸ“ Size: *${data.size}*\n` +
+            `ðŸ“… For: *${data.eventDate}*\n` +
+            `ðŸ”– Ref: \`${savedOrder.shortId}\`\n\n` +
             `Please contact customer to confirm pricing.`;
           dispatchText(adminPhone, alert, tenant).catch(() => {});
         }
       } catch {}
 
-      // [FIX-2] Capture return value — completeFlow may return a lead-capture UIResponse
+      // [FIX-2] Capture return value â€” completeFlow may return a lead-capture UIResponse
       const _lcRbk = await completeFlow(session, 'ORDER', business, tenant);
       if (_lcRbk) return _lcRbk;
       return {
         type: 'buttons',
-        body: `✅ *Cake order placed!*\n\n🎂 *${data.flavor} cake (${data.size})*\n📅 For: *${data.eventDate}*\n\nWe'll be in touch to confirm details and pricing. Thank you! 🥐`,
+        body: `âœ… *Cake order placed!*\n\nðŸŽ‚ *${data.flavor} cake (${data.size})*\nðŸ“… For: *${data.eventDate}*\n\nWe'll be in touch to confirm details and pricing. Thank you! ðŸ¥`,
         buttons: [
-          { id: 'ORDER',     title: '🧁 Order More'      },
-          { id: 'BOOK',      title: '📅 Book Collection' },
-          { id: 'SHOW_MENU', title: '🔄 Start Over'      },
+          { id: 'ORDER',     title: 'ðŸ§ Order More'      },
+          { id: 'BOOK',      title: 'ðŸ“… Book Collection' },
+          { id: 'SHOW_MENU', title: 'ðŸ”„ Start Over'      },
         ],
       };
     }
     default:
       return {
         type: 'buttons',
-        body: '🎂 What flavour would you like for your cake?',
-        buttons: [{ id: 'CANCEL', title: '❌ Cancel' }],
+        body: 'ðŸŽ‚ What flavour would you like for your cake?',
+        buttons: [{ id: 'CANCEL', title: 'âŒ Cancel' }],
       };
   }
 }
 
-// ── Standard order flow — dedicated bakery flow (NOT the restaurant proxy) ───
+// â”€â”€ Standard order flow â€” dedicated bakery flow (NOT the restaurant proxy) â”€â”€â”€
 export { handleBakeryOrderFlow as handleBakeryOrder } from './orderFlow.js';
 
-// ── Booking/collection flow ───────────────────────────────────────────────────
+// â”€â”€ Booking/collection flow â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 export async function handleBakeryBooking({ session, message, business, tenant, isInteractive }) {
   return handleBookingFlow({ session, message, business, tenant, isInteractive });
 }
+

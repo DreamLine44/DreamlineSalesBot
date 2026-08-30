@@ -239,7 +239,7 @@ export async function handleDonePayment(customerPhone, tenantId, tenantDoc) {
  * @param {string} shortId
  * @param {string|null} storedRef  - existing paymentReference from the Order doc, if any
  */
-export function buildPaymentInstructionsUI(business, totalPrice, shortId, storedRef = null) {
+export const buildPaymentInstructionsUI = (business, totalPrice, shortId, storedRef = null) => {
   const payment  = business?.payment || {};
   const currency = payment.currency || 'D';
 

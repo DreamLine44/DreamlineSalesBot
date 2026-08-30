@@ -1,0 +1,443 @@
+﻿/**
+ * services/activeOrderResolver.js
+ *
+ * Single source of truth for "does this customer have an active order, and
+ * if so, what should the bot say right now?"
+ *
+ * Called by webhookController at step 8.6 ÔÇö BEFORE intent detection,
+ * BEFORE AI responses, BEFORE welcome menus.
+ *
+ * Resolution priority (highest unresolved state wins):
+ *   1. PAYMENT_REJECTED       ÔÇö paymentStatus = 'rejected'
+ *   2. PAYMENT_PENDING        ÔÇö paymentStatus = 'proof_received' | 'payment_pending_verification'
+ *   3. PAYMENT_VERIFIED       ÔÇö paymentStatus in ['confirmed','self_confirmed','paid'] + status = 'confirmed'
+ *   4. PREPARING              ÔÇö status = 'preparing'
+ *   5. READY                  ÔÇö status = 'ready'
+ *   6. OUT_FOR_DELIVERY       ÔÇö status = 'out_for_delivery'
+ *   7. DELIVERED (recent)     ÔÇö status = 'delivered', delivered within past 2 hours
+ *   8. MULTIPLE_ACTIVE_ORDERS ÔÇö more than one unresolved active order found
+ *   9. NO_ACTIVE_ORDER        ÔÇö nothing to intercept
+ *
+ * Database is the source of truth. Session state is never consulted here.
+ * This makes order context survive session TTL expiry, server restarts,
+ * and human handoff resets.
+ *
+ * Returns:
+ *   {
+ *     order:           Order | null,
+ *     orders:          Order[],        // all active orders found
+ *     state:           string,         // one of the constants above
+ *     shouldIntercept: boolean,        // true ÔåÆ skip normal routing
+ *     uiResponse:      UIResponse | null,
+ *   }
+ */
+
+import Order  from '../../models/Order.js';
+import logger from '../../config/logger.js';
+import { formatMoney } from '../../utils/formatCurrency.js';
+import { formatOrderItemSummary } from './orderService.js';
+
+// ÔöÇÔöÇ Active order state constants ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
+export const ACTIVE_ORDER_STATES = {
+  PAYMENT_REJECTED:       'PAYMENT_REJECTED',
+  PAYMENT_PENDING:        'PAYMENT_PENDING',
+  PAYMENT_VERIFIED:       'PAYMENT_VERIFIED',
+  PREPARING:              'PREPARING',
+  READY:                  'READY',
+  OUT_FOR_DELIVERY:       'OUT_FOR_DELIVERY',
+  DELIVERED:              'DELIVERED',
+  MULTIPLE_ACTIVE_ORDERS: 'MULTIPLE_ACTIVE_ORDERS',
+  NO_ACTIVE_ORDER:        'NO_ACTIVE_ORDER',
+};
+
+// How long after delivery do we still show a "your order was delivered" context
+// rather than the normal welcome menu? Default 2 hours.
+const DELIVERED_CONTEXT_WINDOW_MS = 2 * 60 * 60 * 1000;
+
+/**
+ * resolveActiveOrder
+ *
+ * @param {string} customerPhone
+ * @param {string|ObjectId} tenantId
+ * @param {object} business  ÔÇö BusinessConfig lean doc (for currency, adminPhone, etc.)
+ * @param {object} session   ÔÇö current session (for customerName)
+ * @returns {Promise<{order, orders, state, shouldIntercept, uiResponse}>}
+ */
+export async function resolveActiveOrder(customerPhone, tenantId, business = null, session = null) {
+  try {
+    // ÔöÇÔöÇ Query: all non-terminal orders for this customer / tenant ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
+    // Exclude orders that are definitively done and old:
+    //   cancelled / completed / payment_failed older than 24h
+    // Delivered orders within the last 2h are included so we can show context.
+    //
+    // [AUDIT-FIX-2] cutoff24h was declared but never wired into the query below ÔÇö
+    // every 'pending' order was treated as active forever, regardless of age. A
+    // customer who started an order, abandoned it, and came back three weeks later
+    // would still have that stale pending order intercept every new message
+    // ("you have an active order...") instead of letting them start fresh. This is
+    // the exact "stale pending+unpaid orders older than 24h" bug from past audits ÔÇö
+    // the fix was written (the cutoff variable) but never actually applied to the
+    // query. 'pending' orders are now only considered active if created within the
+    // last 24h; once past that window they're abandoned carts, not active orders,
+    // and should not block new intents. Other non-terminal statuses (confirmed,
+    // preparing, ready, out_for_delivery, payment verification states) are left
+    // unbounded since those represent orders genuinely in progress in the real
+    // world and a stale one is an admin/ops problem, not a "let the bot keep
+    // nagging the customer" problem.
+    const cutoff24h  = new Date(Date.now() - 24 * 60 * 60 * 1000);
+    const activeOrders = await Order.find({
+      customerPhone,
+      tenantId,
+      $or: [
+        // [AUDIT-FIX-2] 'pending' bounded to last 24h ÔÇö abandoned carts age out.
+        { status: 'pending', createdAt: { $gte: cutoff24h } },
+        // Genuinely in-progress statuses ÔÇö no age bound.
+        { status: { $in: ['payment_pending_verification', 'confirmed', 'preparing', 'ready', 'out_for_delivery'] } },
+        // Delivered within the context window
+        { status: 'delivered', updatedAt: { $gte: new Date(Date.now() - DELIVERED_CONTEXT_WINDOW_MS) } },
+        // Rejected payments (order.status may be 'pending' after a reject+retry window)
+        { paymentStatus: 'rejected' },
+        // Proof submitted, still awaiting admin decision
+        { paymentStatus: { $in: ['proof_received', 'payment_pending_verification'] } },
+        // [AUDIT-FIX-AOR-QUERY-REJECT] Admin-rejected orders are written back as
+        // status:'pending' + paymentStatus:'unpaid' + paymentReviewedAt set (see
+        // the wasAdminRejected check below) ÔÇö the SAME shape as an abandoned cart,
+        // so they were silently caught by the 24h-bounded 'pending' clause above
+        // and dropped once the admin took more than a day to review. A rejection
+        // is an order awaiting explicit customer action, not an abandoned cart, so
+        // this clause is intentionally left age-unbounded.
+        { status: 'pending', paymentStatus: 'unpaid', paymentReviewedAt: { $ne: null } },
+      ],
+    })
+      .sort({ createdAt: -1 })
+      .limit(10)  // hard cap ÔÇö no customer should have more than 10 unresolved orders
+      .lean();
+
+    if (!activeOrders.length) {
+      return _noActiveOrder();
+    }
+
+    // ÔöÇÔöÇ Multiple active orders ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
+    if (activeOrders.length > 1) {
+      return _multipleOrders(activeOrders, business);
+    }
+
+    // ÔöÇÔöÇ Single active order ÔÇö resolve state ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
+    const order = activeOrders[0];
+    return _resolveState(order, business, session);
+
+  } catch (err) {
+    logger.warn('[ActiveOrderResolver] DB error ÔÇö falling through to normal routing', {
+      customerPhone, err: err.message,
+    });
+    return _noActiveOrder();
+  }
+}
+
+// ÔöÇÔöÇ State resolution ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
+
+const _resolveState = (order, business, session) => {
+  const { paymentStatus, status, updatedAt } = order;
+
+  const currency    = business?.payment?.currency || 'D';
+  const adminPhone  = business?.adminPhone || null;
+  const custName    = session?.customerName ? `, ${session.customerName}` : '';
+  const shortId     = order.shortId || '???';
+  const itemSummary = formatOrderItemSummary(order);
+  const priceStr    = order.totalPrice ? `${currency}${formatMoney(order.totalPrice)}` : null;
+
+  // Priority 1 ÔÇö Rejected payment
+  // [FIX-AOR-REJECT] paymentStatus === 'rejected' is checked for forward-compat,
+  // but no code path in this codebase actually writes that literal value.
+  // adminCommandService.rejectPayment() intentionally writes
+  // { status: 'pending', paymentStatus: 'unpaid', paymentReviewedAt: <Date> } instead ÔÇö
+  // 'unpaid' is required so paymentService.receiveProof() will accept the customer's
+  // retry screenshot (it specifically queries paymentStatus:'unpaid'). That means this
+  // branch ÔÇö and the "Payment Not Approved" card with the rejection reason and
+  // RESEND_PROOF button ÔÇö was unreachable through the real rejection flow: a customer
+  // whose session expired (TTL) after a rejection and returned later got silently routed
+  // to NO_ACTIVE_ORDER instead, losing all context including rejectedNote. paymentReviewedAt
+  // is only ever set by confirmPayment (which moves status/paymentStatus away from
+  // pending/unpaid) and rejectPayment, so `pending + unpaid + paymentReviewedAt set` is an
+  // unambiguous signal that this specific order was administratively rejected and is
+  // awaiting a retry.
+  const wasAdminRejected = status === 'pending' && paymentStatus === 'unpaid' && !!order.paymentReviewedAt;
+  if (paymentStatus === 'rejected' || wasAdminRejected) {
+    const reason = order.rejectedNote || null;
+    return {
+      order, orders: [order],
+      state: ACTIVE_ORDER_STATES.PAYMENT_REJECTED,
+      shouldIntercept: true,
+      uiResponse: {
+        type: 'buttons',
+        body:
+          `ÔØî *Payment Not Approved*\n\n` +
+          `Order *#${shortId}* ÔÇö ${itemSummary}` +
+          (priceStr ? `\n­ƒÆ░ Amount: *${priceStr}*` : '') +
+          (reason ? `\n\n*Reason:* ${reason}` : `\n\n_Please contact us for more details._`) +
+          `\n\nWhat would you like to do?`,
+        buttons: [
+          { id: 'RESEND_PROOF', title: '­ƒô© Upload New Proof' },
+          { id: 'SUPPORT',      title: '­ƒÆ¼ Contact Business' },
+          { id: 'CANCEL',       title: 'ÔØî Cancel Order'     },
+        ],
+      },
+    };
+  }
+
+  // Priority 2 ÔÇö Payment proof submitted, awaiting admin verification
+  if (paymentStatus === 'proof_received' || paymentStatus === 'payment_pending_verification') {
+    const submittedAt = order.proofReceivedAt
+      ? _formatDate(order.proofReceivedAt)
+      : null;
+    return {
+      order, orders: [order],
+      state: ACTIVE_ORDER_STATES.PAYMENT_PENDING,
+      shouldIntercept: true,
+      uiResponse: {
+        type: 'buttons',
+        body:
+          `ÔÅ│ *Payment Under Review*\n\n` +
+          `Order *#${shortId}* ÔÇö ${itemSummary}` +
+          (priceStr ? `\n­ƒÆ░ Amount: *${priceStr}*` : '') +
+          (submittedAt ? `\n­ƒôà Screenshot received: *${submittedAt}*` : '') +
+          `\n\nOur team is reviewing your payment. We'll notify you once it's confirmed. ­ƒÖÅ`,
+        buttons: [
+          { id: 'TRACK_ORDER', title: '­ƒöì Check Status'    },
+          { id: 'SUPPORT',     title: '­ƒÆ¼ Contact Business'},
+        ],
+      },
+    };
+  }
+
+  // Priority 3 ÔÇö Payment confirmed, order being processed
+  const isPaymentVerified = ['confirmed', 'self_confirmed', 'paid'].includes(paymentStatus);
+  if (isPaymentVerified && status === 'confirmed') {
+    return {
+      order, orders: [order],
+      state: ACTIVE_ORDER_STATES.PAYMENT_VERIFIED,
+      shouldIntercept: true,
+      uiResponse: _preparingCard(order, business, session, 'confirmed'),
+    };
+  }
+
+  // Priority 4 ÔÇö Preparing
+  if (status === 'preparing') {
+    return {
+      order, orders: [order],
+      state: ACTIVE_ORDER_STATES.PREPARING,
+      shouldIntercept: true,
+      uiResponse: _preparingCard(order, business, session, 'preparing'),
+    };
+  }
+
+  // Priority 5 ÔÇö Ready
+  if (status === 'ready') {
+    return {
+      order, orders: [order],
+      state: ACTIVE_ORDER_STATES.READY,
+      shouldIntercept: true,
+      uiResponse: {
+        type: 'buttons',
+        body:
+          `Ô£à *Your order is ready${custName}!*\n\n` +
+          `Order *#${shortId}* ÔÇö ${itemSummary}` +
+          (priceStr ? `\n­ƒÆ░ Amount: *${priceStr}*` : '') +
+          `\n\nPlease come collect at the counter! ­ƒÿè`,
+        // [FIX-READY-CARD] COLLECTED_ button lets customer confirm pickup in one tap.
+        // Previously only 'Contact Business' and 'Order Again' were shown ÔÇö no way to
+        // acknowledge collection, so orders stayed in 'ready' state forever in the DB.
+        buttons: [
+          { id: shortId ? `COLLECTED_${shortId}` : 'SUPPORT', title: 'Ô£à Collected ÔÇö Thanks!' },
+          { id: 'SUPPORT', title: '­ƒÆ¼ Contact Business' },
+        ],
+      },
+    };
+  }
+
+  // Priority 6 ÔÇö Out for delivery
+  if (status === 'out_for_delivery') {
+    return {
+      order, orders: [order],
+      state: ACTIVE_ORDER_STATES.OUT_FOR_DELIVERY,
+      shouldIntercept: true,
+      uiResponse: {
+        type: 'buttons',
+        body:
+          `­ƒÜù *Your order is on its way${custName}!*\n\n` +
+          `Order *#${shortId}* ÔÇö ${itemSummary}` +
+          `\n\nSit tight ÔÇö your delivery is en route! ­ƒÖÅ`,
+        buttons: [
+          { id: 'SUPPORT', title: '­ƒÆ¼ Contact Business' },
+          { id: 'ORDER',   title: '­ƒøÆ Order Again'      },
+        ],
+      },
+    };
+  }
+
+  // Priority 7 ÔÇö Delivered (within context window)
+  if (status === 'delivered') {
+    const deliveredAt = updatedAt ? new Date(updatedAt) : null;
+    const withinWindow = deliveredAt
+      ? (Date.now() - deliveredAt.getTime()) < DELIVERED_CONTEXT_WINDOW_MS
+      : false;
+    if (withinWindow) {
+      return {
+        order, orders: [order],
+        state: ACTIVE_ORDER_STATES.DELIVERED,
+        shouldIntercept: true,
+        uiResponse: {
+          type: 'buttons',
+          body:
+            `­ƒÄë *Your order has been delivered${custName}!*\n\n` +
+            `Order *#${shortId}* ÔÇö ${itemSummary}\n\n` +
+            `Thank you for ordering with us! We hope you enjoy it. ­ƒÿè`,
+          buttons: [
+            { id: 'ORDER',   title: '­ƒøÆ Order Again'     },
+            { id: 'SUPPORT', title: '­ƒÆ¼ Contact Business' },
+          ],
+        },
+      };
+    }
+  }
+
+  return _noActiveOrder();
+}
+
+// ÔöÇÔöÇ UI builders ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
+
+const _preparingCard = (order, business, session, stage) => {
+  const currency   = business?.payment?.currency || 'D';
+  const custName   = session?.customerName ? `, ${session.customerName}` : '';
+  const shortId    = order.shortId || '???';
+  const itemSummary = formatOrderItemSummary(order);
+  const priceStr   = order.totalPrice ? `${currency}${formatMoney(order.totalPrice)}` : null;
+
+  const statusLine = stage === 'preparing'
+    ? `­ƒƒí Status: *Preparing*`
+    : `Ô£à Status: *Payment Confirmed*`;
+
+  return {
+    type: 'buttons',
+    body:
+      `­ƒæï *Welcome back${custName}!*\n\n` +
+      `Your order *#${shortId}* is currently in progress.\n\n` +
+      `­ƒì¢ ${itemSummary}` +
+      (priceStr ? `\n­ƒÆ░ *${priceStr}*` : '') +
+      `\n${statusLine}\n\n` +
+      `We'll notify you when it's ready. ­ƒÖÅ`,
+    buttons: [
+      { id: 'TRACK_ORDER', title: '­ƒöì Track Order'      },
+      { id: 'ORDER',       title: '­ƒøÆ Order Again'      },
+      { id: 'SUPPORT',     title: '­ƒÆ¼ Contact Business' },
+    ],
+  };
+}
+
+const _multipleOrders = (orders, business) => {
+  // [FIX-LIST-LIMIT] WhatsApp enforces a hard cap of 10 rows across ALL sections
+  // in a single list message. We always include a CANCEL_ALL action row (1 row),
+  // so order rows must be capped at 9. With .limit(10) in the query, up to 10 orders
+  // can come back ÔÇö the 10th would push the total to 11, causing Meta to reject the
+  // entire message with a 400 error and silently drop the response to the customer.
+  const MAX_ORDER_ROWS = 9;
+  const displayOrders = orders.slice(0, MAX_ORDER_ROWS);
+
+  const rows = displayOrders.map(o => ({
+    id:          `ORDER_STATUS_${o.shortId || String(o._id).slice(-6).toUpperCase()}`,
+    title:       `#${o.shortId || '???'} ÔÇö ${(o.item || 'Order').slice(0, 24)}`,
+    description: `${_statusLabel(o.status)} ┬À ${_paymentLabel(o.paymentStatus)}`,
+  }));
+
+  const overflowNote = orders.length > MAX_ORDER_ROWS
+    ? ` _(showing ${MAX_ORDER_ROWS} of ${orders.length})_`
+    : '';
+
+  return {
+    order:  orders[0],
+    orders,
+    state:  ACTIVE_ORDER_STATES.MULTIPLE_ACTIVE_ORDERS,
+    shouldIntercept: true,
+    uiResponse: {
+      type: 'list',
+      body: `­ƒôª You have *${orders.length} active orders*.${overflowNote}\n\nWhich one would you like to check?`,
+      // [FIX-AOR-BTNLABEL] Was 'buttonText' ÔÇö the dispatcher's list builder only reads
+      // ui.button / ui.buttonLabel (see core/whatsapp/dispatcher.js), so this custom
+      // label was silently ignored and every multiple-orders list rendered with the
+      // generic 'Choose option' fallback instead of 'View My Orders'.
+      button: 'View My Orders',
+      sections: [
+        {
+          title: 'Active Orders',
+          rows,
+        },
+        {
+          title: 'Actions',
+          rows: [{
+            id:          'CANCEL_ALL',
+            title:       'ÔØî Cancel All Orders',
+            description: 'Cancel all your pending and confirmed orders',
+          }],
+        },
+      ],
+    },
+  };
+}
+
+const _noActiveOrder = () => {
+  return {
+    order:  null,
+    orders: [],
+    state:  ACTIVE_ORDER_STATES.NO_ACTIVE_ORDER,
+    shouldIntercept: false,
+    uiResponse: null,
+  };
+}
+
+// ÔöÇÔöÇ Helpers ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
+
+const _formatDate = (date) => {
+  try {
+    const d  = new Date(date);
+    const dd = String(d.getDate()).padStart(2, '0');
+    const mo = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][d.getMonth()];
+    const hh = String(d.getHours()).padStart(2, '0');
+    const mm = String(d.getMinutes()).padStart(2, '0');
+    return `${dd} ${mo} ${hh}:${mm}`;
+  } catch {
+    return null;
+  }
+}
+
+const _statusLabel = (status) => {
+  const MAP = {
+    pending:                     'Pending',
+    payment_pending_verification:'Awaiting Payment',
+    confirmed:                   'Confirmed',
+    preparing:                   'Preparing',
+    ready:                       'Ready',
+    out_for_delivery:            'Out for Delivery',
+    delivered:                   'Delivered',
+    completed:                   'Completed',
+    cancelled:                   'Cancelled',
+    rejected:                    'Rejected',
+    payment_failed:              'Payment Failed',
+  };
+  return MAP[status] || status || 'Unknown';
+}
+
+const _paymentLabel = (paymentStatus) => {
+  const MAP = {
+    unpaid:                      'Unpaid',
+    proof_received:              'Screenshot received',
+    payment_pending_verification:'Under review',
+    self_confirmed:              'Self-confirmed',
+    confirmed:                   'Payment confirmed',
+    paid:                        'Paid',
+    rejected:                    'Payment rejected',
+    payment_failed:              'Payment failed',
+    cancelled:                   'Cancelled',
+    refunded:                    'Refunded',
+  };
+  return MAP[paymentStatus] || paymentStatus || '';
+}

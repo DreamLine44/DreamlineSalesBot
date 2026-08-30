@@ -1,19 +1,19 @@
-/**
+﻿/**
  * modules/cosmetics/flows/orderFlow.js
  *
- * COSMETICS ORDER FLOW — dedicated, not a restaurant proxy.
+ * COSMETICS ORDER FLOW â€” dedicated, not a restaurant proxy.
  *
  * Cosmetics-specific logic:
- *   • Skin-type/concern context collected BEFORE item selection
+ *   â€¢ Skin-type/concern context collected BEFORE item selection
  *     (customer who mentions "oily skin" gets filtered recommendations)
- *   • Shade / variant selection step
- *   • Quantity (cosmetics are typically 1–3 units)
- *   • Delivery only (no dine-in / table)
- *   • Optional personalisation note ("gift wrap", "send with card")
+ *   â€¢ Shade / variant selection step
+ *   â€¢ Quantity (cosmetics are typically 1â€“3 units)
+ *   â€¢ Delivery only (no dine-in / table)
+ *   â€¢ Optional personalisation note ("gift wrap", "send with card")
  *
- * Steps: SKIN_CONTEXT → SELECT_ITEM → SELECT_SHADE → QUANTITY → GIFT_NOTE → CONFIRM → [PAYMENT?]
+ * Steps: SKIN_CONTEXT â†’ SELECT_ITEM â†’ SELECT_SHADE â†’ QUANTITY â†’ GIFT_NOTE â†’ CONFIRM â†’ [PAYMENT?]
  *
- * SKIN_CONTEXT is skippable — if customer taps "Shop Products" directly they go
+ * SKIN_CONTEXT is skippable â€” if customer taps "Shop Products" directly they go
  * straight to SELECT_ITEM without being forced through the skin-type wizard.
  */
 
@@ -22,7 +22,7 @@ import { completeFlow, cancelFlow } from '../../../core/conversations/flowEngine
 import { getAIReply }     from '../../../core/ai/providers/aiRouter.js';
 import { findBestMatch }  from '../../../utils/matchEngine.js';
 import { parseQuantity }  from '../../../utils/parseQuantity.js';
-import { saveOrder }      from '../../../services/orderService.js';
+import { saveOrder }      from '../../../services/order/orderService.js';
 import { trackOrderAnalytics } from '../../../core/analytics/analyticsService.js';
 import logger             from '../../../config/logger.js';
 import { buildWhatsAppImageUrl } from '../../../config/cloudinary.js';
@@ -42,33 +42,33 @@ export async function handleCosmeticsOrderFlow({ session, message, business, ten
   const data  = session.data || {};
   const menu  = (business?.menuItems || []).filter(i => i.available !== false);
 
-  // ── No menu ───────────────────────────────────────────────────────────────
+  // â”€â”€ No menu â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   if (!menu.length) {
     await updateSession(session.customerPhone, session.tenantId, { currentFlow: null, step: null, data: {} });
     return {
       type:    'buttons',
-      body:    '💄 Our product range is being updated. Please check back soon or contact us.',
-      buttons: [{ id: 'SUPPORT', title: '💬 Contact Us' }, { id: 'SHOW_MENU', title: '🔄 Start Over' }],
+      body:    'ðŸ’„ Our product range is being updated. Please check back soon or contact us.',
+      buttons: [{ id: 'SUPPORT', title: 'ðŸ’¬ Contact Us' }, { id: 'SHOW_MENU', title: 'ðŸ”„ Start Over' }],
     };
   }
 
-  // ── INIT ──────────────────────────────────────────────────────────────────
+  // â”€â”€ INIT â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   if (message === null) {
     await updateSession(session.customerPhone, session.tenantId, {
       step: 'SKIN_CONTEXT', data: {}, menuViewed: false,
     });
     return {
       type:   'list',
-      body:   `💄 *Shop Products*\n\nWould you like personalised recommendations based on your skin type, or browse all products?`,
+      body:   `ðŸ’„ *Shop Products*\n\nWould you like personalised recommendations based on your skin type, or browse all products?`,
       button: 'Choose',
       sections: [{
         title: 'How to shop',
         rows: [
-          { id: 'SKIN_DRY',    title: '💧 Dry Skin',          description: 'Feels tight, flaky, or dull'      },
-          { id: 'SKIN_OILY',   title: '✨ Oily Skin',          description: 'Shiny, prone to breakouts'        },
-          { id: 'SKIN_COMBO',  title: '🌟 Combination Skin',   description: 'Oily T-zone, dry cheeks'          },
-          { id: 'SKIN_NORMAL', title: '😊 Normal / All Types', description: 'Generally balanced skin'          },
-          { id: 'SKIP_SKIN',   title: '🛍 Browse All Products', description: 'Skip and see everything'         },
+          { id: 'SKIN_DRY',    title: 'ðŸ’§ Dry Skin',          description: 'Feels tight, flaky, or dull'      },
+          { id: 'SKIN_OILY',   title: 'âœ¨ Oily Skin',          description: 'Shiny, prone to breakouts'        },
+          { id: 'SKIN_COMBO',  title: 'ðŸŒŸ Combination Skin',   description: 'Oily T-zone, dry cheeks'          },
+          { id: 'SKIN_NORMAL', title: 'ðŸ˜Š Normal / All Types', description: 'Generally balanced skin'          },
+          { id: 'SKIP_SKIN',   title: 'ðŸ› Browse All Products', description: 'Skip and see everything'         },
         ],
       }],
     };
@@ -76,7 +76,7 @@ export async function handleCosmeticsOrderFlow({ session, message, business, ten
 
   switch (step) {
 
-    // ── SKIN_CONTEXT ──────────────────────────────────────────────────────────
+    // â”€â”€ SKIN_CONTEXT â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     case 'SKIN_CONTEXT': {
       const SKIN_MAP = {
         'SKIN_DRY':    'dry',
@@ -108,7 +108,7 @@ export async function handleCosmeticsOrderFlow({ session, message, business, ten
       return _buildCosmeticsMenu(menu, business, null);
     }
 
-    // ── SELECT_ITEM ───────────────────────────────────────────────────────────
+    // â”€â”€ SELECT_ITEM â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     case 'SELECT_ITEM': {
       if (!isInteractive && !session.menuViewed && /^\d+$/.test(raw)) {
         await updateSession(session.customerPhone, session.tenantId, { menuViewed: true });
@@ -116,10 +116,10 @@ export async function handleCosmeticsOrderFlow({ session, message, business, ten
       }
       if (clean.length < 2) return _buildCosmeticsMenu(menu, business, data.skinType || null);
 
-      // [CART-AI] Try multi-item parsing FIRST — "a lipstick and 2 cleansers"
+      // [CART-AI] Try multi-item parsing FIRST â€” "a lipstick and 2 cleansers"
       // resolves to 2+ distinct product lines and jumps straight to
       // CART_REVIEW. Restricted to messages where NONE of the resolved
-      // items have shade/variant options — a multi-item cart line has no
+      // items have shade/variant options â€” a multi-item cart line has no
       // per-line shade picker (yet), so a shade-bearing product always
       // falls through to the existing single-item SELECT_SHADE flow below,
       // one product at a time, exactly as before.
@@ -132,12 +132,12 @@ export async function handleCosmeticsOrderFlow({ session, message, business, ten
         });
         let note = buildUnmatchedNote(multi.unmatchedSegments);
         if (overflowCount > 0) {
-          note += `\n\n_(Your cart can hold up to ${business?.multiItemCart?.maxItems || 10} items — ${overflowCount} extra item${overflowCount > 1 ? 's were' : ' was'} left out.)_`;
+          note += `\n\n_(Your cart can hold up to ${business?.multiItemCart?.maxItems || 10} items â€” ${overflowCount} extra item${overflowCount > 1 ? 's were' : ' was'} left out.)_`;
         }
         return _buildCosmeticsCartSummaryUI(cappedCart, business, note);
       }
 
-      // [AUDIT-FIX-PARSEINT] parseInt("2 red shirts", 10) === 2, NOT NaN — so any
+      // [AUDIT-FIX-PARSEINT] parseInt("2 red shirts", 10) === 2, NOT NaN â€” so any
       // message merely STARTING with a digit silently hijacked the menu index
       // once menuViewed was true (the normal case). Only trust the parsed index
       // for a bare number or an interactive tap; everything else falls through
@@ -160,10 +160,10 @@ export async function handleCosmeticsOrderFlow({ session, message, business, ten
           }).catch(() => null);
           return {
             type: 'buttons',
-            body: aiReply || `Did you mean *${matched.name}*? 💄`,
+            body: aiReply || `Did you mean *${matched.name}*? ðŸ’„`,
             buttons: [
-              { id: 'CONFIRM',   title: `✅ Yes, ${matched.name.slice(0, 15)}` },
-              { id: 'SHOW_MENU', title: '🛍 Browse All'                         },
+              { id: 'CONFIRM',   title: `âœ… Yes, ${matched.name.slice(0, 15)}` },
+              { id: 'SHOW_MENU', title: 'ðŸ› Browse All'                         },
             ],
           };
         }
@@ -181,22 +181,22 @@ export async function handleCosmeticsOrderFlow({ session, message, business, ten
       if (_shadeOptions(item).length) {
         nextPrompt = _buildShadeUI(item);
       } else {
-        const price = item.price ? ` — ${item.currency || 'D'}${formatMoney(item.price)}` : '';
+        const price = item.price ? ` â€” ${item.currency || 'D'}${formatMoney(item.price)}` : '';
         const desc  = item.description ? `\n_${item.description}_` : '';
         nextPrompt = {
           type: 'buttons',
-          body: `💄 *${item.name}*${price}${desc}\n\nHow many would you like?`,
+          body: `ðŸ’„ *${item.name}*${price}${desc}\n\nHow many would you like?`,
           buttons: [
-            { id: 'QTY_1', title: '1️⃣  1' },
-            { id: 'QTY_2', title: '2️⃣  2' },
-            { id: 'QTY_3', title: '3️⃣  3' },
+            { id: 'QTY_1', title: '1ï¸âƒ£  1' },
+            { id: 'QTY_2', title: '2ï¸âƒ£  2' },
+            { id: 'QTY_3', title: '3ï¸âƒ£  3' },
           ],
           footer: 'Or type any number',
         };
       }
 
       // [FEAT-CATALOG-IMAGES] Same pattern as restaurant/retail/fashion/
-      // electronics — the tenant's uploaded photo is stored correctly
+      // electronics â€” the tenant's uploaded photo is stored correctly
       // regardless of vertical, but cosmetics never sent it before.
       const imageUrl = item?.image?.url;
       if (imageUrl && item?.showImageOnSelect !== false) {
@@ -204,7 +204,7 @@ export async function handleCosmeticsOrderFlow({ session, message, business, ten
           {
             type:    'image',
             url:     buildWhatsAppImageUrl(imageUrl),
-            caption: `*${item.name}*${item.price ? ` — ${item.currency || 'D'}${formatMoney(item.price)}` : ''}`,
+            caption: `*${item.name}*${item.price ? ` â€” ${item.currency || 'D'}${formatMoney(item.price)}` : ''}`,
           },
           nextPrompt,
         ];
@@ -212,7 +212,7 @@ export async function handleCosmeticsOrderFlow({ session, message, business, ten
       return nextPrompt;
     }
 
-    // ── CART_REVIEW ───────────────────────────────────────────────────────────
+    // â”€â”€ CART_REVIEW â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     // [CART-AI] Reached once data.cart has 2+ distinct shade-less products.
     // Checkout skips SELECT_SHADE/QUANTITY (already resolved per line) and
     // goes straight to GIFT_NOTE, same convergence point the single-item
@@ -231,10 +231,10 @@ export async function handleCosmeticsOrderFlow({ session, message, business, ten
         });
         return {
           type: 'buttons',
-          body: `💄 *Your Order:*\n\n${formatCartSummary(cart, business)}\n\nAny special requests for the whole order?\n_(e.g. "Gift wrap", "Include a card")_`,
+          body: `ðŸ’„ *Your Order:*\n\n${formatCartSummary(cart, business)}\n\nAny special requests for the whole order?\n_(e.g. "Gift wrap", "Include a card")_`,
           buttons: [
-            { id: 'GIFT_NONE', title: '✅ No special requests' },
-            { id: 'CANCEL',    title: '❌ Cancel'               },
+            { id: 'GIFT_NONE', title: 'âœ… No special requests' },
+            { id: 'CANCEL',    title: 'âŒ Cancel'               },
           ],
           footer: 'Or type your request and send',
         };
@@ -246,7 +246,7 @@ export async function handleCosmeticsOrderFlow({ session, message, business, ten
         return _buildCosmeticsMenu(menu, business, data.skinType || null);
       }
 
-      // [CART-AI-MODIFY] "remove the lipstick" / "make it 2 cleansers" —
+      // [CART-AI-MODIFY] "remove the lipstick" / "make it 2 cleansers" â€”
       // resolved against items ALREADY in the cart, checked before treating
       // the message as an attempt to add a brand-new product.
       const mod = parseCartModification(cart, raw);
@@ -261,7 +261,7 @@ export async function handleCosmeticsOrderFlow({ session, message, business, ten
           mod.type === 'remove' ? '\n\n_(Removed from your cart.)_' : '\n\n_(Updated the quantity.)_');
       }
 
-      // Treat the message itself as more products to add — same shade-less
+      // Treat the message itself as more products to add â€” same shade-less
       // restriction as SELECT_ITEM above.
       const multiAdd = parseMultiItemMessage(menu, raw);
       let newLines = null;
@@ -280,16 +280,16 @@ export async function handleCosmeticsOrderFlow({ session, message, business, ten
         await updateSession(session.customerPhone, session.tenantId, { data: { ...data, cart: cappedCart } });
         let note = multiAdd ? buildUnmatchedNote(multiAdd.unmatchedSegments) : '';
         if (overflowCount > 0) {
-          note += `\n\n_(Your cart can hold up to ${business?.multiItemCart?.maxItems || 10} items — ${overflowCount} extra item${overflowCount > 1 ? 's were' : ' was'} left out.)_`;
+          note += `\n\n_(Your cart can hold up to ${business?.multiItemCart?.maxItems || 10} items â€” ${overflowCount} extra item${overflowCount > 1 ? 's were' : ' was'} left out.)_`;
         }
         return _buildCosmeticsCartSummaryUI(cappedCart, business, note);
       }
 
       return _buildCosmeticsCartSummaryUI(cart, business,
-        `\n\n_(I didn't catch a product in that — try naming something, or tap Checkout/Add More.)_`);
+        `\n\n_(I didn't catch a product in that â€” try naming something, or tap Checkout/Add More.)_`);
     }
 
-    // ── SELECT_SHADE ──────────────────────────────────────────────────────────
+    // â”€â”€ SELECT_SHADE â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     case 'SELECT_SHADE': {
       const item = data.item;
       const shades = _shadeOptions(item);
@@ -308,20 +308,20 @@ export async function handleCosmeticsOrderFlow({ session, message, business, ten
         step: 'QUANTITY', data: { ...data, shade },
       });
 
-      const price = item.price ? ` — ${item.currency || 'D'}${formatMoney(item.price)}` : '';
+      const price = item.price ? ` â€” ${item.currency || 'D'}${formatMoney(item.price)}` : '';
       return {
         type: 'buttons',
-        body: `💄 *${item.name}* — ${shade}${price}\n\nHow many would you like?`,
+        body: `ðŸ’„ *${item.name}* â€” ${shade}${price}\n\nHow many would you like?`,
         buttons: [
-          { id: 'QTY_1', title: '1️⃣  1' },
-          { id: 'QTY_2', title: '2️⃣  2' },
-          { id: 'QTY_3', title: '3️⃣  3' },
+          { id: 'QTY_1', title: '1ï¸âƒ£  1' },
+          { id: 'QTY_2', title: '2ï¸âƒ£  2' },
+          { id: 'QTY_3', title: '3ï¸âƒ£  3' },
         ],
         footer: 'Or type any number',
       };
     }
 
-    // ── QUANTITY ──────────────────────────────────────────────────────────────
+    // â”€â”€ QUANTITY â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     case 'QUANTITY': {
       const QTY = { 'QTY_1': 1, 'QTY_2': 2, 'QTY_3': 3 };
       const qty = QTY[raw.toUpperCase()] ?? parseQuantity(raw);
@@ -330,11 +330,11 @@ export async function handleCosmeticsOrderFlow({ session, message, business, ten
       if (!qty || qty < 1) {
         return {
           type:    'buttons',
-          body:    `💄 How many *${data.item?.name}* would you like?`,
+          body:    `ðŸ’„ How many *${data.item?.name}* would you like?`,
           buttons: [
-            { id: 'QTY_1', title: '1️⃣  1' },
-            { id: 'QTY_2', title: '2️⃣  2' },
-            { id: 'QTY_3', title: '3️⃣  3' },
+            { id: 'QTY_1', title: '1ï¸âƒ£  1' },
+            { id: 'QTY_2', title: '2ï¸âƒ£  2' },
+            { id: 'QTY_3', title: '3ï¸âƒ£  3' },
           ],
           footer: `Max: ${MAX} per order`,
         };
@@ -342,8 +342,8 @@ export async function handleCosmeticsOrderFlow({ session, message, business, ten
       if (qty > MAX) {
         return {
           type:    'buttons',
-          body:    `⚠️ Maximum is *${MAX}* per order. For bulk orders please contact us.`,
-          buttons: [{ id: 'SUPPORT', title: '💬 Contact Us' }, { id: 'CANCEL', title: '❌ Cancel' }],
+          body:    `âš ï¸ Maximum is *${MAX}* per order. For bulk orders please contact us.`,
+          buttons: [{ id: 'SUPPORT', title: 'ðŸ’¬ Contact Us' }, { id: 'CANCEL', title: 'âŒ Cancel' }],
         };
       }
 
@@ -353,16 +353,16 @@ export async function handleCosmeticsOrderFlow({ session, message, business, ten
 
       return {
         type: 'buttons',
-        body: `🎁 Any special requests?\n_(e.g. "Gift wrap", "Include a card", "Fragrance-free packaging")_`,
+        body: `ðŸŽ Any special requests?\n_(e.g. "Gift wrap", "Include a card", "Fragrance-free packaging")_`,
         buttons: [
-          { id: 'GIFT_NONE', title: '✅ No special requests' },
-          { id: 'CANCEL',    title: '❌ Cancel'               },
+          { id: 'GIFT_NONE', title: 'âœ… No special requests' },
+          { id: 'CANCEL',    title: 'âŒ Cancel'               },
         ],
         footer: 'Or type your request and send',
       };
     }
 
-    // ── GIFT_NOTE ─────────────────────────────────────────────────────────────
+    // â”€â”€ GIFT_NOTE â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     case 'GIFT_NOTE': {
       const giftNote = raw.toUpperCase() === 'GIFT_NONE' ? null : raw;
       const cart     = Array.isArray(data.cart) ? data.cart : [];
@@ -380,7 +380,7 @@ export async function handleCosmeticsOrderFlow({ session, message, business, ten
       const total    = isCart ? cartTotal(cart) : data.totalPrice;
       const itemsLine = isCart
         ? formatCartSummary(cart, business)
-        : `💄 *${qty}× ${item?.name}${shade}*`;
+        : `ðŸ’„ *${qty}Ã— ${item?.name}${shade}*`;
 
       await updateSession(session.customerPhone, session.tenantId, {
         step: 'CONFIRM', data: { ...data, giftNote: giftNote || null, totalPrice: total },
@@ -389,20 +389,20 @@ export async function handleCosmeticsOrderFlow({ session, message, business, ten
       return {
         type: 'buttons',
         body:
-          `🧾 *Order Summary*\n\n` +
+          `ðŸ§¾ *Order Summary*\n\n` +
           `${itemsLine}\n` +
-          (total != null ? `💰 *Total:* ${currency}${formatMoney(total)}\n` : '') +
-          (giftNote ? `🎁 *Note:* ${giftNote}\n` : '') +
+          (total != null ? `ðŸ’° *Total:* ${currency}${formatMoney(total)}\n` : '') +
+          (giftNote ? `ðŸŽ *Note:* ${giftNote}\n` : '') +
           `\nReady to confirm?`,
         buttons: [
-          { id: 'CONFIRM', title: '✅ Confirm Order' },
-          { id: 'CANCEL',  title: '❌ Cancel'         },
+          { id: 'CONFIRM', title: 'âœ… Confirm Order' },
+          { id: 'CANCEL',  title: 'âŒ Cancel'         },
         ],
       };
     }
 
-    // ── CONFIRM ───────────────────────────────────────────────────────────────
-    // [FIX-DUALLAYER-CONFIRM] See core/shared/confirmationMatcher.js — was
+    // â”€â”€ CONFIRM â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // [FIX-DUALLAYER-CONFIRM] See core/shared/confirmationMatcher.js â€” was
     // exact-match-only, so a typed "yes please"/"go ahead" never registered.
     case 'CONFIRM': {
       const { resolveConfirmation } = await import('../../../core/shared/confirmationMatcher.js');
@@ -411,10 +411,10 @@ export async function handleCosmeticsOrderFlow({ session, message, business, ten
       if (verdict !== 'yes') {
         return {
           type:    'buttons',
-          body:    '💄 Ready to place your order?',
+          body:    'ðŸ’„ Ready to place your order?',
           buttons: [
-            { id: 'CONFIRM', title: '✅ Confirm Order' },
-            { id: 'CANCEL',  title: '❌ Cancel'         },
+            { id: 'CONFIRM', title: 'âœ… Confirm Order' },
+            { id: 'CANCEL',  title: 'âŒ Cancel'         },
           ],
         };
       }
@@ -431,7 +431,7 @@ export async function handleCosmeticsOrderFlow({ session, message, business, ten
           tenantId:      session.tenantId,
           customerPhone: session.customerPhone,
           customerName:  session.customerName,
-          // [CART-AI] Multi-item cart → items[]; orderService.resolveOrderFields()
+          // [CART-AI] Multi-item cart â†’ items[]; orderService.resolveOrderFields()
           // mirrors items[0] into item/quantity/addOns for backward-compat readers.
           ...(isCart
             ? { items: cartToOrderItems(cart), totalPrice: cartTotal(cart) }
@@ -452,10 +452,10 @@ export async function handleCosmeticsOrderFlow({ session, message, business, ten
         });
         return {
           type:    'buttons',
-          body:    `⚠️ *Something went wrong saving your order.*\n\nPlease try again — tap below to start over.`,
+          body:    `âš ï¸ *Something went wrong saving your order.*\n\nPlease try again â€” tap below to start over.`,
           buttons: [
-            { id: 'ORDER',    title: '🛒 Try Again'   },
-            { id: 'SUPPORT',  title: '💬 Contact Us'  },
+            { id: 'ORDER',    title: 'ðŸ›’ Try Again'   },
+            { id: 'SUPPORT',  title: 'ðŸ’¬ Contact Us'  },
           ],
         };
       }
@@ -467,7 +467,7 @@ export async function handleCosmeticsOrderFlow({ session, message, business, ten
         await updateSession(session.customerPhone, session.tenantId, {
           step: 'PAYMENT_PROOF', currentFlow: 'ORDER',
         });
-        // [FIX-PAYREF-COSMETICS] Generate and persist paymentReference — mirrors restaurant/bakery pattern.
+        // [FIX-PAYREF-COSMETICS] Generate and persist paymentReference â€” mirrors restaurant/bakery pattern.
         const shortIdRef = savedOrder?.shortId || '';
         let ref = null;
         if (shortIdRef) {
@@ -485,28 +485,28 @@ export async function handleCosmeticsOrderFlow({ session, message, business, ten
 
       // [FIX-BUG3-COSMETICS] Upgrade admin alert from dispatchText (plain text, no buttons)
       // to dispatchMessage with APPROVE_/REJECT_ buttons. Also parks session at
-      // AWAIT_ADMIN_CONFIRM — mirrors restaurant/electronics/bakery pattern.
+      // AWAIT_ADMIN_CONFIRM â€” mirrors restaurant/electronics/bakery pattern.
       try {
         const adminPhone = business?.adminPhone || tenant?.adminPhone;
         if (adminPhone && tenant && savedOrder) {
           const { dispatchMessage } = await import('../../../core/whatsapp/dispatcher.js');
           const currency = business?.payment?.currency || 'D';
           const itemsLine = isCart
-            ? `💄 ${formatCartSummary(cart, business).replace(/\n/g, '\n💄 ')}\n`
-            : `💄 *${data.quantity}× ${data.item?.name}${shade}*\n`;
+            ? `ðŸ’„ ${formatCartSummary(cart, business).replace(/\n/g, '\nðŸ’„ ')}\n`
+            : `ðŸ’„ *${data.quantity}Ã— ${data.item?.name}${shade}*\n`;
           await dispatchMessage(adminPhone, {
             type: 'buttons',
             body:
-              `🔔 *New Cosmetics Order — ${business?.name || 'Beauty'}*\n\n` +
-              `📞 Customer: *${session.customerPhone}*\n` +
+              `ðŸ”” *New Cosmetics Order â€” ${business?.name || 'Beauty'}*\n\n` +
+              `ðŸ“ž Customer: *${session.customerPhone}*\n` +
               itemsLine +
-              (skinNote ? `🌿 ${skinNote}\n` : '') +
-              (data.giftNote ? `🎁 ${data.giftNote}\n` : '') +
-              (data.totalPrice ? `💰 Total: *${currency}${formatMoney(data.totalPrice)}*\n` : '') +
-              `🔖 Ref: \`${savedOrder?.shortId || 'N/A'}\``,
+              (skinNote ? `ðŸŒ¿ ${skinNote}\n` : '') +
+              (data.giftNote ? `ðŸŽ ${data.giftNote}\n` : '') +
+              (data.totalPrice ? `ðŸ’° Total: *${currency}${formatMoney(data.totalPrice)}*\n` : '') +
+              `ðŸ”– Ref: \`${savedOrder?.shortId || 'N/A'}\``,
             buttons: [
-              { id: `APPROVE_${savedOrder.shortId}`, title: '✅ Confirm Order' },
-              { id: `REJECT_${savedOrder.shortId}`,  title: '❌ Cancel Order'  },
+              { id: `APPROVE_${savedOrder.shortId}`, title: 'âœ… Confirm Order' },
+              { id: `REJECT_${savedOrder.shortId}`,  title: 'âŒ Cancel Order'  },
             ],
           }, tenant).catch(e => logger.warn('[CosmeticsOrder] admin notify failed', { err: e.message }));
         }
@@ -519,11 +519,11 @@ export async function handleCosmeticsOrderFlow({ session, message, business, ten
         data.totalPrice || 0,
         session.tenantId,
       ).catch(() => {});
-      // [AUDIT-FIX-4] recordRevenue() moved to adminCommandService.confirmPayment() —
+      // [AUDIT-FIX-4] recordRevenue() moved to adminCommandService.confirmPayment() â€”
       // recording it here at placement time counted unconfirmed/later-rejected orders
       // as revenue. See adminCommandService.js AUDIT-FIX-4 for full rationale.
 
-      // Park session — customer waits for admin confirmation
+      // Park session â€” customer waits for admin confirmation
       await updateSession(session.customerPhone, session.tenantId, {
         step: 'AWAIT_ADMIN_CONFIRM', currentFlow: 'ORDER',
         data: { ...data },
@@ -532,12 +532,12 @@ export async function handleCosmeticsOrderFlow({ session, message, business, ten
       return {
         type: 'text',
         body:
-          `✅ *Order Received!* 💄\n\n` +
+          `âœ… *Order Received!* ðŸ’„\n\n` +
           (isCart
             ? `${formatCartSummary(cart, business)}\n`
-            : `*${data.quantity}× ${data.item?.name}${shade}*\n`) +
-          (data.giftNote ? `🎁 ${data.giftNote}\n` : '') +
-          `\n⏳ Our team will confirm your order shortly. Please wait for confirmation before placing a new one. 🙏`,
+            : `*${data.quantity}Ã— ${data.item?.name}${shade}*\n`) +
+          (data.giftNote ? `ðŸŽ ${data.giftNote}\n` : '') +
+          `\nâ³ Our team will confirm your order shortly. Please wait for confirmation before placing a new one. ðŸ™`,
       };
     }
 
@@ -547,18 +547,18 @@ export async function handleCosmeticsOrderFlow({ session, message, business, ten
   }
 }
 
-// ── UI Helpers ────────────────────────────────────────────────────────────────
+// â”€â”€ UI Helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 function _buildCosmeticsCartSummaryUI(cart, business, note = '') {
   const currency = business?.payment?.currency || 'D';
   const total = cartTotal(cart);
   return {
     type: 'buttons',
-    body: `🧾 *Your Order*\n\n${formatCartSummary(cart, business)}${total != null ? `\n\n💰 Total: *${currency}${formatMoney(total)}*` : ''}${note}\n\nReady to checkout, or add something else?`,
+    body: `ðŸ§¾ *Your Order*\n\n${formatCartSummary(cart, business)}${total != null ? `\n\nðŸ’° Total: *${currency}${formatMoney(total)}*` : ''}${note}\n\nReady to checkout, or add something else?`,
     buttons: [
-      { id: 'CONFIRM',          title: '✅ Checkout'  },
-      { id: 'ADD_ANOTHER_ITEM', title: '➕ Add More'   },
-      { id: 'CANCEL',           title: '❌ Cancel'     },
+      { id: 'CONFIRM',          title: 'âœ… Checkout'  },
+      { id: 'ADD_ANOTHER_ITEM', title: 'âž• Add More'   },
+      { id: 'CANCEL',           title: 'âŒ Cancel'     },
     ],
   };
 }
@@ -566,20 +566,20 @@ function _buildCosmeticsCartSummaryUI(cart, business, note = '') {
 function _buildCosmeticsMenu(items, business, skinType = null) {
   const name   = business?.businessName || business?.name || 'Beauty';
   const header = skinType
-    ? `💄 Products for *${skinType} skin*`
-    : `💄 *${name}*`;
+    ? `ðŸ’„ Products for *${skinType} skin*`
+    : `ðŸ’„ *${name}*`;
 
   if (!items.length) {
     return {
       type:    'buttons',
       body:    `${header}\n\nNo products available right now. Please check back soon.`,
-      buttons: [{ id: 'SUPPORT', title: '💬 Contact Us' }],
+      buttons: [{ id: 'SUPPORT', title: 'ðŸ’¬ Contact Us' }],
     };
   }
 
-  // [FIX-LIST-CAP-2] No build-time slice needed here — dispatcher.js now
+  // [FIX-LIST-CAP-2] No build-time slice needed here â€” dispatcher.js now
   // hard-caps the OUTGOING message at Meta's real limit of 10 rows TOTAL
-  // across all sections (not 10/section as previously assumed here — that
+  // across all sections (not 10/section as previously assumed here â€” that
   // assumption caused production 400s: "Total row count exceed max
   // allowed count: 10"). If this list has more than 10 items, the
   // dispatcher truncates and adds a footer hint; consider category
@@ -591,15 +591,15 @@ function _buildCosmeticsMenu(items, business, skinType = null) {
     description: [
       item.description?.slice(0, 40),
       item.price ? `${item.currency || 'D'}${formatMoney(item.price)}` : null,
-    ].filter(Boolean).join(' — ').slice(0, 72) || undefined,
+    ].filter(Boolean).join(' â€” ').slice(0, 72) || undefined,
   }));
 
   return {
     type:   'list',
     header,
     body:   skinType
-      ? `Products recommended for *${skinType} skin* — tap to select:`
-      : `Our full range — tap a product to select:`,
+      ? `Products recommended for *${skinType} skin* â€” tap to select:`
+      : `Our full range â€” tap a product to select:`,
     button: 'View Products',
     rows,
   };
@@ -609,7 +609,7 @@ function _buildCosmeticsMenu(items, business, skinType = null) {
 // round-trips through Mongoose (see BusinessConfig.js FIX-VARIANTS-SCHEMA)
 // and the only field waCatalogHelpers.js (buildRetailerId/resolveCatalogItem/
 // buildCategorizedSections) reads when syncing to and resolving from Meta's
-// WA Catalog. item.shades is NOT in the schema — any value written to it via
+// WA Catalog. item.shades is NOT in the schema â€” any value written to it via
 // addMenuItem/updateMenuItem is silently dropped by Mongoose strict mode, so
 // it is always undefined on a persisted item. That meant SELECT_SHADE could
 // never actually trigger for any cosmetics tenant, and any shade options a
@@ -629,7 +629,7 @@ function _buildShadeUI(item) {
   if (shades.length <= 3) {
     return {
       type: 'buttons',
-      body: `💄 *${item.name}*\n\nWhich shade would you like?`,
+      body: `ðŸ’„ *${item.name}*\n\nWhich shade would you like?`,
       buttons: shades.slice(0, 3).map(s => ({
         id:    `SHADE_${String(s).toUpperCase().replace(/\s+/g, '_')}`,
         title: String(s),
@@ -638,7 +638,7 @@ function _buildShadeUI(item) {
   }
   return {
     type:   'list',
-    body:   `💄 *${item.name}*\n\nWhich shade would you like?`,
+    body:   `ðŸ’„ *${item.name}*\n\nWhich shade would you like?`,
     button: 'Choose shade',
     sections: [{
       title: 'Available Shades',
@@ -650,3 +650,4 @@ function _buildShadeUI(item) {
     footer: 'Or type your preferred shade',
   };
 }
+

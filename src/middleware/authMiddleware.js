@@ -1,5 +1,5 @@
-/**
- * middleware/authMiddleware.js — WhatSalesAgent2 (Production)
+﻿/**
+ * middleware/authMiddleware.js â€” WhatSalesAgent2 (Production)
  *
  * Changes from dev:
  *  - requireApiKey now also accepts per-tenant API keys (apiKeyHash lookup),
@@ -12,9 +12,9 @@ import crypto from 'crypto';
 import Tenant     from '../models/Tenant.js';
 import AdminUser  from '../models/AdminUser.js';
 import logger     from '../config/logger.js';
-import { verifySessionToken } from '../services/adminAuthService.js';
+import { verifySessionToken } from '../services/admin/adminAuthService.js';
 
-/** Constant-time string comparison — prevents timing side-channel attacks.
+/** Constant-time string comparison â€” prevents timing side-channel attacks.
  *
  * [FIX #14] The old implementation used padEnd(64), which is a no-op for
  * strings longer than 64 chars. timingSafeEqual then received buffers of
@@ -33,18 +33,18 @@ function safeCompare(a, b) {
   Buffer.from(a).copy(aBuf);
   Buffer.from(b).copy(bBuf);
   // timingSafeEqual gives constant-time XOR; the length check catches mismatches
-  // that the padded XOR would pass (e.g. 'abc\0\0…' vs 'abcde\0…').
+  // that the padded XOR would pass (e.g. 'abc\0\0â€¦' vs 'abcde\0â€¦').
   return crypto.timingSafeEqual(aBuf, bBuf) && a.length === b.length;
 }
 
 /**
- * tryBearerAuth — [FEATURE-MULTIADMIN-1] Verifies an `Authorization: Bearer <token>`
+ * tryBearerAuth â€” [FEATURE-MULTIADMIN-1] Verifies an `Authorization: Bearer <token>`
  * header against an AdminUser session token, without ever throwing.
  *
  * Returns the matching AdminUser (as a plain object: { id, name, role, tenantId })
  * on success, or null if the header is absent, the token is invalid/expired/tampered,
  * or the underlying AdminUser has since been removed or DISABLED (revocation must
- * take effect immediately, not just at the token's own expiry — so this always hits
+ * take effect immediately, not just at the token's own expiry â€” so this always hits
  * the DB rather than trusting the token payload's embedded role/tenantId alone).
  */
 export async function tryBearerAuth(req) {
@@ -59,7 +59,7 @@ export async function tryBearerAuth(req) {
     const admin = await AdminUser.findById(payload.sub)
       .select('name role status tenantId').lean();
     if (!admin || admin.status !== 'ACTIVE') return null;
-    // Defense in depth: the session was signed for a specific tenant — if the
+    // Defense in depth: the session was signed for a specific tenant â€” if the
     // AdminUser has somehow moved tenants since (shouldn't happen, but the
     // token's own claim is untrusted data) refuse rather than trust the token.
     if (String(admin.tenantId) !== String(payload.tenantId)) return null;
@@ -71,8 +71,8 @@ export async function tryBearerAuth(req) {
 }
 
 /**
- * requireApiKey — accepts any of:
- *   a) An AdminUser Bearer session token (Authorization: Bearer <token>) —
+ * requireApiKey â€” accepts any of:
+ *   a) An AdminUser Bearer session token (Authorization: Bearer <token>) â€”
  *      sets req.adminUser and req.tenantId for an individually-identified caller.
  *   b) SUPER_ADMIN_API_KEY (master key, legacy x-api-key header)
  *   c) A valid tenant API key (looked up by SHA-256 hash in Tenant collection)
@@ -80,7 +80,7 @@ export async function tryBearerAuth(req) {
  * Sets req.tenant when a tenant key is used so downstream routes can use it.
  */
 export async function requireApiKey(req, res, next) {
-  // [FEATURE-MULTIADMIN-1] Bearer session takes priority when present — it's
+  // [FEATURE-MULTIADMIN-1] Bearer session takes priority when present â€” it's
   // the more specific, individually-identified credential. An invalid/expired
   // Bearer token is rejected outright rather than silently falling through to
   // the x-api-key check below; silently downgrading a bad session token to
@@ -90,7 +90,7 @@ export async function requireApiKey(req, res, next) {
     const admin = await tryBearerAuth(req);
     if (!admin) {
       logger.warn('[Auth] Invalid or expired admin session', { path: req.path, ip: req.ip });
-      return res.status(401).json({ error: 'Unauthorized — session is invalid or has expired' });
+      return res.status(401).json({ error: 'Unauthorized â€” session is invalid or has expired' });
     }
     const tenant = await Tenant.findById(admin.tenantId).select('status').lean().catch(() => null);
     if (!tenant || tenant.status === 'SUSPENDED') {
@@ -106,7 +106,7 @@ export async function requireApiKey(req, res, next) {
   const key = req.headers['x-api-key'];
   if (!key) {
     logger.warn('[Auth] Missing x-api-key', { path: req.path, ip: req.ip });
-    return res.status(401).json({ error: 'Unauthorized — x-api-key header required' });
+    return res.status(401).json({ error: 'Unauthorized â€” x-api-key header required' });
   }
 
   // Super-admin key check (constant-time)
@@ -122,7 +122,7 @@ export async function requireApiKey(req, res, next) {
   // in order to configure their account and reach ACTIVE in the first place.
   // Status-based access control belongs in individual route handlers (e.g. the
   // WhatsApp bot's receiveWebhook only dispatches for ACTIVE tenants), NOT at the
-  // authentication layer. SUSPENDED tenants are still blocked — they are explicitly
+  // authentication layer. SUSPENDED tenants are still blocked â€” they are explicitly
   // disabled by an admin action.
   try {
     const hash   = crypto.createHash('sha256').update(key).digest('hex');
@@ -150,10 +150,10 @@ export async function requireApiKey(req, res, next) {
 const ROLE_RANK = { STAFF: 1, MANAGER: 2, OWNER: 3 };
 
 /**
- * requireRole(minRole) — gates a route to AdminUsers with at least the given
+ * requireRole(minRole) â€” gates a route to AdminUsers with at least the given
  * role. Must run after requireApiKey.
  *
- * A legacy x-api-key caller (super-admin or tenant key — no individual
+ * A legacy x-api-key caller (super-admin or tenant key â€” no individual
  * AdminUser identity, so req.adminUser is unset) bypasses this check and is
  * treated as OWNER-equivalent, matching the pre-existing behavior where a
  * shared tenant key could do anything a dashboard user could. This keeps
@@ -167,7 +167,7 @@ export function requireRole(minRole) {
   }
   return (req, res, next) => {
     if (!req.adminUser) {
-      // Legacy x-api-key caller (isSuperAdmin or tenant key) — OWNER-equivalent.
+      // Legacy x-api-key caller (isSuperAdmin or tenant key) â€” OWNER-equivalent.
       return next();
     }
     const rank = ROLE_RANK[req.adminUser.role] || 0;
@@ -175,22 +175,23 @@ export function requireRole(minRole) {
       logger.warn('[Auth] Insufficient role', {
         path: req.path, role: req.adminUser.role, required: minRole,
       });
-      return res.status(403).json({ error: `Forbidden — requires ${minRole} role or higher` });
+      return res.status(403).json({ error: `Forbidden â€” requires ${minRole} role or higher` });
     }
     next();
   };
 }
 
 /**
- * requireSuperAdminKey — only the master key passes.
+ * requireSuperAdminKey â€” only the master key passes.
  * Used for /admin/tenants (tenant management) routes.
  */
 export function requireSuperAdminKey(req, res, next) {
   const key = req.headers['x-api-key'];
   if (!key || !safeCompare(key, process.env.SUPER_ADMIN_API_KEY || '')) {
     logger.warn('[Auth] Rejected super-admin attempt', { path: req.path, ip: req.ip });
-    return res.status(401).json({ error: 'Unauthorized — super-admin key required' });
+    return res.status(401).json({ error: 'Unauthorized â€” super-admin key required' });
   }
   req.isSuperAdmin = true;
   next();
 }
+

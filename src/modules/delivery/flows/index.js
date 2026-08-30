@@ -1,8 +1,8 @@
-/**
+﻿/**
  * modules/delivery/flows/index.js
  *
- * DELIVERY mode — dedicated flow for courier, on-demand delivery, and dark-kitchen businesses.
- * Not a re-skin of the restaurant — proper delivery-first personality:
+ * DELIVERY mode â€” dedicated flow for courier, on-demand delivery, and dark-kitchen businesses.
+ * Not a re-skin of the restaurant â€” proper delivery-first personality:
  *   - Delivery address collection
  *   - Delivery slot / ASAP selection
  *   - Distance-aware messaging
@@ -10,12 +10,12 @@
  *   - Rider dispatch notification to admin
  *
  * Flows:
- *   ORDER — item → quantity → address → slot → confirm
+ *   ORDER â€” item â†’ quantity â†’ address â†’ slot â†’ confirm
  *
- * [DOC-FIX] Header previously listed a "TRACKING — check order status" flow that
+ * [DOC-FIX] Header previously listed a "TRACKING â€” check order status" flow that
  * does not exist in this module. TRACK_ORDER is a global action handled centrally
  * via ACTION_REGISTRY (see core/shared/moduleRegistry.js registerAction('TRACK_ORDER', ...)
- * and core/conversations/moduleRouter.js case 'TRACK_ORDER') — it is not module-specific
+ * and core/conversations/moduleRouter.js case 'TRACK_ORDER') â€” it is not module-specific
  * and has no handler here. Comment corrected to avoid implying a missing implementation.
  */
 
@@ -23,18 +23,18 @@ import { updateSession }  from '../../../core/sessions/sessionService.js';
 import { cancelFlow }     from '../../../core/conversations/flowEngine.js';
 // [FIX-DELIVERY-IMPORT] completeFlow was imported but never called in this module.
 // Delivery flow completion (postFlowAck + lead capture) is triggered by adminCommandService
-// after admin APPROVE/REJECT — not inline here. Removed the dead import to prevent
+// after admin APPROVE/REJECT â€” not inline here. Removed the dead import to prevent
 // confusion during future audits about where flow completion happens.
 import { getAIReply }     from '../../../core/ai/providers/aiRouter.js';
 import { findBestMatch }  from '../../../utils/matchEngine.js';
-import { saveOrder }      from '../../../services/orderService.js';
+import { saveOrder }      from '../../../services/order/orderService.js';
 import { parseQuantity }  from '../../../utils/parseQuantity.js';
 import { trackOrderAnalytics } from '../../../core/analytics/analyticsService.js';
 import { itemLabel }      from '../../../utils/itemLabel.js';
 import { formatMoney }    from '../../../utils/formatCurrency.js';
 import logger             from '../../../config/logger.js';
 
-// ── Config ────────────────────────────────────────────────────────────────────
+// â”€â”€ Config â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 export const DELIVERY_CONFIG = {
   businessMode: 'DELIVERY',
@@ -44,33 +44,33 @@ export const DELIVERY_CONFIG = {
     ORDER: ['SELECT_ITEM', 'QUANTITY', 'DELIVERY_ADDRESS', 'DELIVERY_SLOT', 'CONFIRM'],
   },
   ui: {
-    // [FIX-4BTN-DEL] Meta button cap is 3 — the 4th button (QUESTION) was silently
+    // [FIX-4BTN-DEL] Meta button cap is 3 â€” the 4th button (QUESTION) was silently
     // dropped by the dispatcher's .slice(0,3). Customers ordering delivery care most
     // about placing an order, viewing the menu, and tracking. SUPPORT handles questions.
     welcomeButtons: [
-      { id: 'ORDER',       title: '🚚 Order Now'      },
-      { id: 'BROWSE_CATALOG', title: '🛍 Browse Catalog' },
-      { id: 'TRACK_ORDER', title: '📍 Track My Order'  },
+      { id: 'ORDER',       title: 'ðŸšš Order Now'      },
+      { id: 'BROWSE_CATALOG', title: 'ðŸ› Browse Catalog' },
+      { id: 'TRACK_ORDER', title: 'ðŸ“ Track My Order'  },
     ],
     fallbackButtons: [
-      { id: 'ORDER',       title: '🚚 Order Now'     },
-      { id: 'TRACK_ORDER', title: '📍 Track Order'   },
-      { id: 'BROWSE_CATALOG', title: '🛍 Browse Catalog' },
+      { id: 'ORDER',       title: 'ðŸšš Order Now'     },
+      { id: 'TRACK_ORDER', title: 'ðŸ“ Track Order'   },
+      { id: 'BROWSE_CATALOG', title: 'ðŸ› Browse Catalog' },
     ],
     confirmButtons: [
-      { id: 'CONFIRM', title: '✅ Confirm Order' },
-      { id: 'CANCEL',  title: '❌ Cancel'         },
+      { id: 'CONFIRM', title: 'âœ… Confirm Order' },
+      { id: 'CANCEL',  title: 'âŒ Cancel'         },
     ],
   },
   messages: {
-    welcome:      '🚚 Welcome! What would you like delivered today?\n\nBrowse our menu or type what you want.',
-    orderPrompt:  '📋 What would you like to order?',
-    cancelMsg:    '✅ Order cancelled. Come back whenever you\'re ready! 🚚',
+    welcome:      'ðŸšš Welcome! What would you like delivered today?\n\nBrowse our menu or type what you want.',
+    orderPrompt:  'ðŸ“‹ What would you like to order?',
+    cancelMsg:    'âœ… Order cancelled. Come back whenever you\'re ready! ðŸšš',
     fallback:     'Would you like to *place an order*, *track a delivery*, or ask a *question*?',
   },
 };
 
-// ── Main Order Flow ───────────────────────────────────────────────────────────
+// â”€â”€ Main Order Flow â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 export async function handleDeliveryOrder({ session, message, business, tenant, isInteractive }) {
   const raw   = String(message || '').trim();
@@ -79,7 +79,7 @@ export async function handleDeliveryOrder({ session, message, business, tenant, 
   const data  = session.data || {};
   const menu  = (business?.menuItems || []).filter(i => i.available !== false);
 
-  // ── INIT ──────────────────────────────────────────────────────────────────
+  // â”€â”€ INIT â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   if (message === null) {
     // [FIX-FLOW-STUCK] If menu is empty, clear the flow immediately so the
     // session is not stuck in ORDER state on every subsequent message.
@@ -99,7 +99,7 @@ export async function handleDeliveryOrder({ session, message, business, tenant, 
 
   switch (step) {
 
-    // ── SELECT_ITEM ───────────────────────────────────────────────────────────
+    // â”€â”€ SELECT_ITEM â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     case 'SELECT_ITEM': {
       if (!isInteractive && !session.menuViewed && /^\d+$/.test(raw)) {
         await updateSession(session.customerPhone, session.tenantId, { menuViewed: true });
@@ -107,7 +107,7 @@ export async function handleDeliveryOrder({ session, message, business, tenant, 
       }
       if (clean.length < 2) return _buildMenuUI(menu, business);
 
-      // [AUDIT-FIX-PARSEINT] parseInt("2 red shirts", 10) === 2, NOT NaN — so any
+      // [AUDIT-FIX-PARSEINT] parseInt("2 red shirts", 10) === 2, NOT NaN â€” so any
       // message merely STARTING with a digit silently hijacked the menu index
       // once menuViewed was true (the normal case). Only trust the parsed index
       // for a bare number or an interactive tap; everything else falls through
@@ -125,8 +125,8 @@ export async function handleDeliveryOrder({ session, message, business, tenant, 
             type: 'buttons',
             body: `Did you mean *${m.name}*?`,
             buttons: [
-              { id: 'CONFIRM',   title: '✅ Yes'         },
-              { id: 'BROWSE_CATALOG', title: '🛍 Browse Catalog' },
+              { id: 'CONFIRM',   title: 'âœ… Yes'         },
+              { id: 'BROWSE_CATALOG', title: 'ðŸ› Browse Catalog' },
             ],
           };
         }
@@ -143,8 +143,8 @@ export async function handleDeliveryOrder({ session, message, business, tenant, 
           type: 'buttons',
           body: aiReply || `Hmm, I couldn't find *"${raw}"*. Here's what we deliver:`,
           buttons: [
-            { id: 'BROWSE_CATALOG', title: '🛍 Browse Catalog' },
-            { id: 'QUESTION',  title: '❓ Ask a Question' },
+            { id: 'BROWSE_CATALOG', title: 'ðŸ› Browse Catalog' },
+            { id: 'QUESTION',  title: 'â“ Ask a Question' },
           ],
         };
       }
@@ -155,21 +155,21 @@ export async function handleDeliveryOrder({ session, message, business, tenant, 
         menuViewed: true,
       });
 
-      const price = item.price ? ` — ${item.currency || business?.payment?.currency || 'D'}${formatMoney(item.price)}` : '';
+      const price = item.price ? ` â€” ${item.currency || business?.payment?.currency || 'D'}${formatMoney(item.price)}` : '';
       return {
         type: 'buttons',
-        body: `🚚 *${item.name}*${price}\n\n${item.description ? `_${item.description}_\n\n` : ''}How many would you like?`,
-        // [UX-DEL-1] Drop Cancel from qty row — 3-button limit. Cancel is on the next error screen.
+        body: `ðŸšš *${item.name}*${price}\n\n${item.description ? `_${item.description}_\n\n` : ''}How many would you like?`,
+        // [UX-DEL-1] Drop Cancel from qty row â€” 3-button limit. Cancel is on the next error screen.
         buttons: [
-          { id: 'QTY_1', title: '1️⃣  1' },
-          { id: 'QTY_2', title: '2️⃣  2' },
-          { id: 'QTY_3', title: '3️⃣  3' },
+          { id: 'QTY_1', title: '1ï¸âƒ£  1' },
+          { id: 'QTY_2', title: '2ï¸âƒ£  2' },
+          { id: 'QTY_3', title: '3ï¸âƒ£  3' },
         ],
         footer: 'Or type any number e.g. 4, 5, 10',
       };
     }
 
-    // ── QUANTITY ──────────────────────────────────────────────────────────────
+    // â”€â”€ QUANTITY â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     case 'QUANTITY': {
       const qtyShortcut = { 'QTY_1': 1, 'QTY_2': 2, 'QTY_3': 3 };
       const qty = qtyShortcut[raw.toUpperCase()] ?? parseQuantity(raw);
@@ -179,9 +179,9 @@ export async function handleDeliveryOrder({ session, message, business, tenant, 
           type: 'buttons',
           body: `How many *${data.item?.name}* would you like delivered?\n_(Enter a number)_`,
           buttons: [
-            { id: 'QTY_1', title: '1️⃣  1' },
-            { id: 'QTY_2', title: '2️⃣  2' },
-            { id: 'QTY_3', title: '3️⃣  3' },
+            { id: 'QTY_1', title: '1ï¸âƒ£  1' },
+            { id: 'QTY_2', title: '2ï¸âƒ£  2' },
+            { id: 'QTY_3', title: '3ï¸âƒ£  3' },
           ],
           footer: 'Or type any number',
         };
@@ -198,10 +198,10 @@ export async function handleDeliveryOrder({ session, message, business, tenant, 
       if (savedAddress) {
         return {
           type: 'buttons',
-          body: `📍 *Delivery Address*\n\nDeliver to your usual address?\n\n_${savedAddress}_`,
+          body: `ðŸ“ *Delivery Address*\n\nDeliver to your usual address?\n\n_${savedAddress}_`,
           buttons: [
-            { id: 'USE_SAVED_ADDRESS', title: '✅ Yes, use this'     },
-            { id: 'NEW_ADDRESS',       title: '📝 Use different one' },
+            { id: 'USE_SAVED_ADDRESS', title: 'âœ… Yes, use this'     },
+            { id: 'NEW_ADDRESS',       title: 'ðŸ“ Use different one' },
           ],
         };
       }
@@ -211,15 +211,15 @@ export async function handleDeliveryOrder({ session, message, business, tenant, 
       // clearly and keep Cancel accessible without making them type first.
       return {
         type: 'buttons',
-        body: `📍 *Delivery Address*\n\nPlease type your full delivery address below.\n\n` +
+        body: `ðŸ“ *Delivery Address*\n\nPlease type your full delivery address below.\n\n` +
               `_Include: street name, area/neighbourhood, and a landmark for the rider._\n\n` +
               `*Example:* 15 Kairaba Ave, Bakau, near the mosque`,
-        buttons: [{ id: 'CANCEL', title: '❌ Cancel' }],
+        buttons: [{ id: 'CANCEL', title: 'âŒ Cancel' }],
         footer: 'Type your address and send',
       };
     }
 
-    // ── DELIVERY_ADDRESS ──────────────────────────────────────────────────────
+    // â”€â”€ DELIVERY_ADDRESS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     case 'DELIVERY_ADDRESS': {
       let address;
 
@@ -228,8 +228,8 @@ export async function handleDeliveryOrder({ session, message, business, tenant, 
       } else if (raw.toUpperCase() === 'NEW_ADDRESS') {
         return {
           type: 'buttons',
-          body: '📍 Please type your delivery address:\n\n_Include: street, area/neighbourhood, and a landmark for the rider._\n\n*Example:* 15 Kairaba Ave, Bakau, near the mosque',
-          buttons: [{ id: 'CANCEL', title: '❌ Cancel' }],
+          body: 'ðŸ“ Please type your delivery address:\n\n_Include: street, area/neighbourhood, and a landmark for the rider._\n\n*Example:* 15 Kairaba Ave, Bakau, near the mosque',
+          buttons: [{ id: 'CANCEL', title: 'âŒ Cancel' }],
         };
       } else {
         address = raw;
@@ -238,8 +238,8 @@ export async function handleDeliveryOrder({ session, message, business, tenant, 
       if (!address || address.length < 5) {
         return {
           type: 'buttons',
-          body: '📍 Please provide a valid delivery address so we can send the rider to the right place.',
-          buttons: [{ id: 'CANCEL', title: '❌ Cancel' }],
+          body: 'ðŸ“ Please provide a valid delivery address so we can send the rider to the right place.',
+          buttons: [{ id: 'CANCEL', title: 'âŒ Cancel' }],
         };
       }
 
@@ -250,21 +250,21 @@ export async function handleDeliveryOrder({ session, message, business, tenant, 
         savedAddress: address,
       });
 
-      // [UX-DEL-2] 4 slot options → list widget
+      // [UX-DEL-2] 4 slot options â†’ list widget
       return {
         type: 'list',
-        body: `⏱ *When do you need it?*\n\n📍 Delivering to: _${address}_`,
+        body: `â± *When do you need it?*\n\nðŸ“ Delivering to: _${address}_`,
         button: 'Choose delivery time',
         sections: [{ title: 'Delivery Window', rows: [
-          { id: 'SLOT_ASAP',     title: '🔥 ASAP',          description: 'As soon as possible'        },
-          { id: 'SLOT_30',       title: '⏱ In ~30 mins',    description: 'Quick delivery'              },
-          { id: 'SLOT_1HR',      title: '⏳ In ~1 hour',    description: 'Standard delivery'           },
-          { id: 'SLOT_SCHEDULE', title: '📅 Schedule it',   description: 'Pick a specific time slot'   },
+          { id: 'SLOT_ASAP',     title: 'ðŸ”¥ ASAP',          description: 'As soon as possible'        },
+          { id: 'SLOT_30',       title: 'â± In ~30 mins',    description: 'Quick delivery'              },
+          { id: 'SLOT_1HR',      title: 'â³ In ~1 hour',    description: 'Standard delivery'           },
+          { id: 'SLOT_SCHEDULE', title: 'ðŸ“… Schedule it',   description: 'Pick a specific time slot'   },
         ]}],
       };
     }
 
-    // ── DELIVERY_SLOT ─────────────────────────────────────────────────────────
+    // â”€â”€ DELIVERY_SLOT â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     case 'DELIVERY_SLOT': {
       const SLOT_MAP = {
         'SLOT_ASAP':     'ASAP (as soon as possible)',
@@ -283,11 +283,11 @@ export async function handleDeliveryOrder({ session, message, business, tenant, 
         // forcing customers to type "3pm today" with no guidance.
         return {
           type: 'list',
-          body: '🕐 *Schedule Delivery*\n\nChoose a time slot or tap "Custom time" to type your own:',
+          body: 'ðŸ• *Schedule Delivery*\n\nChoose a time slot or tap "Custom time" to type your own:',
           button: 'Choose time',
           sections: [
             {
-              title: '🌅 Morning',
+              title: 'ðŸŒ… Morning',
               rows: [
                 { id: 'SCHED_9AM',  title: '9:00 AM',  description: 'Morning delivery' },
                 { id: 'SCHED_10AM', title: '10:00 AM', description: 'Morning delivery' },
@@ -295,7 +295,7 @@ export async function handleDeliveryOrder({ session, message, business, tenant, 
               ],
             },
             {
-              title: '☀️ Afternoon',
+              title: 'â˜€ï¸ Afternoon',
               rows: [
                 { id: 'SCHED_12PM', title: '12:00 PM', description: 'Midday delivery'    },
                 { id: 'SCHED_2PM',  title: '2:00 PM',  description: 'Afternoon delivery' },
@@ -303,10 +303,10 @@ export async function handleDeliveryOrder({ session, message, business, tenant, 
               ],
             },
             {
-              title: '🌆 Evening',
+              title: 'ðŸŒ† Evening',
               rows: [
                 { id: 'SCHED_6PM',    title: '6:00 PM',    description: 'Evening delivery' },
-                { id: 'SCHED_CUSTOM', title: '✏️ Custom time', description: 'Type a specific time' },
+                { id: 'SCHED_CUSTOM', title: 'âœï¸ Custom time', description: 'Type a specific time' },
               ],
             },
           ],
@@ -325,14 +325,14 @@ export async function handleDeliveryOrder({ session, message, business, tenant, 
         'SCHED_6PM':  'Today at 6:00 PM',
       };
       if (raw.toUpperCase() === 'SCHED_CUSTOM') {
-        // Customer wants to type a custom time — stay in DELIVERY_SLOT with awaitingSlotText
+        // Customer wants to type a custom time â€” stay in DELIVERY_SLOT with awaitingSlotText
         await updateSession(session.customerPhone, session.tenantId, {
           data: { ...data, awaitingSlotText: true },
         });
         return {
           type: 'buttons',
-          body: '📅 Type your preferred delivery time:\n\n_(e.g. *3pm today*, *tomorrow morning*, *Saturday 11am*)_',
-          buttons: [{ id: 'CANCEL', title: '❌ Cancel' }],
+          body: 'ðŸ“… Type your preferred delivery time:\n\n_(e.g. *3pm today*, *tomorrow morning*, *Saturday 11am*)_',
+          buttons: [{ id: 'CANCEL', title: 'âŒ Cancel' }],
         };
       }
       if (SCHED_MAP[raw.toUpperCase()]) {
@@ -347,15 +347,15 @@ export async function handleDeliveryOrder({ session, message, business, tenant, 
         });
         return {
           type: 'buttons',
-          body: `🧾 *Order Summary*\n\n` +
-            `🚚 *Item:* ${itemLabel(item, data.variant)} × ${qty}\n` +
-            `📍 *Deliver to:* ${address}\n` +
-            `⏱ *When:* ${resolvedScheduled}` +
-            (subtotal ? `\n💰 *Total:* ${item.currency || business?.payment?.currency || 'D'}${subtotal.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : '') +
+          body: `ðŸ§¾ *Order Summary*\n\n` +
+            `ðŸšš *Item:* ${itemLabel(item, data.variant)} Ã— ${qty}\n` +
+            `ðŸ“ *Deliver to:* ${address}\n` +
+            `â± *When:* ${resolvedScheduled}` +
+            (subtotal ? `\nðŸ’° *Total:* ${item.currency || business?.payment?.currency || 'D'}${subtotal.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : '') +
             `\n\nReady to confirm?`,
           buttons: [
-            { id: 'CONFIRM', title: '✅ Confirm Order' },
-            { id: 'CANCEL',  title: '❌ Cancel'         },
+            { id: 'CONFIRM', title: 'âœ… Confirm Order' },
+            { id: 'CANCEL',  title: 'âŒ Cancel'         },
           ],
         };
       }
@@ -365,24 +365,24 @@ export async function handleDeliveryOrder({ session, message, business, tenant, 
       if (!slot || slot.length < 2) {
         return {
           type: 'buttons',
-          body: '⏱ When do you need the delivery?',
+          body: 'â± When do you need the delivery?',
           buttons: [
-            { id: 'SLOT_ASAP', title: '🔥 ASAP'       },
-            { id: 'SLOT_1HR',  title: '⏳ In ~1 hour' },
-            { id: 'CANCEL',    title: '❌ Cancel'      },
+            { id: 'SLOT_ASAP', title: 'ðŸ”¥ ASAP'       },
+            { id: 'SLOT_1HR',  title: 'â³ In ~1 hour' },
+            { id: 'CANCEL',    title: 'âŒ Cancel'      },
           ],
         };
       }
 
       // [FIX-TIME-3] When the customer types a scheduled delivery time (free-text),
-      // check it isn't in the past. Only applies to typed slots — ASAP/30min/1hr are
+      // check it isn't in the past. Only applies to typed slots â€” ASAP/30min/1hr are
       // always future by definition.
       if (data.awaitingSlotText && SLOT_MAP[raw.toUpperCase()] === undefined) {
         const { tryParseDate } = await import('../../../core/conversations/bookingFlow.js');
         // [FIX-TZ-DELIVERY] business?.timezone was reading a non-existent top-level field.
         // timezone lives at business.hours.timezone (BusinessConfig schema).
         const tz = business?.hours?.timezone || 'UTC';
-        // Try to extract a date component — if none found, treat as today
+        // Try to extract a date component â€” if none found, treat as today
         const lowerSlot = raw.toLowerCase();
         const datePart = lowerSlot.includes('tomorrow') ? 'tomorrow' : 'today';
         const parsedSlotDate = tryParseDate(datePart, tz);
@@ -392,7 +392,7 @@ export async function handleDeliveryOrder({ session, message, business, tenant, 
                           raw.match(/\b([01]?\d|2[0-3]):[0-5]\d\b/);
         if (timeMatch && parsedSlotDate) {
           // [AUDIT-FIX-DEAD-IMPORT] validateTime is not exported by bookingFlow.js
-          // (it's a private, unexported function there) — the dynamic import that
+          // (it's a private, unexported function there) â€” the dynamic import that
           // used to sit here always resolved to undefined and was discarded
           // unused. Removed; the lightweight inline check below is the real logic.
           const safeZone = (() => { try { Intl.DateTimeFormat(undefined, { timeZone: tz }); return tz; } catch { return 'UTC'; } })();
@@ -415,11 +415,11 @@ export async function handleDeliveryOrder({ session, message, business, tenant, 
               if (slotMins < nowMins - 5) {
                 return {
                   type: 'buttons',
-                  body: `⚠️ That time has already passed today.\n\nPlease enter an *upcoming* delivery time, or pick a slot below.`,
+                  body: `âš ï¸ That time has already passed today.\n\nPlease enter an *upcoming* delivery time, or pick a slot below.`,
                   buttons: [
-                    { id: 'SLOT_ASAP', title: '🔥 ASAP'    },
-                    { id: 'SLOT_1HR',  title: '⏳ 1 hour'   },
-                    { id: 'CANCEL',    title: '❌ Cancel'    },
+                    { id: 'SLOT_ASAP', title: 'ðŸ”¥ ASAP'    },
+                    { id: 'SLOT_1HR',  title: 'â³ 1 hour'   },
+                    { id: 'CANCEL',    title: 'âŒ Cancel'    },
                   ],
                 };
               }
@@ -440,21 +440,21 @@ export async function handleDeliveryOrder({ session, message, business, tenant, 
 
       return {
         type: 'buttons',
-        body: `🧾 *Order Summary*\n\n` +
-          `🚚 *Item:* ${itemLabel(item, data.variant)} × ${qty}\n` +
-          `📍 *Deliver to:* ${address}\n` +
-          `⏱ *When:* ${slot}` +
-          (subtotal ? `\n💰 *Total:* ${item.currency || business?.payment?.currency || 'D'}${subtotal.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : '') +
+        body: `ðŸ§¾ *Order Summary*\n\n` +
+          `ðŸšš *Item:* ${itemLabel(item, data.variant)} Ã— ${qty}\n` +
+          `ðŸ“ *Deliver to:* ${address}\n` +
+          `â± *When:* ${slot}` +
+          (subtotal ? `\nðŸ’° *Total:* ${item.currency || business?.payment?.currency || 'D'}${subtotal.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : '') +
           `\n\nReady to confirm?`,
         buttons: [
-          { id: 'CONFIRM', title: '✅ Confirm Order' },
-          { id: 'CANCEL',  title: '❌ Cancel'         },
+          { id: 'CONFIRM', title: 'âœ… Confirm Order' },
+          { id: 'CANCEL',  title: 'âŒ Cancel'         },
         ],
       };
     }
 
-    // ── CONFIRM ───────────────────────────────────────────────────────────────
-    // [FIX-DUALLAYER-CONFIRM] See core/shared/confirmationMatcher.js — was
+    // â”€â”€ CONFIRM â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // [FIX-DUALLAYER-CONFIRM] See core/shared/confirmationMatcher.js â€” was
     // exact-match-only, so a typed "yes please"/"go ahead" never registered.
     case 'CONFIRM': {
       const { resolveConfirmation } = await import('../../../core/shared/confirmationMatcher.js');
@@ -465,8 +465,8 @@ export async function handleDeliveryOrder({ session, message, business, tenant, 
           type: 'buttons',
           body: 'Shall we confirm your delivery order?',
           buttons: [
-            { id: 'CONFIRM', title: '✅ Confirm' },
-            { id: 'CANCEL',  title: '❌ Cancel'  },
+            { id: 'CONFIRM', title: 'âœ… Confirm' },
+            { id: 'CANCEL',  title: 'âŒ Cancel'  },
           ],
         };
       }
@@ -492,9 +492,9 @@ export async function handleDeliveryOrder({ session, message, business, tenant, 
           quantity:      qty,
           notes:         `Delivery to: ${address} | Slot: ${slot}`,
           status:        'pending',
-          // [FIX-DELIVERY-1] totalAmount → totalPrice (same bug as retail — see retail fix)
+          // [FIX-DELIVERY-1] totalAmount â†’ totalPrice (same bug as retail â€” see retail fix)
           totalPrice:    totalPrice || undefined,
-          // [FIX-DELIVERY-4] businessId was missing here — every other module's saveOrder()
+          // [FIX-DELIVERY-4] businessId was missing here â€” every other module's saveOrder()
           // call passes business._id, but delivery omitted it. Order.businessId stayed null
           // for every delivery order, breaking any business-scoped admin view/report that
           // filters orders by businessId (cosmetics, electronics, bakery, restaurant, salon,
@@ -502,10 +502,10 @@ export async function handleDeliveryOrder({ session, message, business, tenant, 
           businessId:    business._id,
         });
 
-        // [AUDIT-FIX-4] recordRevenue() moved to adminCommandService.confirmPayment() —
+        // [AUDIT-FIX-4] recordRevenue() moved to adminCommandService.confirmPayment() â€”
         // recording it here at placement time counted unconfirmed/later-rejected orders
         // as revenue. See adminCommandService.js AUDIT-FIX-4 for full rationale.
-        // [FIX-DELIVERY-3] trackOrderAnalytics wrong positional call — same bug as retail
+        // [FIX-DELIVERY-3] trackOrderAnalytics wrong positional call â€” same bug as retail
         trackOrderAnalytics(itemLabel(item, data.variant), null, qty, totalPrice || 0, session.tenantId).catch(() => {});
       } catch (err) {
         logger.error('[Delivery] saveOrder error:', err.message);
@@ -516,15 +516,15 @@ export async function handleDeliveryOrder({ session, message, business, tenant, 
         });
         return {
           type:    'buttons',
-          body:    `⚠️ *Something went wrong saving your order.*\n\nPlease try again — tap below to start over.`,
+          body:    `âš ï¸ *Something went wrong saving your order.*\n\nPlease try again â€” tap below to start over.`,
           buttons: [
-            { id: 'ORDER',    title: '🛒 Try Again'   },
-            { id: 'SUPPORT',  title: '💬 Contact Us'  },
+            { id: 'ORDER',    title: 'ðŸ›’ Try Again'   },
+            { id: 'SUPPORT',  title: 'ðŸ’¬ Contact Us'  },
           ],
         };
       }
 
-      // [FIX-BUG4-DELIVERY] Payment flow — was completely absent. If tenant has
+      // [FIX-BUG4-DELIVERY] Payment flow â€” was completely absent. If tenant has
       // payment enabled and item has a price, show payment instructions.
       const payment = business?.payment;
       if (payment?.enabled && totalPrice) {
@@ -551,14 +551,14 @@ export async function handleDeliveryOrder({ session, message, business, tenant, 
             await dispatchMessage(adminPhone, {
               type: 'text',
               body:
-                `🔔 *New Delivery Order — ${business?.name || 'Delivery'}*\n\n` +
-                `📞 Customer: *${session.customerPhone}*\n` +
-                `📦 *${qty}× ${itemLabel(item, data.variant)}*\n` +
-                `📍 Address: *${address}*\n` +
-                `⏱ Slot: *${slot}*\n` +
-                `💰 Total: *${currency}${formatMoney(totalPrice)}*\n` +
-                `📝 Ref: *${ref}*\n\n` +
-                `⏳ Status: *Pending* — awaiting payment screenshot.`,
+                `ðŸ”” *New Delivery Order â€” ${business?.name || 'Delivery'}*\n\n` +
+                `ðŸ“ž Customer: *${session.customerPhone}*\n` +
+                `ðŸ“¦ *${qty}Ã— ${itemLabel(item, data.variant)}*\n` +
+                `ðŸ“ Address: *${address}*\n` +
+                `â± Slot: *${slot}*\n` +
+                `ðŸ’° Total: *${currency}${formatMoney(totalPrice)}*\n` +
+                `ðŸ“ Ref: *${ref}*\n\n` +
+                `â³ Status: *Pending* â€” awaiting payment screenshot.`,
             }, tenant).catch(() => {});
           }
         } catch { /* non-fatal */ }
@@ -577,16 +577,16 @@ export async function handleDeliveryOrder({ session, message, business, tenant, 
           await dispatchMessage(adminPhone, {
             type: 'buttons',
             body:
-              `🔔 *New Delivery Order — ${business?.name || 'Delivery'}*\n\n` +
-              `📞 Customer: *${session.customerPhone}*\n` +
-              `📦 *${qty}× ${itemLabel(item, data.variant)}*\n` +
-              `📍 Address: *${address}*\n` +
-              `⏱ Slot: *${slot}*\n` +
-              (totalPrice ? `💰 Total: *${currency}${formatMoney(totalPrice)}*\n` : '') +
-              `🔖 Ref: \`${savedOrder?.shortId || 'N/A'}\``,
+              `ðŸ”” *New Delivery Order â€” ${business?.name || 'Delivery'}*\n\n` +
+              `ðŸ“ž Customer: *${session.customerPhone}*\n` +
+              `ðŸ“¦ *${qty}Ã— ${itemLabel(item, data.variant)}*\n` +
+              `ðŸ“ Address: *${address}*\n` +
+              `â± Slot: *${slot}*\n` +
+              (totalPrice ? `ðŸ’° Total: *${currency}${formatMoney(totalPrice)}*\n` : '') +
+              `ðŸ”– Ref: \`${savedOrder?.shortId || 'N/A'}\``,
             buttons: [
-              { id: `APPROVE_${savedOrder.shortId}`, title: '✅ Confirm Order' },
-              { id: `REJECT_${savedOrder.shortId}`,  title: '❌ Cancel Order'  },
+              { id: `APPROVE_${savedOrder.shortId}`, title: 'âœ… Confirm Order' },
+              { id: `REJECT_${savedOrder.shortId}`,  title: 'âŒ Cancel Order'  },
             ],
           }, tenant);
         }
@@ -602,11 +602,11 @@ export async function handleDeliveryOrder({ session, message, business, tenant, 
       return {
         type: 'text',
         body:
-          `✅ *Order Received!* 🚚\n\n` +
-          `*${itemLabel(item, data.variant)}* × ${qty}\n` +
-          `📍 Delivering to: *${address}*\n` +
-          `⏱ Requested slot: *${slot}*\n\n` +
-          `⏳ Our team will confirm your order and assign a rider shortly. Please wait for confirmation before placing a new one. 🙏`,
+          `âœ… *Order Received!* ðŸšš\n\n` +
+          `*${itemLabel(item, data.variant)}* Ã— ${qty}\n` +
+          `ðŸ“ Delivering to: *${address}*\n` +
+          `â± Requested slot: *${slot}*\n\n` +
+          `â³ Our team will confirm your order and assign a rider shortly. Please wait for confirmation before placing a new one. ðŸ™`,
       };
     }
 
@@ -620,16 +620,16 @@ export async function handleDeliveryOrder({ session, message, business, tenant, 
   }
 }
 
-// ── UI Helpers ────────────────────────────────────────────────────────────────
+// â”€â”€ UI Helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 function _buildMenuUI(menu, business) {
   if (!menu.length) {
     return {
       type: 'buttons',
-      body: `🚚 *${business?.name || 'Delivery'}*\n\nWhat would you like to order today?\n\n_Type what you'd like and we'll check if we can deliver it._`,
+      body: `ðŸšš *${business?.name || 'Delivery'}*\n\nWhat would you like to order today?\n\n_Type what you'd like and we'll check if we can deliver it._`,
       buttons: [
-        { id: 'QUESTION', title: '❓ Ask a Question' },
-        { id: 'CANCEL',   title: '❌ Cancel'          },
+        { id: 'QUESTION', title: 'â“ Ask a Question' },
+        { id: 'CANCEL',   title: 'âŒ Cancel'          },
       ],
     };
   }
@@ -637,7 +637,7 @@ function _buildMenuUI(menu, business) {
   // [AUDIT-FIX-DELIVERYLIST] Tappable WhatsApp list instead of a plain-text
   // numbered block. Row ids are 1-based numeric strings so the existing
   // `parseInt(raw, 10) - 1` selection logic above needs no change. Flat
-  // `rows` (not `sections`), unsliced — dispatcher.js hard-caps at Meta's
+  // `rows` (not `sections`), unsliced â€” dispatcher.js hard-caps at Meta's
   // real limit of 10 rows TOTAL (it does not chunk into extra sections), so
   // a menu with more than 10 items gets truncated with a footer hint here.
   // See [FIX-LIST-CAP-2] in core/whatsapp/dispatcher.js.
@@ -648,15 +648,16 @@ function _buildMenuUI(menu, business) {
     description: [
       item.description ? item.description.slice(0, 40) : null,
       item.price ? `${item.currency || currency}${formatMoney(item.price)}` : null,
-    ].filter(Boolean).join(' — ').slice(0, 72) || undefined,
+    ].filter(Boolean).join(' â€” ').slice(0, 72) || undefined,
   }));
 
   return {
     type: 'list',
-    header: `🚚 *${business?.name || 'Delivery Menu'}*`,
+    header: `ðŸšš *${business?.name || 'Delivery Menu'}*`,
     body:   'What would you like delivered? Tap an item, or type its name:',
     button: 'View Menu',
     rows,
     footer: 'Tap an item or type what you want',
   };
 }
+

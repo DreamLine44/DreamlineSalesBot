@@ -15,7 +15,7 @@ import Tenant      from '../models/Tenant.js';
 import mongoose    from 'mongoose';
 import logger      from '../config/logger.js';
 
-function toOid(id) {
+const toOid = (id) => {
   if (!id) return id;
   if (id instanceof mongoose.Types.ObjectId) return id;
   try { return new mongoose.Types.ObjectId(String(id)); } catch { return id; }
@@ -30,7 +30,7 @@ const NAME_NOISE = new Set([
   'home','work','busy','free','waiting','coming','hungry','back','soon',
   'now','out','away','test','hhhh','lol','haha','hihi','hehe','aaaa',
 ]);
-function validateCapturedName(raw) {
+const validateCapturedName = (raw) => {
   if (!raw) return null;
   const cleaned = raw.trim();
   if (!/^[a-zA-Z\s]+$/.test(cleaned)) return null;        // letters only

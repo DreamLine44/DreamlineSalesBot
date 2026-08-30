@@ -1,10 +1,10 @@
-/**
+﻿/**
  * core/conversations/bookingFlow.js
  *
- * SHARED BOOKING FLOW — handles DATE, TIME, SERVICE steps identically
+ * SHARED BOOKING FLOW â€” handles DATE, TIME, SERVICE steps identically
  * across all booking-capable modules. Each module registers this flow.
  *
- * Steps: [SELECT_SERVICE?] → DATE → DATE_CONFIRM → TIME → TIME_CONFIRM → CONFIRM
+ * Steps: [SELECT_SERVICE?] â†’ DATE â†’ DATE_CONFIRM â†’ TIME â†’ TIME_CONFIRM â†’ CONFIRM
  *
  * KEY FIXES:
  * [FIX-B] Past-date and far-future-date rejection (with ordinal stripping)
@@ -18,32 +18,28 @@
 
 import { updateSession }           from '../sessions/sessionService.js';
 import { completeFlow, cancelFlow } from './flowEngine.js';
-import { saveBooking }             from '../../services/bookingService.js';
 import {
+  saveBooking,
   getLocalNow,
   tryParseDate,
   resolveBookingDateInput,
   formatBookingDateLabel,
-} from '../../services/bookingDateParser.js';
-import {
   buildSimpleDayList,
   buildWeekDayList,
   buildMonthPickerList,
   buildMonthDayList,
   parseMonthId,
   resolveDayPick,
-} from '../../services/bookingDatePickerUI.js';
-import {
   shouldUseBookingDateFlow,
   resolveBookingDateFlowId,
   buildBookingDateFlowMessage,
   parseBookingDateFlowReply,
   resolveFlowBookingDate,
-} from '../../services/bookingDateFlow.js';
+} from '../../services/booking/bookingFeature.js';
 // buildAdminBookingAlertBody is imported dynamically inside BOOKING_CONFIRM to stay consistent
 // with the dynamic import already there. The static buildAdminBookingAlert alias was dead code.
 import { trackBookingAnalytics }   from '../analytics/analyticsService.js';
-// [FIX-BC-2] dispatchText was imported but never called anywhere in this file — dead import removed.
+// [FIX-BC-2] dispatchText was imported but never called anywhere in this file â€” dead import removed.
 import logger                      from '../../config/logger.js';
 import { formatMoney }             from '../../utils/formatCurrency.js';
 import {
@@ -52,7 +48,7 @@ import {
 } from '../../utils/businessHoursUtils.js';
 
 // Re-export for backward compatibility (bakery/delivery flows import from here).
-export { tryParseDate } from '../../services/bookingDateParser.js';
+export { tryParseDate } from '../../services/booking/bookingDateParser.js';
 
 function looksLikeTime(input) {
   if (!input) return false;
@@ -61,9 +57,9 @@ function looksLikeTime(input) {
 }
 
 /**
- * parseTimeToMinutes — converts a human time string to minutes-since-midnight.
+ * parseTimeToMinutes â€” converts a human time string to minutes-since-midnight.
  * Returns null if unparseable.
- * Examples: "2pm" → 840, "14:30" → 870, "9:00 AM" → 540, "9AM" → 540
+ * Examples: "2pm" â†’ 840, "14:30" â†’ 870, "9:00 AM" â†’ 540, "9AM" â†’ 540
  */
 function parseTimeToMinutes(timeStr) {
   if (!timeStr) return null;
@@ -114,13 +110,13 @@ async function _confirmBookingDate(session, data, resolved, { business, tenant, 
   });
   return {
     type:    'buttons',
-    body:    `Just to confirm — did you mean *${resolved.label}*? 📅`,
-    buttons: [{ id: 'CONFIRM', title: '✅ Yes, that date' }, { id: 'DATE_BACK', title: '❌ No, re-enter' }],
+    body:    `Just to confirm â€” did you mean *${resolved.label}*? ðŸ“…`,
+    buttons: [{ id: 'CONFIRM', title: 'âœ… Yes, that date' }, { id: 'DATE_BACK', title: 'âŒ No, re-enter' }],
   };
 }
 
 /**
- * validateTime — checks that a time input is not in the past when the booking
+ * validateTime â€” checks that a time input is not in the past when the booking
  * date is today (in the business's local timezone).
  *
  * [FIX-TIME-1] Previously there was NO time validation at all. A customer
@@ -132,24 +128,24 @@ async function _confirmBookingDate(session, data, resolved, { business, tenant, 
  * @param {object}  parsedBookingDate  Date object for the booking date (midnight)
  * @param {string=} tz   IANA timezone
  * @returns {{ error: string } | { minutes: number } | null}
- *   null  → unparseable (don't block — bot will re-prompt)
- *   error → past-time error message
- *   ok    → { minutes: number } (minutes since midnight, for reference)
+ *   null  â†’ unparseable (don't block â€” bot will re-prompt)
+ *   error â†’ past-time error message
+ *   ok    â†’ { minutes: number } (minutes since midnight, for reference)
  */
 function validateTime(timeInput, parsedBookingDate, tz) {
   const minutes = parseTimeToMinutes(timeInput);
-  if (minutes === null) return null; // unparseable — don't block here
+  if (minutes === null) return null; // unparseable â€” don't block here
 
   const localNow = getLocalNow(tz);
   const localToday = new Date(Date.UTC(localNow.getUTCFullYear(), localNow.getUTCMonth(), localNow.getUTCDate()));
 
   // Only validate past-time when the booking is for today
   const bookingIsToday = parsedBookingDate && parsedBookingDate.getTime() === localToday.getTime();
-  if (!bookingIsToday) return { minutes }; // future date — any time is fine
+  if (!bookingIsToday) return { minutes }; // future date â€” any time is fine
 
   // Current minutes since midnight in the business's local clock
   const nowMinutes = localNow.getUTCHours() * 60 + localNow.getUTCMinutes();
-  const GRACE = 5; // 5-minute grace — allow taps that land just past the hour
+  const GRACE = 5; // 5-minute grace â€” allow taps that land just past the hour
 
   if (minutes < nowMinutes - GRACE) {
     // Format the rejected time for the error message
@@ -166,14 +162,14 @@ function validateTime(timeInput, parsedBookingDate, tz) {
     const suggest = nextHour < 24 ? ` (e.g. *${suggestH12}:00 ${suggestPeriod}*)` : '';
 
     return {
-      error: `⚠️ *${fmtTime}* has already passed today.\n\nPlease choose an *upcoming time*${suggest}.`,
+      error: `âš ï¸ *${fmtTime}* has already passed today.\n\nPlease choose an *upcoming time*${suggest}.`,
     };
   }
 
   return { minutes };
 }
 
-// ── Booking flow handler ───────────────────────────────────────────────────────
+// â”€â”€ Booking flow handler â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 export async function handleBookingFlow({ session, message, business, tenant, isInteractive, flowReply = null }) {
   const raw      = String(message || '').trim();
   const clean    = raw.toLowerCase().trim();
@@ -184,14 +180,14 @@ export async function handleBookingFlow({ session, message, business, tenant, is
   // Falls back to UTC when not configured so "today" and "past time" decisions
   // are relative to the business's local clock, not the UTC server clock.
   // [FIX-TZ-2] timezone lives at business.hours.timezone (nested under hours).
-  // The previous business?.timezone was reading a non-existent top-level field —
-  // always undefined — so date/time validation silently fell back to UTC for every
+  // The previous business?.timezone was reading a non-existent top-level field â€”
+  // always undefined â€” so date/time validation silently fell back to UTC for every
   // business not configured in UTC. Past-date and past-time checks were wrong for
   // all businesses using a non-UTC timezone (e.g. Africa/Banjul = GMT+0 in winter,
   // but named zones handle DST edge cases correctly; UTC is only coincidentally right).
   const tz       = business?.hours?.timezone || 'UTC';
 
-  // ── INIT ──────────────────────────────────────────────────────────────────
+  // â”€â”€ INIT â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   if (message === null) {
     // Determine first step
     const firstStep = services.length ? 'SELECT_SERVICE' : 'DATE';
@@ -206,7 +202,7 @@ export async function handleBookingFlow({ session, message, business, tenant, is
           sections: [{ title: 'Our Services', rows: services.map(s => ({
             id: `SVC_${s.name.toUpperCase().replace(/\s+/g, '_')}`,
             title: s.name.slice(0, 24),
-            description: [s.price ? `D${formatMoney(s.price)}` : null, s.duration ? `${s.duration} min` : null].filter(Boolean).join(' · ') || undefined,
+            description: [s.price ? `D${formatMoney(s.price)}` : null, s.duration ? `${s.duration} min` : null].filter(Boolean).join(' Â· ') || undefined,
           }))}],
         };
       }
@@ -216,20 +212,20 @@ export async function handleBookingFlow({ session, message, business, tenant, is
         buttons: services.slice(0, 3).map(s => ({
           id: `SVC_${s.name.toUpperCase().replace(/\s+/g, '_')}`,
           title: s.name.slice(0, 20),
-        })).concat([{ id: 'CANCEL', title: '❌ Cancel' }]).slice(0, 3),
+        })).concat([{ id: 'CANCEL', title: 'âŒ Cancel' }]).slice(0, 3),
       };
     }
-    // No services — for restaurants ask party size first, then date
+    // No services â€” for restaurants ask party size first, then date
     const isRestaurant = (business?.businessMode || '').toUpperCase() === 'RESTAURANT';
     if (isRestaurant) {
       await updateSession(session.customerPhone, session.tenantId, { step: 'PARTY_SIZE', data: { ...data } });
       return {
         type:    'buttons',
-        body:    `How many guests will be dining? 👥`,
+        body:    `How many guests will be dining? ðŸ‘¥`,
         buttons: [
-          { id: 'PARTY_2', title: '👥 2 guests'  },
-          { id: 'PARTY_4', title: '👥 4 guests'  },
-          { id: 'PARTY_6', title: '👥 6+ guests' },
+          { id: 'PARTY_2', title: 'ðŸ‘¥ 2 guests'  },
+          { id: 'PARTY_4', title: 'ðŸ‘¥ 4 guests'  },
+          { id: 'PARTY_6', title: 'ðŸ‘¥ 6+ guests' },
         ],
         footer: 'Or type any number e.g. 8',
       };
@@ -241,7 +237,7 @@ export async function handleBookingFlow({ session, message, business, tenant, is
 
     case 'SELECT_SERVICE': {
       // [AUDIT-FIX-PARSEINT-9] parseInt("2 haircuts please", 10) === 2, NOT NaN
-      // — so any message merely STARTING with a digit silently hijacked the
+      // â€” so any message merely STARTING with a digit silently hijacked the
       // services array index instead of falling through to name matching below.
       // Only trust the parsed index for a bare number.
       const isPureNumeric = /^\d+$/.test(raw.trim());
@@ -260,7 +256,7 @@ export async function handleBookingFlow({ session, message, business, tenant, is
       }
 
       if (!service) {
-        // Show as list for more than 3 services, buttons for ≤3
+        // Show as list for more than 3 services, buttons for â‰¤3
         if (services.length > 3) {
           return {
             type: 'list',
@@ -269,7 +265,7 @@ export async function handleBookingFlow({ session, message, business, tenant, is
             sections: [{ title: 'Our Services', rows: services.map(s => ({
               id: `SVC_${s.name.toUpperCase().replace(/\s+/g, '_')}`,
               title: s.name.slice(0, 24),
-              description: s.price ? `D${formatMoney(s.price)}${s.duration ? ` · ${s.duration}min` : ''}` : undefined,
+              description: s.price ? `D${formatMoney(s.price)}${s.duration ? ` Â· ${s.duration}min` : ''}` : undefined,
             }))}],
           };
         }
@@ -279,12 +275,12 @@ export async function handleBookingFlow({ session, message, business, tenant, is
           buttons: services.slice(0, 3).map(s => ({
             id: `SVC_${s.name.toUpperCase().replace(/\s+/g, '_')}`,
             title: s.name.slice(0, 20),
-          })).concat([{ id: 'CANCEL', title: '❌ Cancel' }]).slice(0, 3),
+          })).concat([{ id: 'CANCEL', title: 'âŒ Cancel' }]).slice(0, 3),
         };
       }
 
       // [FIX-7] For RESTAURANT mode, ask how many people (partySize) after service selection.
-      // The Booking model has a partySize field but the flow never captured it — admin had
+      // The Booking model has a partySize field but the flow never captured it â€” admin had
       // no idea how many covers to prepare.
       const isRestaurant = (business?.businessMode || '').toUpperCase() === 'RESTAURANT';
       const nextStep = isRestaurant ? 'PARTY_SIZE' : 'DATE';
@@ -296,20 +292,20 @@ export async function handleBookingFlow({ session, message, business, tenant, is
       if (isRestaurant) {
         return {
           type:    'buttons',
-          body:    `Great — *${service.name}* selected! ✅\n\nHow many guests will be dining? 👥`,
-          // [UX-BOOK-1] Drop Cancel from party size — keeps within 3-button limit.
+          body:    `Great â€” *${service.name}* selected! âœ…\n\nHow many guests will be dining? ðŸ‘¥`,
+          // [UX-BOOK-1] Drop Cancel from party size â€” keeps within 3-button limit.
           buttons: [
-            { id: 'PARTY_2', title: '👥 2 guests'  },
-            { id: 'PARTY_4', title: '👥 4 guests'  },
-            { id: 'PARTY_6', title: '👥 6+ guests' },
+            { id: 'PARTY_2', title: 'ðŸ‘¥ 2 guests'  },
+            { id: 'PARTY_4', title: 'ðŸ‘¥ 4 guests'  },
+            { id: 'PARTY_6', title: 'ðŸ‘¥ 6+ guests' },
           ],
           footer: 'Or type any number e.g. 8',
         };
       }
-      return _buildDatePickerUI(`Great — *${service.name}* selected! ✅\n\nWhat date would you like? 📅`, tz, { business, tenant, customerPhone: session.customerPhone });
+      return _buildDatePickerUI(`Great â€” *${service.name}* selected! âœ…\n\nWhat date would you like? ðŸ“…`, tz, { business, tenant, customerPhone: session.customerPhone });
     }
 
-    // [FIX-7] PARTY_SIZE step — only reached for RESTAURANT mode
+    // [FIX-7] PARTY_SIZE step â€” only reached for RESTAURANT mode
     case 'PARTY_SIZE': {
       if (_isCancelIntent(clean, raw)) return cancelFlow(session, business);
 
@@ -322,12 +318,12 @@ export async function handleBookingFlow({ session, message, business, tenant, is
         if (triedCancel) return cancelFlow(session, business);
         return {
           type:    'buttons',
-          body:    `How many guests will be dining? 👥\n\n_Type *cancel* anytime to stop._`,
-          // [UX-BOOK-1] Drop Cancel from party size — keeps within 3-button limit.
+          body:    `How many guests will be dining? ðŸ‘¥\n\n_Type *cancel* anytime to stop._`,
+          // [UX-BOOK-1] Drop Cancel from party size â€” keeps within 3-button limit.
           buttons: [
-            { id: 'PARTY_2', title: '👥 2 guests'  },
-            { id: 'PARTY_4', title: '👥 4 guests'  },
-            { id: 'PARTY_6', title: '👥 6+ guests' },
+            { id: 'PARTY_2', title: 'ðŸ‘¥ 2 guests'  },
+            { id: 'PARTY_4', title: 'ðŸ‘¥ 4 guests'  },
+            { id: 'PARTY_6', title: 'ðŸ‘¥ 6+ guests' },
           ],
           footer: 'Or type any number e.g. 8',
         };
@@ -335,14 +331,14 @@ export async function handleBookingFlow({ session, message, business, tenant, is
       if (partySize > 50) {
         return {
           type:    'buttons',
-          body:    `⚠️ Maximum party size is *50*. For larger groups please contact us directly.`,
-          buttons: [{ id: 'SUPPORT', title: '💬 Contact Us' }, { id: 'CANCEL', title: '❌ Cancel' }],
+          body:    `âš ï¸ Maximum party size is *50*. For larger groups please contact us directly.`,
+          buttons: [{ id: 'SUPPORT', title: 'ðŸ’¬ Contact Us' }, { id: 'CANCEL', title: 'âŒ Cancel' }],
         };
       }
       await updateSession(session.customerPhone, session.tenantId, {
         step: 'DATE', data: { ...data, partySize },
       });
-      return _buildDatePickerUI(`Perfect — *${partySize} guest${partySize > 1 ? 's' : ''}* 👥\n\nWhat date would you like? 📅`, tz, { business, tenant, customerPhone: session.customerPhone });
+      return _buildDatePickerUI(`Perfect â€” *${partySize} guest${partySize > 1 ? 's' : ''}* ðŸ‘¥\n\nWhat date would you like? ðŸ“…`, tz, { business, tenant, customerPhone: session.customerPhone });
     }
 
     case 'DATE_MONTH': {
@@ -426,7 +422,7 @@ export async function handleBookingFlow({ session, message, business, tenant, is
       ));
       const _fmtLocal = (d) => `${d.getUTCDate()} ${d.toLocaleDateString('en-GB', { month: 'long', timeZone: 'UTC' })}`;
 
-      // Legacy quick-pick offsets (DATE_PICK_0…9)
+      // Legacy quick-pick offsets (DATE_PICK_0â€¦9)
       const pickMatch = raw.toUpperCase().match(/^DATE_PICK_(\d+)$/);
       if (pickMatch) {
         const offset = parseInt(pickMatch[1], 10);
@@ -507,7 +503,7 @@ export async function handleBookingFlow({ session, message, business, tenant, is
         : tryParseDate(data.date, tz);
 
       if (!looksLikeTime(resolvedTime)) {
-        return _buildTimePickerUI(`Please enter a valid time ⏰\n\n(e.g. *10:00*, *2pm*, *14:30*)`, { tz, bookingDate: bookingParsedDate });
+        return _buildTimePickerUI(`Please enter a valid time â°\n\n(e.g. *10:00*, *2pm*, *14:30*)`, { tz, bookingDate: bookingParsedDate });
       }
 
       const timeValidation = validateTime(resolvedTime, bookingParsedDate, tz);
@@ -520,8 +516,8 @@ export async function handleBookingFlow({ session, message, business, tenant, is
       });
       return {
         type:    'buttons',
-        body:    `Confirm time: *${resolvedTime}*? ⏰`,
-        buttons: [{ id: 'CONFIRM', title: '✅ Yes, that time' }, { id: 'TIME_BACK', title: '❌ No, re-enter' }],
+        body:    `Confirm time: *${resolvedTime}*? â°`,
+        buttons: [{ id: 'CONFIRM', title: 'âœ… Yes, that time' }, { id: 'TIME_BACK', title: 'âŒ No, re-enter' }],
       };
     }
 
@@ -534,15 +530,15 @@ export async function handleBookingFlow({ session, message, business, tenant, is
         const staffDisplay = stylist || staff || null;
         const isBarbershopSummary = (business?.businessMode || '').toUpperCase() === 'BARBERSHOP';
         const summary =
-          `📋 *Booking Summary*\n\n` +
-          (service      ? `${isBarbershopSummary ? '✂️' : '💇'} *${service}*\n`                      : '') +
-          (staffDisplay ? `👤 *${isBarbershopSummary ? 'Barber' : 'Stylist'}:* ${staffDisplay}\n`    : '') +
-          (partySize    ? `👥 *${partySize} guest${partySize > 1 ? 's' : ''}*\n`                     : '') +
-          `📅 *${date}*\n⏰ *${time}*\n\nShall we confirm this booking?`;
+          `ðŸ“‹ *Booking Summary*\n\n` +
+          (service      ? `${isBarbershopSummary ? 'âœ‚ï¸' : 'ðŸ’‡'} *${service}*\n`                      : '') +
+          (staffDisplay ? `ðŸ‘¤ *${isBarbershopSummary ? 'Barber' : 'Stylist'}:* ${staffDisplay}\n`    : '') +
+          (partySize    ? `ðŸ‘¥ *${partySize} guest${partySize > 1 ? 's' : ''}*\n`                     : '') +
+          `ðŸ“… *${date}*\nâ° *${time}*\n\nShall we confirm this booking?`;
         return {
           type:    'buttons',
           body:    summary,
-          buttons: [{ id: 'CONFIRM', title: '✅ Confirm Booking' }, { id: 'CANCEL', title: '❌ Cancel' }],
+          buttons: [{ id: 'CONFIRM', title: 'âœ… Confirm Booking' }, { id: 'CANCEL', title: 'âŒ Cancel' }],
         };
       }
       if (clean === 'time_back' || /^(no|n|back|change)$/i.test(clean)) {
@@ -563,8 +559,8 @@ export async function handleBookingFlow({ session, message, business, tenant, is
         });
         return {
           type:    'buttons',
-          body:    `Confirm time: *${raw}*? ⏰`,
-          buttons: [{ id: 'CONFIRM', title: '✅ Yes' }, { id: 'TIME_BACK', title: '❌ Re-enter' }],
+          body:    `Confirm time: *${raw}*? â°`,
+          buttons: [{ id: 'CONFIRM', title: 'âœ… Yes' }, { id: 'TIME_BACK', title: 'âŒ Re-enter' }],
         };
       }
       // [FIX-13] Use a local `confirmedTime` that both the inline-new-time branch
@@ -573,14 +569,14 @@ export async function handleBookingFlow({ session, message, business, tenant, is
       return {
         type:    'buttons',
         body:    `Please confirm *${confirmedTime}*, or go back to re-enter.`,
-        buttons: [{ id: 'CONFIRM', title: '✅ Yes, that time' }, { id: 'TIME_BACK', title: '❌ Re-enter' }],
+        buttons: [{ id: 'CONFIRM', title: 'âœ… Yes, that time' }, { id: 'TIME_BACK', title: 'âŒ Re-enter' }],
       };
     }
 
     case 'BOOKING_CONFIRM': {
       // [FIX-v14-BUG-1] CANCEL must be intercepted FIRST, before the summary re-prompt.
       // Without this guard, CANCEL at the booking summary screen hits the else-branch
-      // of the confirm regex and re-shows the booking summary — an infinite loop.
+      // of the confirm regex and re-shows the booking summary â€” an infinite loop.
       // handleSalonBooking's global escape catches it only when the flow delegates here;
       // for non-salon modes (restaurant, services) that call handleBookingFlow directly,
       // no outer escape exists, so the fix must live here in the shared flow.
@@ -597,7 +593,7 @@ export async function handleBookingFlow({ session, message, business, tenant, is
       // and TIME_CONFIRM in this same file already accept them. This is the step
       // that actually saves the booking, so it matters most.
       // [FIX-DUALLAYER-CONFIRM] Widened via the shared regex guard so "yes
-      // please", "sounds good", "go ahead" etc. also confirm — not just a bare
+      // please", "sounds good", "go ahead" etc. also confirm â€” not just a bare
       // single-word match.
       const isBookingConfirm = /^(yes|y|yeah|yep|confirm|ok|okay|sure)$/i.test(clean) || clean === 'confirm' ||
         _isAffirmativeBooking(raw);
@@ -608,25 +604,25 @@ export async function handleBookingFlow({ session, message, business, tenant, is
         return {
           type:    'buttons',
           body:
-            `📋 *Booking Summary*\n\n` +
-            (service       ? `${isBarbershopReprompt ? '✂️' : '💇'} *${service}*\n`                         : '') +
-            (staffDisplay2 ? `👤 *${isBarbershopReprompt ? 'Barber' : 'Stylist'}:* ${staffDisplay2}\n`      : '') +
-            (partySize     ? `👥 *${partySize} guest${partySize > 1 ? 's' : ''}*\n`                         : '') +
-            `📅 *${date}*\n⏰ *${time}*\n\nShall we confirm this booking?`,
-          buttons: [{ id: 'CONFIRM', title: '✅ Confirm Booking' }, { id: 'CANCEL', title: '❌ Cancel' }],
+            `ðŸ“‹ *Booking Summary*\n\n` +
+            (service       ? `${isBarbershopReprompt ? 'âœ‚ï¸' : 'ðŸ’‡'} *${service}*\n`                         : '') +
+            (staffDisplay2 ? `ðŸ‘¤ *${isBarbershopReprompt ? 'Barber' : 'Stylist'}:* ${staffDisplay2}\n`      : '') +
+            (partySize     ? `ðŸ‘¥ *${partySize} guest${partySize > 1 ? 's' : ''}*\n`                         : '') +
+            `ðŸ“… *${date}*\nâ° *${time}*\n\nShall we confirm this booking?`,
+          buttons: [{ id: 'CONFIRM', title: 'âœ… Confirm Booking' }, { id: 'CANCEL', title: 'âŒ Cancel' }],
         };
       }
 
       // Save booking
       const customerName = session.customerName || null;
       const { date, time, service, partySize, stylist, staff } = data;
-      // [FIX-SALON-9] stylist is set by handleSalonBooking SELECT_STYLIST → session.data.stylist
+      // [FIX-SALON-9] stylist is set by handleSalonBooking SELECT_STYLIST â†’ session.data.stylist
       const staffToSave = stylist || staff || null;
       // [FIX-SALON-2] Mark appointments as 'appointment' type (vs walk-in 'walkin')
       const isSalonMode = ['SALON','BARBERSHOP'].includes((business?.businessMode || '').toUpperCase());
       const bookingTypeToSave = isSalonMode ? 'appointment' : null;
 
-      // [v14-DUPLICATE] Double-booking guard: same customer, same date, within ±30 min.
+      // [v14-DUPLICATE] Double-booking guard: same customer, same date, within Â±30 min.
       if (isSalonMode && date) {
         try {
           const { default: _BookingModel } = await import('../../models/Booking.js');
@@ -654,25 +650,25 @@ export async function handleBookingFlow({ session, message, business, tenant, is
             return {
               type: 'buttons',
               body:
-                `⚠️ *You already have a booking on ${date}*` +
+                `âš ï¸ *You already have a booking on ${date}*` +
                 (conflict.time && newMinutes !== null ? ' around this time' : '') +
                 `\n\n` +
-                (conflict.service ? `💇 *${conflict.service}*\n` : '') +
-                (conflict.time    ? `⏰ *${conflict.time}*\n`    : '') +
+                (conflict.service ? `ðŸ’‡ *${conflict.service}*\n` : '') +
+                (conflict.time    ? `â° *${conflict.time}*\n`    : '') +
                 `\nWould you like to reschedule that booking, or book a different date?`,
               buttons: [
-                { id: 'RESCHEDULE', title: '📅 Reschedule'      },
-                { id: 'BOOK',       title: '📅 Different Date'  },
-                { id: 'SHOW_MENU',  title: '🔄 Main Menu'        },
+                { id: 'RESCHEDULE', title: 'ðŸ“… Reschedule'      },
+                { id: 'BOOK',       title: 'ðŸ“… Different Date'  },
+                { id: 'SHOW_MENU',  title: 'ðŸ”„ Main Menu'        },
               ],
             };
           }
-        } catch { /* non-fatal — proceed with save */ }
+        } catch { /* non-fatal â€” proceed with save */ }
       }
 
       // [FIX-16] parsedDate is stored as a Date object but comes back from
       // session.data (lean MongoDB read) as an ISO string. Coerce explicitly
-      // so saveBooking always receives a real Date or null — never a string.
+      // so saveBooking always receives a real Date or null â€” never a string.
       const rawParsedDate = data.parsedDate;
       // [AUDIT-FIX-BOOK-1] Fallback re-parse was missing the `tz` argument that every
       // other tryParseDate() call site in this file passes. data.parsedDate is only
@@ -681,7 +677,7 @@ export async function handleBookingFlow({ session, message, business, tenant, is
       // this fallback re-parse path is rare but real. Without `tz`, getLocalNow()
       // inside tryParseDate() defaults to UTC, so "today"/"tomorrow"/ordinal-year
       // corrections would resolve against the server's UTC calendar day instead of
-      // the business's configured timezone — the same class of bug [FIX-TZ-2] fixed
+      // the business's configured timezone â€” the same class of bug [FIX-TZ-2] fixed
       // for the rest of this file.
       const parsedDate = rawParsedDate
         ? (rawParsedDate instanceof Date ? rawParsedDate : new Date(rawParsedDate))
@@ -705,17 +701,17 @@ export async function handleBookingFlow({ session, message, business, tenant, is
       } catch (err) {
         logger.error('[BookingFlow] saveBooking failed', { err: err.message });
         // [FIX-SAVE-ERR] If we couldn't persist the booking, do NOT proceed to send a
-        // confirmation — the customer would think they're booked when they're not, and
+        // confirmation â€” the customer would think they're booked when they're not, and
         // the admin would never receive an alert. Clear the flow and show a retry prompt.
         await updateSession(session.customerPhone, session.tenantId, {
           currentFlow: null, step: null, data: {},
         });
         return {
           type:    'buttons',
-          body:    `⚠️ *Something went wrong saving your booking.*\n\nPlease try again — tap below to restart.`,
+          body:    `âš ï¸ *Something went wrong saving your booking.*\n\nPlease try again â€” tap below to restart.`,
           buttons: [
-            { id: 'BOOK',    title: '📅 Try Again'  },
-            { id: 'SUPPORT', title: '💬 Contact Us' },
+            { id: 'BOOK',    title: 'ðŸ“… Try Again'  },
+            { id: 'SUPPORT', title: 'ðŸ’¬ Contact Us' },
           ],
         };
       }
@@ -730,15 +726,15 @@ export async function handleBookingFlow({ session, message, business, tenant, is
         }).catch(() => {});
       }
 
-      // [FIX-E] Notify admin — every other flow (order, payment) alerts the admin;
+      // [FIX-E] Notify admin â€” every other flow (order, payment) alerts the admin;
       // bookings never did. Now mirrors the pattern used in paymentService.
       try {
         const adminPhone = business?.adminPhone || tenant?.adminPhone;
         if (adminPhone && tenant && savedBooking) {
-          const { buildAdminBookingAlertBody } = await import('../../services/adminCommandService.js');
+          const { buildAdminBookingAlertBody } = await import('../../services/admin/adminCommandService.js');
           const { dispatchMessage } = await import('../whatsapp/dispatcher.js');
           // [v14-BUG-10] Pass staff (stylist) to admin alert so admin sees who
-          // the customer requested. Previously omitted — admin saw service/date/time
+          // the customer requested. Previously omitted â€” admin saw service/date/time
           // but no stylist name even when the salon booking flow captured one.
           const alertBody = buildAdminBookingAlertBody({
             customerPhone: session.customerPhone,
@@ -754,8 +750,8 @@ export async function handleBookingFlow({ session, message, business, tenant, is
             type:    'buttons',
             body:    alertBody,
             buttons: [
-              { id: `CONFIRM_BOOK_${savedBooking.shortId}`, title: '✅ Confirm' },
-              { id: `DECLINE_BOOK_${savedBooking.shortId}`, title: '❌ Decline' },
+              { id: `CONFIRM_BOOK_${savedBooking.shortId}`, title: 'âœ… Confirm' },
+              { id: `DECLINE_BOOK_${savedBooking.shortId}`, title: 'âŒ Decline' },
             ],
           }, tenant).catch(() => {});
         }
@@ -767,12 +763,12 @@ export async function handleBookingFlow({ session, message, business, tenant, is
       if (_lcRb) return _lcRb;
 
       // [FIX-BC-1] CRITICAL: isBarbershopConfirm and shortIdLine were used below
-      // but never declared anywhere in this function — this was a ReferenceError crash
+      // but never declared anywhere in this function â€” this was a ReferenceError crash
       // on every successful booking save, meaning NO customer ever received a booking
       // confirmation message. Both variables defined here.
       const isBarbershopConfirm = (business?.businessMode || '').toUpperCase() === 'BARBERSHOP';
       const shortIdLine = savedBooking?.shortId
-        ? `🔖 Ref: \`#${savedBooking.shortId}\`\n`
+        ? `ðŸ”– Ref: \`#${savedBooking.shortId}\`\n`
         : '';
 
       // [v14-PREP] Service-specific preparation tip on booking receipt (salon/barbershop)
@@ -781,40 +777,40 @@ export async function handleBookingFlow({ session, message, business, tenant, is
         try {
           const { getSalonPrepTip } = await import('../../modules/salon/salonHelpers.js');
           const tip = getSalonPrepTip(service, business);
-          if (tip) prepLine = `\n💡 *Prep tip:* ${tip}\n`;
+          if (tip) prepLine = `\nðŸ’¡ *Prep tip:* ${tip}\n`;
         } catch { /* non-fatal */ }
       }
 
       const confirmBody =
-        `📅 *Booking Request Received!* ✨\n\n` +
-        (service     ? `${isBarbershopConfirm ? '✂️' : '💇'}  Service: *${service}*\n`   : '') +
-        (staffToSave ? `👤  ${isBarbershopConfirm ? 'Barber' : 'Stylist'}: *${staffToSave}*\n` : '') +
-        (date        ? `📅  Date: *${date}*\n`          : '') +
-        (time        ? `⏰  Time: *${time}*\n`          : '') +
-        (partySize   ? `👥  Party size: *${partySize} guest${partySize > 1 ? 's' : ''}*\n` : '') +
+        `ðŸ“… *Booking Request Received!* âœ¨\n\n` +
+        (service     ? `${isBarbershopConfirm ? 'âœ‚ï¸' : 'ðŸ’‡'}  Service: *${service}*\n`   : '') +
+        (staffToSave ? `ðŸ‘¤  ${isBarbershopConfirm ? 'Barber' : 'Stylist'}: *${staffToSave}*\n` : '') +
+        (date        ? `ðŸ“…  Date: *${date}*\n`          : '') +
+        (time        ? `â°  Time: *${time}*\n`          : '') +
+        (partySize   ? `ðŸ‘¥  Party size: *${partySize} guest${partySize > 1 ? 's' : ''}*\n` : '') +
         shortIdLine +
         prepLine +
-        `\n⏳ We're reviewing your booking and will confirm shortly. We'll send you a message as soon as it's confirmed! 🙏`;
+        `\nâ³ We're reviewing your booking and will confirm shortly. We'll send you a message as soon as it's confirmed! ðŸ™`;
 
-      // [SPEC-6C] No welcome/sales buttons on booking receipt — customer is waiting
+      // [SPEC-6C] No welcome/sales buttons on booking receipt â€” customer is waiting
       // for admin confirmation. Just a cancel escape.
       return {
         type:    'buttons',
         body:    confirmBody,
-        buttons: [{ id: 'CANCEL_BOOKING', title: '❌ Cancel Booking' }],
+        buttons: [{ id: 'CANCEL_BOOKING', title: 'âŒ Cancel Booking' }],
       };
     }
 
     default:
       return {
         type:    'buttons',
-        body:    `What date would you like to book? 📅`,
-        buttons: [{ id: 'CANCEL', title: '❌ Cancel' }],
+        body:    `What date would you like to book? ðŸ“…`,
+        buttons: [{ id: 'CANCEL', title: 'âŒ Cancel' }],
       };
   }
 }
 
-// ── UI Builder Helpers ─────────────────────────────────────────────────────────
+// â”€â”€ UI Builder Helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 function _isCancelIntent(clean, raw) {
   const normalized = String(raw || clean || '')
@@ -829,7 +825,7 @@ function _isCancelIntent(clean, raw) {
 }
 
 /**
- * _buildDatePickerUI — standard list picker by default; Flow calendar only when explicitly enabled.
+ * _buildDatePickerUI â€” standard list picker by default; Flow calendar only when explicitly enabled.
  */
 function _buildDatePickerUI(headingOrError = null, tz = 'UTC', { business, tenant, customerPhone } = {}) {
   const standardPicker = buildSimpleDayList(tz, headingOrError);
@@ -848,17 +844,17 @@ function _buildDatePickerUI(headingOrError = null, tz = 'UTC', { business, tenan
 }
 
 const ALL_TIME_SLOTS = [
-  { id: 'TIME_9AM',  title: '9:00 AM',  minutes: 9 * 60,  period: '🌅 Morning'   },
-  { id: 'TIME_10AM', title: '10:00 AM', minutes: 10 * 60, period: '🌅 Morning'   },
-  { id: 'TIME_11AM', title: '11:00 AM', minutes: 11 * 60, period: '🌅 Morning'   },
-  { id: 'TIME_12PM', title: '12:00 PM', minutes: 12 * 60, period: '☀️ Afternoon' },
-  { id: 'TIME_1PM',  title: '1:00 PM',  minutes: 13 * 60, period: '☀️ Afternoon' },
-  { id: 'TIME_2PM',  title: '2:00 PM',  minutes: 14 * 60, period: '☀️ Afternoon' },
-  { id: 'TIME_3PM',  title: '3:00 PM',  minutes: 15 * 60, period: '☀️ Afternoon' },
-  { id: 'TIME_4PM',  title: '4:00 PM',  minutes: 16 * 60, period: '☀️ Afternoon' },
-  { id: 'TIME_5PM',  title: '5:00 PM',  minutes: 17 * 60, period: '🌆 Evening'   },
-  { id: 'TIME_6PM',  title: '6:00 PM',  minutes: 18 * 60, period: '🌆 Evening'   },
-  { id: 'TIME_7PM',  title: '7:00 PM',  minutes: 19 * 60, period: '🌆 Evening'   },
+  { id: 'TIME_9AM',  title: '9:00 AM',  minutes: 9 * 60,  period: 'ðŸŒ… Morning'   },
+  { id: 'TIME_10AM', title: '10:00 AM', minutes: 10 * 60, period: 'ðŸŒ… Morning'   },
+  { id: 'TIME_11AM', title: '11:00 AM', minutes: 11 * 60, period: 'ðŸŒ… Morning'   },
+  { id: 'TIME_12PM', title: '12:00 PM', minutes: 12 * 60, period: 'â˜€ï¸ Afternoon' },
+  { id: 'TIME_1PM',  title: '1:00 PM',  minutes: 13 * 60, period: 'â˜€ï¸ Afternoon' },
+  { id: 'TIME_2PM',  title: '2:00 PM',  minutes: 14 * 60, period: 'â˜€ï¸ Afternoon' },
+  { id: 'TIME_3PM',  title: '3:00 PM',  minutes: 15 * 60, period: 'â˜€ï¸ Afternoon' },
+  { id: 'TIME_4PM',  title: '4:00 PM',  minutes: 16 * 60, period: 'â˜€ï¸ Afternoon' },
+  { id: 'TIME_5PM',  title: '5:00 PM',  minutes: 17 * 60, period: 'ðŸŒ† Evening'   },
+  { id: 'TIME_6PM',  title: '6:00 PM',  minutes: 18 * 60, period: 'ðŸŒ† Evening'   },
+  { id: 'TIME_7PM',  title: '7:00 PM',  minutes: 19 * 60, period: 'ðŸŒ† Evening'   },
 ];
 
 function _filterAvailableTimeSlots({ tz = 'UTC', bookingDate = null } = {}) {
@@ -875,7 +871,7 @@ function _filterAvailableTimeSlots({ tz = 'UTC', bookingDate = null } = {}) {
 }
 
 /**
- * _buildTimePickerUI — tap-only time list; hides past slots when booking is today.
+ * _buildTimePickerUI â€” tap-only time list; hides past slots when booking is today.
  */
 function _buildTimePickerUI(headingOrError = null, { tz = 'UTC', bookingDate = null } = {}) {
   const available = _filterAvailableTimeSlots({ tz, bookingDate });
@@ -892,13 +888,13 @@ function _buildTimePickerUI(headingOrError = null, { tz = 'UTC', bookingDate = n
 
   const body = headingOrError
     ? `${headingOrError}\n\nPlease select your preferred time.`
-    : `What time works for you? ⏰\n\nPlease select your preferred time.`;
+    : `What time works for you? â°\n\nPlease select your preferred time.`;
 
   if (!sections.length) {
     return {
       type:    'buttons',
-      body:    `${body}\n\n⚠️ No slots left today. Please pick a later date or type a time.`,
-      buttons: [{ id: 'DATE_BACK', title: '📅 Change date' }, { id: 'CANCEL', title: '❌ Cancel' }],
+      body:    `${body}\n\nâš ï¸ No slots left today. Please pick a later date or type a time.`,
+      buttons: [{ id: 'DATE_BACK', title: 'ðŸ“… Change date' }, { id: 'CANCEL', title: 'âŒ Cancel' }],
     };
   }
 
@@ -911,7 +907,7 @@ function _buildTimePickerUI(headingOrError = null, { tz = 'UTC', bookingDate = n
 }
 
 /**
- * Resume booking at the shared DATE step after a reschedule — shows the
+ * Resume booking at the shared DATE step after a reschedule â€” shows the
  * professional date picker immediately instead of a plain-text prompt.
  */
 export async function buildRescheduleDatePicker({ session, business, tenant, resumeData = {} }) {
@@ -937,3 +933,4 @@ export async function buildRescheduleDatePicker({ session, business, tenant, res
     isInteractive: false,
   });
 }
+

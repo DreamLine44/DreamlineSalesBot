@@ -60,7 +60,7 @@ const templateName = {
  * Adjust param order and count to match your approved Meta template.
  * Default template assumes: {{1}} = item name, {{2}} = business name
  */
-function buildAbandonedCartComponents(item, bizName) {
+const buildAbandonedCartComponents = (item, bizName) => {
   return [{
     type: 'body',
     parameters: [
@@ -74,7 +74,7 @@ function buildAbandonedCartComponents(item, bizName) {
  * Build template components for a booking reminder.
  * Default template assumes: {{1}} = customer name, {{2}} = service, {{3}} = datetime, {{4}} = business name
  */
-function buildBookingReminderComponents(customerName, service, when, bizName) {
+const buildBookingReminderComponents = (customerName, service, when, bizName) => {
   return [{
     type: 'body',
     parameters: [
@@ -94,7 +94,7 @@ function buildBookingReminderComponents(customerName, service, when, bizName) {
  * holds the primary channel's accountNo, which may be a bank account number, not a Wave
  * phone number. The misleading name caused confusion when reading template payloads in logs.
  */
-function buildPaymentReminderComponents(item, amount, paymentContact) {
+const buildPaymentReminderComponents = (item, amount, paymentContact) => {
   return [{
     type: 'body',
     parameters: [
@@ -107,7 +107,7 @@ function buildPaymentReminderComponents(item, amount, paymentContact) {
 
 let _timers = [];
 
-export function startScheduler() {
+export const startScheduler = () => {
   if (process.env.SCHEDULER_ENABLED !== 'true') {
     logger.info('[Scheduler] Disabled (SCHEDULER_ENABLED != true)');
     return;
@@ -127,7 +127,7 @@ export function startScheduler() {
   logger.info('[Scheduler] 4 jobs running');
 }
 
-export function stopScheduler() {
+export const stopScheduler = () => {
   _timers.forEach(t => clearInterval(t));
   _timers = [];
 }
@@ -293,7 +293,7 @@ async function runBookingReminderJob() {
   }
 }
 
-function decideShouldSendReminder(booking, now, businessTimezone) {
+const decideShouldSendReminder = (booking, now, businessTimezone) => {
   // Strategy A: parsedDate known → remind 24–36h before appointment.
   // [FIX-7] Add 30-min tolerance on the upper bound too: a job that runs
   // a minute early would otherwise miss a booking at exactly 36h01m.

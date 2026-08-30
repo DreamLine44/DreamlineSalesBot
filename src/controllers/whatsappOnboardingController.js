@@ -1,4 +1,4 @@
-/**
+﻿/**
  * controllers/whatsappOnboardingController.js
  *
  * Handles all HTTP request/response logic for the WhatsApp onboarding system.
@@ -19,7 +19,7 @@
  *
  * [FIX-ONBOARD-CTL-1] saveTenantWhatsAppCredentials now also advances
  *   onboardingStep to 2 (credentials saved) via Tenant.$set when credentials
- *   are stored — consistent with what PATCH /admin/tenants/:id does.
+ *   are stored â€” consistent with what PATCH /admin/tenants/:id does.
  *   Previously onboardingStep was never updated by the onboarding path.
  *
  * [FIX-ONBOARD-CTL-2] testTenantWhatsAppConnection now decrypts the stored
@@ -42,18 +42,18 @@ import {
   verifyCredentials,
   markConnected,
   updateStatus,
-} from '../services/whatsappOnboardingService.js';
+} from '../services/whatsapp/whatsappOnboardingService.js';
 import { decryptToken } from '../controllers/tenantController.js';
-import { notifyAdminNewRequest } from '../services/whatsappNotificationService.js';
+import { notifyAdminNewRequest } from '../services/whatsapp/whatsappNotificationService.js';
 import logger from '../config/logger.js';
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
+// â”€â”€ Helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 function isValidObjectId(id) {
   return mongoose.Types.ObjectId.isValid(id);
 }
 
-// ── Tenant-facing controllers ─────────────────────────────────────────────────
+// â”€â”€ Tenant-facing controllers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 /**
  * submitConnectionRequest
@@ -116,10 +116,10 @@ export async function submitConnectionRequest(req, res, next) {
  *
  * [AUDIT-FIX-18a] `request` now also includes businessCategory, contactPerson,
  *   contactEmail, and createdAt. Previously this handler only returned
- *   { id, businessName, whatsappNumber, status, submittedAt, lastUpdated } —
+ *   { id, businessName, whatsappNumber, status, submittedAt, lastUpdated } â€”
  *   WhatsAppConnectionPage.jsx (WhatsAppStatusCard) reads request.businessCategory,
  *   request.contactPerson, request.contactEmail, and request.createdAt, so all four
- *   fields silently rendered as "—" for every tenant even though the data existed
+ *   fields silently rendered as "â€”" for every tenant even though the data existed
  *   in the DB (the admin-facing endpoints already return the full document).
  *   submittedAt/lastUpdated are kept for backward compatibility with any existing
  *   caller, alongside the now-added createdAt.
@@ -176,7 +176,7 @@ export async function getTenantRequestStatus(req, res, next) {
   }
 }
 
-// ── Admin-facing controllers ──────────────────────────────────────────────────
+// â”€â”€ Admin-facing controllers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 /**
  * getAllConnectionRequests
@@ -189,7 +189,7 @@ export async function getAllConnectionRequests(req, res, next) {
     const filter = {};
     if (status) filter.status = status;
 
-    // [AUDIT-FIX-10] Added Math.max(...,1) lower bound — same gap as
+    // [AUDIT-FIX-10] Added Math.max(...,1) lower bound â€” same gap as
     // adminRoutes.js's sessions endpoint and the (already-fixed)
     // dashboardController.getCustomers. ?limit=-5 would otherwise pass straight
     // through to Mongoose's .limit() unguarded.
@@ -308,7 +308,7 @@ export async function saveTenantWhatsAppCredentials(req, res, next) {
       verifyResult = await verifyCredentials({ phoneNumberId, wabaId, accessToken, apiVersion });
       if (verifyResult.status !== 'CONNECTED') {
         return res.status(422).json({
-          error:         'Credential verification failed — credentials not saved',
+          error:         'Credential verification failed â€” credentials not saved',
           verifyStatus:  verifyResult.status,
           verifyMessage: verifyResult.message,
           details:       verifyResult.details,
@@ -329,7 +329,7 @@ export async function saveTenantWhatsAppCredentials(req, res, next) {
     }
 
     // [FIX-ONBOARD-CTL-1] Advance onboardingStep to 2 (credentials saved, awaiting verification)
-    // when the tenant is still at step 0 or 1 — consistent with PATCH /admin/tenants/:id behaviour.
+    // when the tenant is still at step 0 or 1 â€” consistent with PATCH /admin/tenants/:id behaviour.
     const currentTenant = await Tenant.findById(tenantId).select('onboardingStep').lean();
     if (currentTenant && (currentTenant.onboardingStep ?? 0) <= 1) {
       await Tenant.findByIdAndUpdate(tenantId, { $set: { onboardingStep: 2 } });
@@ -453,3 +453,4 @@ export async function testTenantWhatsAppConnection(req, res, next) {
     next(err);
   }
 }
+

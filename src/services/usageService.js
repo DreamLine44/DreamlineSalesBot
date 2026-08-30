@@ -22,7 +22,7 @@ import Tenant from '../models/Tenant.js';
 import logger from '../config/logger.js';
 
 /** True if `resetDate` falls in a different calendar month than `now`. */
-function isPastResetWindow(resetDate, now) {
+const isPastResetWindow = (resetDate, now) => {
   if (!resetDate) return true;
   const r = new Date(resetDate);
   return r.getFullYear() !== now.getFullYear() || r.getMonth() !== now.getMonth();

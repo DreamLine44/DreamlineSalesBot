@@ -1,27 +1,27 @@
-/**
+﻿/**
  * modules/restaurant/flows/orderFlow.js
  *
  * Handles the full ORDER flow for restaurants (and all ORDER-capable modules).
  * Registered with flowEngine for RESTAURANT:ORDER and as the generic ORDER handler.
  *
- * Steps: SELECT_ITEM → QUANTITY → [UPSELL?] → CONFIRM → [PAYMENT?] → DONE
+ * Steps: SELECT_ITEM â†’ QUANTITY â†’ [UPSELL?] â†’ CONFIRM â†’ [PAYMENT?] â†’ DONE
  *
  * FIXES:
- * [FIX-1] norm() regex was missing the 'g' flag — only the FIRST whitespace run was
- *         collapsed. "jollof  rice  combo" → "jollof rice  combo" (double-space survives).
+ * [FIX-1] norm() regex was missing the 'g' flag â€” only the FIRST whitespace run was
+ *         collapsed. "jollof  rice  combo" â†’ "jollof rice  combo" (double-space survives).
  *         Fuzzy matching then failed against the normalised item name. Fixed: /\s+/g.
  *
- * [FIX-2] WORD_NUMS was 1-based (one:1, two:2 …) but numIndex feeds directly into
+ * [FIX-2] WORD_NUMS was 1-based (one:1, two:2 â€¦) but numIndex feeds directly into
  *         menu[numIndex]. "one" gave menu[1] (the SECOND item). Fixed: now 0-indexed.
  *
  * [FIX-3] After order confirm with no payment configured, the admin was never notified.
- *         Cash/no-payment restaurants had silent orders — admin had no idea.
+ *         Cash/no-payment restaurants had silent orders â€” admin had no idea.
  *         Fixed: dispatchText() to adminPhone after every successful order save.
  *
- * [FIX-4] Payment step was reusing session data without re-fetching — race condition
+ * [FIX-4] Payment step was reusing session data without re-fetching â€” race condition
  *         on slow connections. Now reads totalPrice from confirmed data object.
  *
- * [MULTICART-v39-PHASE2] Added real multi-item cart support — see
+ * [MULTICART-v39-PHASE2] Added real multi-item cart support â€” see
  *         core/shared/cartEngine.js module header for the full rationale.
  *         Two new entry points into a cart, both purely additive (a normal
  *         single-item order never touches either):
@@ -33,12 +33,12 @@
  *               fuzzy-match path unchanged.
  *           (b) The CONFIRM step's order summary now offers an "Add Another
  *               Item" button. Tapping it pushes the current item into
- *               data.cart and loops back to SELECT_ITEM instead of saving —
+ *               data.cart and loops back to SELECT_ITEM instead of saving â€”
  *               so a customer who picks items one at a time (browsing the
  *               menu) can also build a multi-item order, not just one who
  *               types everything in a single message.
  *         Either path converges on ITEM_ADDED/CONFIRM's items[] save via
- *         saveOrder({ items: cartToOrderItems(cart) }) — orderService.js's
+ *         saveOrder({ items: cartToOrderItems(cart) }) â€” orderService.js's
  *         resolveOrderFields() already normalizes that exactly like a WA
  *         Catalog multi-item cart order does.
  */
@@ -52,15 +52,15 @@ import {
   buildItemAddedUI, buildItemsAddedUI, buildCartReviewUI, buildEditCartMenuUI, buildEditCartPickerUI,
 } from '../handlers/uiBuilders.js';
 import { parseQuantity }    from '../../../utils/parseQuantity.js';
-import { saveOrder }        from '../../../services/orderService.js';
+import { saveOrder }        from '../../../services/order/orderService.js';
 import { trackOrderAnalytics } from '../../../core/analytics/analyticsService.js';
 import { dispatchText }     from '../../../core/whatsapp/dispatcher.js';
 import { buildPaymentInstructionsUI } from '../../../services/paymentService.js';
 import { buildWhatsAppImageUrl }       from '../../../config/cloudinary.js';
 import { itemLabel }        from '../../../utils/itemLabel.js';
-// [AUDIT-FIX-XZ-REMOVE] isCatalogEnabled — see the two call sites below for
+// [AUDIT-FIX-XZ-REMOVE] isCatalogEnabled â€” see the two call sites below for
 // the rationale. The legacy text/list menu (buildMenuUI, the "Choose an
-// option ▼" flow) is being retired for any tenant with a live WA Catalog.
+// option â–¼" flow) is being retired for any tenant with a live WA Catalog.
 import { isCatalogEnabled } from '../../catalog/waCatalogConfig.js';
 import { formatMoney }      from '../../../utils/formatCurrency.js';
 import { formatPhoneDisplay } from '../../../utils/formatPhone.js';
@@ -73,11 +73,11 @@ import {
 } from '../../../core/shared/cartEngine.js';
 import logger               from '../../../config/logger.js';
 
-// ── Normalise — [FIX-1] /\s+/ was missing the 'g' flag ──────────────────────
+// â”€â”€ Normalise â€” [FIX-1] /\s+/ was missing the 'g' flag â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 const norm = (s = '') => s.toLowerCase().replace(/[^\w\s]/g, ' ').replace(/\s+/g, ' ').trim();
 
-// ── Word-number map — 0-indexed — [FIX-2] was 1-based causing off-by-1 errors ─
-// "one" → menu[0], "two" → menu[1], etc. (parseInt path already does -1)
+// â”€â”€ Word-number map â€” 0-indexed â€” [FIX-2] was 1-based causing off-by-1 errors â”€
+// "one" â†’ menu[0], "two" â†’ menu[1], etc. (parseInt path already does -1)
 const WORD_NUMS = {
   one:0, two:1, three:2, four:3, five:4, six:5, seven:6, eight:7, nine:8, ten:9,
   a:0, an:0,
@@ -93,11 +93,11 @@ export async function handleOrderFlow({ session, message, business, tenant, isIn
   const menu  = (business?.menuItems || []).filter(i => i.available !== false);
   const data  = session.data || {};
 
-  // ── No menu configured ────────────────────────────────────────────────────
+  // â”€â”€ No menu configured â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   // [FIX-FLOW-STUCK] Clear currentFlow BEFORE returning so the session is not
   // permanently stuck in ORDER state. Without this, every subsequent message from
   // the customer re-enters handleOrderFlow (currentFlow='ORDER'), hits this guard
-  // again, and returns the same error indefinitely — the bot becomes unresponsive.
+  // again, and returns the same error indefinitely â€” the bot becomes unresponsive.
   if (!menu.length) {
     await updateSession(session.customerPhone, session.tenantId, {
       currentFlow: null, step: null, data: {},
@@ -105,32 +105,32 @@ export async function handleOrderFlow({ session, message, business, tenant, isIn
     const cfg = (await import('../../../config/modes.js')).getModeConfig(business);
     return {
       type:    'buttons',
-      body:    '⚠️ Our menu is being updated. Please contact us directly.',
+      body:    'âš ï¸ Our menu is being updated. Please contact us directly.',
       buttons: [
-        { id: 'SUPPORT',   title: '💬 Contact Us'  },
-        { id: 'SHOW_MENU', title: '🔄 Start Over'  },
+        { id: 'SUPPORT',   title: 'ðŸ’¬ Contact Us'  },
+        { id: 'SHOW_MENU', title: 'ðŸ”„ Start Over'  },
       ],
     };
   }
 
-  // ── INIT (message = null — start of flow) ─────────────────────────────────
+  // â”€â”€ INIT (message = null â€” start of flow) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   // [FIX-INIT-HIJACK] This block used to run on EVERY message===null call,
   // regardless of `step`. But message===null isn't only used to start a
-  // fresh flow — moduleRegistry.js's direct-order handoff ("two plates of
+  // fresh flow â€” moduleRegistry.js's direct-order handoff ("two plates of
   // Yassa Chicken"), its cart-modification handoff, and
   // webhookController.js's ambiguity-resolution handoff all deliberately
   // set step:'CONFIRM' with a pre-populated cart, then call advance() with
   // message:null specifically so the customer lands straight on the Order
-  // Summary — skipping catalog/menu/quantity/upsell entirely, as intended.
+  // Summary â€” skipping catalog/menu/quantity/upsell entirely, as intended.
   // Because this block ran unconditionally, it fired FIRST on every one of
   // those calls, silently overwrote step back to 'SELECT_ITEM', and showed
   // the catalog or (if data.orderViaCatalog wasn't set) the legacy
-  // buildMenuUI() text list instead of the summary — even for a tenant with
+  // buildMenuUI() text list instead of the summary â€” even for a tenant with
   // a fully live, synced WA Catalog.
   // Fix: only treat message===null as a fresh-flow INIT when the step is
   // actually the default starting step. A genuine startFlow() call always
   // passes step:null (see flowEngine.js), which falls back to 'SELECT_ITEM'
-  // via the `step` const above — so this still fires exactly as before for
+  // via the `step` const above â€” so this still fires exactly as before for
   // every real "Order Food" tap / catalog offer / plain "I want to order".
   // Any handoff that deliberately set a further-along step (CONFIRM, etc.)
   // now correctly falls through to the switch below instead of being reset.
@@ -138,9 +138,9 @@ export async function handleOrderFlow({ session, message, business, tenant, isIn
     const existingCart = Array.isArray(data.cart) ? data.cart : [];
     // [AUDIT-FIX-XZ-REMOVE] Previously this only trusted data.orderViaCatalog,
     // a session-level flag stamped once at START_ORDER. If a tenant enabled/
-    // synced WA Catalog AFTER a customer's session began — or the flag was
-    // ever lost/never set on a particular session for any other reason — this
-    // fell straight to buildMenuUI() below: the legacy "Choose an option ▼"
+    // synced WA Catalog AFTER a customer's session began â€” or the flag was
+    // ever lost/never set on a particular session for any other reason â€” this
+    // fell straight to buildMenuUI() below: the legacy "Choose an option â–¼"
     // list. That path has a real, separate defect (selecting an item from it
     // can dead-end in the QUESTION/FAQ fallback instead of continuing the
     // order) and is being removed outright for any tenant with a live,
@@ -160,14 +160,14 @@ export async function handleOrderFlow({ session, message, business, tenant, isIn
     if (viaCatalog) {
       const count = cartItemCount(existingCart);
       const note  = existingCart.length
-        ? `🛒 You still have *${count} item${count > 1 ? 's' : ''}* in your cart.\n\n`
+        ? `ðŸ›’ You still have *${count} item${count > 1 ? 's' : ''}* in your cart.\n\n`
         : '';
       return await _browseForMoreItems(session, business, tenant, freshData, { note });
     }
     const menuUI = buildMenuUI(business);
     if (existingCart.length) {
       const count = cartItemCount(existingCart);
-      const cartNote = `🛒 You still have *${count} item${count > 1 ? 's' : ''}* in your cart.\n\n`;
+      const cartNote = `ðŸ›’ You still have *${count} item${count > 1 ? 's' : ''}* in your cart.\n\n`;
       if (typeof menuUI.body === 'string') menuUI.body = cartNote + menuUI.body;
     }
     return menuUI;
@@ -175,7 +175,7 @@ export async function handleOrderFlow({ session, message, business, tenant, isIn
 
   switch (step) {
 
-    // ────────────────────────────────────────────────────────────────────────
+    // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     case 'SELECT_ITEM': {
       const cartAtSelect = Array.isArray(data.cart) ? data.cart : [];
 
@@ -190,7 +190,7 @@ export async function handleOrderFlow({ session, message, business, tenant, isIn
         .replace(/^(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten)\s+(?:plates?\s+of\s+)?/i, '')
         .replace(/[?!.]+$/, '')
         .trim();
-      // [FIX-GENERIC-LEFTOVER] Mirrors the same fix in moduleRegistry.js —
+      // [FIX-GENERIC-LEFTOVER] Mirrors the same fix in moduleRegistry.js â€”
       // see that file for the full rationale. A leftover made entirely of
       // filler/navigational words ("to order", "to see the menu", "food")
       // is not a product-lookup attempt.
@@ -215,7 +215,7 @@ export async function handleOrderFlow({ session, message, business, tenant, isIn
             itemCount: cartItemCount(cappedCart),
             business,
             note: overflowCount > 0
-              ? `\n\n_(Your cart can hold up to ${business?.multiItemCart?.maxItems || 10} items — ${overflowCount} extra item${overflowCount > 1 ? 's were' : ' was'} left out.)_`
+              ? `\n\n_(Your cart can hold up to ${business?.multiItemCart?.maxItems || 10} items â€” ${overflowCount} extra item${overflowCount > 1 ? 's were' : ' was'} left out.)_`
               : '',
           });
         }
@@ -223,7 +223,7 @@ export async function handleOrderFlow({ session, message, business, tenant, isIn
         // guard above already confirmed directProductText has real content
         // (e.g. "Yassa Chicken"), yet neither parser could match it against
         // the live menu. Previously this fell through with no explicit
-        // return, silently landing in _browseForMoreItems/buildMenuUI below —
+        // return, silently landing in _browseForMoreItems/buildMenuUI below â€”
         // which just re-shows the same "still have N items in cart" note the
         // customer already saw, with no explanation of why their order
         // didn't go through. That produced the exact repeat-message loop in
@@ -234,8 +234,8 @@ export async function handleOrderFlow({ session, message, business, tenant, isIn
           type: 'buttons',
           body: `I couldn't match *${directProductText.slice(0, 50)}* to an item on our menu. Please check the name and try again, or browse the menu below.`,
           buttons: [
-            { id: 'SHOW_MENU', title: '📋 Browse Menu' },
-            { id: 'CANCEL', title: '❌ Cancel' },
+            { id: 'SHOW_MENU', title: 'ðŸ“‹ Browse Menu' },
+            { id: 'CANCEL', title: 'âŒ Cancel' },
           ],
         };
       }
@@ -250,12 +250,12 @@ export async function handleOrderFlow({ session, message, business, tenant, isIn
         });
       }
 
-      // [FIX-2] 0-indexed WORD_NUMS: WORD_NUMS['one']=0 → menu[0] ✓
-      // [AUDIT-FIX-PARSEINT-6] parseInt("2 red pizzas", 10) === 2, NOT NaN — so
+      // [FIX-2] 0-indexed WORD_NUMS: WORD_NUMS['one']=0 â†’ menu[0] âœ“
+      // [AUDIT-FIX-PARSEINT-6] parseInt("2 red pizzas", 10) === 2, NOT NaN â€” so
       // any message merely STARTING with a digit silently hijacked the menu
       // index. The WORD_NUMS lookup is exact-match-only and safe; only the
       // parseInt fallback needed gating so it never fires on mixed alphanumeric
-      // input — it now only fires for a bare number.
+      // input â€” it now only fires for a bare number.
       const isPureNumeric = /^\d+$/.test(raw.trim());
       const numIndex = WORD_NUMS[clean] ?? (isPureNumeric ? parseInt(raw, 10) - 1 : NaN);
       const isNum    = !isNaN(numIndex) && numIndex >= 0;
@@ -271,26 +271,26 @@ export async function handleOrderFlow({ session, message, business, tenant, isIn
         return await _selectItem(item, session, business, data);
       }
 
-      // Cancel — exit the flow entirely (matches global CANCEL button behaviour).
+      // Cancel â€” exit the flow entirely (matches global CANCEL button behaviour).
       if (/^(cancel|stop|exit)$/i.test(clean)) {
         return cancelFlow(session, business);
       }
-      // Menu/home — stay in ORDER flow, just re-show the browse menu.
+      // Menu/home â€” stay in ORDER flow, just re-show the browse menu.
       if (/^(back|menu|home)$/i.test(clean)) {
         await updateSession(session.customerPhone, session.tenantId, { step: 'SELECT_ITEM', menuViewed: true });
         return await _browseForMoreItems(session, business, tenant, data);
       }
 
-      // Too short — show a gentle nudge instead of just dumping the menu again
+      // Too short â€” show a gentle nudge instead of just dumping the menu again
       if (clean.length < 3) {
         return {
           type:    'buttons',
           body:    `Please type the name of what you'd like to order, or tap *Browse Catalog* to see all options:`,
-          buttons: [{ id: 'BROWSE_CATALOG', title: '🛍 Browse Catalog' }],
+          buttons: [{ id: 'BROWSE_CATALOG', title: 'ðŸ› Browse Catalog' }],
         };
       }
 
-      // ── Casual / gibberish / off-topic detection ─────────────────────────────
+      // â”€â”€ Casual / gibberish / off-topic detection â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
       // Catches greetings, random characters, keyboard spam, short nonsense strings,
       // and anything that clearly isn't a food item name.
       const CASUAL_RE = /^(hello+|hi+h*|h+i+|hey+|helo|howdy|yo+|sup|good\s*(morning|afternoon|evening|night)|gm|ok+a?y?|k+|yes+|no+pe?|yep|yeah|yh|sure|thanks?|thank\s*u|thx|ty|tq|lol+|haha+|why|what|how|who|huh+|hmm+|test|ping|help|bye|good\s*bye|later)$/i;
@@ -306,10 +306,10 @@ export async function handleOrderFlow({ session, message, business, tenant, isIn
       if (isOffTopic) {
         return {
           type:    'buttons',
-          body:    `Hi there! 😊 You're in the ordering flow for *${business.name || 'our restaurant'}*.\n\nPlease type the *name of a dish* you'd like to order, or tap below to browse the full menu:`,
+          body:    `Hi there! ðŸ˜Š You're in the ordering flow for *${business.name || 'our restaurant'}*.\n\nPlease type the *name of a dish* you'd like to order, or tap below to browse the full menu:`,
           buttons: [
-            { id: 'BROWSE_CATALOG', title: '🛍 Browse Catalog' },
-            { id: 'CANCEL',    title: '❌ Cancel'    },
+            { id: 'BROWSE_CATALOG', title: 'ðŸ› Browse Catalog' },
+            { id: 'CANCEL',    title: 'âŒ Cancel'    },
           ],
         };
       }
@@ -319,22 +319,22 @@ export async function handleOrderFlow({ session, message, business, tenant, isIn
       // Route them to the existing DB-first Q&A layer before falling into the
       // "not found on our menu" item-lookup response. This preserves the order flow for
       // legitimate product-selection messages while keeping the ask-a-question flow helpful.
-      const questionAnswerService = await import('../../../services/questionAnswerService.js');
+      const questionAnswerService = await import('../../../services/question/questionAnswerService.js');
       const qAnswer = await questionAnswerService.tryDatabaseAnswer({ message: raw, business, session });
       if (qAnswer?.handled && qAnswer.body) {
-        // [AUDIT-FIX-QMODE-2] This is an INLINE aside inside an active ORDER flow — the
+        // [AUDIT-FIX-QMODE-2] This is an INLINE aside inside an active ORDER flow â€” the
         // customer is still browsing/building a cart and just asked a quick menu
         // question. persistQuestionSession() unconditionally writes currentFlow:
         // 'QUESTION', step: 'AWAITING_QUESTION', which silently ended their ORDER flow
         // right here even though the comment above this block explicitly says the goal
-        // is to "preserve the order flow". Worse: if they then tapped the "❓ Ask
+        // is to "preserve the order flow". Worse: if they then tapped the "â“ Ask
         // Another" button this reply shows, ACTION_REGISTRY's QUESTION handler calls
-        // startFlow('QUESTION', ...) — and startFlow() only preserves data.cart when
+        // startFlow('QUESTION', ...) â€” and startFlow() only preserves data.cart when
         // the flow being started is 'ORDER', so their in-progress cart was wiped.
         // Fix: keep currentFlow/step exactly as they are (still mid-ORDER) and only
         // stash the Q&A context, mirroring what persistQuestionSession does internally
         // minus the flow/step overwrite.
-        const { mergeQuestionContext } = await import('../../../services/questionModeHelper.js');
+        const { mergeQuestionContext } = await import('../../../services/question/questionModeHelper.js');
         await updateSession(session.customerPhone, session.tenantId, {
           data: {
             ...(session.data || {}),
@@ -345,8 +345,8 @@ export async function handleOrderFlow({ session, message, business, tenant, isIn
           type: 'buttons',
           body: qAnswer.body,
           buttons: qAnswer.stayOnTopic
-            ? [{ id: 'QUESTION', title: '❓ Ask Another' }, { id: 'SUPPORT', title: '💬 Contact Support' }]
-            : [{ id: 'QUESTION', title: '❓ Ask Another' }, { id: 'BROWSE_CATALOG', title: '🛍 Browse Catalog' }, { id: 'SUPPORT', title: '💬 Contact Support' }],
+            ? [{ id: 'QUESTION', title: 'â“ Ask Another' }, { id: 'SUPPORT', title: 'ðŸ’¬ Contact Support' }]
+            : [{ id: 'QUESTION', title: 'â“ Ask Another' }, { id: 'BROWSE_CATALOG', title: 'ðŸ› Browse Catalog' }, { id: 'SUPPORT', title: 'ðŸ’¬ Contact Support' }],
         };
       }
 
@@ -354,7 +354,7 @@ export async function handleOrderFlow({ session, message, business, tenant, isIn
       // "2 burgers and a coke" resolves to 2+ distinct menu lines here and
       // jumps straight to ITEM_ADDED. A normal single-item message never
       // resolves 2+ lines (parseMultiItemMessage returns null), so this is a
-      // pure no-op for the overwhelming majority of messages — the exact
+      // pure no-op for the overwhelming majority of messages â€” the exact
       // pre-existing single-item fuzzy match below still runs for those.
       const multi = parseMultiItemMessage(menu, raw);
       if (multi) {
@@ -369,10 +369,10 @@ export async function handleOrderFlow({ session, message, business, tenant, isIn
 
         let note = buildUnmatchedNote(multi.unmatchedSegments);
         if (overflowCount > 0) {
-          note += `\n\n_(Your cart can hold up to ${business?.multiItemCart?.maxItems || 10} items — ${overflowCount} extra item${overflowCount > 1 ? 's were' : ' was'} left out.)_`;
+          note += `\n\n_(Your cart can hold up to ${business?.multiItemCart?.maxItems || 10} items â€” ${overflowCount} extra item${overflowCount > 1 ? 's were' : ' was'} left out.)_`;
         }
 
-        // [MULTICART-v40-EDIT] No per-item confirmation — fold straight into
+        // [MULTICART-v40-EDIT] No per-item confirmation â€” fold straight into
         // the cart and ask once whether they want to keep shopping or check
         // out, same as a single browsed item (buildItemAddedUI below).
         return buildItemsAddedUI({
@@ -396,33 +396,33 @@ export async function handleOrderFlow({ session, message, business, tenant, isIn
         });
         return {
           type:    'buttons',
-          body:    `🤔 Did you mean *${item.name}*?`,
+          body:    `ðŸ¤” Did you mean *${item.name}*?`,
           buttons: [
-            { id: 'CONFIRM', title: `✅ Yes, ${item.name.slice(0,15)}` },
-            { id: 'BROWSE_CATALOG', title: '🛍 Browse Catalog' },
+            { id: 'CONFIRM', title: `âœ… Yes, ${item.name.slice(0,15)}` },
+            { id: 'BROWSE_CATALOG', title: 'ðŸ› Browse Catalog' },
           ],
         };
       }
 
-      // No match — show helpful nudge, not just a raw menu dump
+      // No match â€” show helpful nudge, not just a raw menu dump
       if (isDirectOrderText) {
         return {
           type: 'buttons',
           body: `I couldn't find *${raw.slice(0, 50)}* in our current menu. Please check the dish name and try again, or browse the catalog.`,
           buttons: [
-            { id: 'BROWSE_CATALOG', title: '🛍 Browse Catalog' },
-            { id: 'CANCEL', title: '❌ Cancel' },
+            { id: 'BROWSE_CATALOG', title: 'ðŸ› Browse Catalog' },
+            { id: 'CANCEL', title: 'âŒ Cancel' },
           ],
         };
       }
       return {
         type:    'buttons',
         body:    `I couldn't find "*${raw.slice(0,30)}*" on our menu.\n\nTap below to browse all items:`,
-        buttons: [{ id: 'BROWSE_CATALOG', title: '🛍 Browse Catalog' }],
+        buttons: [{ id: 'BROWSE_CATALOG', title: 'ðŸ› Browse Catalog' }],
       };
     }
 
-    // ────────────────────────────────────────────────────────────────────────
+    // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     case 'SUGGESTION_CONFIRM': {
       if (/^(yes|y|yep|yeah|confirm|ok|okay)$/i.test(clean) || clean === 'confirm') {
         const suggestedName = data.suggestion;
@@ -432,9 +432,9 @@ export async function handleOrderFlow({ session, message, business, tenant, isIn
       return await _browseForMoreItems(session, business, tenant, data);
     }
 
-    // ────────────────────────────────────────────────────────────────────────
+    // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     // [MULTICART-v40-EDIT] Reached right after ANY item (or batch of items)
-    // is added to the cart — replaces the old per-item "Confirm Order?"
+    // is added to the cart â€” replaces the old per-item "Confirm Order?"
     // prompt. Only two things are asked here: keep shopping, or move to the
     // one final consolidated review (CONFIRM case below).
     case 'ITEM_ADDED': {
@@ -459,7 +459,7 @@ export async function handleOrderFlow({ session, message, business, tenant, isIn
         return await _browseForMoreItems(session, business, tenant, data);
       }
 
-      // [CART-AI-MODIFY] "remove the coke" / "make it 3 fries" — resolved
+      // [CART-AI-MODIFY] "remove the coke" / "make it 3 fries" â€” resolved
       // against the items ALREADY in the cart. Checked BEFORE the "treat as
       // more items to add" fallback below so a removal/resize request can
       // never be misread as an attempt to add a brand-new line.
@@ -471,15 +471,15 @@ export async function handleOrderFlow({ session, message, business, tenant, isIn
         const newCount = cartItemCount(modResult.updatedCart);
         return {
           type: 'buttons',
-          body: `${modResult.mod.type === 'remove' ? '🗑️ Removed from your cart.' : '✅ Updated the quantity.'}\n\n🛒 *${newCount} item${newCount > 1 ? 's' : ''}* in your cart.\n\nWould you like to add another item?`,
+          body: `${modResult.mod.type === 'remove' ? 'ðŸ—‘ï¸ Removed from your cart.' : 'âœ… Updated the quantity.'}\n\nðŸ›’ *${newCount} item${newCount > 1 ? 's' : ''}* in your cart.\n\nWould you like to add another item?`,
           buttons: [
-            { id: 'ADD_ANOTHER_ITEM', title: '➕ Add Another Item'  },
-            { id: 'REVIEW_CART',      title: '🧾 Review & Checkout' },
+            { id: 'ADD_ANOTHER_ITEM', title: 'âž• Add Another Item'  },
+            { id: 'REVIEW_CART',      title: 'ðŸ§¾ Review & Checkout' },
           ],
         };
       }
 
-      // Treat the message itself as more items to add to the existing cart —
+      // Treat the message itself as more items to add to the existing cart â€”
       // typing "also 2 fries" works without needing to tap a button first.
       const multiAdd = parseMultiItemMessage(menu, raw);
       let newLines = null;
@@ -498,7 +498,7 @@ export async function handleOrderFlow({ session, message, business, tenant, isIn
         });
         let note = multiAdd ? buildUnmatchedNote(multiAdd.unmatchedSegments) : '';
         if (overflowCount > 0) {
-          note += `\n\n_(Your cart can hold up to ${business?.multiItemCart?.maxItems || 10} items — ${overflowCount} extra item${overflowCount > 1 ? 's were' : ' was'} left out.)_`;
+          note += `\n\n_(Your cart can hold up to ${business?.multiItemCart?.maxItems || 10} items â€” ${overflowCount} extra item${overflowCount > 1 ? 's were' : ' was'} left out.)_`;
         }
         return buildItemsAddedUI({
           addedSummary: formatCartSummary(newLines, business),
@@ -508,20 +508,20 @@ export async function handleOrderFlow({ session, message, business, tenant, isIn
         });
       }
 
-      // Couldn't resolve anything new — re-show the prompt with a gentle nudge.
+      // Couldn't resolve anything new â€” re-show the prompt with a gentle nudge.
       return {
         type: 'buttons',
-        body: `I didn't catch an item in that — try naming a dish, or choose an option below:`,
+        body: `I didn't catch an item in that â€” try naming a dish, or choose an option below:`,
         buttons: [
-          { id: 'ADD_ANOTHER_ITEM', title: '➕ Add Another Item'  },
-          { id: 'REVIEW_CART',      title: '🧾 Review & Checkout' },
+          { id: 'ADD_ANOTHER_ITEM', title: 'âž• Add Another Item'  },
+          { id: 'REVIEW_CART',      title: 'ðŸ§¾ Review & Checkout' },
         ],
       };
     }
 
-    // ────────────────────────────────────────────────────────────────────────
+    // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     case 'QUANTITY': {
-      // Customers type any number (digit or word) — parseQuantity handles both.
+      // Customers type any number (digit or word) â€” parseQuantity handles both.
       // No button shortcuts here; WhatsApp button labels are capped at 20 chars
       // and numbered buttons "1 / 2 / 3" are visually unprofessional and limiting.
       const qty = parseQuantity(raw);
@@ -542,7 +542,7 @@ export async function handleOrderFlow({ session, message, business, tenant, isIn
       if (qty > MAX_QTY) {
         return {
           type: 'text',
-          body: `⚠️ Maximum order quantity is *${MAX_QTY}*. Please type a number between *1* and *${MAX_QTY}*.`,
+          body: `âš ï¸ Maximum order quantity is *${MAX_QTY}*. Please type a number between *1* and *${MAX_QTY}*.`,
         };
       }
       const item   = data.item;
@@ -550,9 +550,9 @@ export async function handleOrderFlow({ session, message, business, tenant, isIn
       const total  = price * qty;
       const addOns = business?.addOns || [];
 
-      // Upsell — if configured and not yet shown
+      // Upsell â€” if configured and not yet shown
       if (addOns.length && !session.upsellSent) {
-        // [FIX-14] Pin the add-on at first selection — re-use the stored one if we
+        // [FIX-14] Pin the add-on at first selection â€” re-use the stored one if we
         // somehow reach this branch again (e.g. after a session update race) so the
         // customer never sees different add-on offers across retries.
         const addOn = data.pendingAddOn || addOns[Math.floor(Math.random() * addOns.length)];
@@ -563,15 +563,15 @@ export async function handleOrderFlow({ session, message, business, tenant, isIn
         });
         return {
           type:    'buttons',
-          body:    `You've chosen *${qty}× ${item.name}*${total ? ` — ${currency}${formatMoney(total)}` : ''}.\n\nWould you like to add *${addOn.name}* for ${currency}${formatMoney(addOn.price)}? 🥤`,
+          body:    `You've chosen *${qty}Ã— ${item.name}*${total ? ` â€” ${currency}${formatMoney(total)}` : ''}.\n\nWould you like to add *${addOn.name}* for ${currency}${formatMoney(addOn.price)}? ðŸ¥¤`,
           buttons: [
-            { id: 'UPSELL_YES', title: '✅ Yes, add it' },
-            { id: 'UPSELL_NO',  title: '❌ No thanks'   },
+            { id: 'UPSELL_YES', title: 'âœ… Yes, add it' },
+            { id: 'UPSELL_NO',  title: 'âŒ No thanks'   },
           ],
         };
       }
 
-      // [MULTICART-v40-EDIT] No upsell to show — fold straight into the cart
+      // [MULTICART-v40-EDIT] No upsell to show â€” fold straight into the cart
       // and ask once whether to keep shopping or check out. No per-item
       // "Confirm Order?" screen anymore; that's reserved for the one final
       // consolidated review (CONFIRM case).
@@ -580,7 +580,7 @@ export async function handleOrderFlow({ session, message, business, tenant, isIn
       });
     }
 
-    // ────────────────────────────────────────────────────────────────────────
+    // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     case 'UPSELL': {
       const addOn    = data.pendingAddOn;
       const accepted = /^(yes|y|yep|yeah|ok|okay|sure|add|upsell_yes)$/i.test(clean) || clean === 'upsell_yes';
@@ -593,17 +593,17 @@ export async function handleOrderFlow({ session, message, business, tenant, isIn
         addOnsList  = [...addOnsList, addOn.name];
       }
 
-      // [MULTICART-v40-EDIT] Fold straight into the cart — same as the
+      // [MULTICART-v40-EDIT] Fold straight into the cart â€” same as the
       // no-upsell QUANTITY path above.
       return await _addItemAndPrompt(session, business, data, {
         item: data.item, quantity: data.quantity, variant: data.variant || null, addOns: addOnsList,
       });
     }
 
-    // ────────────────────────────────────────────────────────────────────────
-    // [MULTICART-v40-EDIT] The single, final order review. Every item —
+    // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // [MULTICART-v40-EDIT] The single, final order review. Every item â€”
     // whether picked one at a time via the menu/list or typed as a
-    // multi-item message — has already been folded into data.cart by this
+    // multi-item message â€” has already been folded into data.cart by this
     // point (see _addItemAndPrompt / ITEM_ADDED above). This step never asks
     // the customer to confirm an individual line; it shows the whole cart
     // once and offers exactly 3 actions: Confirm / Edit / Cancel.
@@ -615,7 +615,7 @@ export async function handleOrderFlow({ session, message, business, tenant, isIn
       // confirm-style step in this file (SUGGESTION_CONFIRM, UPSELL) accepts them.
       // [FIX-DUALLAYER-CONFIRM] Widened further via the shared regex guard
       // (core/shared/confirmationMatcher.js / negationGuard.js) so phrases
-      // like "yes please", "sounds good", "go ahead" also register — the
+      // like "yes please", "sounds good", "go ahead" also register â€” the
       // original list only matched a SINGLE bare word exactly. Kept as a
       // sync (non-AI) check here, deliberately BEFORE the cart-modification
       // parser below, so a message like "remove the coke" is never at risk
@@ -624,13 +624,13 @@ export async function handleOrderFlow({ session, message, business, tenant, isIn
       const isConfirm = /^(yes|y|yeah|yep|confirm|ok|okay|sure|place|confirmed)$/i.test(clean) ||
         _isAffirmativeConfirm(raw);
       if (isConfirm) {
-        // [MULTICART-v40-EDIT] One consolidated save — _checkoutCart already
+        // [MULTICART-v40-EDIT] One consolidated save â€” _checkoutCart already
         // handles items[] persistence, payment-vs-cash branching, and admin
         // notification for a cart of any size (1 line or many).
         return await _checkoutCart(cart, session, business, tenant);
       }
 
-      // [SIMPLE-CART-CONFIRM] Primary action on the final review screen —
+      // [SIMPLE-CART-CONFIRM] Primary action on the final review screen â€”
       // matches the requested button set (Confirm / Add More Items / Cancel)
       // exactly. Goes straight back to the catalog; the cart is untouched.
       const wantsAddMore = raw === 'ADD_MORE_ITEMS' || raw === 'ADD_ANOTHER_ITEM' ||
@@ -640,7 +640,7 @@ export async function handleOrderFlow({ session, message, business, tenant, isIn
       }
 
       // Typed "edit" still opens the fuller Remove/Increase/Decrease/Clear
-      // menu for anyone who wants it — not exposed as a button (keeps the
+      // menu for anyone who wants it â€” not exposed as a button (keeps the
       // 3-button screen simple) but the capability isn't removed.
       const wantsEdit = raw === 'EDIT_CART' || /^(edit|edit order|edit cart|change)$/i.test(clean);
       if (wantsEdit) {
@@ -648,7 +648,7 @@ export async function handleOrderFlow({ session, message, business, tenant, isIn
         return buildEditCartMenuUI();
       }
 
-      // [FIX-DUALLAYER-CONFIRM] Same widening for the decline side — "no
+      // [FIX-DUALLAYER-CONFIRM] Same widening for the decline side â€” "no
       // thanks", "cancel it please", "nah I changed my mind" now register.
       const { isNegative: _isNegativeConfirm } = await import('../../../core/shared/confirmationMatcher.js');
       const wantsCancel = raw === 'CANCEL' || /^(cancel|cancel order|no|nope|stop)$/i.test(clean) ||
@@ -659,7 +659,7 @@ export async function handleOrderFlow({ session, message, business, tenant, isIn
 
       // [CART-AI-MODIFY] Let the customer type a fix directly at the review
       // screen ("remove the coke", "make it 3 fries") instead of having to
-      // tap Edit Order first. Extracted to _resolveCartModification() —
+      // tap Edit Order first. Extracted to _resolveCartModification() â€”
       // never overlaps isConfirm's exact yes/yeah/etc. match set above.
       const modResult = await _resolveCartModification(session, business, data, cart, raw);
       if (modResult) {
@@ -675,7 +675,7 @@ export async function handleOrderFlow({ session, message, business, tenant, isIn
         });
       }
 
-      // Unrecognised — re-show the summary unchanged.
+      // Unrecognised â€” re-show the summary unchanged.
       return buildCartReviewUI({
         summaryText: formatCartSummary(cart, business),
         total:       cartTotal(cart),
@@ -684,7 +684,7 @@ export async function handleOrderFlow({ session, message, business, tenant, isIn
       });
     }
 
-    // ────────────────────────────────────────────────────────────────────────
+    // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     // [MULTICART-v40-EDIT] Edit Order top-level menu: Add / Remove / Increase
     // / Decrease / Clear / Back to Summary.
     case 'EDIT_CART_MENU': {
@@ -717,7 +717,7 @@ export async function handleOrderFlow({ session, message, business, tenant, isIn
           step: 'SELECT_ITEM', data: clearedData,
         });
         return await _browseForMoreItems(session, business, tenant, clearedData, {
-          note: '🗑️ Your cart has been cleared.\n\n',
+          note: 'ðŸ—‘ï¸ Your cart has been cleared.\n\n',
         });
       }
 
@@ -741,11 +741,11 @@ export async function handleOrderFlow({ session, message, business, tenant, isIn
         });
       }
 
-      // Unrecognised — re-show the edit menu.
+      // Unrecognised â€” re-show the edit menu.
       return buildEditCartMenuUI();
     }
 
-    // ────────────────────────────────────────────────────────────────────────
+    // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     // [MULTICART-v40-EDIT] Customer replies with a line number to remove/
     // increase/decrease, chosen from EDIT_CART_MENU.
     case 'EDIT_CART_PICK': {
@@ -803,7 +803,7 @@ export async function handleOrderFlow({ session, message, business, tenant, isIn
       });
     }
 
-    // ── Payment / wait steps — normally handled in webhookController.js;
+    // â”€â”€ Payment / wait steps â€” normally handled in webhookController.js;
     // these cases prevent a direct advance() call from silently dumping the menu.
     case 'PAYMENT_PROOF':
       return {
@@ -814,12 +814,12 @@ export async function handleOrderFlow({ session, message, business, tenant, isIn
     case 'AWAIT_ADMIN_CONFIRM':
       return {
         type:    'buttons',
-        body:    'Your order is with our team — we\'ll confirm it shortly. 🙏',
-        buttons: [{ id: 'CANCEL', title: '❌ Cancel Order' }],
+        body:    'Your order is with our team â€” we\'ll confirm it shortly. ðŸ™',
+        buttons: [{ id: 'CANCEL', title: 'âŒ Cancel Order' }],
       };
 
     default: {
-      logger.warn('[RestaurantOrderFlow] Unhandled step — recovering to SELECT_ITEM', {
+      logger.warn('[RestaurantOrderFlow] Unhandled step â€” recovering to SELECT_ITEM', {
         step, tenantId: session.tenantId, phone: session.customerPhone,
       });
       const existingCart = Array.isArray(data.cart) ? data.cart : [];
@@ -838,19 +838,19 @@ export async function handleOrderFlow({ session, message, business, tenant, isIn
           ? `Something went wrong with your order step (*${step}*). Your cart is still saved (${count} item${count > 1 ? 's' : ''}). Tap below to continue or cancel.`
           : `Something went wrong with your order step (*${step}*). Tap below to browse the menu or cancel.`,
         buttons: [
-          { id: 'BROWSE_CATALOG', title: '🛍 Browse Catalog' },
-          ...(existingCart.length ? [{ id: 'REVIEW_CART', title: '🧾 Review Cart' }] : []),
-          { id: 'CANCEL', title: '❌ Cancel' },
+          { id: 'BROWSE_CATALOG', title: 'ðŸ› Browse Catalog' },
+          ...(existingCart.length ? [{ id: 'REVIEW_CART', title: 'ðŸ§¾ Review Cart' }] : []),
+          { id: 'CANCEL', title: 'âŒ Cancel' },
         ],
       };
     }
   }
 }
 
-// ── Cart-modification helper ──────────────────────────────────────────────────
+// â”€â”€ Cart-modification helper â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 /**
  * _resolveCartModification(session, business, data, cart, raw)
- * [CART-AI-MODIFY] Shared by ITEM_ADDED and CONFIRM — tries to read `raw` as
+ * [CART-AI-MODIFY] Shared by ITEM_ADDED and CONFIRM â€” tries to read `raw` as
  * a free-text edit against the items already in the cart ("remove the
  * coke", "make it 3 fries"). Persists the updated cart itself (moving to
  * SELECT_ITEM if it emptied out) so callers only need to build the
@@ -872,7 +872,7 @@ async function _resolveCartModification(session, business, data, cart, raw) {
   return { mod, updatedCart };
 }
 
-// ── Catalog-aware browse (add-more / empty-cart / recovery) ───────────────────
+// â”€â”€ Catalog-aware browse (add-more / empty-cart / recovery) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 /**
  * _browseForMoreItems(session, business, tenant, data, { note })
  * [FIX-CATALOG-ADD-MORE] Catalog-sourced orders re-open WA Catalog; typed-menu
@@ -881,9 +881,9 @@ async function _resolveCartModification(session, business, data, cart, raw) {
  *
  * [AUDIT-FIX-XZ-REMOVE] The catalog branch below used to key ONLY off
  * data.orderViaCatalog. tryResumeCatalogShopping() itself returns `false`
- * whenever that one flag is missing — even for a tenant whose WA Catalog is
- * fully live — and this function then fell straight through to buildMenuUI()
- * (the legacy "Choose an option ▼" list) with no further catalog attempt.
+ * whenever that one flag is missing â€” even for a tenant whose WA Catalog is
+ * fully live â€” and this function then fell straight through to buildMenuUI()
+ * (the legacy "Choose an option â–¼" list) with no further catalog attempt.
  * That is the exact X-flow regression: a catalog-ready tenant landing back
  * on the broken legacy list because of a stale/missing session flag rather
  * than because catalog genuinely isn't available. isCatalogEnabled(business)
@@ -891,7 +891,7 @@ async function _resolveCartModification(session, business, data, cart, raw) {
  * [CATALOG-ONLY-1] rule ("no text-menu fallback for catalog-enabled
  * tenants"). When catalog is enabled but tryResumeCatalogShopping declines
  * purely because the flag was unset, browseCatalogExplicit() is used
- * instead — it sends the same catalog message without requiring the flag.
+ * instead â€” it sends the same catalog message without requiring the flag.
  */
 async function _browseForMoreItems(session, business, tenant, data, { note = '' } = {}) {
   const cart = Array.isArray(data?.cart) ? data.cart : [];
@@ -900,7 +900,7 @@ async function _browseForMoreItems(session, business, tenant, data, { note = '' 
     const { tryResumeCatalogShopping, browseCatalogExplicit } = await import('../../catalog/waCatalogFlow.js');
     let catalogResult = await tryResumeCatalogShopping({ session, business, tenant });
     if (catalogResult === false && catalogReady) {
-      // Flag was missing but catalog is genuinely live — send it directly
+      // Flag was missing but catalog is genuinely live â€” send it directly
       // instead of dropping into the legacy list.
       catalogResult = await browseCatalogExplicit({ session, business, tenant });
     }
@@ -919,14 +919,14 @@ async function _browseForMoreItems(session, business, tenant, data, { note = '' 
   return menuUI;
 }
 
-// ── Add-item-to-cart helper ───────────────────────────────────────────────────
+// â”€â”€ Add-item-to-cart helper â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 /**
  * _addItemAndPrompt(session, business, data, { item, quantity, variant, addOns })
  * [MULTICART-v40-EDIT] Folds a single resolved item (from QUANTITY or UPSELL)
- * into data.cart and moves to ITEM_ADDED — the only prompt shown right after
+ * into data.cart and moves to ITEM_ADDED â€” the only prompt shown right after
  * an item is added ("add another item?" / "review & checkout"). Replaces the
  * old per-item "Confirm Order?" screen (buildOrderSummary/_addAnotherItem).
- * Extracted to a helper for the same reason _addAnotherItem was before it —
+ * Extracted to a helper for the same reason _addAnotherItem was before it â€”
  * keeps the QUANTITY/UPSELL case bodies short.
  */
 async function _addItemAndPrompt(session, business, data, { item, quantity, variant, addOns }) {
@@ -941,7 +941,7 @@ async function _addItemAndPrompt(session, business, data, { item, quantity, vari
   });
 
   const overflowNote = overflowCount > 0
-    ? `\n\n_(Your cart can hold up to ${business?.multiItemCart?.maxItems || 10} items — ${overflowCount} extra item${overflowCount > 1 ? 's were' : ' was'} left out.)_`
+    ? `\n\n_(Your cart can hold up to ${business?.multiItemCart?.maxItems || 10} items â€” ${overflowCount} extra item${overflowCount > 1 ? 's were' : ' was'} left out.)_`
     : '';
   // [AUDIT-FIX-CATALOG-VARIANT-LOSS] fold variant into the display name here too,
   // not just at final cart review (cartEngine's formatCartSummary already does this).
@@ -950,13 +950,13 @@ async function _addItemAndPrompt(session, business, data, { item, quantity, vari
   return ui;
 }
 
-// ── Cart checkout helper ──────────────────────────────────────────────────────
+// â”€â”€ Cart checkout helper â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 /**
  * _checkoutCart(cart, session, business, tenant)
  * [MULTICART-v39-PHASE2] Multi-item counterpart to the CONFIRM step's
  * single-item save logic above. Mirrors modules/catalog/waCatalogFlow.js's
- * handleMultiItemCatalogOrder() — same saveOrder({items}) call, same
- * payment-vs-cash branching, same admin alert shape — so a text-typed
+ * handleMultiItemCatalogOrder() â€” same saveOrder({items}) call, same
+ * payment-vs-cash branching, same admin alert shape â€” so a text-typed
  * multi-item order and a WA-Catalog multi-item order behave identically
  * from here on. Reached from CONFIRM once items have been accumulated via
  * "Add Another Item" or a WA Catalog / typed multi-item handoff.
@@ -988,10 +988,10 @@ async function _checkoutCart(cart, session, business, tenant) {
     });
     return {
       type:    'buttons',
-      body:    `⚠️ *Something went wrong saving your order.*\n\nPlease try again — tap below to start over.`,
+      body:    `âš ï¸ *Something went wrong saving your order.*\n\nPlease try again â€” tap below to start over.`,
       buttons: [
-        { id: 'ORDER',   title: '🛒 Try Again'  },
-        { id: 'SUPPORT', title: '💬 Contact Us' },
+        { id: 'ORDER',   title: 'ðŸ›’ Try Again'  },
+        { id: 'SUPPORT', title: 'ðŸ’¬ Contact Us' },
       ],
     };
   }
@@ -1003,13 +1003,13 @@ async function _checkoutCart(cart, session, business, tenant) {
   const itemCount   = cartItemCount(cart);
   const usePayment  = payment?.enabled && totalPrice != null;
 
-  // [AUDIT-FIX-ORDER-POLISH-9] "Order Time" — the one item from the review's
+  // [AUDIT-FIX-ORDER-POLISH-9] "Order Time" â€” the one item from the review's
   // suggested admin-alert additions that's always available with no new data
   // capture required. "Delivery/Pickup" and "Customer Note" are intentionally
   // NOT added here: this flow doesn't currently ask the customer for either,
   // so fabricating a line for data that doesn't exist would be worse than
   // omitting it. Capturing them is a real feature addition (a new flow step),
-  // not a formatting fix — flagged separately rather than guessed at here.
+  // not a formatting fix â€” flagged separately rather than guessed at here.
   const orderTimeStr = new Date().toLocaleString('en-GB', {
     day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit',
   });
@@ -1036,13 +1036,13 @@ async function _checkoutCart(cart, session, business, tenant) {
         await dispatchMessage(adminPhone, {
           type: 'text',
           body:
-            `🔔 *New Order — ${business.name || 'Restaurant'}*\n\n` +
+            `ðŸ”” *New Order â€” ${business.name || 'Restaurant'}*\n\n` +
             `${formatPhoneDisplay(session.customerPhone)}\n` +
-            `🕐 Order Time: ${orderTimeStr}\n\n` +
-            `🛒 Items (${itemCount}):\n${cartSummary}\n` +
-            `💰 Total: *${currency}${formatMoney(totalPrice)}*\n` +
-            `📝 Ref: *${ref}*\n\n` +
-            `⏳ Status: *Pending* — awaiting payment screenshot.`,
+            `ðŸ• Order Time: ${orderTimeStr}\n\n` +
+            `ðŸ›’ Items (${itemCount}):\n${cartSummary}\n` +
+            `ðŸ’° Total: *${currency}${formatMoney(totalPrice)}*\n` +
+            `ðŸ“ Ref: *${ref}*\n\n` +
+            `â³ Status: *Pending* â€” awaiting payment screenshot.`,
         }, tenant).catch(() => {});
       }
     } catch { /* non-fatal */ }
@@ -1050,10 +1050,10 @@ async function _checkoutCart(cart, session, business, tenant) {
     return buildPaymentInstructionsUI(business, totalPrice, shortId, ref);
   }
 
-  // Cash / no-payment branch — mirrors CONFIRM's own cash branch: always
+  // Cash / no-payment branch â€” mirrors CONFIRM's own cash branch: always
   // park at AWAIT_ADMIN_CONFIRM with tap-to-confirm admin buttons, never a
   // silent flow reset (see waCatalogFlow.js [FIX-CATALOG-CART-3] for why
-  // this matters — a cash order with no AWAIT_ADMIN_CONFIRM lock lets the
+  // this matters â€” a cash order with no AWAIT_ADMIN_CONFIRM lock lets the
   // customer immediately start a second order while the first is unconfirmed).
   try {
     const adminPhone = business?.adminPhone || tenant?.adminPhone;
@@ -1062,16 +1062,16 @@ async function _checkoutCart(cart, session, business, tenant) {
       await dispatchMessage(adminPhone, {
         type:    'buttons',
         body:
-          `🔔 *New Order — ${business.name || 'Restaurant'}*\n\n` +
+          `ðŸ”” *New Order â€” ${business.name || 'Restaurant'}*\n\n` +
           `${formatPhoneDisplay(session.customerPhone)}\n` +
-          `🕐 Order Time: ${orderTimeStr}\n\n` +
-          `🛒 Items (${itemCount}):\n${cartSummary}\n` +
-          (totalPrice != null ? `💰 Total: *${currency}${formatMoney(totalPrice)}*\n` : '') +
-          `🔖 Ref: \`#${savedOrder.shortId}\`\n\n` +
-          `⏳ Status: *Pending* — please confirm.`,
+          `ðŸ• Order Time: ${orderTimeStr}\n\n` +
+          `ðŸ›’ Items (${itemCount}):\n${cartSummary}\n` +
+          (totalPrice != null ? `ðŸ’° Total: *${currency}${formatMoney(totalPrice)}*\n` : '') +
+          `ðŸ”– Ref: \`#${savedOrder.shortId}\`\n\n` +
+          `â³ Status: *Pending* â€” please confirm.`,
         buttons: [
-          { id: `APPROVE_${savedOrder.shortId}`, title: '✅ Confirm Received' },
-          { id: `REJECT_${savedOrder.shortId}`,  title: '❌ Cancel Order'     },
+          { id: `APPROVE_${savedOrder.shortId}`, title: 'âœ… Confirm Received' },
+          { id: `REJECT_${savedOrder.shortId}`,  title: 'âŒ Cancel Order'     },
         ],
       }, tenant).catch(() => {});
     }
@@ -1083,22 +1083,22 @@ async function _checkoutCart(cart, session, business, tenant) {
 
   // [AUDIT-FIX-ORDER-POLISH-8] Previously this confirmation never showed the
   // customer their own reference number (only the admin alert got one) and
-  // never stated a "Status" — just a soft "please wait" line. A customer
+  // never stated a "Status" â€” just a soft "please wait" line. A customer
   // with no order number has nothing to quote if they follow up.
   return {
     type: 'text',
     body:
-      `✅ *Order Confirmed*\n\n` +
+      `âœ… *Order Confirmed*\n\n` +
       `Your order has been received successfully.\n\n` +
-      `🧾 Items (${itemCount}):\n${cartSummary}\n` +
-      (totalPrice != null ? `💰 Total: *${currency}${formatMoney(totalPrice)}*\n\n` : '\n') +
-      `🔖 Reference: *#${savedOrder.shortId}*\n` +
-      `⏳ Status: *Pending*\n\n` +
+      `ðŸ§¾ Items (${itemCount}):\n${cartSummary}\n` +
+      (totalPrice != null ? `ðŸ’° Total: *${currency}${formatMoney(totalPrice)}*\n\n` : '\n') +
+      `ðŸ”– Reference: *#${savedOrder.shortId}*\n` +
+      `â³ Status: *Pending*\n\n` +
       `We'll notify you once the restaurant confirms your order.`,
   };
 }
 
-// ── Select item helper ────────────────────────────────────────────────────────
+// â”€â”€ Select item helper â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 async function _selectItem(item, session, business, data) {
   if (data?.pendingNaturalQuantity) {
     const quantity = data.pendingNaturalQuantity;
@@ -1113,11 +1113,11 @@ async function _selectItem(item, session, business, data) {
 
   // [AUDIT-FIX-ADDON-1] Previously the teaser here always advertised addOns[0],
   // but the QUANTITY step's upsell prompt picked a DIFFERENT, RANDOM add-on from
-  // the same list — a customer could be told "*Soft Drink* pairs well with this"
+  // the same list â€” a customer could be told "*Soft Drink* pairs well with this"
   // and then be asked "Would you like to add *Dessert*?" one message later. The
   // add-on is now chosen ONCE here, pinned as data.pendingAddOn, and QUANTITY
   // (which already prefers data.pendingAddOn over re-rolling) reuses that same
-  // pinned choice — so the teaser and the actual checkout offer always match.
+  // pinned choice â€” so the teaser and the actual checkout offer always match.
   const addOns       = business?.addOns || [];
   const pendingAddOn = addOns.length ? addOns[Math.floor(Math.random() * addOns.length)] : null;
 
@@ -1126,10 +1126,10 @@ async function _selectItem(item, session, business, data) {
   });
 
   const addOnText = pendingAddOn
-    ? `\n\n💡 *${pendingAddOn.name}* pairs well with this — we'll ask at checkout!`
+    ? `\n\nðŸ’¡ *${pendingAddOn.name}* pairs well with this â€” we'll ask at checkout!`
     : '';
 
-  // ── Send item image if available and showImageOnSelect is not disabled ────
+  // â”€â”€ Send item image if available and showImageOnSelect is not disabled â”€â”€â”€â”€
   // The image message is dispatched separately BEFORE the quantity-prompt reply.
   // We return an array of UI payloads; flowEngine dispatches them in sequence.
   const imageUrl = item?.image?.url;
@@ -1138,11 +1138,11 @@ async function _selectItem(item, session, business, data) {
   const MAX_QTY_DISPLAY = business?.settings?.maxOrderQuantity || 20;
   const quantityPrompt = {
     type: 'text',
-    body: `You've chosen *${item.name}* 👌${addOnText}\n\nHow many would you like? Please type a number (e.g. *2*) or a word (e.g. *five*). Maximum: *${MAX_QTY_DISPLAY}*.`,
+    body: `You've chosen *${item.name}* ðŸ‘Œ${addOnText}\n\nHow many would you like? Please type a number (e.g. *2*) or a word (e.g. *five*). Maximum: *${MAX_QTY_DISPLAY}*.`,
   };
 
   if (imageUrl && showImage) {
-    // Return array — flowEngine will dispatch both in order: image first, then buttons.
+    // Return array â€” flowEngine will dispatch both in order: image first, then buttons.
     // [FIX-IMG-URL] Apply WhatsApp delivery optimization (q_auto, f_auto, max w_1600)
     // before sending. The stored URL may have no transformation segment; this adds one.
     const whatsappImageUrl = buildWhatsAppImageUrl(imageUrl);
@@ -1151,8 +1151,8 @@ async function _selectItem(item, session, business, data) {
         type:    'image',
         url:     whatsappImageUrl,
         caption: item.description
-          ? `*${item.name}*\n${item.description}${item.price ? `\n💰 ${business?.payment?.currency || 'D'}${formatMoney(item.price)}` : ''}`
-          : `*${item.name}*${item.price ? ` — ${business?.payment?.currency || 'D'}${formatMoney(item.price)}` : ''}`,
+          ? `*${item.name}*\n${item.description}${item.price ? `\nðŸ’° ${business?.payment?.currency || 'D'}${formatMoney(item.price)}` : ''}`
+          : `*${item.name}*${item.price ? ` â€” ${business?.payment?.currency || 'D'}${formatMoney(item.price)}` : ''}`,
       },
       quantityPrompt,
     ];
@@ -1161,7 +1161,7 @@ async function _selectItem(item, session, business, data) {
   return quantityPrompt;
 }
 
-// ── Restaurant Question Handler ───────────────────────────────────────────────
+// â”€â”€ Restaurant Question Handler â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 /**
  * handleRestaurantQuestion
  * Handles the QUESTION button and keyword-triggered FAQ intent for restaurant mode.
@@ -1173,13 +1173,13 @@ export async function handleRestaurantQuestion({ session, message, business, ten
   if (!raw || raw.length < 2) {
     return {
       type: 'text',
-      body: '❓ What would you like to know? Ask about our menu, hours, allergens, or anything else!',
+      body: 'â“ What would you like to know? Ask about our menu, hours, allergens, or anything else!',
     };
   }
 
-  const { processQuestionMessage, persistQuestionSession } = await import('../../../services/questionAnswerService.js');
+  const { processQuestionMessage, persistQuestionSession } = await import('../../../services/question/questionAnswerService.js');
   const { detectIntent } = await import('../../../core/intents/intentEngine.js');
-  const { buildStatusReply } = await import('../../../services/activityStatusService.js');
+  const { buildStatusReply } = await import('../../../services/activity/activityStatusService.js');
 
   try {
     const intentResult = await detectIntent({
@@ -1201,3 +1201,4 @@ export async function handleRestaurantQuestion({ session, message, business, ten
   await persistQuestionSession(session, tenant, reply.context || { lastMessage: raw });
   return { type: reply.type, body: reply.body };
 }
+

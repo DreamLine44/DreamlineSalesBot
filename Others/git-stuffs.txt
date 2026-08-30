@@ -10,3 +10,22 @@ git config --global user.email "dreamlineking@gmail.com"
 git add .
 git commit -m "updates added"
 git push
+
+
+
+
+
+
+
+
+
+
+
+git fetch origin
+git checkout main
+git add .
+git commit -m "Replace with local version"
+git push --force-with-lease origin main
+
+
+Systematically audit and improve natural language handler/feature to be more advanced to be able process everything required from what a client types when booking and pass it all to the booking summary and then continue processing it through the final step without anything breaking or failing. Also fix any gaps or issues, make sure nothing is broken elsewhere
