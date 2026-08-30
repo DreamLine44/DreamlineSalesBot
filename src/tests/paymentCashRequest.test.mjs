@@ -14,8 +14,11 @@ const baseBusiness = { payment: { currency: 'D', requireProof: true, channels: [
 
 test('buildPaymentInstructionsUI adds a cash-request button when requireProof is true', () => {
   const ui = buildPaymentInstructionsUI(baseBusiness, 1250, 'A1B2C3', 'DSB-0830-A1B2C3');
-  assert.ok(ui.buttons.some(button => button.id === 'REQUEST_CASH_PAYMENT'));
-  assert.equal(ui.buttons[1].title, '💵 Pay with Cash');
+  assert.deepEqual(ui.buttons.map(button => ({ id: button.id, title: button.title })), [
+    { id: 'REQUEST_CASH_PAYMENT', title: '💵 Pay with Cash' },
+    { id: 'SUPPORT', title: '❓ Need Help' },
+    { id: 'CANCEL', title: '❌ Cancel Order' },
+  ]);
 });
 
 test('buildPaymentInstructionsUI keeps requireProof=false unchanged', () => {

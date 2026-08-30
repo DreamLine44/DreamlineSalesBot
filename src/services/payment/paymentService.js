@@ -315,8 +315,8 @@ export const buildPaymentInstructionsUI = (business, totalPrice, shortId, stored
   const requireProof = payment?.requireProof !== false; // default true
   const actionButtons = requireProof
     ? [
-        { id: 'SUPPORT', title: '❓ Need Help'          },
         { id: 'REQUEST_CASH_PAYMENT', title: '💵 Pay with Cash' },
+        { id: 'SUPPORT', title: '❓ Need Help'          },
         { id: 'CANCEL',  title: '❌ Cancel Order'       },
       ]
     : [
