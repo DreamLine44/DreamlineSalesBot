@@ -155,14 +155,20 @@ export async function handleAdminButtonReply(buttonId, tenantId, adminPhone, ten
 
   const upper = String(buttonId).toUpperCase();
 
-  if (upper.startsWith('APPROVE_'))      return confirmPayment(upper.replace('APPROVE_', ''),      tenantId, adminPhone, tenantDoc, business);
-  if (upper.startsWith('REJECT_'))       return rejectPayment(upper.replace('REJECT_', ''),        tenantId, adminPhone, tenantDoc, business);
+  // [FIX-CASH-ORDER] APPROVE_CASH_<id> / REJECT_CASH_<id> must be checked BEFORE the
+  // generic APPROVE_ / REJECT_ prefixes below. "APPROVE_CASH_3A41C9".startsWith('APPROVE_')
+  // is also true, so with the old ordering every cash button was swallowed by the
+  // generic branch first and confirmPayment() was called with shortId "CASH_3A41C9"
+  // (a nonexistent order) instead of approveCashRequest() with "3A41C9" — producing
+  // "⚠️ No order found: CASH_3A41C9" instead of approving the cash request.
   // [LEGACY-CASH-BTN] Older builds dispatched CASH_<shortId> button IDs instead of
   // APPROVE_CASH_<shortId>. Keep accepting that legacy alias so a stale queued button
   // does not fall through to the generic 'No order found' branch.
-  if (upper.startsWith('CASH_'))         return approveCashRequest(upper.replace('CASH_', ''),      tenantId, adminPhone, tenantDoc, business);
   if (upper.startsWith('APPROVE_CASH_')) return approveCashRequest(upper.replace('APPROVE_CASH_', ''), tenantId, adminPhone, tenantDoc, business);
   if (upper.startsWith('REJECT_CASH_'))  return rejectCashRequest(upper.replace('REJECT_CASH_', ''),  tenantId, adminPhone, tenantDoc, business);
+  if (upper.startsWith('CASH_'))         return approveCashRequest(upper.replace('CASH_', ''),      tenantId, adminPhone, tenantDoc, business);
+  if (upper.startsWith('APPROVE_'))      return confirmPayment(upper.replace('APPROVE_', ''),      tenantId, adminPhone, tenantDoc, business);
+  if (upper.startsWith('REJECT_'))       return rejectPayment(upper.replace('REJECT_', ''),        tenantId, adminPhone, tenantDoc, business);
   if (upper.startsWith('CONFIRM_BOOK_')) return confirmBooking(upper.replace('CONFIRM_BOOK_', ''), tenantId, adminPhone, tenantDoc);
   if (upper.startsWith('READY_'))        return markOrderReady(upper.replace('READY_', ''),        tenantId, adminPhone, tenantDoc, business);
   // [FIX-X3] RESUME_BOT_<phone> button — dispatched by the support escalation alert
