@@ -30,8 +30,7 @@
  *   Activation (status → ACTIVE) happens via PATCH /admin/tenants/:id/status
  *   or the ONE-SHOT activate:true path.
  */
-import Tenant from '../../models/Tenant.js';
-import WhatsAppConnectionRequest from '../../models/WhatsAppConnectionRequest.js';
+import { Tenant, WhatsAppConnectionRequest } from '../../models/index.js';
 import { encryptToken, decryptToken } from '../../controllers/tenantController.js';
 import { notifyStatusChange } from './whatsappNotificationService.js';
 import logger from '../../config/logger.js';

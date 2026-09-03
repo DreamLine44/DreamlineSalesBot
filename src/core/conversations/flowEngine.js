@@ -304,7 +304,7 @@ export async function completeFlow(session, completedFlow, business = null, tena
         trigger = 'AFTER_BOOKING';
       }
       if (trigger) {
-        const { shouldCaptureLead, startLeadCapture } = await import('../../services/leadCaptureService.js');
+        const { shouldCaptureLead, startLeadCapture } = await import('../../services/leads/leadCaptureService.js');
         const freshSession = (await getSession(session.customerPhone, session.tenantId)) || session;
         if (await shouldCaptureLead(business, freshSession, trigger)) {
           return await startLeadCapture(freshSession, business);

@@ -42,13 +42,14 @@ import { trackBookingAnalytics }   from '../analytics/analyticsService.js';
 // [FIX-BC-2] dispatchText was imported but never called anywhere in this file — dead import removed.
 import logger                      from '../../config/logger.js';
 import { formatMoney }             from '../../utils/formatCurrency.js';
+import { getAdminPhones }          from '../../utils/adminPhones.js';
 import {
   isBookingDateClosed,
   formatClosedDayMessage,
 } from '../../utils/businessHoursUtils.js';
 
 // Re-export for backward compatibility (bakery/delivery flows import from here).
-export { tryParseDate } from '../../services/booking/bookingDateParser.js';
+export { tryParseDate } from '../nlu/resolution/bookingDateParser.js';
 
 function looksLikeTime(input) {
   if (!input) return false;
@@ -91,11 +92,11 @@ function parseTimeToMinutes(timeStr) {
   return null;
 }
 
-async function _confirmBookingDate(session, data, resolved, { business, tenant, tz } = {}) {
+async function _confirmBookingDate(session, data, resolved, { business, tenant, tz, heading = null } = {}) {
   if (business?.hours?.enabled && resolved?.parsed) {
     if (isBookingDateClosed(resolved.parsed, business.hours, tz)) {
       const msg = formatClosedDayMessage(resolved.label, business.hours, tz, resolved.parsed);
-      return _buildDatePickerUI(msg, tz, { business, tenant, customerPhone: session.customerPhone });
+      return _buildDatePickerUI(heading ? `${heading}\n\n${msg}` : msg, tz, { business, tenant, customerPhone: session.customerPhone });
     }
   }
 
@@ -108,9 +109,10 @@ async function _confirmBookingDate(session, data, resolved, { business, tenant, 
       parsedDate: resolved.parsed,
     },
   });
+  const confirmBody = `Just to confirm — did you mean *${resolved.label}*? 📅`;
   return {
     type:    'buttons',
-    body:    `Just to confirm — did you mean *${resolved.label}*? 📅`,
+    body:    heading ? `${heading}\n\n${confirmBody}` : confirmBody,
     buttons: [{ id: 'CONFIRM', title: '✅ Yes, that date' }, { id: 'DATE_BACK', title: '❌ No, re-enter' }],
   };
 }
@@ -169,6 +171,77 @@ function validateTime(timeInput, parsedBookingDate, tz) {
   return { minutes };
 }
 
+// [FEAT-NLU-BOOKING-PREFILL] Lands the customer on the first genuinely
+// UNKNOWN field when `data` already carries partySize/parsedDate/time
+// extracted from their original natural-language message (see
+// parseDirectBookingRequest() in core/shared/moduleRegistry.js). Reuses the
+// exact same UI builders and confirm-screens (_buildDatePickerUI,
+// _confirmBookingDate → DATE_CONFIRM, _buildTimePickerUI → TIME_CONFIRM) the
+// step-by-step flow already uses — so an extracted date/time is always
+// re-confirmed with the customer via the same "Just to confirm — did you
+// mean X?" screen a manually-typed answer would get, rather than silently
+// trusted. Never asks about a field twice: PARTY_SIZE's success handler and
+// DATE_CONFIRM's "yes" handler each also check for a pre-filled next value
+// (see their [FEAT-NLU-BOOKING-PREFILL] comments below) so a value found here
+// but not yet reached carries all the way through instead of being re-asked
+// once the customer answers the field that WAS missing.
+async function _resumeFromPrefill(session, data, { business, tenant, tz, heading = null } = {}) {
+  const isRestaurant = (business?.businessMode || '').toUpperCase() === 'RESTAURANT';
+  // [AUDIT-FIX-BOOKING-SERVICES-PREFILL] `heading` lets a caller that already
+  // showed its own confirmation line (e.g. SELECT_SERVICE's "Great — X
+  // selected! ✅") prepend it to whichever prompt this function lands on,
+  // instead of that context being silently dropped. Optional and defaults to
+  // null so the original no-services call site (INIT, no heading) is
+  // byte-for-byte unchanged.
+  const withHeading = (body) => (heading ? `${heading}\n\n${body}` : body);
+
+  if (isRestaurant && !data.partySize) {
+    await updateSession(session.customerPhone, session.tenantId, { step: 'PARTY_SIZE', data: { ...data } });
+    return {
+      type:    'buttons',
+      body:    withHeading(`How many guests will be dining? 👥`),
+      buttons: [
+        { id: 'PARTY_2', title: '👥 2 guests'  },
+        { id: 'PARTY_4', title: '👥 4 guests'  },
+        { id: 'PARTY_6', title: '👥 6+ guests' },
+      ],
+      footer: 'Or type any number e.g. 8',
+    };
+  }
+
+  if (!data.parsedDate) {
+    await updateSession(session.customerPhone, session.tenantId, { step: 'DATE', data: { ...data } });
+    const partyLine = data.partySize
+      ? `Perfect — *${data.partySize} guest${data.partySize > 1 ? 's' : ''}* 👥`
+      : null;
+    const datePrompt = [heading, partyLine, 'What date would you like? 📅'].filter(Boolean).join('\n\n');
+    return _buildDatePickerUI(datePrompt || null, tz, { business, tenant, customerPhone: session.customerPhone });
+  }
+
+  if (!data.time) {
+    const parsedDate = data.parsedDate instanceof Date ? data.parsedDate : new Date(data.parsedDate);
+    return _confirmBookingDate(session, data, {
+      ok: true, parsed: parsedDate, label: data.date, raw: data.dateRaw || data.date,
+    }, { business, tenant, tz, heading });
+  }
+
+  // Every field is pre-filled — validate the extracted time before trusting
+  // it (it may be a same-day time that's already passed) and go straight to
+  // the same "confirm time?" screen the TIME step itself would show.
+  const parsedDate = data.parsedDate instanceof Date ? data.parsedDate : new Date(data.parsedDate);
+  const timeValidation = validateTime(data.time, parsedDate, tz);
+  if (timeValidation?.error) {
+    await updateSession(session.customerPhone, session.tenantId, { step: 'TIME', data: { ...data, time: null } });
+    return _buildTimePickerUI(withHeading(timeValidation.error), { tz, bookingDate: parsedDate });
+  }
+  await updateSession(session.customerPhone, session.tenantId, { step: 'TIME_CONFIRM', data: { ...data } });
+  return {
+    type:    'buttons',
+    body:    withHeading(`Confirm time: *${data.time}*? ⏰`),
+    buttons: [{ id: 'CONFIRM', title: '✅ Yes, that time' }, { id: 'TIME_BACK', title: '❌ No, re-enter' }],
+  };
+}
+
 // ── Booking flow handler ───────────────────────────────────────────────────────
 export async function handleBookingFlow({ session, message, business, tenant, isInteractive, flowReply = null }) {
   const raw      = String(message || '').trim();
@@ -189,6 +262,22 @@ export async function handleBookingFlow({ session, message, business, tenant, is
 
   // ── INIT ──────────────────────────────────────────────────────────────────
   if (message === null) {
+    // [FEAT-NLU-BOOKING-PREFILL] If the customer's original message already
+    // told us the party size / date / time (e.g. "book a table for three
+    // people on the first of next month at 3 pm" — see
+    // parseDirectBookingRequest() in core/shared/moduleRegistry.js), `data`
+    // arrives here already carrying whichever of those fields were
+    // confidently extracted. Skip straight past any step whose answer we
+    // already have instead of asking again from scratch. Safe unconditionally:
+    // in EVERY normal (non-prefilled) flow start, `data` is always `{}` at
+    // this exact point — partySize/parsedDate/time are only ever written by
+    // their own step's handler, which by definition hasn't run yet on a
+    // fresh INIT call — so this never fires or misfires mid-flow, only for a
+    // genuine direct-parse pre-fill.
+    if (!services.length && (data.partySize || data.parsedDate || data.time)) {
+      return _resumeFromPrefill(session, data, { business, tenant, tz });
+    }
+
     // Determine first step
     const firstStep = services.length ? 'SELECT_SERVICE' : 'DATE';
     await updateSession(session.customerPhone, session.tenantId, { step: firstStep, data: { ...data } });
@@ -282,27 +371,25 @@ export async function handleBookingFlow({ session, message, business, tenant, is
       // [FIX-7] For RESTAURANT mode, ask how many people (partySize) after service selection.
       // The Booking model has a partySize field but the flow never captured it — admin had
       // no idea how many covers to prepare.
-      const isRestaurant = (business?.businessMode || '').toUpperCase() === 'RESTAURANT';
-      const nextStep = isRestaurant ? 'PARTY_SIZE' : 'DATE';
-
-      await updateSession(session.customerPhone, session.tenantId, {
-        step: nextStep, data: { ...data, service: service.name, serviceDuration: service.duration, servicePrice: service.price },
+      //
+      // [AUDIT-FIX-BOOKING-SERVICES-PREFILL] This used to hardcode "ask
+      // party size" / "show the date picker" unconditionally after a service
+      // was picked — completely ignoring any date/time the customer's
+      // original message already gave us (e.g. "book a haircut on the 15th
+      // at 3pm"). Any booking-capable business with a services list
+      // configured (SALON/BARBERSHOP/SERVICES/GENERAL — the common case for
+      // those modes) hit this branch, so the NLU-prefill feature effectively
+      // never applied to them even though moduleRegistry.js's START_BOOKING
+      // action had already merged the extracted fields into session data.
+      // Delegating to _resumeFromPrefill() (same "what's still missing?"
+      // logic INIT uses for services-less businesses) fixes that: it skips
+      // straight past party size/date/time confirmation for whichever of
+      // those were already extracted, and asks normally for the rest — with
+      // the "Great — X selected!" line preserved via the heading param.
+      const updatedData = { ...data, service: service.name, serviceDuration: service.duration, servicePrice: service.price };
+      return _resumeFromPrefill(session, updatedData, {
+        business, tenant, tz, heading: `Great — *${service.name}* selected! ✅`,
       });
-
-      if (isRestaurant) {
-        return {
-          type:    'buttons',
-          body:    `Great — *${service.name}* selected! ✅\n\nHow many guests will be dining? 👥`,
-          // [UX-BOOK-1] Drop Cancel from party size — keeps within 3-button limit.
-          buttons: [
-            { id: 'PARTY_2', title: '👥 2 guests'  },
-            { id: 'PARTY_4', title: '👥 4 guests'  },
-            { id: 'PARTY_6', title: '👥 6+ guests' },
-          ],
-          footer: 'Or type any number e.g. 8',
-        };
-      }
-      return _buildDatePickerUI(`Great — *${service.name}* selected! ✅\n\nWhat date would you like? 📅`, tz, { business, tenant, customerPhone: session.customerPhone });
     }
 
     // [FIX-7] PARTY_SIZE step — only reached for RESTAURANT mode
@@ -311,7 +398,7 @@ export async function handleBookingFlow({ session, message, business, tenant, is
 
       // Support quick-pick buttons (PARTY_2, PARTY_4, PARTY_6) as well as typed numbers
       const PARTY_SHORTCUTS = { 'PARTY_2': 2, 'PARTY_4': 4, 'PARTY_6': 6 };
-      const { parseQuantity } = await import('../../utils/parseQuantity.js');
+      const { parseQuantity } = await import('../nlu/resolution/parseQuantity.js');
       const partySize = PARTY_SHORTCUTS[raw.toUpperCase()] ?? parseQuantity(raw);
       if (!partySize || partySize < 1) {
         const triedCancel = _isCancelIntent(clean, raw);
@@ -338,6 +425,21 @@ export async function handleBookingFlow({ session, message, business, tenant, is
       await updateSession(session.customerPhone, session.tenantId, {
         step: 'DATE', data: { ...data, partySize },
       });
+      // [FEAT-NLU-BOOKING-PREFILL] If the original message already gave us a
+      // date too (e.g. "table for three on the first of next month at 3pm" —
+      // partySize was missing so _resumeFromPrefill landed here on PARTY_SIZE,
+      // but data.parsedDate is already set), skip the date picker and go
+      // straight to confirming the date we already extracted — same as
+      // _resumeFromPrefill would do if it were re-entered with partySize now
+      // known. Without this check, a party size typed in response to this
+      // step would silently overwrite/ignore the already-known date and ask
+      // for it again from scratch.
+      if (data.parsedDate) {
+        const parsedDate = data.parsedDate instanceof Date ? data.parsedDate : new Date(data.parsedDate);
+        return _confirmBookingDate(session, { ...data, partySize }, {
+          ok: true, parsed: parsedDate, label: data.date, raw: data.dateRaw || data.date,
+        }, { business, tenant, tz });
+      }
       return _buildDatePickerUI(`Perfect — *${partySize} guest${partySize > 1 ? 's' : ''}* 👥\n\nWhat date would you like? 📅`, tz, { business, tenant, customerPhone: session.customerPhone });
     }
 
@@ -461,14 +563,47 @@ export async function handleBookingFlow({ session, message, business, tenant, is
     }
 
     case 'DATE_CONFIRM': {
-      if (clean === 'confirm' || /^(yes|y|yep|yeah)$/i.test(clean)) {
-        await updateSession(session.customerPhone, session.tenantId, { step: 'TIME' });
+      // [AUDIT-FIX-BOOKING-CONFIRM-WIDEN] DATE_CONFIRM and TIME_CONFIRM only
+      // ever recognised a narrow literal regex (yes/y/yep/yeah — no/n/re-
+      // enter/change/back), even though BOOKING_CONFIRM further down this
+      // SAME file was already widened via confirmationMatcher.js's shared
+      // isAffirmative/isNegative (see [FIX-DUALLAYER-CONFIRM] there) so
+      // natural replies like "sure", "sounds good", "yes please", "nah
+      // change it", "no thanks" are recognised. A customer typing anything
+      // outside the narrow literal set at THESE two confirm screens fell
+      // through to unrelated re-parsing (as a new date/time attempt) instead
+      // of being recognised as a plain yes/no — exactly the "bot ignores
+      // what I typed" gap confirmationMatcher.js exists to close.
+      const { isAffirmative: _isAffirmativeDate, isNegative: _isNegativeDate } =
+        await import('../nlu/resolution/confirmationMatcher.js');
+      if (clean === 'confirm' || /^(yes|y|yep|yeah)$/i.test(clean) || _isAffirmativeDate(raw)) {
         const bookingParsedDate = data.parsedDate
           ? (data.parsedDate instanceof Date ? data.parsedDate : new Date(data.parsedDate))
           : tryParseDate(data.date, tz);
+        // [FEAT-NLU-BOOKING-PREFILL] If the original message also gave us a
+        // time (e.g. _resumeFromPrefill landed on DATE_CONFIRM because only
+        // the date needed confirming, but data.time was already extracted),
+        // skip the time picker and go straight to confirming the time we
+        // already have — mirrors the partySize check in the PARTY_SIZE case
+        // above. Falls through to the normal time picker if the pre-filled
+        // time turns out to be invalid (e.g. already passed today).
+        if (data.time) {
+          const timeValidation = validateTime(data.time, bookingParsedDate, tz);
+          if (!timeValidation?.error) {
+            await updateSession(session.customerPhone, session.tenantId, { step: 'TIME_CONFIRM', data: { ...data } });
+            return {
+              type:    'buttons',
+              body:    `Confirm time: *${data.time}*? ⏰`,
+              buttons: [{ id: 'CONFIRM', title: '✅ Yes, that time' }, { id: 'TIME_BACK', title: '❌ No, re-enter' }],
+            };
+          }
+          await updateSession(session.customerPhone, session.tenantId, { step: 'TIME', data: { ...data, time: null } });
+          return _buildTimePickerUI(timeValidation.error, { tz, bookingDate: bookingParsedDate });
+        }
+        await updateSession(session.customerPhone, session.tenantId, { step: 'TIME' });
         return _buildTimePickerUI(null, { tz, bookingDate: bookingParsedDate });
       }
-      if (clean === 'date_back' || /^(no|n|re-enter|change|back)$/i.test(clean)) {
+      if (clean === 'date_back' || /^(no|n|re-enter|change|back)$/i.test(clean) || _isNegativeDate(raw)) {
         await updateSession(session.customerPhone, session.tenantId, { step: 'DATE' });
         return _buildDatePickerUI(null, tz, { business, tenant, customerPhone: session.customerPhone });
       }
@@ -522,7 +657,11 @@ export async function handleBookingFlow({ session, message, business, tenant, is
     }
 
     case 'TIME_CONFIRM': {
-      if (clean === 'confirm' || /^(yes|y|yep|yeah)$/i.test(clean)) {
+      // [AUDIT-FIX-BOOKING-CONFIRM-WIDEN] See the matching note on
+      // DATE_CONFIRM above — same gap, same fix.
+      const { isAffirmative: _isAffirmativeTime, isNegative: _isNegativeTime } =
+        await import('../nlu/resolution/confirmationMatcher.js');
+      if (clean === 'confirm' || /^(yes|y|yep|yeah)$/i.test(clean) || _isAffirmativeTime(raw)) {
         await updateSession(session.customerPhone, session.tenantId, { step: 'BOOKING_CONFIRM' });
         const { date, time, service, partySize, stylist, staff } = data;
         // [FIX-SALON-9] Show stylist/staff in booking summary when set by salon flow.
@@ -541,7 +680,7 @@ export async function handleBookingFlow({ session, message, business, tenant, is
           buttons: [{ id: 'CONFIRM', title: '✅ Confirm Booking' }, { id: 'CANCEL', title: '❌ Cancel' }],
         };
       }
-      if (clean === 'time_back' || /^(no|n|back|change)$/i.test(clean)) {
+      if (clean === 'time_back' || /^(no|n|back|change)$/i.test(clean) || _isNegativeTime(raw)) {
         await updateSession(session.customerPhone, session.tenantId, { step: 'TIME' });
         const bpdBack = data.parsedDate
           ? (data.parsedDate instanceof Date ? data.parsedDate : new Date(data.parsedDate))
@@ -584,7 +723,7 @@ export async function handleBookingFlow({ session, message, business, tenant, is
       // "please cancel it", "nah changed my mind" etc. also escape instead of
       // silently falling through to the confirm re-prompt below.
       const { isAffirmative: _isAffirmativeBooking, isNegative: _isNegativeBooking } =
-        await import('../shared/confirmationMatcher.js');
+        await import('../nlu/resolution/confirmationMatcher.js');
       if (/^(cancel|cancel_booking|no|nope|show_menu)$/i.test(clean) || _isNegativeBooking(raw)) {
         return cancelFlow(session, business);
       }
@@ -729,8 +868,8 @@ export async function handleBookingFlow({ session, message, business, tenant, is
       // [FIX-E] Notify admin — every other flow (order, payment) alerts the admin;
       // bookings never did. Now mirrors the pattern used in paymentService.
       try {
-        const adminPhone = business?.adminPhone || tenant?.adminPhone;
-        if (adminPhone && tenant && savedBooking) {
+        const adminPhones = getAdminPhones(business, tenant);
+        if (adminPhones.length && tenant && savedBooking) {
           const { buildAdminBookingAlertBody } = await import('../../services/admin/adminCommandService.js');
           const { dispatchMessage } = await import('../whatsapp/dispatcher.js');
           // [v14-BUG-10] Pass staff (stylist) to admin alert so admin sees who
@@ -746,14 +885,17 @@ export async function handleBookingFlow({ session, message, business, tenant, is
             business,
             shortId: savedBooking.shortId,
           });
-          await dispatchMessage(adminPhone, {
+          const alertPayload = {
             type:    'buttons',
             body:    alertBody,
             buttons: [
               { id: `CONFIRM_BOOK_${savedBooking.shortId}`, title: '✅ Confirm' },
               { id: `DECLINE_BOOK_${savedBooking.shortId}`, title: '❌ Decline' },
             ],
-          }, tenant).catch(() => {});
+          };
+          for (const adminPhone of adminPhones) {
+            await dispatchMessage(adminPhone, alertPayload, tenant).catch(() => {});
+          }
         }
       } catch (err) {
         logger.warn('[BookingFlow] Admin notification failed (non-fatal)', { err: err.message });

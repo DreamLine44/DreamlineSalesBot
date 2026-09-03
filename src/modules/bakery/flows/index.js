@@ -5,8 +5,9 @@
 import { updateSession }  from '../../../core/sessions/sessionService.js';
 import { completeFlow }   from '../../../core/conversations/flowEngine.js';
 import { handleBookingFlow } from '../../../core/conversations/bookingFlow.js';
-import { findBestMatch }  from '../../../utils/matchEngine.js';
+import { findBestMatch }  from '../../../core/nlu/resolution/matchEngine.js';
 import { saveOrder }      from '../../../services/order/orderService.js';
+import { getAdminPhones } from '../../../utils/adminPhones.js';
 import { saveBooking }    from '../../../services/booking/bookingService.js';
 import logger             from '../../../config/logger.js';
 
@@ -190,8 +191,8 @@ export async function handleCakeCustomization({ session, message, business, tena
 
       // [FIX-9] Notify admin — bakery cake orders were placed silently with no alert
       try {
-        const adminPhone = business?.adminPhone || tenant?.adminPhone;
-        if (adminPhone && tenant && savedOrder) {
+        const adminPhones = getAdminPhones(business, tenant);
+        if (adminPhones.length && tenant && savedOrder) {
           const { dispatchText } = await import('../../../core/whatsapp/dispatcher.js');
           const alert =
             `🎂 *Custom Cake Order — ${business?.name || 'Bakery'}*\n\n` +
@@ -201,7 +202,9 @@ export async function handleCakeCustomization({ session, message, business, tena
             `📅 For: *${data.eventDate}*\n` +
             `🔖 Ref: \`${savedOrder.shortId}\`\n\n` +
             `Please contact customer to confirm pricing.`;
-          dispatchText(adminPhone, alert, tenant).catch(() => {});
+          for (const adminPhone of adminPhones) {
+            dispatchText(adminPhone, alert, tenant).catch(() => {});
+          }
         }
       } catch {}
 

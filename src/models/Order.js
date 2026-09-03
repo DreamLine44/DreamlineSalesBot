@@ -64,6 +64,14 @@ const orderSchema = new mongoose.Schema({
       quantity: { type: Number, required: true, min: 1 },
       unitPrice: { type: Number, default: null },
       addOns:   { type: [String], default: [] },
+      // [AUDIT-FIX-UPSELL-PRICE-1] Flat price of any accepted add-on(s) on this
+      // line (e.g. restaurant orderFlow.js's UPSELL step) — NOT multiplied by
+      // quantity. Previously there was nowhere to persist this: orderFlow.js
+      // computed `finalTotal = basePrice + addOn.price` but then discarded it,
+      // and cartToOrderItems()/resolveOrderFields() only ever summed
+      // unitPrice*quantity, so every accepted paid upsell was silently
+      // undercharged. See cartEngine.js and orderService.resolveOrderFields().
+      addOnsTotal: { type: Number, default: 0 },
       // menuItemId — produced by every cart-line builder (waCatalogHelpers.
       // buildCatalogCartItems(), and the CATALOG-STOCK-1 menuItemId every
       // per-vertical orderFlow.js passes) but previously missing from this

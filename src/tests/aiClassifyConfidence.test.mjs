@@ -38,7 +38,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import { detectIntent } from '../core/intents/intentEngine.js';
+import { detectIntent } from '../core/nlu/classification/intentEngine.js';
 
 function readSource(relPath) {
   return fs.readFileSync(new URL(relPath, import.meta.url), 'utf8');
@@ -47,7 +47,7 @@ function readSource(relPath) {
 // ── groqProvider.js — prompt + parsing changes ───────────────────────────────
 
 test('groqProvider.js: classifyIntent prompt explicitly warns about negation/full-meaning', () => {
-  const src = readSource('../core/ai/providers/groqProvider.js');
+  const src = readSource('../core/nlu/extraction/groqProvider.js');
   assert.match(
     src,
     /Understand the customer's full meaning, not just keywords[\s\S]{0,200}negation/i,
@@ -57,7 +57,7 @@ test('groqProvider.js: classifyIntent prompt explicitly warns about negation/ful
 });
 
 test('groqProvider.js: classifyIntent asks for and parses an INTENT|CONFIDENCE reply', () => {
-  const src = readSource('../core/ai/providers/groqProvider.js');
+  const src = readSource('../core/nlu/extraction/groqProvider.js');
   assert.match(src, /INTENT\|CONFIDENCE/, 'System prompt should specify the "INTENT|CONFIDENCE" reply format');
   assert.match(
     src,
@@ -67,7 +67,7 @@ test('groqProvider.js: classifyIntent asks for and parses an INTENT|CONFIDENCE r
 });
 
 test('groqProvider.js: classifyIntent returns { intent, confidence } on every exit path (no bare strings)', () => {
-  const src = readSource('../core/ai/providers/groqProvider.js');
+  const src = readSource('../core/nlu/extraction/groqProvider.js');
   const fnStart = src.indexOf('export async function classifyIntent');
   assert.ok(fnStart !== -1, 'classifyIntent function not found');
   const fnEnd = src.indexOf('\n// ── Helpers', fnStart);
@@ -86,7 +86,7 @@ test('groqProvider.js: classifyIntent returns { intent, confidence } on every ex
 });
 
 test('groqProvider.js: confidence defaults to MEDIUM (not HIGH) when the tier token is missing/unparseable', () => {
-  const src = readSource('../core/ai/providers/groqProvider.js');
+  const src = readSource('../core/nlu/extraction/groqProvider.js');
   assert.match(
     src,
     /\['HIGH', 'MEDIUM', 'LOW'\]\.includes\(confToken\) \? confToken : 'MEDIUM'/,
@@ -98,7 +98,7 @@ test('groqProvider.js: confidence defaults to MEDIUM (not HIGH) when the tier to
 // ── intentEngine.js — confidence gating ──────────────────────────────────────
 
 test('intentEngine.js: classifyWithAI returns the { intent, confidence } object shape on every branch', () => {
-  const src = readSource('../core/intents/intentEngine.js');
+  const src = readSource('../core/nlu/classification/intentEngine.js');
   const fnStart = src.indexOf('async function classifyWithAI');
   const fnEnd = src.indexOf('\nfunction getValidIntents', fnStart);
   const fnSrc = src.slice(fnStart, fnEnd);
@@ -110,7 +110,7 @@ test('intentEngine.js: classifyWithAI returns the { intent, confidence } object 
 });
 
 test('groqProvider.js: classifyMessageStructured provides structured NLU for enhanced layer', () => {
-  const src = readSource('../core/ai/providers/groqProvider.js');
+  const src = readSource('../core/nlu/extraction/groqProvider.js');
   assert.match(src, /export async function classifyMessageStructured/);
   assert.match(
     src,
@@ -120,7 +120,7 @@ test('groqProvider.js: classifyMessageStructured provides structured NLU for enh
 });
 
 test('intentEngine.js: detectIntent only auto-continues the AI-guessed workflow when confidence is HIGH', () => {
-  const src = readSource('../core/intents/intentEngine.js');
+  const src = readSource('../core/nlu/classification/intentEngine.js');
   const stepStart = src.indexOf('AI classify (last resort');
   const stepEnd = src.indexOf('// ── 8. Final fallback', stepStart);
   const stepSrc = src.slice(stepStart, stepEnd);
@@ -139,7 +139,7 @@ test('intentEngine.js: detectIntent only auto-continues the AI-guessed workflow 
 });
 
 test("detectIntent JSDoc no longer documents the meaningless flat 'AI' confidence tag", () => {
-  const src = readSource('../core/intents/intentEngine.js');
+  const src = readSource('../core/nlu/classification/intentEngine.js');
   assert.match(src, /confidence:\s*'HIGH'\|'MEDIUM'\|'LOW'/);
 });
 

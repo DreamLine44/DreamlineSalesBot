@@ -46,10 +46,8 @@
 
 import { updateSession }  from '../../../core/sessions/sessionService.js';
 import { completeFlow, startFlow } from '../../../core/conversations/flowEngine.js';
-import { getAIReply }     from '../../../core/ai/providers/aiRouter.js';
-import { findBestMatch }  from '../../../utils/matchEngine.js';
+import { getAIReply, findBestMatch, parseQuantity } from '../../../core/nlu/nluFeature.js';
 import { saveOrder }      from '../../../services/order/orderService.js';
-import { parseQuantity }  from '../../../utils/parseQuantity.js';
 import { trackOrderAnalytics } from '../../../core/analytics/analyticsService.js';
 import { buildPaymentInstructionsUI } from '../../../services/payment/paymentFeature.js';
 import { dispatchMessage } from '../../../core/whatsapp/dispatcher.js';
@@ -63,9 +61,9 @@ import {
   buildComparisonCard,
   buildAdminOrderAlertBody,
 } from '../handlers/uiBuilders.js';
-import { itemLabel } from '../../../utils/itemLabel.js';
-import { formatMoney } from '../../../utils/formatCurrency.js';
+import { itemLabel, formatMoney } from '../../../utils/formatFeature.js';
 import logger from '../../../config/logger.js';
+import { getAdminPhones } from '../../../utils/adminPhones.js';
 
 // ── Normalise text for fuzzy comparisons ─────────────────────────────────────
 const norm = (s = '') =>
@@ -419,12 +417,12 @@ export async function handleElectronicsOrder({
 
     // ── CONFIRM ──────────────────────────────────────────────────────────────
     case 'CONFIRM': {
-      // [FIX-DUALLAYER-CONFIRM] See core/shared/confirmationMatcher.js — the
+      // [FIX-DUALLAYER-CONFIRM] See core/nlu/resolution/confirmationMatcher.js — the
       // bare exact-word regex missed compound phrasing like "yes please" /
       // "sounds good" / "go ahead". Widened via the shared sync regex guard
       // (no AI here — this step has no cart-modification path to protect,
       // but AI adds latency this simple gate doesn't need).
-      const { isAffirmative: _isAffirmativeConfirm } = await import('../../../core/shared/confirmationMatcher.js');
+      const { isAffirmative: _isAffirmativeConfirm } = await import('../../../core/nlu/nluFeature.js');
       const isConfirm = /^(yes|y|confirm|ok|okay|sure|place|confirmed)$/i.test(clean) ||
         _isAffirmativeConfirm(raw);
       if (!isConfirm) {
@@ -512,10 +510,10 @@ export async function handleElectronicsOrder({
         });
 
         try {
-          const adminPhone = business?.adminPhone || tenant?.adminPhone;
-          if (adminPhone && tenant && savedOrder) {
+          const adminPhones = getAdminPhones(business, tenant);
+          if (adminPhones.length && tenant && savedOrder) {
             // [FIX-1] Static import — dispatchMessage already imported at top of file
-            await dispatchMessage(adminPhone, {
+            const alertPayload = {
               type: 'text',
               body:
                 `🔔 *New Order — ${business.name || 'Electronics Store'}*\n\n` +
@@ -525,7 +523,10 @@ export async function handleElectronicsOrder({
                 `📦 Fulfilment: *${data.fulfilment === 'DELIVERY' ? 'Delivery' : 'In-store pick-up'}*\n` +
                 `📝 Ref: *${ref}*\n\n` +
                 `⏳ Status: *Pending* — awaiting payment screenshot.`,
-            }, tenant).catch(() => {});
+            };
+            for (const adminPhone of adminPhones) {
+              await dispatchMessage(adminPhone, alertPayload, tenant).catch(() => {});
+            }
           }
         } catch { /* non-fatal */ }
 
@@ -535,8 +536,8 @@ export async function handleElectronicsOrder({
 
       // ── No payment / cash / COD ────────────────────────────────────────────
       try {
-        const adminPhone = business?.adminPhone || tenant?.adminPhone;
-        if (adminPhone && tenant && savedOrder) {
+        const adminPhones = getAdminPhones(business, tenant);
+        if (adminPhones.length && tenant && savedOrder) {
           // [FIX-1] Static import — dispatchMessage already imported at top of file
           const alertBody = buildAdminOrderAlertBody({
             customerPhone: session.customerPhone,
@@ -547,14 +548,17 @@ export async function handleElectronicsOrder({
             shortId:       savedOrder.shortId,
             business,
           });
-          await dispatchMessage(adminPhone, {
+          const alertPayload = {
             type:    'buttons',
             body:    alertBody,
             buttons: [
               { id: `APPROVE_${savedOrder.shortId}`, title: '✅ Confirm Order' },
               { id: `REJECT_${savedOrder.shortId}`,  title: '❌ Cancel Order'  },
             ],
-          }, tenant).catch(() => {});
+          };
+          for (const adminPhone of adminPhones) {
+            await dispatchMessage(adminPhone, alertPayload, tenant).catch(() => {});
+          }
         }
       } catch (err) {
         logger.warn('[ElectronicsOrder] Admin notification failed (non-fatal)', { err: err.message });

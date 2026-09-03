@@ -16,7 +16,7 @@ import {
 } from '../services/order/orderService.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const adminSrc = readFileSync(join(__dirname, '../services/adminCommandService.js'), 'utf8');
+const adminSrc = readFileSync(join(__dirname, '../services/admin/adminCommandService.js'), 'utf8');
 
 test('isNoPaymentOrder: payment disabled → order wording', () => {
   assert.equal(isNoPaymentOrder({ payment: { enabled: false } }, { paymentStatus: 'unpaid' }), true);

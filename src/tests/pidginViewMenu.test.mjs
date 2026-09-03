@@ -13,14 +13,14 @@
 // disabled/unavailable/uncertain.
 //
 // FIX (two cooperating pieces):
-//   1. core/intents/intentEngine.js — VIEW_MENU_DIRECT_RE gained a pidgin
+//   1. core/nlu/classification/intentEngine.js — VIEW_MENU_DIRECT_RE gained a pidgin
 //      alternative group (VIEW_MENU_PIDGIN_RE_SRC) covering common
 //      "wetin ... get" / "make i see menu" / "show me wetin ..." shapes.
-//   2. core/intents/patterns.js — VIEW_MENU's exact-match keyword list
+//   2. core/nlu/classification/patterns.js — VIEW_MENU's exact-match keyword list
 //      gained the most common literal pidgin phrasings.
 //
 // A companion, non-code-tested change also localized the Groq system
-// prompt (core/ai/providers/groqProvider.js, classifyMessageStructured)
+// prompt (core/nlu/extraction/groqProvider.js, classifyMessageStructured)
 // with Pidgin examples and an explicit instruction not to default to
 // LOW/MEDIUM confidence just because a message is in Pidgin — that part
 // is verified here via a source-text assertion (same convention used by
@@ -32,8 +32,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import { VIEW_MENU_DIRECT_RE } from '../core/intents/intentEngine.js';
-import { INTENT_PATTERNS } from '../core/intents/patterns.js';
+import { VIEW_MENU_DIRECT_RE } from '../core/nlu/classification/intentEngine.js';
+import { INTENT_PATTERNS } from '../core/nlu/classification/patterns.js';
 
 function readSource(relPath) {
   return fs.readFileSync(new URL(relPath, import.meta.url), 'utf8');
@@ -111,7 +111,7 @@ test('patterns.js: VIEW_MENU keyword list contains common pidgin phrasings', () 
 // ── 3. groqProvider.js — system prompt localized for Pidgin/Krio ───────────
 
 test('groqProvider.js: classifyMessageStructured system prompt includes Pidgin guidance', () => {
-  const src = readSource('../core/ai/providers/groqProvider.js');
+  const src = readSource('../core/nlu/extraction/groqProvider.js');
   assert.match(src, /Pidgin/);
   assert.match(src, /wetin una get/);
   assert.match(src, /clarificationNeeded=true just because a message is in Pidgin/);

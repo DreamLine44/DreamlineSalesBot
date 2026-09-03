@@ -30,12 +30,12 @@ test('bookingFlow.js: buildRescheduleDatePicker opens shared date picker', () =>
 });
 
 test('postFlowHandler.js: RESCHEDULE uses buildRescheduleDatePicker', () => {
-  const src = read('../services/postFlowHandler.js');
+  const src = read('../services/shared/postFlowHandler.js');
   assert.match(src, /buildRescheduleDatePicker/);
 });
 
 test('adminCommandService.js: confirmed booking offers reschedule button', () => {
-  const src = read('../services/adminCommandService.js');
+  const src = read('../services/admin/adminCommandService.js');
   const block = src.slice(src.indexOf('confirmBooking'), src.indexOf('// [v14-UPSELL]'));
   assert.match(block, /RESCHEDULE/);
 });

@@ -22,7 +22,7 @@
  *         on slow connections. Now reads totalPrice from confirmed data object.
  *
  * [MULTICART-v39-PHASE2] Added real multi-item cart support — see
- *         core/shared/cartEngine.js module header for the full rationale.
+ *         core/nlu/resolution/cartMessageParser.js module header for the full rationale.
  *         Two new entry points into a cart, both purely additive (a normal
  *         single-item order never touches either):
  *           (a) SELECT_ITEM now tries parseMultiItemMessage() FIRST. A
@@ -45,33 +45,24 @@
 
 import { updateSession }    from '../../../core/sessions/sessionService.js';
 import { completeFlow, cancelFlow } from '../../../core/conversations/flowEngine.js';
-import { getAIReply }       from '../../../core/ai/providers/aiRouter.js';
-import { findBestMatch }    from '../../../utils/matchEngine.js';
+import { getAIReply, findBestMatch, parseQuantity, parseMultiItemMessage, parseNaturalOrderMessage, parseCartModification } from '../../../core/nlu/nluFeature.js';
 import {
   buildMenuUI,
   buildItemAddedUI, buildItemsAddedUI, buildCartReviewUI, buildEditCartMenuUI, buildEditCartPickerUI,
 } from '../handlers/uiBuilders.js';
-import { parseQuantity }    from '../../../utils/parseQuantity.js';
 import { saveOrder }        from '../../../services/order/orderService.js';
 import { trackOrderAnalytics } from '../../../core/analytics/analyticsService.js';
 import { dispatchText }     from '../../../core/whatsapp/dispatcher.js';
 import { buildPaymentInstructionsUI } from '../../../services/payment/paymentFeature.js';
 import { buildWhatsAppImageUrl }       from '../../../config/cloudinary.js';
-import { itemLabel }        from '../../../utils/itemLabel.js';
+import { itemLabel, formatMoney, formatPhoneDisplay } from '../../../utils/formatFeature.js';
 // [AUDIT-FIX-XZ-REMOVE] isCatalogEnabled — see the two call sites below for
 // the rationale. The legacy text/list menu (buildMenuUI, the "Choose an
 // option â–¼" flow) is being retired for any tenant with a live WA Catalog.
 import { isCatalogEnabled } from '../../catalog/waCatalogConfig.js';
-import { formatMoney }      from '../../../utils/formatCurrency.js';
-import { formatPhoneDisplay } from '../../../utils/formatPhone.js';
-import {
-  parseMultiItemMessage, parseNaturalOrderMessage, mergeCartLines, enforceCartLimit,
-  cartTotal, cartToOrderItems, formatCartSummary, buildUnmatchedNote,
-  removeCartLine, incrementCartLine, decrementCartLine, clearCart,
-  cartItemCount, formatNumberedCartSummary,
-  parseCartModification, applyCartModification,
-} from '../../../core/shared/cartEngine.js';
+import { mergeCartLines, enforceCartLimit, cartTotal, cartToOrderItems, formatCartSummary, buildUnmatchedNote, removeCartLine, incrementCartLine, decrementCartLine, clearCart, cartItemCount, formatNumberedCartSummary, applyCartModification } from '../../../core/shared/cartEngine.js';
 import logger               from '../../../config/logger.js';
+import { getAdminPhones } from '../../../utils/adminPhones.js';
 
 // ── Normalise — [FIX-1] /\s+/ was missing the 'g' flag ──────────────────────
 const norm = (s = '') => s.toLowerCase().replace(/[^\w\s]/g, ' ').replace(/\s+/g, ' ').trim();
@@ -486,8 +477,16 @@ export async function handleOrderFlow({ session, message, business, tenant, isIn
       if (multiAdd) {
         newLines = multiAdd.lines;
       } else {
-        const { item: singleItem, confidenceLevel: singleConf } = findBestMatch(menu, clean);
-        if (singleItem && singleConf === 'HIGH') newLines = [{ item: singleItem, quantity: 1, variant: null }];
+        // [AUDIT-FIX-CONFIRM-ADD-QTY] Was findBestMatch(menu, clean) with a
+        // hardcoded quantity of 1 — any quantity the customer typed here
+        // ("3 fries" while reviewing the cart) was silently dropped to 1,
+        // same bug class as [AUDIT-FIX-GREETING-LEADIN] in
+        // cartMessageParser.js, just via a path that never called a
+        // quantity-aware parser at all. parseNaturalOrderMessage extracts
+        // the same HIGH-confidence-only match plus the actual quantity
+        // (still defaulting to 1 when the customer didn't give one).
+        const singleOrder = parseNaturalOrderMessage(menu, raw);
+        if (singleOrder?.lines?.length) newLines = singleOrder.lines;
       }
 
       if (newLines) {
@@ -585,18 +584,24 @@ export async function handleOrderFlow({ session, message, business, tenant, isIn
       const addOn    = data.pendingAddOn;
       const accepted = /^(yes|y|yep|yeah|ok|okay|sure|add|upsell_yes)$/i.test(clean) || clean === 'upsell_yes';
 
-      let finalTotal = data.totalPrice || 0;
-      let addOnsList = data.addOns || [];
+      let addOnsList  = data.addOns || [];
+      // [AUDIT-FIX-UPSELL-PRICE-1] This used to compute `finalTotal = data.totalPrice
+      // + addOn.price` and then never use it anywhere — _addItemAndPrompt() had no
+      // param to receive it, so cartToOrderItems()/saveOrder() only ever priced the
+      // cart line at the base item price. addOnsTotal now flows all the way to the
+      // Order document (models/Order.js, cartEngine.js, orderService.js) instead of
+      // being silently dropped.
+      let addOnsTotal = 0;
 
       if (accepted && addOn) {
-        finalTotal += addOn.price;
+        addOnsTotal = addOn.price || 0;
         addOnsList  = [...addOnsList, addOn.name];
       }
 
       // [MULTICART-v40-EDIT] Fold straight into the cart — same as the
       // no-upsell QUANTITY path above.
       return await _addItemAndPrompt(session, business, data, {
-        item: data.item, quantity: data.quantity, variant: data.variant || null, addOns: addOnsList,
+        item: data.item, quantity: data.quantity, variant: data.variant || null, addOns: addOnsList, addOnsTotal,
       });
     }
 
@@ -614,13 +619,13 @@ export async function handleOrderFlow({ session, message, business, tenant, isIn
       // [FIX-CONFIRM-1] "yeah"/"yep" were missing here even though every other
       // confirm-style step in this file (SUGGESTION_CONFIRM, UPSELL) accepts them.
       // [FIX-DUALLAYER-CONFIRM] Widened further via the shared regex guard
-      // (core/shared/confirmationMatcher.js / negationGuard.js) so phrases
+      // (core/nlu/resolution/confirmationMatcher.js / negationGuard.js) so phrases
       // like "yes please", "sounds good", "go ahead" also register — the
       // original list only matched a SINGLE bare word exactly. Kept as a
       // sync (non-AI) check here, deliberately BEFORE the cart-modification
       // parser below, so a message like "remove the coke" is never at risk
       // of being swept up as a confirm/decline guess.
-      const { isAffirmative: _isAffirmativeConfirm } = await import('../../../core/shared/confirmationMatcher.js');
+      const { isAffirmative: _isAffirmativeConfirm } = await import('../../../core/nlu/nluFeature.js');
       const isConfirm = /^(yes|y|yeah|yep|confirm|ok|okay|sure|place|confirmed)$/i.test(clean) ||
         _isAffirmativeConfirm(raw);
       if (isConfirm) {
@@ -650,7 +655,7 @@ export async function handleOrderFlow({ session, message, business, tenant, isIn
 
       // [FIX-DUALLAYER-CONFIRM] Same widening for the decline side — "no
       // thanks", "cancel it please", "nah I changed my mind" now register.
-      const { isNegative: _isNegativeConfirm } = await import('../../../core/shared/confirmationMatcher.js');
+      const { isNegative: _isNegativeConfirm } = await import('../../../core/nlu/nluFeature.js');
       const wantsCancel = raw === 'CANCEL' || /^(cancel|cancel order|no|nope|stop)$/i.test(clean) ||
         _isNegativeConfirm(raw);
       if (wantsCancel) {
@@ -921,7 +926,10 @@ async function _browseForMoreItems(session, business, tenant, data, { note = '' 
 
 // ── Add-item-to-cart helper ───────────────────────────────────────────────────
 /**
- * _addItemAndPrompt(session, business, data, { item, quantity, variant, addOns })
+ * _addItemAndPrompt(session, business, data, { item, quantity, variant, addOns, addOnsTotal })
+ * addOnsTotal: flat price of any accepted paid add-on(s) on this line (NOT
+ * multiplied by quantity) — see [AUDIT-FIX-UPSELL-PRICE-1] in the UPSELL case
+ * below and models/Order.js.
  * [MULTICART-v40-EDIT] Folds a single resolved item (from QUANTITY or UPSELL)
  * into data.cart and moves to ITEM_ADDED — the only prompt shown right after
  * an item is added ("add another item?" / "review & checkout"). Replaces the
@@ -929,9 +937,9 @@ async function _browseForMoreItems(session, business, tenant, data, { note = '' 
  * Extracted to a helper for the same reason _addAnotherItem was before it —
  * keeps the QUANTITY/UPSELL case bodies short.
  */
-async function _addItemAndPrompt(session, business, data, { item, quantity, variant, addOns }) {
+async function _addItemAndPrompt(session, business, data, { item, quantity, variant, addOns, addOnsTotal = 0 }) {
   const priorCart = Array.isArray(data.cart) ? data.cart : [];
-  const merged = mergeCartLines(priorCart, [{ item, quantity, variant: variant || null, addOns: addOns || [] }]);
+  const merged = mergeCartLines(priorCart, [{ item, quantity, variant: variant || null, addOns: addOns || [], addOnsTotal }]);
   const { cart: cappedCart, overflowCount } = enforceCartLimit(merged, business);
 
   await updateSession(session.customerPhone, session.tenantId, {
@@ -1030,10 +1038,10 @@ async function _checkoutCart(cart, session, business, tenant) {
     });
 
     try {
-      const adminPhone = business?.adminPhone || tenant?.adminPhone;
-      if (adminPhone && tenant) {
+      const adminPhones = getAdminPhones(business, tenant);
+      if (adminPhones.length && tenant) {
         const { dispatchMessage } = await import('../../../core/whatsapp/dispatcher.js');
-        await dispatchMessage(adminPhone, {
+        const alertPayload = {
           type: 'text',
           body:
             `🔔 *New Order — ${business.name || 'Restaurant'}*\n\n` +
@@ -1043,7 +1051,10 @@ async function _checkoutCart(cart, session, business, tenant) {
             `💰 Total: *${currency}${formatMoney(totalPrice)}*\n` +
             `📝 Ref: *${ref}*\n\n` +
             `⏳ Status: *Pending* — awaiting payment screenshot.`,
-        }, tenant).catch(() => {});
+        };
+        for (const adminPhone of adminPhones) {
+          await dispatchMessage(adminPhone, alertPayload, tenant).catch(() => {});
+        }
       }
     } catch { /* non-fatal */ }
 
@@ -1056,10 +1067,10 @@ async function _checkoutCart(cart, session, business, tenant) {
   // this matters — a cash order with no AWAIT_ADMIN_CONFIRM lock lets the
   // customer immediately start a second order while the first is unconfirmed).
   try {
-    const adminPhone = business?.adminPhone || tenant?.adminPhone;
-    if (adminPhone && tenant && savedOrder) {
+    const adminPhones = getAdminPhones(business, tenant);
+    if (adminPhones.length && tenant && savedOrder) {
       const { dispatchMessage } = await import('../../../core/whatsapp/dispatcher.js');
-      await dispatchMessage(adminPhone, {
+      const alertPayload = {
         type:    'buttons',
         body:
           `🔔 *New Order — ${business.name || 'Restaurant'}*\n\n` +
@@ -1073,7 +1084,10 @@ async function _checkoutCart(cart, session, business, tenant) {
           { id: `APPROVE_${savedOrder.shortId}`, title: '✅ Confirm Received' },
           { id: `REJECT_${savedOrder.shortId}`,  title: '❌ Cancel Order'     },
         ],
-      }, tenant).catch(() => {});
+      };
+      for (const adminPhone of adminPhones) {
+        await dispatchMessage(adminPhone, alertPayload, tenant).catch(() => {});
+      }
     }
   } catch { /* non-fatal */ }
 
@@ -1178,7 +1192,7 @@ export async function handleRestaurantQuestion({ session, message, business, ten
   }
 
   const { processQuestionMessage, persistQuestionSession } = await import('../../../services/question/questionAnswerService.js');
-  const { detectIntent } = await import('../../../core/intents/intentEngine.js');
+  const { detectIntent } = await import('../../../core/nlu/nluFeature.js');
   const { buildStatusReply } = await import('../../../services/activity/activityStatusService.js');
 
   try {

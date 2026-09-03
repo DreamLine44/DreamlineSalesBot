@@ -1,13 +1,13 @@
 // tests/intentEngine.test.mjs
 //
-// Pure, additive regression tests for core/intents/intentEngine.js.
+// Pure, additive regression tests for core/nlu/classification/intentEngine.js.
 // Does NOT modify any existing source file.
 //
 // Run with:  node --test tests/
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { detectIntent, normalise } from '../core/intents/intentEngine.js';
+import { detectIntent, normalise } from '../core/nlu/classification/intentEngine.js';
 
 test('normalise() lowercases, strips punctuation, collapses whitespace', () => {
   assert.equal(normalise('  Hello,   World!! '), 'hello world');

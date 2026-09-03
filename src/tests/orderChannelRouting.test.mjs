@@ -44,14 +44,25 @@ test('START_ORDER sends resolved NLU products directly to the existing cart revi
   assert.match(block.slice(nluBranch, nluBranch + 1500), /advance\(/);
 });
 
-test('START_BOOKING has a direct all-in-one booking path for party, date, and time', () => {
+test('START_BOOKING extracts a direct booking request and hands off to the flow for partial-aware resume', () => {
   const src = readSource('../core/shared/moduleRegistry.js');
   const start = src.indexOf("registerAction('START_BOOKING'");
   const end = src.indexOf("registerAction('WALKIN'", start);
   const block = src.slice(start, end);
   assert.match(block, /parseDirectBookingRequest/);
-  assert.match(block, /step: 'BOOKING_CONFIRM'/);
   assert.match(block, /advance\(/);
+  // [FEAT-NLU-BOOKING-PREFILL] parseDirectBookingRequest() now returns PARTIAL
+  // matches (whatever of partySize/date/time it could confidently resolve),
+  // not all-or-nothing — so this handler can no longer hardcode
+  // step: 'BOOKING_CONFIRM' (that assumes every field is already known, which
+  // is no longer guaranteed). It must hand off with step: null and let
+  // bookingFlow.js's INIT branch (_resumeFromPrefill) decide where to land
+  // based on which fields actually came back.
+  assert.match(block, /step:\s*null/);
+  assert.doesNotMatch(block, /step:\s*'BOOKING_CONFIRM'/,
+    'START_BOOKING must not hardcode BOOKING_CONFIRM — a partial extraction ' +
+    '(e.g. only party size, or only date) would land the customer on a ' +
+    'confirm screen missing fields it never collected');
 });
 
 test('START_ORDER applies free-text cart modifications before starting a new order flow', () => {
@@ -91,20 +102,20 @@ test('webhook consumes pending natural-order selections before generic flow rout
 });
 
 test('postFlowHandler: status commands fall through instead of generic menu', () => {
-  const src = readSource('../services/postFlowHandler.js');
+  const src = readSource('../services/shared/postFlowHandler.js');
   assert.match(src, /isStatusCommand\(msg\)/);
   assert.match(src, /return false/);
 });
 
 test('activityStatusService: isStatusCommand recognises track phrases', async () => {
-  const { isStatusCommand } = await import('../services/activityStatusService.js');
+  const { isStatusCommand } = await import('../services/activity/activityStatusService.js');
   assert.equal(isStatusCommand('track my order'), true);
   assert.equal(isStatusCommand('track my booking'), true);
   assert.equal(isStatusCommand('hello'), false);
 });
 
 test('detectIntent: ORDER button tap returns semantic intent ORDER (not START_ORDER)', async () => {
-  const { detectIntent } = await import('../core/intents/intentEngine.js');
+  const { detectIntent } = await import('../core/nlu/classification/intentEngine.js');
   const result = await detectIntent({
     message: 'ORDER',
     isInteractive: true,

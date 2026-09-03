@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { buildSystemPrompt } from '../core/ai/providers/groqProvider.js';
+import { buildSystemPrompt } from '../core/nlu/extraction/groqProvider.js';
 
 // [FIX-AI-FULLCATALOG] / [FIX-AI-LISTING] regression suite.
 //

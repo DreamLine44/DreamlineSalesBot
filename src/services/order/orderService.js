@@ -61,8 +61,11 @@ export const resolveOrderFields = ({ item, quantity, totalPrice, addOns, items }
     resolvedTotal = totalPrice;
   } else {
     const allPriced = items.every(i => typeof i.unitPrice === 'number');
+    // [AUDIT-FIX-UPSELL-PRICE-1] Add each line's addOnsTotal (flat, not
+    // multiplied by quantity — see models/Order.js) on top of unitPrice*quantity,
+    // or accepted paid upsells never reach the persisted order total.
     resolvedTotal = allPriced
-      ? items.reduce((sum, i) => sum + i.unitPrice * (i.quantity ?? 1), 0)
+      ? items.reduce((sum, i) => sum + i.unitPrice * (i.quantity ?? 1) + (i.addOnsTotal || 0), 0)
       : null;
   }
 
@@ -147,7 +150,8 @@ export const formatOrderItemsForMessage = (order, business) => {
 
   return cartLines.map((i) => {
     const qty = i.quantity ?? 1;
-    const lineTotal = typeof i.unitPrice === 'number' ? i.unitPrice * qty : null;
+    // [AUDIT-FIX-UPSELL-PRICE-1] See resolveOrderFields() above.
+    const lineTotal = typeof i.unitPrice === 'number' ? i.unitPrice * qty + (i.addOnsTotal || 0) : null;
     const pricePart = lineTotal != null ? ` — ${currency}${formatMoney(lineTotal)}` : '';
     return `📦  ${qty}× ${i.item}${pricePart}`;
   }).join('\n');

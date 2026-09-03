@@ -62,13 +62,13 @@ function extractRescheduleBlocks(src) {
 }
 
 test('postFlowHandler.js: has exactly two RESCHEDULE handlers (APPOINTMENT_REMINDER + BOOKING_CONFIRMED/WALKIN_CONFIRMED)', () => {
-  const src = read('../services/postFlowHandler.js');
+  const src = read('../services/shared/postFlowHandler.js');
   const blocks = extractRescheduleBlocks(src);
   assert.equal(blocks.length, 2, `Expected 2 RESCHEDULE handlers, found ${blocks.length}`);
 });
 
 test('postFlowHandler.js: RESCHEDULE never sets step to SELECT_SERVICE while asking for a date', () => {
-  const src = read('../services/postFlowHandler.js');
+  const src = read('../services/shared/postFlowHandler.js');
   const blocks = extractRescheduleBlocks(src);
   assert.ok(blocks.length > 0, 'No RESCHEDULE handler found');
   for (const block of blocks) {
@@ -84,7 +84,7 @@ test('postFlowHandler.js: RESCHEDULE never sets step to SELECT_SERVICE while ask
 });
 
 test('postFlowHandler.js: RESCHEDULE preserves the existing service/stylist instead of wiping data', () => {
-  const src = read('../services/postFlowHandler.js');
+  const src = read('../services/shared/postFlowHandler.js');
   const blocks = extractRescheduleBlocks(src);
   for (const block of blocks) {
     assert.ok(

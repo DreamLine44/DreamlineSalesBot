@@ -153,7 +153,22 @@ const businessConfigSchema = new mongoose.Schema({
   botEnabled: { type: Boolean, default: true },
   // Legacy top-level wavePhone (kept for backward-compat with flowService)
   wavePhone:  { type: String, default: null, trim: true },
+  // [FEAT-MULTI-ADMIN] adminPhone (legacy, singular) is kept for every
+  // existing single-number reader — it always mirrors adminPhones[0].
+  // adminPhones is the source of truth going forward: up to 2 numbers,
+  // each of which can receive order/booking/payment notifications AND
+  // send admin commands (APPROVE/REJECT/CONFIRM BOOK/etc). Both fields are
+  // written together by applyAdminPhonesUpdate() in utils/adminPhones.js —
+  // never set independently by a controller.
   adminPhone: { type: String, default: null, trim: true },
+  adminPhones: {
+    type:      [{ type: String, trim: true }],
+    default:   [],
+    validate: {
+      validator: (arr) => Array.isArray(arr) && arr.length <= 2,
+      message:   'adminPhones supports at most 2 numbers',
+    },
+  },
 
   // Nested payment config (used by paymentService)
   payment: {

@@ -1,6 +1,6 @@
 // tests/directIntentMenuSkip.test.mjs
 //
-// Pure, additive regression tests for core/intents/intentEngine.js.
+// Pure, additive regression tests for core/nlu/classification/intentEngine.js.
 // Does NOT modify any existing source file.
 //
 // Covers the product requirement: a customer who directly types an
@@ -19,7 +19,7 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { detectIntent } from '../core/intents/intentEngine.js';
+import { detectIntent } from '../core/nlu/classification/intentEngine.js';
 
 const RESTAURANT = { businessMode: 'RESTAURANT' };
 

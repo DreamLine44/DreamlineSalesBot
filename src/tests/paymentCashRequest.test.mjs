@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
 import { buildPaymentInstructionsUI } from '../services/payment/paymentService.js';
-import { buildPaymentInstructionsUI as buildPaymentInstructionsUIFromRoot } from '../services/paymentService.js';
+import { buildPaymentInstructionsUI as buildPaymentInstructionsUIFromRoot } from '../services/payment/paymentService.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const webhookSrc = readFileSync(join(__dirname, '../controllers/webhookController.js'), 'utf8');

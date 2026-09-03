@@ -5,8 +5,7 @@
 import { updateSession }     from '../../../core/sessions/sessionService.js';
 import { completeFlow }      from '../../../core/conversations/flowEngine.js';
 import { handleBookingFlow } from '../../../core/conversations/bookingFlow.js';
-import { getAIReply }        from '../../../core/ai/providers/aiRouter.js';
-import { findBestMatch }     from '../../../utils/matchEngine.js';
+import { getAIReply, findBestMatch } from '../../../core/nlu/nluFeature.js';
 import { saveOrder }         from '../../../services/order/orderService.js';
 import logger                from '../../../config/logger.js';
 

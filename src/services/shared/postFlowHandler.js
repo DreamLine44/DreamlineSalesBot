@@ -109,7 +109,7 @@ async function classifyPostFlowSentiment(msg, business) {
   if (matches.length === 1 && !soleMatchIsGameable) return matches[0];
 
   try {
-    const { classifyIntent } = await import('../../core/ai/providers/groqProvider.js');
+    const { classifyIntent } = await import('../../core/nlu/nluFeature.js');
     const result = await classifyIntent({ message: msg, validIntents: SENTIMENT_LABELS, mode });
     if (result && SENTIMENT_LABELS.includes(result.intent)) return result.intent;
     return 'UNRELATED';
@@ -298,7 +298,7 @@ async function sendPostFlowExpression({
 
 /** AI reply for post-flow expressions — one short sentence, hard cap on length. */
 async function getPostFlowAIReply({ customerMessage, business, session, intent, orderContext, sessionContext }) {
-  const { getAIReply } = await import('../../core/ai/providers/aiRouter.js');
+  const { getAIReply } = await import('../../core/nlu/nluFeature.js');
   const raw = await getAIReply({
     customerMessage, business, session, intent, orderContext, sessionContext,
     replyMode: 'expression',
@@ -435,7 +435,7 @@ export async function handlePostFlowMessage({
     // warranty answer (a "thanks", another question, or a buy-now tap) got the
     // generic menu with zero context, same class of gap as QUESTION above.
     case 'SPEC_REQUEST': {
-      const { getAIReply: _specAI } = await import('../../core/ai/providers/aiRouter.js');
+      const { getAIReply: _specAI } = await import('../../core/nlu/nluFeature.js');
       const _specBtns = [
         { id: 'SPEC_REQUEST', title: '❓ Another Question' },
         ...welcomeBtns.slice(0, 2),
@@ -467,7 +467,7 @@ export async function handlePostFlowMessage({
     }
 
     case 'WARRANTY': {
-      const { getAIReply: _warAI } = await import('../../core/ai/providers/aiRouter.js');
+      const { getAIReply: _warAI } = await import('../../core/nlu/nluFeature.js');
       const _warBtns = [
         { id: 'WARRANTY',     title: '❓ Another Question' },
         { id: 'SPEC_REQUEST', title: '🛒 Tech Help'         },
@@ -605,7 +605,7 @@ export async function handlePostFlowMessage({
       // (AUDIT-FIX-15) — same fix here: answer via AI, then re-arm postFlowAck so a
       // further typed question or a button tap both keep working afterwards.
       if (isQuestion) {
-        const { getAIReply: _reminderQA } = await import('../../core/ai/providers/aiRouter.js');
+        const { getAIReply: _reminderQA } = await import('../../core/nlu/nluFeature.js');
         const aiReply = await _reminderQA({ customerMessage: msg, business, intent: 'QUESTION' }).catch(() => null);
         await dispatchMessage(from, {
           type:    'buttons',
@@ -644,7 +644,7 @@ export async function handlePostFlowMessage({
         return true;
       }
       if (isQuestion) {
-        const { getAIReply } = await import('../../core/ai/providers/aiRouter.js');
+        const { getAIReply } = await import('../../core/nlu/nluFeature.js');
         const aiReply = await getAIReply({ customerMessage: msg, business, session, intent: 'SKINCARE_ADVICE' });
         await dispatchMessage(from, buildOptionsReply(cfg, aiReply || `Happy to help${custName}! 😊`), tenantDoc);
         return true;
@@ -720,7 +720,7 @@ export async function handlePostFlowMessage({
       // will be in touch" reply as an ordinary follow-up — ignoring the
       // complaint entirely. Now escalates like every other ackCtx case.
       if (isComplaint) {
-        const { getAIReply: _qfAI } = await import('../../core/ai/providers/aiRouter.js');
+        const { getAIReply: _qfAI } = await import('../../core/nlu/nluFeature.js');
         const _qfReply = await _qfAI({ customerMessage: msg, business, intent: 'COMPLAINT' });
         await dispatchMessage(from, {
           type:    'buttons',
@@ -745,7 +745,7 @@ export async function handlePostFlowMessage({
       // the AI would improvise an answer without ever offering to connect the
       // customer to a human. Now escalates like every other ackCtx case.
       if (isComplaint) {
-        const { getAIReply: _aboutComplaintAI } = await import('../../core/ai/providers/aiRouter.js');
+        const { getAIReply: _aboutComplaintAI } = await import('../../core/nlu/nluFeature.js');
         const _aboutComplaintReply = await _aboutComplaintAI({ customerMessage: msg, business, intent: 'COMPLAINT' });
         await dispatchMessage(from, {
           type:    'buttons',
@@ -754,7 +754,7 @@ export async function handlePostFlowMessage({
         }, tenantDoc);
         return true;
       }
-      const { getAIReply: _aboutAI } = await import('../../core/ai/providers/aiRouter.js');
+      const { getAIReply: _aboutAI } = await import('../../core/nlu/nluFeature.js');
       const _aboutReply = await _aboutAI({ customerMessage: msg, business, intent: 'QUESTION' });
       await dispatchMessage(from, buildOptionsReply(cfg, _aboutReply || `Happy to help${custName}! 😊`), tenantDoc);
       return true;
@@ -881,7 +881,7 @@ export async function handlePostFlowMessage({
       // the original mid-flow question, then postFlowAck is re-armed so the customer
       // can keep asking further questions or resume the paused flow at any point.
       if (isComplaint) {
-        const { getAIReply: _mfqComplaintAI } = await import('../../core/ai/providers/aiRouter.js');
+        const { getAIReply: _mfqComplaintAI } = await import('../../core/nlu/nluFeature.js');
         const _r = await _mfqComplaintAI({ customerMessage: msg, business, intent: 'COMPLAINT' }).catch(() => null);
         await dispatchMessage(from, {
           type:    'buttons',
@@ -909,7 +909,7 @@ export async function handlePostFlowMessage({
 
         let dataReply = null;
         try {
-          const { detectIntent } = await import('../../core/intents/intentEngine.js');
+          const { detectIntent } = await import('../../core/nlu/nluFeature.js');
           const { route }        = await import('../../core/conversations/moduleRouter.js');
           const pqResult = await detectIntent({
             message: msg, isInteractive: false, session: flowlessSession, business,
@@ -934,7 +934,7 @@ export async function handlePostFlowMessage({
             buttons: resumeButtons,
           }, tenantDoc);
         } else {
-          const { getAIReply: _mfqFollowUpAI } = await import('../../core/ai/providers/aiRouter.js');
+          const { getAIReply: _mfqFollowUpAI } = await import('../../core/nlu/nluFeature.js');
           const aiText = await _mfqFollowUpAI({ customerMessage: msg, business, session, intent: 'QUESTION' }).catch(() => null);
           await dispatchMessage(from, {
             type:    'buttons',
@@ -1253,9 +1253,16 @@ async function handleOrderReady({
     await dispatchMessage(from, {
       type:    'buttons',
       body:    `You're welcome${custName}! ${itemRef} is ready at the counter. 😊`,
+      // [FIX-BTN-LABEL-MISMATCH] Previously both branches used the same title
+      // '✅ Collected — Thanks!' regardless of which id they routed to. When
+      // flowData.shortId was missing, the button's id fell back to 'SUPPORT'
+      // (a human-escalation trigger) but still displayed the "Collected" label —
+      // so a customer tapping what looked like an order-collection confirmation
+      // was silently routed into a support ticket instead. The label now matches
+      // the actual action for each branch.
       buttons: collectedBtnId
-        ? [{ id: collectedBtnId, title: '✅ Collected — Thanks!' }]
-        : [{ id: 'SUPPORT',      title: '✅ Collected — Thanks!' }],
+        ? [{ id: collectedBtnId, title: '✅ Collected — Thanks' }]
+        : [{ id: 'SUPPORT',      title: '❓ Need Help' }],
     }, tenantDoc);
     return true;
   }

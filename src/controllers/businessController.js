@@ -33,6 +33,7 @@ import { getModeConfig, getSupportedModes } from '../config/modes.js';
 import logger from '../config/logger.js';
 import { uploadMenuImage, deleteMenuImage, CLOUDINARY_ENABLED } from '../config/cloudinary.js';
 import { scheduleWaCatalogSync } from '../modules/catalog/waCatalogSyncScheduler.js';
+import { applyAdminPhonesUpdate } from '../utils/adminPhones.js';
 
 // [AUDIT-FIX-17] Explicit whitelist — req.tenant is a lean object (no toJSON
 // stripping), so never spread it wholesale into a tenant-facing response.
@@ -93,6 +94,13 @@ export async function updateBusinessConfig(req, res) {
       update.menuItems = update.menu;
     }
     delete update.menu;
+
+    // [FEAT-MULTI-ADMIN] Same single-field, up-to-2-numbers parsing as the
+    // dashboard's updateBusinessSettings — this generic PUT is also a valid
+    // path for saving adminPhone (e.g. admin-panel/API callers).
+    if (update.adminPhone !== undefined) {
+      Object.assign(update, applyAdminPhonesUpdate(update.adminPhone));
+    }
 
     // Same alias for services/faq common alternate key names
     if (update.servicesList !== undefined && update.services === undefined) {

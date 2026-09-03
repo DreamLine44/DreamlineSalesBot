@@ -30,7 +30,7 @@
  *   ANGRY > FRUSTRATED > CONFUSED > URGENT > THANKFUL > HAPPY > NEUTRAL
  */
 
-import { normalise } from '../intents/intentEngine.js';
+import { normalise } from '../nlu/classification/intentEngine.js';
 
 const ANGRY_RE = /\b(furious|angry|pissed|outraged|disgusted|hate\s+this)\b/i;
 

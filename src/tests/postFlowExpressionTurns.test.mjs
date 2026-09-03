@@ -22,10 +22,10 @@ import {
   trimExpressionReply,
   formatExpressionReply,
   preserveExpressionTurns,
-} from '../services/postFlowHandler.js';
+} from '../services/shared/postFlowHandler.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const pfhSrc = readFileSync(join(__dirname, '../services/postFlowHandler.js'), 'utf8');
+const pfhSrc = readFileSync(join(__dirname, '../services/shared/postFlowHandler.js'), 'utf8');
 const flowSrc = readFileSync(join(__dirname, '../core/conversations/flowEngine.js'), 'utf8');
 
 test('EXPRESSION_TURN_BUDGET is 2 (two human replies before normal routing)', () => {
@@ -153,7 +153,7 @@ test('postFlowHandler.js: ORDER_COLLECTED uses smart expression replies, not har
 });
 
 test('groqProvider.js: expression mode uses minimal feeling-first prompt', () => {
-  const groqSrc = readFileSync(join(__dirname, '../core/ai/providers/groqProvider.js'), 'utf8');
+  const groqSrc = readFileSync(join(__dirname, '../core/nlu/extraction/groqProvider.js'), 'utf8');
   assert.match(groqSrc, /replyMode === 'expression'/);
   assert.match(groqSrc, /NEVER mention food names, dish names, menu items/);
   assert.match(groqSrc, /maxTokens\s*=\s*isExpression \? 45 : 500/);

@@ -20,7 +20,7 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { analyzeMessage } from '../core/intents/negationGuard.js';
+import { analyzeMessage } from '../core/nlu/classification/negationGuard.js';
 
 test('general frustration/anger phrases now trigger the complaint guard', () => {
   const angry = [

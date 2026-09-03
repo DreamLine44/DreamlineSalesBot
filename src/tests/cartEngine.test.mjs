@@ -8,12 +8,9 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {
-  parseMultiItemMessage, parseNaturalOrderMessage, mergeCartLines, enforceCartLimit,
-  cartTotal, cartToOrderItems, formatCartSummary, buildUnmatchedNote,
-  parseCartModification, applyCartModification,
-} from '../core/shared/cartEngine.js';
-import { parseQuantity } from '../utils/parseQuantity.js';
+import { mergeCartLines, enforceCartLimit, cartTotal, cartToOrderItems, formatCartSummary, buildUnmatchedNote, applyCartModification } from '../core/shared/cartEngine.js';
+import { parseMultiItemMessage, parseNaturalOrderMessage, parseCartModification } from '../core/nlu/resolution/cartMessageParser.js';
+import { parseQuantity } from '../core/nlu/resolution/parseQuantity.js';
 
 const menu = [
   { _id: '1', name: 'Jollof Rice', price: 200, available: true },

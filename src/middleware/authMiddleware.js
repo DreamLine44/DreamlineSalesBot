@@ -9,8 +9,7 @@
  *  - Request logging on auth failure for security auditing.
  */
 import crypto from 'crypto';
-import Tenant     from '../models/Tenant.js';
-import AdminUser  from '../models/AdminUser.js';
+import { Tenant, AdminUser } from '../models/index.js';
 import logger     from '../config/logger.js';
 import { verifySessionToken } from '../services/admin/adminAuthService.js';
 

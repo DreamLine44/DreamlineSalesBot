@@ -90,13 +90,13 @@ test('retail/flows/index.js: _buildCategoryUI caps categories at 9 (plus the app
 });
 
 test('postFlowHandler.js: has dedicated SPEC_REQUEST and WARRANTY ackCtx cases (not falling to default)', () => {
-  const src = read('../services/postFlowHandler.js');
+  const src = read('../services/shared/postFlowHandler.js');
   assert.match(src, /case 'SPEC_REQUEST':\s*{/, 'expected a dedicated SPEC_REQUEST case');
   assert.match(src, /case 'WARRANTY':\s*{/, 'expected a dedicated WARRANTY case');
 });
 
 test('postFlowHandler.js: SPEC_REQUEST and WARRANTY cases appear before the default branch in switch order', () => {
-  const src = read('../services/postFlowHandler.js');
+  const src = read('../services/shared/postFlowHandler.js');
   const specIdx    = src.indexOf("case 'SPEC_REQUEST':");
   const warrantyIdx = src.indexOf("case 'WARRANTY':");
   const defaultIdx  = src.indexOf('default: {');

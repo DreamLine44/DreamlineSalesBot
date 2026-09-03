@@ -18,8 +18,7 @@
  *   PATCH /dashboard/:tenantId/admins/:id               — change role/status     (OWNER only)
  *   DELETE /dashboard/:tenantId/admins/:id              — remove a staff member  (OWNER only)
  */
-import AdminUser from '../models/AdminUser.js';
-import Tenant     from '../models/Tenant.js';
+import { AdminUser, Tenant } from '../models/index.js';
 import {
   hashPassword, verifyPassword,
   generateInviteToken, hashInviteToken,

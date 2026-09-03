@@ -3,7 +3,7 @@
  * Used by bookingFlow (closed-day validation) and can be reused elsewhere.
  */
 
-import { formatBookingDateLabel } from '../services/booking/bookingDateParser.js';
+import { formatBookingDateLabel } from '../core/nlu/resolution/bookingDateParser.js';
 
 const DAY_NAMES = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
 

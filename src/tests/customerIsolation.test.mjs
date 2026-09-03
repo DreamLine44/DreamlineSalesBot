@@ -43,7 +43,7 @@ test('webhookController.js: COLLECTED_* handler query is scoped to the requestin
 });
 
 test('postFlowHandler.js: SWITCH_YES order-cancel write is scoped to the requesting customer', () => {
-  const src = read('../services/postFlowHandler.js');
+  const src = read('../services/shared/postFlowHandler.js');
   assert.ok(
     src.includes("{ shortId: cancelShortId, tenantId, customerPhone: from, status: { $nin: ['cancelled', 'completed'] } }"),
     'SWITCH_YES cancel write should be scoped by customerPhone'
@@ -51,7 +51,7 @@ test('postFlowHandler.js: SWITCH_YES order-cancel write is scoped to the request
 });
 
 test('postFlowHandler.js: ORDER_READY collected write is scoped to the requesting customer', () => {
-  const src = read('../services/postFlowHandler.js');
+  const src = read('../services/shared/postFlowHandler.js');
   assert.ok(
     src.includes("{ shortId: shortIdRef, tenantId, customerPhone: from, status: 'ready' }"),
     'ORDER_READY collected write should be scoped by customerPhone'
@@ -59,7 +59,7 @@ test('postFlowHandler.js: ORDER_READY collected write is scoped to the requestin
 });
 
 test('postFlowHandler.js: RESCHEDULE old-booking cancel write is scoped to the requesting customer', () => {
-  const src = read('../services/postFlowHandler.js');
+  const src = read('../services/shared/postFlowHandler.js');
   assert.ok(
     src.includes("{ shortId: flowData.shortId, tenantId, customerPhone: from, status: { $nin: ['cancelled', 'completed'] } }"),
     'RESCHEDULE old-booking cancel write should be scoped by customerPhone'

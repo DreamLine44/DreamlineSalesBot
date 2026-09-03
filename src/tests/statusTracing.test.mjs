@@ -1,7 +1,7 @@
 // tests/statusTracing.test.mjs
 //
 // Pure, additive regression tests for the [AUDIT-FIX-TRACE-*] fixes:
-//   - TRACK_ORDER keyword list (core/intents/patterns.js) now recognises
+//   - TRACK_ORDER keyword list (core/nlu/classification/patterns.js) now recognises
 //     booking-status phrasing, not just order-status phrasing.
 //   - The quick STATUS command fast path (controllers/webhookController.js,
 //     step 14.6) now recognises booking-status phrasing AND checks Booking
@@ -16,9 +16,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import { detectIntent } from '../core/intents/intentEngine.js';
-import { INTENT_PATTERNS } from '../core/intents/patterns.js';
-import { STATUS_CMD_RE } from '../services/activityStatusService.js';
+import { detectIntent } from '../core/nlu/classification/intentEngine.js';
+import { INTENT_PATTERNS } from '../core/nlu/classification/patterns.js';
+import { STATUS_CMD_RE } from '../services/activity/activityStatusService.js';
 
 // ── TRACK_ORDER keyword coverage ──────────────────────────────────────────
 

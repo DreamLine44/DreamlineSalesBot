@@ -18,17 +18,13 @@
  */
 import { Router } from 'express';
 import { randomUUID } from 'crypto';
-import Order    from '../models/Order.js';
-import Booking  from '../models/Booking.js';
-import Session  from '../models/Session.js';
-import Tenant   from '../models/Tenant.js';
-import AdminNotification, { NOTIFICATION_DIRECTIONS, NOTIFICATION_SEVERITIES } from '../models/AdminNotification.js';
-import { updateSession }              from '../core/sessions/sessionService.js';
+import { Order, Booking, Session, Tenant, AdminNotification, NOTIFICATION_DIRECTIONS, NOTIFICATION_SEVERITIES, BusinessConfig } from '../models/index.js';
+import { updateSession, getSession }  from '../core/sessions/sessionService.js';
 import { dispatchText, dispatchMessage } from '../core/whatsapp/dispatcher.js';
 import { humanModeLimiter, overviewLimiter } from '../middleware/rateLimiter.js';
 import logger from '../config/logger.js';
-import BusinessConfig from '../models/BusinessConfig.js';
 import { formatOrderItemsForMessage } from '../services/order/orderFeature.js';
+import { getAdminPhones } from '../utils/adminPhones.js';
 
 const r = Router();
 
@@ -70,6 +66,12 @@ r.patch('/sessions/:tenantId/:phone/human', humanModeLimiter, async (req, res) =
     if (typeof humanMode !== 'boolean') {
       return res.status(400).json({ error: 'humanMode must be a boolean' });
     }
+    // [FIX-RESUME-IDEMPOTENT] Mirrors adminCommandService.resumeBot()'s fix — read the
+    // prior humanMode value first so a duplicate/retried PATCH that doesn't actually
+    // change anything doesn't re-send the "bot is back" notification a second time.
+    const priorSession = await getSession(phone, tenantId).catch(() => null);
+    const wasHumanMode = priorSession?.humanMode === true;
+
     // [FIX-ADMIN-NULL] Capture updateSession result — returns null when no active session
     // exists (TTL-expired). Only dispatch the resume notification when the session was
     // actually updated; firing it on a null return sends a confusing message to a customer
@@ -77,7 +79,8 @@ r.patch('/sessions/:tenantId/:phone/human', humanModeLimiter, async (req, res) =
     const updatedSession = await updateSession(phone, tenantId, { humanMode: Boolean(humanMode) });
 
     // [FIX-ADMIN-3] Notify customer when bot is resumed (humanMode OFF)
-    if (!humanMode && updatedSession) {
+    // [FIX-RESUME-IDEMPOTENT] ...and only when it was actually ON before this call.
+    if (!humanMode && wasHumanMode && updatedSession) {
       try {
         const tenant = await loadTenant(tenantId);
         if (tenant) {
@@ -123,12 +126,22 @@ r.patch('/orders/:id/status', async (req, res) => {
     const filter = { _id: req.params.id };
     if (!req.isSuperAdmin) filter.tenantId = req.tenantId;
 
+    // [FIX-ADMIN-SYNC] Same two gaps as dashboardController.updateOrderStatus (see its
+    // [FIX-DASH-SYNC] comment for the full explanation): no idempotency guard on the
+    // write (a retried/duplicated PATCH re-fires the customer notification below), and
+    // status:'confirmed'/'cancelled' here never touched paymentStatus, letting this
+    // superadmin path and adminCommandService's paymentStatus-keyed double-tap guards
+    // disagree about whether an order is already confirmed — risking a duplicate
+    // "Order Confirmed!" WhatsApp message if a WhatsApp APPROVE_<shortId> tap follows
+    // a superadmin confirmation of the same order.
     const order = await Order.findOneAndUpdate(
-      filter,
+      { ...filter, status: { $ne: status } },
       {
         $set: {
           status,
           ...(notes ? { notes } : {}),
+          ...(status === 'confirmed' ? { paymentStatus: 'confirmed' } : {}),
+          ...(status === 'cancelled' || status === 'rejected' ? { paymentStatus: 'cancelled' } : {}),
           // Lifecycle timestamps — mirrors dashboardController behaviour
           ...(status === 'preparing'        ? { preparingAt:       new Date() } : {}),
           ...(status === 'ready'            ? { readyAt:           new Date() } : {}),
@@ -139,7 +152,13 @@ r.patch('/orders/:id/status', async (req, res) => {
       },
       { new: true },
     );
-    if (!order) return res.status(404).json({ error: 'Order not found' });
+    if (!order) {
+      // Either no such order, or it's already at the requested status (idempotent
+      // no-op — return the current order rather than a false 404 or re-notifying).
+      const current = await Order.findOne(filter).lean().catch(() => null);
+      if (!current) return res.status(404).json({ error: 'Order not found' });
+      return res.json({ order: current });
+    }
 
     // [FIX-ADMIN-1] Notify customer on meaningful status changes
     try {
@@ -160,7 +179,7 @@ r.patch('/orders/:id/status', async (req, res) => {
             body:
               `🍽️ *Your Order is Ready!*\n\n${itemsBlock}\n🔖  Reference: *#${order.shortId}*\n\nPlease collect your order at the counter 😊`,
             buttons: [
-              { id: `COLLECTED_${order.shortId}`, title: '✅ Collected — Thanks!' },
+              { id: `COLLECTED_${order.shortId}`, title: '✅ Collected — Thanks' },
               { id: 'SUPPORT',                     title: '❓ Need Help'           },
             ],
           }, tenant);
@@ -230,12 +249,19 @@ r.patch('/bookings/:id/status', async (req, res) => {
     const filter = { _id: req.params.id };
     if (!req.isSuperAdmin) filter.tenantId = req.tenantId;
 
+    // [FIX-ADMIN-SYNC] Same idempotency gap as the order status route above — a
+    // retried/duplicated PATCH previously re-matched and re-sent the customer
+    // notification below even when the booking was already at that status.
     const booking = await Booking.findOneAndUpdate(
-      filter,
+      { ...filter, status: { $ne: status } },
       { $set: { status, ...(adminNote ? { adminNote } : {}) } },
       { new: true },
     );
-    if (!booking) return res.status(404).json({ error: 'Booking not found' });
+    if (!booking) {
+      const current = await Booking.findOne(filter).lean().catch(() => null);
+      if (!current) return res.status(404).json({ error: 'Booking not found' });
+      return res.json({ booking: current });
+    }
 
     // [FIX-ADMIN-2] Notify customer on meaningful status changes
     try {
@@ -391,14 +417,20 @@ export function buildNotificationAccessFilter(req, query = {}) {
  * do. Fire-and-forget: never blocks or fails the notification write.
  */
 async function pingTenantAdmin(tenant, notification) {
-  if (!tenant?.adminPhone) return false;
+  const adminPhones = getAdminPhones(null, tenant);
+  if (!adminPhones.length) return false;
   try {
-    await dispatchText(
-      tenant.adminPhone,
-      `📋 *${notification.subject}*\n\n${notification.body}\n\n— WhatSales`,
-      tenant,
-    );
-    return true;
+    const body = `📋 *${notification.subject}*\n\n${notification.body}\n\n— WhatSales`;
+    let anyOk = false;
+    for (const phone of adminPhones) {
+      try {
+        await dispatchText(phone, body, tenant);
+        anyOk = true;
+      } catch (err) {
+        logger.warn('[Admin] pingTenantAdmin failed for one recipient (non-fatal)', { err: err.message, phone });
+      }
+    }
+    return anyOk;
   } catch (err) {
     logger.warn('[Admin] pingTenantAdmin failed (non-fatal)', { err: err.message });
     return false;

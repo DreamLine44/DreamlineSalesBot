@@ -245,10 +245,17 @@ const _resolveState = (order, business, session) => {
           (priceStr ? `\n💰 Amount: *${priceStr}*` : '') +
           `\n\nPlease come collect at the counter! 🎉`,
         // [FIX-READY-CARD] COLLECTED_ button lets customer confirm pickup in one tap.
-        // Previously only 'Contact Business' and 'Order Again' were shown ÔÇö no way to
+        // Previously only 'Contact Business' and 'Order Again' were shown — no way to
         // acknowledge collection, so orders stayed in 'ready' state forever in the DB.
+        // [FIX-BTN-LABEL-MISMATCH] Title must match the id it's paired with — if
+        // shortId is missing, the button already falls back to a SUPPORT id, so the
+        // label must say "Need Help" too. The old code kept the "Collected — Thanks"
+        // label on that fallback, misleading a customer into thinking a tap would
+        // confirm pickup when it would actually open a support/human-escalation flow.
         buttons: [
-          { id: shortId ? `COLLECTED_${shortId}` : 'SUPPORT', title: '✅ Collected – Thanks!' },
+          shortId
+            ? { id: `COLLECTED_${shortId}`, title: '✅ Collected — Thanks' }
+            : { id: 'SUPPORT',              title: '❓ Need Help' },
           { id: 'SUPPORT', title: '☎️ Contact Business' },
         ],
       },

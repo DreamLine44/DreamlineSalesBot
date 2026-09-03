@@ -12,3 +12,5 @@ export { default as Analytics }      from './Analytics.js';
 export { default as ProcessedMessage } from './ProcessedMessage.js';
 export { default as WhatsAppConnectionRequest } from './WhatsAppConnectionRequest.js';
 export { default as AuditLog }        from './AuditLog.js';
+export { default as AdminNotification, NOTIFICATION_DIRECTIONS, NOTIFICATION_SEVERITIES } from './AdminNotification.js';
+export { default as AdminUser }       from './AdminUser.js';

@@ -10,7 +10,7 @@ import {
   formatBookingDateLabel,
   resolveBookingDateInput,
   MAX_BOOKING_MONTHS_AHEAD,
-} from './bookingDateParser.js';
+} from '../../core/nlu/resolution/bookingDateParser.js';
 
 const MONTH_NAMES = [
   'January', 'February', 'March', 'April', 'May', 'June',

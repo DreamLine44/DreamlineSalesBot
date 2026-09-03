@@ -123,20 +123,16 @@
  */
 
 import { getSession, createSession, updateSession } from '../core/sessions/sessionService.js';
-import { detectIntent, extractCustomerName, normalise, VIEW_MENU_DIRECT_RE } from '../core/intents/intentEngine.js';
-import { INTENT_PATTERNS }                           from '../core/intents/patterns.js';
+import { detectIntent, extractCustomerName, normalise, VIEW_MENU_DIRECT_RE, INTENT_PATTERNS, ORDER_DIRECT_RE, BOOKING_DIRECT_RE, DIRECT_INTENT_EXCLUDE_RE, QUESTION_LEADIN_RE, findBestMatch, parseNaturalOrderMessage } from '../core/nlu/nluFeature.js';
 // [FSI] Direct ORDER/BOOKING phrase regexes — same single source of truth
 // intentEngine.js's own pre-flow step 4.5 uses, reused here so the mid-flow
 // switch intercept below can never silently drift from the pre-flow behavior.
-import { ORDER_DIRECT_RE, BOOKING_DIRECT_RE, DIRECT_INTENT_EXCLUDE_RE, QUESTION_LEADIN_RE } from '../core/intents/intentEngine.js';
-import { findBestMatch }                             from '../utils/matchEngine.js';
 import { updateName as persistCustomerName }         from '../core/memory/customerMemory.js';
 import { advance, startFlow }                        from '../core/conversations/flowEngine.js';
 import { route }                                     from '../core/conversations/moduleRouter.js';
 import { dispatchMessage }                           from '../core/whatsapp/dispatcher.js';
 import { getModeConfig }                             from '../config/modes.js';
 import { buildOptionsReply }                         from '../core/shared/uiOptionsHelper.js';
-import { parseNaturalOrderMessage }                  from '../core/shared/cartEngine.js';
 // [AUDIT-FIX-XZ-REMOVE-2] Static import — used synchronously in the hot-path
 // _detectMidFlowQuestion() helper on every typed mid-flow message, so this
 // mirrors the dynamic-import usage elsewhere in this file without paying an
@@ -155,15 +151,12 @@ import { handlePostFlowMessage }                     from '../services/shared/sh
 // "Ok/Hello after payment confirmation gets no order-aware response" bug seen in production.
 import { resolveActiveOrder }                        from '../services/order/activeOrderResolver.js';
 import { isStatusCommand }                           from '../services/activity/activityStatusService.js';
-import Tenant           from '../models/Tenant.js';
-import BusinessConfig   from '../models/BusinessConfig.js';
-import ProcessedMessage from '../models/ProcessedMessage.js';
+import { Tenant, BusinessConfig, ProcessedMessage, Order } from '../models/index.js';
 // [FIX-IMPORT-2] Order used at step 5 (hasActiveOrder guard) without a top-level import.
 // All other Order usages in this file are inside dynamic import() blocks, but the step-5
 // call is at the top-level of the function where dynamic import would add unnecessary
 // latency on every message. Adding the static import here makes the reference valid and
 // avoids a ReferenceError crash on any message received outside business hours.
-import Order            from '../models/Order.js';
 import logger           from '../config/logger.js';
 import { formatMoney }  from '../utils/formatCurrency.js';
 import crypto           from 'crypto';
@@ -862,7 +855,7 @@ const MFQ_QUESTION_RE = /^(wh(at|o|y|en|ere|ich)|how|can|is|are|do|does|would|co
 // FIX: mirror the CANCEL/SHOW_MENU escape check with a SUPPORT escape check, run
 // BEFORE the MFQ question intercept so an explicit "talk to admin" always wins.
 // Uses the same SUPPORT keyword list as top-level intent detection (single source
-// of truth in core/intents/patterns.js) so adding a new admin phrase there also
+// of truth in core/nlu/classification/patterns.js) so adding a new admin phrase there also
 // fixes mid-flow escalation with no other code change needed.
 function _detectMidFlowSupportRequest(text, session) {
   const step  = (session.step || '').toUpperCase();
@@ -1643,11 +1636,17 @@ async function _handleIncomingMessageSerialized({ tenantId, tenantDoc, from, msg
     // [FIX-RESUME-BTN-GATE] Added RESUME_BOT_ — the button sent by the SUPPORT escalation
     // alert (moduleRouter). Without this, tapping "▶️ Resume Bot" produced "Sorry, that
     // action isn't available" rather than calling resumeBot() in adminCommandService.
+    // [FIX-CASH-FLOW-CONTINUATION] Added CANCEL_ORDER_ — the "❌ Cancel Order" button
+    // sent to the admin alongside "✅ Confirm Order" after a cash-payment approval.
+    // Without it here, tapping it fell through to the generic non-admin/customer
+    // handling further down instead of reaching cancelOrderByShortId() in
+    // adminCommandService, the same class of bug READY_ and RESUME_BOT_ hit before.
     if (isInteractive && (
       upper.startsWith('APPROVE_CASH_') || upper.startsWith('REJECT_CASH_') ||
       upper.startsWith('APPROVE_') || upper.startsWith('REJECT_') ||
       upper.startsWith('CONFIRM_BOOK_') || upper.startsWith('DECLINE_BOOK_') ||
-      upper.startsWith('READY_') || upper.startsWith('RESUME_BOT_')
+      upper.startsWith('READY_') || upper.startsWith('RESUME_BOT_') ||
+      upper.startsWith('CANCEL_ORDER_')
     )) {
       const { handleAdminButtonReply, isAdminPhone } = await import('../services/admin/adminCommandService.js');
       // [FIX-X2] Pass pre-fetched business and tenantDoc so isAdminPhone skips both DB queries.
@@ -2052,7 +2051,7 @@ async function _handleIncomingMessageSerialized({ tenantId, tenantDoc, from, msg
   if (session.currentFlow === 'ENQUIRY') {
     if (session.step === 'AWAITING_QUESTION') {
       const { processQuestionMessage, persistQuestionSession } = await import('../services/question/questionAnswerService.js');
-      const { detectIntent } = await import('../core/intents/intentEngine.js');
+      const { detectIntent } = await import('../core/nlu/nluFeature.js');
       const { buildStatusReply } = await import('../services/activity/activityStatusService.js');
 
       let statusReply = null;
@@ -2997,7 +2996,7 @@ async function _handleIncomingMessageSerialized({ tenantId, tenantDoc, from, msg
           }
 
           // No data-backed handler matched — fall back to the general AI Q&A reply.
-          const { getAIReply } = await import('../core/ai/providers/aiRouter.js');
+          const { getAIReply } = await import('../core/nlu/nluFeature.js');
           const aiText = await getAIReply({ customerMessage: pendingQ, business, session, intent: 'QUESTION' }).catch(() => null);
 
           const resumeHint = resumeFlow
@@ -3113,7 +3112,7 @@ async function _handleIncomingMessageSerialized({ tenantId, tenantDoc, from, msg
     if (!isInteractive && session.currentFlow && messageText.length >= 4) {
       const cleanDirectOrder = normalise(messageText);
       if (!DIRECT_INTENT_EXCLUDE_RE.test(cleanDirectOrder) && !QUESTION_LEADIN_RE.test(cleanDirectOrder) && ORDER_DIRECT_RE.test(cleanDirectOrder)) {
-        const { parseMultiItemMessage, parseNaturalOrderMessage } = await import('../core/shared/cartEngine.js');
+        const { parseMultiItemMessage, parseNaturalOrderMessage } = await import('../core/nlu/nluFeature.js');
         const liveMenu = (business?.menuItems || []).filter(item => item.available !== false);
         const parsedDirectOrder = parseMultiItemMessage(liveMenu, messageText)
           || parseNaturalOrderMessage(liveMenu, messageText);
@@ -3397,7 +3396,7 @@ async function _handleIncomingMessageSerialized({ tenantId, tenantDoc, from, msg
 
   // [ENHANCED-NLU] Record typed customer message for multi-turn Groq context.
   if (!isInteractive && messageText && messageText.trim().length >= 2) {
-    import('../core/nlu/nluContext.js').then(({ appendAiHistoryTurn }) => {
+    import('../core/nlu/nluFeature.js').then(({ appendAiHistoryTurn }) => {
       const aiHistory = appendAiHistoryTurn(session, 'user', messageText);
       updateSession(from, tenantId, { aiHistory }).catch(() => {});
       session = { ...session, aiHistory };
@@ -3545,7 +3544,7 @@ async function _handleIncomingMessageSerialized({ tenantId, tenantDoc, from, msg
     const body = typeof lastPayload === 'string' ? lastPayload : lastPayload?.body;
     if (body) {
       updateSession(from, tenantId, { lastBotMessage: body }).catch(() => {});
-      import('../core/nlu/nluContext.js').then(({ appendAiHistoryTurn }) => {
+      import('../core/nlu/nluFeature.js').then(({ appendAiHistoryTurn }) => {
         getSession(from, tenantId).then(s => {
           if (!s) return;
           updateSession(from, tenantId, {

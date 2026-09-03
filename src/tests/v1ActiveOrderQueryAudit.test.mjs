@@ -30,7 +30,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import Order from '../models/Order.js';
-import { resolveActiveOrder, ACTIVE_ORDER_STATES } from '../services/activeOrderResolver.js';
+import { resolveActiveOrder, ACTIVE_ORDER_STATES } from '../services/order/activeOrderResolver.js';
 
 function withCapturedFilter(fakeOrders, run) {
   const original = Order.find;

@@ -16,9 +16,10 @@
 import { updateSession }     from '../../../core/sessions/sessionService.js';
 import { completeFlow, cancelFlow } from '../../../core/conversations/flowEngine.js';
 import { handleBookingFlow } from '../../../core/conversations/bookingFlow.js';
-import { getAIReply }        from '../../../core/ai/providers/aiRouter.js';
+import { getAIReply } from '../../../core/nlu/nluFeature.js';
 import { saveOrder }         from '../../../services/order/orderService.js';
 import logger                from '../../../config/logger.js';
+import { getAdminPhones, getPrimaryAdminPhone } from '../../../utils/adminPhones.js';
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
@@ -198,9 +199,9 @@ export async function handleGeneralEnquiry({ session, message, business, tenant 
 
     // ── CONTACT_CONFIRM ──────────────────────────────────────────────────────
     case 'CONTACT_CONFIRM': {
-      // [FIX-DUALLAYER-CONFIRM] See core/shared/confirmationMatcher.js — was
+      // [FIX-DUALLAYER-CONFIRM] See core/nlu/resolution/confirmationMatcher.js — was
       // exact-match-only, so a typed "yes please"/"go ahead" never registered.
-      const { resolveConfirmation } = await import('../../../core/shared/confirmationMatcher.js');
+      const { resolveConfirmation } = await import('../../../core/nlu/nluFeature.js');
       const verdict = await resolveConfirmation({
         raw, business,
         affirmIds: ['ENQUIRY_SEND', 'CONFIRM', 'YES'],
@@ -248,19 +249,20 @@ export async function handleGeneralEnquiry({ session, message, business, tenant 
         };
       }
 
-      const adminPhone = business?.adminPhone;
+      const adminPhones = getAdminPhones(business, tenant);
+      const adminPhone  = getPrimaryAdminPhone(business, tenant);
 
-      if (adminPhone && tenant) {
+      if (adminPhones.length && tenant) {
         try {
           const { dispatchText } = await import('../../../core/whatsapp/dispatcher.js');
-          await dispatchText(
-            adminPhone,
+          const alertBody =
             `🔔 *New Enquiry*\n\n` +
             `📞 From: ${session.customerPhone}\n` +
             `📌 Topic: ${data.topic || 'General'}\n` +
-            `📝 Details: ${data.description}`,
-            tenant,
-          );
+            `📝 Details: ${data.description}`;
+          for (const phone of adminPhones) {
+            await dispatchText(phone, alertBody, tenant);
+          }
         } catch (err) {
           logger.warn('[General] admin notify failed:', err.message);
         }

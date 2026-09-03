@@ -23,7 +23,7 @@ export const DEFAULT_WA_CATALOG_MODE = WA_CATALOG_MODES.AI_DECIDES;
 
 // [CATALOG-CONFIG-1] Intents that represent open-ended "I want to see what
 // you have" browsing, reusing the intent value ALREADY produced by the
-// existing classification path (core/intents/intentEngine.js — button tap,
+// existing classification path (core/nlu/classification/intentEngine.js — button tap,
 // keyword match, direct-phrase regex, or Groq AI classify; see
 // intentToAction() there for the full mapping). No new keyword list and no
 // new AI intent category were added anywhere in the codebase for this —

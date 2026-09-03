@@ -37,7 +37,7 @@ import assert from 'node:assert/strict';
 import fs     from 'node:fs';
 
 import Tenant from '../models/Tenant.js';
-import { incrementTenantUsage, getTenantUsageSummary } from '../services/usageService.js';
+import { incrementTenantUsage, getTenantUsageSummary } from '../services/shared/usageService.js';
 
 // ── 1. Source-text guards ────────────────────────────────────────────────
 

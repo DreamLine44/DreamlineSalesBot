@@ -49,6 +49,7 @@ import {
 import { buildOptionsReply } from '../shared/uiOptionsHelper.js';
 import logger from '../../config/logger.js';
 import { formatMoney } from '../../utils/formatCurrency.js';
+import { getAdminPhones, getPrimaryAdminPhone } from '../../utils/adminPhones.js';
 
 const ACTION_REGISTRY = new Map();
 
@@ -777,7 +778,8 @@ export async function route({ action, intent, session, message, business, tenant
     }
 
     case 'SUPPORT': {
-      const adminPhone = business?.adminPhone || tenant?.adminPhone || null;
+      const adminPhones = getAdminPhones(business, tenant);
+      const adminPhone  = getPrimaryAdminPhone(business, tenant);
 
       // [FIX-RTR-2] Warn early when tenant is missing — without it the admin can
       // never be notified, so a silent failure here is hard to diagnose.
@@ -793,7 +795,7 @@ export async function route({ action, intent, session, message, business, tenant
       // variable still reflected the pre-update value). Evaluating first ensures
       // the condition is based on the actual pre-transition state and eliminates
       // the race window between the DB write and the guard check.
-      const shouldNotifyAdmin = adminPhone && tenant && !session.humanModeNotified;
+      const shouldNotifyAdmin = adminPhones.length && tenant && !session.humanModeNotified;
 
       // [FIX-BUG8] Set humanModeNotified=true so second message doesn't re-alert admin
       // [FIX-HM-5] humanMode TTL is now 24h (set in sessionService) so the session
@@ -826,11 +828,14 @@ export async function route({ action, intent, session, message, business, tenant
         // [FIX-RTR-4] Log dispatch failures — if this silently fails the admin is
         // never notified of the escalation and there is no trace in logs to diagnose it.
         // Consistent with adminCommandService which logs all customer dispatch failures.
-        dispatchMessage(adminPhone, alertPayload, tenant).catch(err =>
-          logger.warn('[Router] SUPPORT: admin alert dispatch failed', {
-            adminPhone, customerPhone: session.customerPhone, err: err.message,
-          })
-        );
+        // [FEAT-MULTI-ADMIN] Both configured numbers get the escalation alert.
+        for (const phone of adminPhones) {
+          dispatchMessage(phone, alertPayload, tenant).catch(err =>
+            logger.warn('[Router] SUPPORT: admin alert dispatch failed', {
+              adminPhone: phone, customerPhone: session.customerPhone, err: err.message,
+            })
+          );
+        }
       }
 
       // [FIX-HM-6] No "Start Over" button after support escalation.
@@ -870,8 +875,8 @@ export async function route({ action, intent, session, message, business, tenant
 
     case 'FALLBACK':
     case 'CLARIFY': {
-      const { getAIReply } = await import('../ai/providers/aiRouter.js');
-      const { getAiHistoryMessages, buildConversationContext } = await import('../nlu/nluContext.js');
+      const { getAIReply } = await import('../nlu/extraction/aiRouter.js');
+      const { getAiHistoryMessages, buildConversationContext } = await import('../nlu/extraction/nluContext.js');
       const cfg = getModeConfig(business);
 
       // [FIX-FALLBACK-1] Off-topic gate: detect and reject messages that have

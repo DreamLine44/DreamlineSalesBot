@@ -11,7 +11,7 @@ import {
   resolveBookingDateInput,
   formatBookingDateLabel,
   MAX_BOOKING_MONTHS_AHEAD,
-} from './bookingDateParser.js';
+} from '../../core/nlu/resolution/bookingDateParser.js';
 
 export const BOOKING_DATE_FLOW_SCREEN = 'BOOKING_DATE';
 

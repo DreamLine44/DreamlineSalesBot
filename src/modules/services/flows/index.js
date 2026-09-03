@@ -14,9 +14,10 @@
 import { updateSession }     from '../../../core/sessions/sessionService.js';
 import { completeFlow, cancelFlow } from '../../../core/conversations/flowEngine.js';
 import { handleBookingFlow } from '../../../core/conversations/bookingFlow.js';
-import { getAIReply }        from '../../../core/ai/providers/aiRouter.js';
+import { getAIReply } from '../../../core/nlu/nluFeature.js';
 import { saveOrder }         from '../../../services/order/orderService.js';
 import logger                from '../../../config/logger.js';
+import { getAdminPhones, getPrimaryAdminPhone } from '../../../utils/adminPhones.js';
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
@@ -211,9 +212,9 @@ export async function handleEnquiryFlow({ session, message, business, tenant }) 
 
     // ── CONTACT_CONFIRM ──────────────────────────────────────────────────────
     case 'CONTACT_CONFIRM': {
-      // [FIX-DUALLAYER-CONFIRM] See core/shared/confirmationMatcher.js — was
+      // [FIX-DUALLAYER-CONFIRM] See core/nlu/resolution/confirmationMatcher.js — was
       // exact-match-only, so a typed "yes please"/"go ahead" never registered.
-      const { resolveConfirmation } = await import('../../../core/shared/confirmationMatcher.js');
+      const { resolveConfirmation } = await import('../../../core/nlu/nluFeature.js');
       const verdict = await resolveConfirmation({
         raw, business,
         affirmIds: ['ENQUIRY_CONFIRM', 'CONFIRM', 'YES'],
@@ -261,22 +262,23 @@ export async function handleEnquiryFlow({ session, message, business, tenant }) 
         };
       }
 
-      const adminPhone = business?.adminPhone;
+      const adminPhones = getAdminPhones(business, tenant);
+      const adminPhone  = getPrimaryAdminPhone(business, tenant);
 
       // Notify admin
-      if (adminPhone && tenant) {
+      if (adminPhones.length && tenant) {
         try {
           const { dispatchText } = await import('../../../core/whatsapp/dispatcher.js');
-          await dispatchText(
-            adminPhone,
+          const alertBody =
             `🔔 *New Service Enquiry*\n\n` +
             `📞 From: ${session.customerPhone}\n` +
             `🔧 Service: ${data.serviceType || 'Not specified'}\n` +
             `📝 Details: ${data.description}\n` +
             `💰 Budget: ${data.budget}\n` +
-            `📅 Timeline: ${data.timeline}`,
-            tenant,
-          );
+            `📅 Timeline: ${data.timeline}`;
+          for (const phone of adminPhones) {
+            await dispatchText(phone, alertBody, tenant);
+          }
         } catch (err) {
           logger.warn('[Services] admin notify failed:', err.message);
         }
@@ -313,7 +315,7 @@ export async function handleServicesBooking({ session, message, business, tenant
 // ── Quote Follow-Up ───────────────────────────────────────────────────────────
 
 export async function handleQuoteFollowUp({ session, message, business, tenant }) {
-  const adminPhone = business?.adminPhone;
+  const adminPhone = business?.adminPhone || tenant?.adminPhone;
   // [FIX-1] Correct completeFlow signature: (session, completedFlow, business, tenant)
   const _lcRqf = await completeFlow(session, 'QUOTE_FOLLOW', business, tenant);
   if (_lcRqf) return _lcRqf;

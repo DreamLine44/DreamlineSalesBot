@@ -16,14 +16,13 @@
 
 import { updateSession }  from '../../../core/sessions/sessionService.js';
 import { completeFlow, cancelFlow } from '../../../core/conversations/flowEngine.js';
-import { getAIReply }     from '../../../core/ai/providers/aiRouter.js';
-import { findBestMatch }  from '../../../utils/matchEngine.js';
+import { getAIReply, findBestMatch, parseQuantity } from '../../../core/nlu/nluFeature.js';
 import { buildWhatsAppImageUrl } from '../../../config/cloudinary.js';
 import { saveOrder }      from '../../../services/order/orderService.js';
-import { parseQuantity }  from '../../../utils/parseQuantity.js';
 import { trackOrderAnalytics } from '../../../core/analytics/analyticsService.js';
 import logger             from '../../../config/logger.js';
 import { formatMoney }    from '../../../utils/formatCurrency.js';
+import { getAdminPhones } from '../../../utils/adminPhones.js';
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
@@ -367,10 +366,10 @@ export async function handleRetailOrder({ session, message, business, tenant, is
     }
 
     // ── CONFIRM ───────────────────────────────────────────────────────────────
-    // [FIX-DUALLAYER-CONFIRM] See core/shared/confirmationMatcher.js — was
+    // [FIX-DUALLAYER-CONFIRM] See core/nlu/resolution/confirmationMatcher.js — was
     // exact-match-only, so a typed "yes please"/"go ahead" never registered.
     case 'CONFIRM': {
-      const { resolveConfirmation } = await import('../../../core/shared/confirmationMatcher.js');
+      const { resolveConfirmation } = await import('../../../core/nlu/nluFeature.js');
       const verdict = await resolveConfirmation({ raw, business });
       if (verdict === 'no') return cancelFlow(session, business);
       if (verdict !== 'yes') {
@@ -459,11 +458,11 @@ export async function handleRetailOrder({ session, message, business, tenant, is
         });
 
         try {
-          const adminPhone = business?.adminPhone;
-          if (adminPhone && tenant && savedOrder) {
+          const adminPhones = getAdminPhones(business, tenant);
+          if (adminPhones.length && tenant && savedOrder) {
             const { dispatchMessage } = await import('../../../core/whatsapp/dispatcher.js');
             const currency = payment.currency || 'D';
-            await dispatchMessage(adminPhone, {
+            const alertPayload = {
               type: 'text',
               body:
                 `🔔 *New Retail Order — ${business?.name || 'Store'}*\n\n` +
@@ -473,11 +472,14 @@ export async function handleRetailOrder({ session, message, business, tenant, is
                 `💰 Total: *${currency}${formatMoney(totalPrice)}*\n` +
                 `📝 Ref: *${ref}*\n\n` +
                 `⏳ Status: *Pending* — awaiting payment screenshot.`,
-            }, tenant).catch(() => {});
+            };
+            for (const adminPhone of adminPhones) {
+              await dispatchMessage(adminPhone, alertPayload, tenant).catch(() => {});
+            }
           }
         } catch { /* non-fatal */ }
 
-        const { buildPaymentInstructionsUI } = await import('../../../services/paymentService.js');
+        const { buildPaymentInstructionsUI } = await import('../../../services/payment/paymentService.js');
         return buildPaymentInstructionsUI(business, totalPrice, shortId, ref);
       }
 
@@ -485,11 +487,11 @@ export async function handleRetailOrder({ session, message, business, tenant, is
       // dispatchMessage with APPROVE_/REJECT_ buttons. Session parked at
       // AWAIT_ADMIN_CONFIRM so customer cannot place duplicate orders before admin acts.
       try {
-        const adminPhone = business?.adminPhone;
-        if (adminPhone && tenant && savedOrder) {
+        const adminPhones = getAdminPhones(business, tenant);
+        if (adminPhones.length && tenant && savedOrder) {
           const { dispatchMessage } = await import('../../../core/whatsapp/dispatcher.js');
           const currency = payment?.currency || 'D';
-          await dispatchMessage(adminPhone, {
+          const alertPayload = {
             type: 'buttons',
             body:
               `🔔 *New Retail Order — ${business?.name || 'Store'}*\n\n` +
@@ -502,7 +504,10 @@ export async function handleRetailOrder({ session, message, business, tenant, is
               { id: `APPROVE_${savedOrder.shortId}`, title: '✅ Confirm Order' },
               { id: `REJECT_${savedOrder.shortId}`,  title: '❌ Cancel Order'  },
             ],
-          }, tenant);
+          };
+          for (const adminPhone of adminPhones) {
+            await dispatchMessage(adminPhone, alertPayload, tenant);
+          }
         }
       } catch (err) {
         logger.warn('[Retail] admin notify failed:', err.message);

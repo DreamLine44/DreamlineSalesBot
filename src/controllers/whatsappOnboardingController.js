@@ -35,16 +35,15 @@
  * controller, flow engine, session service, or webhook handler.
  */
 import mongoose from 'mongoose';
-import WhatsAppConnectionRequest from '../models/WhatsAppConnectionRequest.js';
-import Tenant from '../models/Tenant.js';
+import { WhatsAppConnectionRequest, Tenant } from '../models/index.js';
 import {
   saveCredentials,
   verifyCredentials,
   markConnected,
   updateStatus,
-} from '../services/whatsapp/whatsappOnboardingService.js';
+  notifyAdminNewRequest,
+} from '../services/whatsapp/whatsappFeature.js';
 import { decryptToken } from '../controllers/tenantController.js';
-import { notifyAdminNewRequest } from '../services/whatsapp/whatsappNotificationService.js';
 import logger from '../config/logger.js';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────

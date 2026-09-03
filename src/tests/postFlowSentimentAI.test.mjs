@@ -29,7 +29,7 @@ function read(relPath) {
 }
 
 function source() {
-  return read('../services/postFlowHandler.js');
+  return read('../services/shared/postFlowHandler.js');
 }
 
 function classifierFnSource() {
@@ -80,8 +80,8 @@ test('postFlowHandler.js: zero or conflicting regex matches trigger the AI tiebr
 test('postFlowHandler.js: AI tiebreaker reuses groqProvider.classifyIntent (same classifier as intentEngine.js), not a new AI-reply call', () => {
   const fn = classifierFnSource();
   assert.ok(
-    /import\(['"]\.\.\/core\/ai\/providers\/groqProvider\.js['"]\)/.test(fn),
-    'Must import classifyIntent from groqProvider.js — the existing lean one-word classifier — ' +
+    /import\(['"]\.\.\/\.\.\/core\/nlu\/nluFeature\.js['"]\)/.test(fn) && /const\s*\{\s*classifyIntent\s*\}/.test(fn),
+    'Must import classifyIntent (re-exported from groqProvider.js via nluFeature.js) — the existing lean one-word classifier — ' +
     'rather than inventing a second AI pathway or using getAIReply (which writes customer-facing wording)'
   );
 });

@@ -28,7 +28,7 @@ function read(relPath) {
   return fs.readFileSync(new URL(relPath, import.meta.url), 'utf8');
 }
 
-const SRC = read('../core/intents/intentEngine.js');
+const SRC = read('../core/nlu/classification/intentEngine.js');
 
 const normalise = (text = '') =>
   text.toLowerCase().replace(/[^\w\s]/g, ' ').replace(/\s+/g, ' ').trim();

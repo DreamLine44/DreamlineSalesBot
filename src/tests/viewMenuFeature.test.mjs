@@ -11,10 +11,10 @@
 // the button/phrase promising exactly that.
 //
 // FIX (four cooperating pieces, all covered below):
-//   1. core/intents/patterns.js       — VIEW_MENU is now its own keyword list
+//   1. core/nlu/classification/patterns.js       — VIEW_MENU is now its own keyword list
 //                                        and its own BUTTON_ID_MAP entry,
 //                                        split out of the old SHOW_MENU bucket.
-//   2. core/intents/intentEngine.js   — VIEW_MENU maps to its own action in
+//   2. core/nlu/classification/intentEngine.js   — VIEW_MENU maps to its own action in
 //                                        intentToAction().
 //   3. core/conversations/moduleRouter.js — case 'VIEW_MENU' starts the ORDER
 //                                        flow (startFlow), reusing each
@@ -44,8 +44,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import { detectIntent } from '../core/intents/intentEngine.js';
-import { INTENT_PATTERNS, BUTTON_ID_MAP } from '../core/intents/patterns.js';
+import { detectIntent } from '../core/nlu/classification/intentEngine.js';
+import { INTENT_PATTERNS, BUTTON_ID_MAP } from '../core/nlu/classification/patterns.js';
 
 function readSource(relPath) {
   return fs.readFileSync(new URL(relPath, import.meta.url), 'utf8');
@@ -112,7 +112,7 @@ test('detectIntent: typed "menu" / "view menu" resolve to the explicit catalog a
 });
 
 test('intentEngine.js: natural browse phrases are available to the active-flow webhook escape path', () => {
-  const src = readSource('../core/intents/intentEngine.js');
+  const src = readSource('../core/nlu/classification/intentEngine.js');
   assert.match(src, /export const VIEW_MENU_DIRECT_RE\s*=\s*\//);
 
   const webhook = readSource('../controllers/webhookController.js');
@@ -134,7 +134,7 @@ test('detectIntent: tapping a SHOW_MENU button still resolves to action SHOW_MEN
 });
 
 test('intentEngine.js: VIEW_MENU intent maps to the explicit native catalog action', () => {
-  const src = readSource('../core/intents/intentEngine.js');
+  const src = readSource('../core/nlu/classification/intentEngine.js');
   assert.match(src, /VIEW_MENU:\s+'BROWSE_CATALOG'/,
     'Menu browsing must use the same action as the native View items catalog button');
 });

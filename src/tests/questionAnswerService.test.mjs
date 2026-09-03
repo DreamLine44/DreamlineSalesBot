@@ -9,13 +9,13 @@ import {
   extractShortId,
   isValidShortIdFormat,
   formatLookupFailureMessage,
-} from '../services/activityLookupService.js';
+} from '../services/activity/activityLookupService.js';
 import {
   formatMenuText,
   formatHoursText,
   tryDatabaseAnswer,
-} from '../services/questionAnswerService.js';
-import { isBusinessScopeQuestion } from '../services/questionModeHelper.js';
+} from '../services/question/questionAnswerService.js';
+import { isBusinessScopeQuestion } from '../services/question/questionModeHelper.js';
 
 function readSource(relPath) {
   return fs.readFileSync(new URL(relPath, import.meta.url), 'utf8');
@@ -280,7 +280,13 @@ test('isBusinessScopeQuestion is mode-aware (not restaurant-only)', () => {
 // ── Wiring source assertions ──────────────────────────────────────────────────
 
 test('adminCommandService supports CANCEL ORDER/BOOKING by reference', () => {
-  const src = readSource('../services/adminCommandService.js');
+  // [FIX-STALE-SHIM-TEST-PATH] Was reading services/adminCommandService.js,
+  // which was already reduced to a one-line `export * from
+  // './admin/adminCommandService.js'` re-export shim by an earlier migration —
+  // the real implementation (and the strings this test looks for) live in
+  // services/admin/adminCommandService.js. This test was silently failing
+  // against shim content instead of the real source.
+  const src = readSource('../services/admin/adminCommandService.js');
   assert.match(src, /cancelOrderByShortId/);
   assert.match(src, /cancelBookingByShortId/);
   assert.match(src, /CANCEL\\s\+ORDER/);
@@ -295,14 +301,18 @@ test('question handlers use processQuestionMessage', () => {
 });
 
 test('activityStatusService uses reference-first lookup', () => {
-  const src = readSource('../services/activityStatusService.js');
+  // [FIX-STALE-SHIM-TEST-PATH] Same shim issue as the adminCommandService
+  // test above — services/activityStatusService.js is now a one-line
+  // re-export shim; the real implementation lives in
+  // services/activity/activityStatusService.js.
+  const src = readSource('../services/activity/activityStatusService.js');
   assert.match(src, /extractShortId/);
   assert.match(src, /lookupActivityByReference/);
   assert.match(src, /trackingContext/);
 });
 
 test('processQuestionMessage handles general messages without throwing', async () => {
-  const { processQuestionMessage } = await import('../services/questionAnswerService.js');
+  const { processQuestionMessage } = await import('../services/question/questionAnswerService.js');
   const business = {
     businessMode: 'RESTAURANT',
     menuItems: [{ name: 'Domoda', price: 200, available: true }],

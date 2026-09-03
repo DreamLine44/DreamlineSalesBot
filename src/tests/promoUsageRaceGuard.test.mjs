@@ -36,7 +36,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 
-const svcSrc = fs.readFileSync(new URL('../services/promoService.js', import.meta.url), 'utf8');
+const svcSrc = fs.readFileSync(new URL('../services/order/promoService.js', import.meta.url), 'utf8');
 
 test('applyPromoUsage no longer unconditionally increments usedCount with no maxUses guard', () => {
   // The old, buggy query: a plain filter with no maxUses condition anywhere,

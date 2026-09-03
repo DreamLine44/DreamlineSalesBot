@@ -1,6 +1,6 @@
 // tests/patterns.test.mjs
 //
-// Pure, additive regression tests for core/intents/patterns.js.
+// Pure, additive regression tests for core/nlu/classification/patterns.js.
 // Does NOT modify any existing source file.
 //
 // Run with:  node --test tests/
@@ -8,7 +8,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import { BUTTON_ID_MAP, EMOJI_MAP, INTENT_PATTERNS } from '../core/intents/patterns.js';
+import { BUTTON_ID_MAP, EMOJI_MAP, INTENT_PATTERNS } from '../core/nlu/classification/patterns.js';
 
 test('BUTTON_ID_MAP numeric keys are limited to the known top-level quick-reply shortcuts', () => {
   // Regression guard for the bug class noted in project history: retail
@@ -39,7 +39,7 @@ test('BUTTON_ID_MAP has no duplicate / overwritten keys', () => {
   // JS object literals silently let a later duplicate key win. This re-parses
   // the source text (not the imported object, which can never show the
   // collision) to catch accidental duplicate entries before they ship.
-  const url = new URL('../core/intents/patterns.js', import.meta.url);
+  const url = new URL('../core/nlu/classification/patterns.js', import.meta.url);
   const src = fs.readFileSync(url, 'utf8');
   const mapBlock = src.slice(src.indexOf('BUTTON_ID_MAP = {'), src.indexOf('\n};', src.indexOf('BUTTON_ID_MAP = {')));
   const keyMatches = [...mapBlock.matchAll(/^\s*'([^']+)':/gm)].map(m => m[1]);

@@ -9,7 +9,7 @@
 // CANCEL on their own.
 //
 // This mirrors the existing MFQ (Mid-Flow Question) intercept pattern:
-//   - core/intents/intentEngine.js: ORDER_DIRECT_RE, BOOKING_DIRECT_RE, and
+//   - core/nlu/classification/intentEngine.js: ORDER_DIRECT_RE, BOOKING_DIRECT_RE, and
 //     DIRECT_INTENT_EXCLUDE_RE are now exported so both the no-flow path and
 //     the new mid-flow intercept share one single source of truth.
 //   - controllers/webhookController.js: _detectMidFlowSwitchRequest(text, session)
@@ -34,7 +34,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import { ORDER_DIRECT_RE, BOOKING_DIRECT_RE, DIRECT_INTENT_EXCLUDE_RE, QUESTION_LEADIN_RE, normalise } from '../core/intents/intentEngine.js';
+import { ORDER_DIRECT_RE, BOOKING_DIRECT_RE, DIRECT_INTENT_EXCLUDE_RE, QUESTION_LEADIN_RE, normalise } from '../core/nlu/classification/intentEngine.js';
 
 function read(relPath) {
   return fs.readFileSync(new URL(relPath, import.meta.url), 'utf8');
@@ -57,7 +57,7 @@ test('intentEngine.js: ORDER_DIRECT_RE / BOOKING_DIRECT_RE / DIRECT_INTENT_EXCLU
 // together so the test runs against the REAL logic, not a re-implementation
 // that could silently drift from it.
 // [FIX-FSI-1]/[FIX-FSI-2] The real function now also calls findBestMatch()
-// (utils/matchEngine.js) and getModeConfig() (config/modes.js). Both are
+// (core/nlu/resolution/matchEngine.js) and getModeConfig() (config/modes.js). Both are
 // injected as factory params, same pattern as ORDER_DIRECT_RE etc, rather than
 // imported directly: matchEngine.js pulls in the 'fast-levenshtein' package
 // which isn't installed in this sandbox, and config/modes.js transitively

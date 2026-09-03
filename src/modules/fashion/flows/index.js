@@ -3,14 +3,13 @@
  * Fashion module — product catalog + variants + recommendations
  */
 import { updateSession }  from '../../../core/sessions/sessionService.js';
-import { getAIReply }     from '../../../core/ai/providers/aiRouter.js';
-import { findBestMatch }  from '../../../utils/matchEngine.js';
+import { getAIReply, findBestMatch, parseQuantity } from '../../../core/nlu/nluFeature.js';
 import { saveOrder }      from '../../../services/order/orderService.js';
-import { parseQuantity }  from '../../../utils/parseQuantity.js';
 import { trackOrderAnalytics } from '../../../core/analytics/analyticsService.js';
 import logger             from '../../../config/logger.js';
 import { buildWhatsAppImageUrl } from '../../../config/cloudinary.js';
 import { formatMoney } from '../../../utils/formatCurrency.js';
+import { getAdminPhones } from '../../../utils/adminPhones.js';
 
 export const FASHION_CONFIG = {
   businessMode: 'FASHION',
@@ -317,10 +316,10 @@ export async function handleFashionOrder({ session, message, business, tenant, i
     }
 
     case 'CONFIRM': {
-      // [FIX-DUALLAYER-CONFIRM] See core/shared/confirmationMatcher.js —
+      // [FIX-DUALLAYER-CONFIRM] See core/nlu/resolution/confirmationMatcher.js —
       // widened from a 4-word exact-match regex so "yes please"/"go ahead"/
       // "sounds good" also register, not just a bare "yes"/"y"/"confirm"/"ok".
-      const { isAffirmative: _isAffirmativeConfirm } = await import('../../../core/shared/confirmationMatcher.js');
+      const { isAffirmative: _isAffirmativeConfirm } = await import('../../../core/nlu/nluFeature.js');
       if (!(/^(yes|y|confirm|ok)$/i.test(clean) || _isAffirmativeConfirm(raw))) {
         return {
           type: 'buttons',
@@ -354,7 +353,7 @@ export async function handleFashionOrder({ session, message, business, tenant, i
       // [FIX-5] Payment flow — fashion was skipping payment even when payment.enabled=true
       const payment = business?.payment;
       if (payment?.enabled && data.totalPrice) {
-        const { buildPaymentInstructionsUI } = await import('../../../services/paymentService.js');
+        const { buildPaymentInstructionsUI } = await import('../../../services/payment/paymentService.js');
         await updateSession(session.customerPhone, session.tenantId, {
           step: 'PAYMENT_PROOF', currentFlow: 'ORDER',
         });
@@ -379,8 +378,8 @@ export async function handleFashionOrder({ session, message, business, tenant, i
       // with APPROVE_/REJECT_ buttons — admin can confirm or cancel with one tap.
       // Also parks session at AWAIT_ADMIN_CONFIRM so the customer waits for confirmation.
       try {
-        const adminPhone = business?.adminPhone || tenant?.adminPhone;
-        if (adminPhone && tenant && savedOrder) {
+        const adminPhones = getAdminPhones(business, tenant);
+        if (adminPhones.length && tenant && savedOrder) {
           const { buildAdminOrderAlertBody } = await import('../../restaurant/handlers/uiBuilders.js');
           const alertBody = buildAdminOrderAlertBody({
             customerPhone: session.customerPhone,
@@ -389,14 +388,17 @@ export async function handleFashionOrder({ session, message, business, tenant, i
             shortId: savedOrder.shortId, business,
           });
           const { dispatchMessage } = await import('../../../core/whatsapp/dispatcher.js');
-          await dispatchMessage(adminPhone, {
+          const alertPayload = {
             type:    'buttons',
             body:    alertBody,
             buttons: [
               { id: `APPROVE_${savedOrder.shortId}`, title: '✅ Confirm Order' },
               { id: `REJECT_${savedOrder.shortId}`,  title: '❌ Cancel Order'  },
             ],
-          }, tenant).catch(() => {});
+          };
+          for (const adminPhone of adminPhones) {
+            await dispatchMessage(adminPhone, alertPayload, tenant).catch(() => {});
+          }
         }
       } catch {}
 

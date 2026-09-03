@@ -122,20 +122,14 @@
 import { updateSession }     from '../../../core/sessions/sessionService.js';
 import { completeFlow, cancelFlow } from '../../../core/conversations/flowEngine.js';
 import { handleBookingFlow } from '../../../core/conversations/bookingFlow.js';
-import { getAIReply }        from '../../../core/ai/providers/aiRouter.js';
-import { findBestMatch }     from '../../../utils/matchEngine.js';
-import { parseQuantity }     from '../../../utils/parseQuantity.js';
+import { getAIReply, findBestMatch, parseQuantity, parseMultiItemMessage, parseNaturalOrderMessage, parseCartModification } from '../../../core/nlu/nluFeature.js';
 import { saveOrder }         from '../../../services/order/orderService.js';
 import { saveBooking }       from '../../../services/booking/bookingService.js';
 import { trackOrderAnalytics } from '../../../core/analytics/analyticsService.js';
-import { itemLabel }         from '../../../utils/itemLabel.js';
-import { formatMoney }       from '../../../utils/formatCurrency.js';
-import {
-  parseMultiItemMessage, mergeCartLines, enforceCartLimit,
-  cartTotal, cartToOrderItems, formatCartSummary, buildUnmatchedNote,
-  parseCartModification, applyCartModification,
-} from '../../../core/shared/cartEngine.js';
+import { itemLabel, formatMoney } from '../../../utils/formatFeature.js';
+import { mergeCartLines, enforceCartLimit, cartTotal, cartToOrderItems, formatCartSummary, buildUnmatchedNote, applyCartModification } from '../../../core/shared/cartEngine.js';
 import logger                from '../../../config/logger.js';
+import { getAdminPhones }    from '../../../utils/adminPhones.js';
 import {
   isBarbershopMode as _isBarbershop,
   getSalonServices as _getServices,
@@ -389,11 +383,11 @@ export async function handleSalonWalkIn({ session, message, business, tenant, is
     }
 
     // ── CONFIRM ──────────────────────────────────────────────────────────────
-    // [FIX-DUALLAYER-CONFIRM] See core/shared/confirmationMatcher.js — the old
+    // [FIX-DUALLAYER-CONFIRM] See core/nlu/resolution/confirmationMatcher.js — the old
     // exact-match check meant a typed "yes please"/"go ahead" (instead of
     // tapping the button) silently failed and just re-showed this prompt.
     case 'CONFIRM': {
-      const { resolveConfirmation } = await import('../../../core/shared/confirmationMatcher.js');
+      const { resolveConfirmation } = await import('../../../core/nlu/nluFeature.js');
       const verdict = await resolveConfirmation({
         raw, business,
         negateIds: ['CANCEL', 'CANCEL_BOOKING', 'SHOW_MENU', 'NO'],
@@ -446,8 +440,8 @@ export async function handleSalonWalkIn({ session, message, business, tenant, is
 
       // Notify admin with confirm/reject buttons
       try {
-        const adminPhone = business?.adminPhone || tenant?.adminPhone;
-        if (adminPhone && tenant && savedBooking) {
+        const adminPhones = getAdminPhones(business, tenant);
+        if (adminPhones.length && tenant && savedBooking) {
           const { dispatchMessage } = await import('../../../core/whatsapp/dispatcher.js');
           const { buildAdminBookingAlertBody } = await import('../../../services/admin/adminCommandService.js');
           const alertBody = buildAdminBookingAlertBody({
@@ -460,18 +454,21 @@ export async function handleSalonWalkIn({ session, message, business, tenant, is
             shortId:       savedBooking.shortId,
             bookingType:   'walkin',
           });
-          await dispatchMessage(
-            adminPhone,
-            {
-              type:    'buttons',
-              body:    alertBody,
-              buttons: [
-                { id: `CONFIRM_BOOK_${savedBooking.shortId}`, title: '✅ Confirm Queue' },
-                { id: `DECLINE_BOOK_${savedBooking.shortId}`, title: '❌ Remove'        },
-              ],
-            },
-            tenant,
-          ).catch(e => logger.warn('[SalonWalkIn] admin notify failed', { err: e.message }));
+          const alertPayload = {
+            type:    'buttons',
+            body:    alertBody,
+            buttons: [
+              { id: `CONFIRM_BOOK_${savedBooking.shortId}`, title: '✅ Confirm Queue' },
+              { id: `DECLINE_BOOK_${savedBooking.shortId}`, title: '❌ Remove'        },
+            ],
+          };
+          for (const adminPhone of adminPhones) {
+            await dispatchMessage(
+              adminPhone,
+              alertPayload,
+              tenant,
+            ).catch(e => logger.warn('[SalonWalkIn] admin notify failed', { err: e.message }));
+          }
         }
       } catch {}
 
@@ -831,7 +828,7 @@ export async function handleSalonProductOrder({ session, message, business, tena
 
       // [FIX-DUALLAYER-CONFIRM] Widened via shared regex guard so "yes please" /
       // "let's checkout" / "go ahead" also register, not just a bare word.
-      const { isAffirmative: _isAffirmativeCheckout } = await import('../../../core/shared/confirmationMatcher.js');
+      const { isAffirmative: _isAffirmativeCheckout } = await import('../../../core/nlu/nluFeature.js');
       const isCheckout = raw === 'CONFIRM' || /^(yes|y|yeah|yep|confirm|ok|okay|sure|checkout|place|done)$/i.test(clean) ||
         _isAffirmativeCheckout(raw);
       if (isCheckout) {
@@ -865,8 +862,11 @@ export async function handleSalonProductOrder({ session, message, business, tena
       if (multiAdd) {
         newLines = multiAdd.lines;
       } else {
-        const { item: singleItem, confidenceLevel: singleConf } = findBestMatch(menu, clean);
-        if (singleItem && singleConf === 'HIGH') newLines = [{ item: singleItem, quantity: 1, variant: null }];
+        // [AUDIT-FIX-CONFIRM-ADD-QTY] Was findBestMatch(menu, clean) with a
+        // hardcoded quantity of 1 — see the matching fix note in
+        // restaurant/flows/orderFlow.js. Same problem, same fix.
+        const singleOrder = parseNaturalOrderMessage(menu, raw);
+        if (singleOrder?.lines?.length) newLines = singleOrder.lines;
       }
 
       if (newLines) {
@@ -931,11 +931,11 @@ export async function handleSalonProductOrder({ session, message, business, tena
     }
 
     // ── CONFIRM ───────────────────────────────────────────────────────────
-    // [FIX-DUALLAYER-CONFIRM] See core/shared/confirmationMatcher.js — the old
+    // [FIX-DUALLAYER-CONFIRM] See core/nlu/resolution/confirmationMatcher.js — the old
     // exact-match check meant a typed "yes please"/"go ahead" (instead of
     // tapping the button) silently failed and just re-showed this prompt.
     case 'CONFIRM': {
-      const { resolveConfirmation } = await import('../../../core/shared/confirmationMatcher.js');
+      const { resolveConfirmation } = await import('../../../core/nlu/nluFeature.js');
 
       // [v14-BUG-4] CANCEL must be caught here; the global escape above won't fire
       // when step=CONFIRM because the switch falls through before reaching default.
@@ -1024,7 +1024,7 @@ export async function handleSalonProductOrder({ session, message, business, tena
       // Payment flow
       const payment = business?.payment;
       if (payment?.enabled && data.totalPrice) {
-        const { buildPaymentInstructionsUI } = await import('../../../services/paymentService.js');
+        const { buildPaymentInstructionsUI } = await import('../../../services/payment/paymentService.js');
         await updateSession(session.customerPhone, session.tenantId, {
           step: 'PAYMENT_PROOF', currentFlow: 'ORDER',
         });
@@ -1045,28 +1045,31 @@ export async function handleSalonProductOrder({ session, message, business, tena
 
       // Admin notify
       try {
-        const adminPhone = business?.adminPhone || tenant?.adminPhone;
-        if (adminPhone && tenant && savedOrder) {
+        const adminPhones = getAdminPhones(business, tenant);
+        if (adminPhones.length && tenant && savedOrder) {
           const { dispatchMessage } = await import('../../../core/whatsapp/dispatcher.js');
           const currency = business?.payment?.currency || 'D';
-          await dispatchMessage(
-            adminPhone,
-            {
-              type: 'buttons',
-              body:
-                `🔔 *New Product Order — ${business?.name || (isBarbershop ? 'Barbershop' : 'Salon')}*\n\n` +
-                `📞 Customer: ${session.customerPhone}\n` +
-                (session.customerName ? `👤 Name: ${session.customerName}\n` : '') +
-                `🛍 *${data.quantity}× ${itemLabel(data.item, data.variant)}*\n` +
-                (data.totalPrice ? `💰 Total: ${currency}${formatMoney(data.totalPrice)}\n` : '') +
-                `🔖 Ref: \`${savedOrder?.shortId || 'N/A'}\``,
-              buttons: [
-                { id: `APPROVE_${savedOrder.shortId}`, title: '✅ Confirm Order' },
-                { id: `REJECT_${savedOrder.shortId}`,  title: '❌ Cancel Order'  },
-              ],
-            },
-            tenant,
-          ).catch(e => logger.warn('[SalonProduct] admin notify failed', { err: e.message }));
+          const alertPayload = {
+            type: 'buttons',
+            body:
+              `🔔 *New Product Order — ${business?.name || (isBarbershop ? 'Barbershop' : 'Salon')}*\n\n` +
+              `📞 Customer: ${session.customerPhone}\n` +
+              (session.customerName ? `👤 Name: ${session.customerName}\n` : '') +
+              `🛍 *${data.quantity}× ${itemLabel(data.item, data.variant)}*\n` +
+              (data.totalPrice ? `💰 Total: ${currency}${formatMoney(data.totalPrice)}\n` : '') +
+              `🔖 Ref: \`${savedOrder?.shortId || 'N/A'}\``,
+            buttons: [
+              { id: `APPROVE_${savedOrder.shortId}`, title: '✅ Confirm Order' },
+              { id: `REJECT_${savedOrder.shortId}`,  title: '❌ Cancel Order'  },
+            ],
+          };
+          for (const adminPhone of adminPhones) {
+            await dispatchMessage(
+              adminPhone,
+              alertPayload,
+              tenant,
+            ).catch(e => logger.warn('[SalonProduct] admin notify failed', { err: e.message }));
+          }
         }
       } catch {}
 
@@ -1163,7 +1166,7 @@ async function _checkoutProductCart(cart, session, business, tenant, isBarbersho
   const totalPrice = savedOrder.totalPrice ?? total;
   const payment = business?.payment;
   if (payment?.enabled && totalPrice) {
-    const { buildPaymentInstructionsUI } = await import('../../../services/paymentService.js');
+    const { buildPaymentInstructionsUI } = await import('../../../services/payment/paymentService.js');
     await updateSession(session.customerPhone, session.tenantId, {
       step: 'PAYMENT_PROOF', currentFlow: 'ORDER', data: {},
     });
@@ -1184,27 +1187,30 @@ async function _checkoutProductCart(cart, session, business, tenant, isBarbersho
 
   // Admin notify
   try {
-    const adminPhone = business?.adminPhone || tenant?.adminPhone;
-    if (adminPhone && tenant && savedOrder) {
+    const adminPhones = getAdminPhones(business, tenant);
+    if (adminPhones.length && tenant && savedOrder) {
       const { dispatchMessage } = await import('../../../core/whatsapp/dispatcher.js');
-      await dispatchMessage(
-        adminPhone,
-        {
-          type: 'buttons',
-          body:
-            `🔔 *New Product Order — ${business?.name || (isBarbershop ? 'Barbershop' : 'Salon')}*\n\n` +
-            `📞 Customer: ${session.customerPhone}\n` +
-            (session.customerName ? `👤 Name: ${session.customerName}\n` : '') +
-            `🛍 Items:\n${cartSummary}\n` +
-            (totalPrice ? `💰 Total: ${currency}${formatMoney(totalPrice)}\n` : '') +
-            `🔖 Ref: \`${savedOrder?.shortId || 'N/A'}\``,
-          buttons: [
-            { id: `APPROVE_${savedOrder.shortId}`, title: '✅ Confirm Order' },
-            { id: `REJECT_${savedOrder.shortId}`,  title: '❌ Cancel Order'  },
-          ],
-        },
-        tenant,
-      ).catch(e => logger.warn('[SalonProduct] admin notify failed', { err: e.message }));
+      const alertPayload = {
+        type: 'buttons',
+        body:
+          `🔔 *New Product Order — ${business?.name || (isBarbershop ? 'Barbershop' : 'Salon')}*\n\n` +
+          `📞 Customer: ${session.customerPhone}\n` +
+          (session.customerName ? `👤 Name: ${session.customerName}\n` : '') +
+          `🛍 Items:\n${cartSummary}\n` +
+          (totalPrice ? `💰 Total: ${currency}${formatMoney(totalPrice)}\n` : '') +
+          `🔖 Ref: \`${savedOrder?.shortId || 'N/A'}\``,
+        buttons: [
+          { id: `APPROVE_${savedOrder.shortId}`, title: '✅ Confirm Order' },
+          { id: `REJECT_${savedOrder.shortId}`,  title: '❌ Cancel Order'  },
+        ],
+      };
+      for (const adminPhone of adminPhones) {
+        await dispatchMessage(
+          adminPhone,
+          alertPayload,
+          tenant,
+        ).catch(e => logger.warn('[SalonProduct] admin notify failed', { err: e.message }));
+      }
     }
   } catch { /* non-fatal */ }
 

@@ -14,7 +14,7 @@
  */
 
 // ===== bookingDateParser.js =====
-export * from './bookingDateParser.js';
+export * from '../../core/nlu/resolution/bookingDateParser.js';
 
 // ===== bookingDatePickerUI.js =====
 export * from './bookingDatePickerUI.js';

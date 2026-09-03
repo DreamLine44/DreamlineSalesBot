@@ -95,10 +95,7 @@
  *               text with typed commands in the footer.
  */
 
-import Order          from '../../models/Order.js';
-import Booking        from '../../models/Booking.js';
-import Tenant         from '../../models/Tenant.js';
-import BusinessConfig from '../../models/BusinessConfig.js';
+import { Order, Booking, Tenant, BusinessConfig } from '../../models/index.js';
 import { updateSession } from '../../core/sessions/sessionService.js';
 import { dispatchText, dispatchMessage } from '../../core/whatsapp/dispatcher.js';
 import { getModeConfig } from '../../config/modes.js';
@@ -108,6 +105,7 @@ import { buildOptionsReply } from '../../core/shared/uiOptionsHelper.js';
 import { isNoPaymentOrder, formatOrderItemsForMessage } from '../order/orderService.js';
 import { getOrderByShortId, extractShortId } from '../activity/activityLookupService.js';
 import { getBookingByShortId } from '../booking/bookingService.js';
+import { isAdminPhoneMatch } from '../../utils/adminPhones.js';
 
 const MAX_INPUT_LENGTH = 500; // guard against absurdly long button IDs / command strings
 
@@ -132,18 +130,23 @@ export async function isAdminPhone(senderPhone, tenantId, business = null, tenan
   // 2. Use pre-fetched documents when available, otherwise fetch in parallel.
   // [FIX-X2] Skip BusinessConfig query when caller already has it.
   // [FIX-X2] Skip Tenant query when caller already has tenantDoc.
+  // [FEAT-MULTI-ADMIN] select() widened to also pull adminPhones (up to 2
+  // numbers) — isAdminPhoneMatch() below checks the sender against ALL of
+  // them, not just the legacy single adminPhone.
   const bizPromise = business
     ? Promise.resolve(business)
-    : BusinessConfig.findOne({ tenantId }).select('adminPhone').lean().catch(() => null);
+    : BusinessConfig.findOne({ tenantId }).select('adminPhone adminPhones').lean().catch(() => null);
 
   const tenantPromise = tenantDoc
     ? Promise.resolve(tenantDoc)
-    : Tenant.findById(tenantId).select('adminPhone').lean().catch(() => null);
+    : Tenant.findById(tenantId).select('adminPhone adminPhones').lean().catch(() => null);
 
   const [biz, tenant] = await Promise.all([bizPromise, tenantPromise]);
 
-  if (biz?.adminPhone    && String(biz.adminPhone).replace(/^\+/, '')    === norm) return true;
-  if (tenant?.adminPhone && String(tenant.adminPhone).replace(/^\+/, '') === norm) return true;
+  // [FEAT-MULTI-ADMIN] isAdminPhoneMatch() applies the same business-overrides-
+  // tenant precedence as before, but against up to 2 numbers per side instead
+  // of 1 — either configured admin can approve/reject/confirm/etc.
+  if (isAdminPhoneMatch(senderPhone, biz, tenant)) return true;
 
   return false;
 }
@@ -155,12 +158,13 @@ export async function handleAdminButtonReply(buttonId, tenantId, adminPhone, ten
 
   const upper = String(buttonId).toUpperCase();
 
-  // [FIX-CASH-ORDER] APPROVE_CASH_<id> / REJECT_CASH_<id> must be checked BEFORE the
-  // generic APPROVE_ / REJECT_ prefixes below. "APPROVE_CASH_3A41C9".startsWith('APPROVE_')
-  // is also true, so with the old ordering every cash button was swallowed by the
-  // generic branch first and confirmPayment() was called with shortId "CASH_3A41C9"
-  // (a nonexistent order) instead of approveCashRequest() with "3A41C9" — producing
-  // "⚠️ No order found: CASH_3A41C9" instead of approving the cash request.
+  // [FIX-CASH-PREFIX-COLLISION] APPROVE_CASH_<id> and REJECT_CASH_<id> must be checked
+  // BEFORE the generic APPROVE_ / REJECT_ prefixes below. 'APPROVE_CASH_122900' also
+  // satisfies upper.startsWith('APPROVE_'), so the generic branch was matching first and
+  // routing every real cash-approval tap into confirmPayment('CASH_122900', ...) — a
+  // shortId that can never exist — instead of approveCashRequest('122900', ...). The
+  // admin got "No order found: CASH_122900" on a perfectly valid order, and the customer
+  // was never notified. Same collision existed for REJECT_CASH_ vs REJECT_.
   // [LEGACY-CASH-BTN] Older builds dispatched CASH_<shortId> button IDs instead of
   // APPROVE_CASH_<shortId>. Keep accepting that legacy alias so a stale queued button
   // does not fall through to the generic 'No order found' branch.
@@ -171,6 +175,13 @@ export async function handleAdminButtonReply(buttonId, tenantId, adminPhone, ten
   if (upper.startsWith('REJECT_'))       return rejectPayment(upper.replace('REJECT_', ''),        tenantId, adminPhone, tenantDoc, business);
   if (upper.startsWith('CONFIRM_BOOK_')) return confirmBooking(upper.replace('CONFIRM_BOOK_', ''), tenantId, adminPhone, tenantDoc);
   if (upper.startsWith('READY_'))        return markOrderReady(upper.replace('READY_', ''),        tenantId, adminPhone, tenantDoc, business);
+  // [FIX-CASH-FLOW-CONTINUATION] "❌ Cancel Order" button sent alongside "✅ Confirm
+  // Order" after a cash-payment approval (see approveCashRequest). No other admin
+  // button uses a bare 'CANCEL_' prefix in this file, so — unlike the APPROVE_CASH_
+  // situation above — there's no collision risk with a more generic 'CANCEL_'
+  // branch today. Still listed here (specific-before-generic) rather than at the
+  // end of the chain, in case one is ever added later.
+  if (upper.startsWith('CANCEL_ORDER_')) return cancelOrderByShortId(upper.replace('CANCEL_ORDER_', ''), tenantId, adminPhone, tenantDoc, business);
   // [FIX-X3] RESUME_BOT_<phone> button — dispatched by the support escalation alert
   // as an interactive button instead of a plain-text `RESUME BOT <phone>` command.
   // Strip all non-digit chars from the phone suffix to match resumeBot()'s normalisation.
@@ -722,6 +733,21 @@ async function approveCashRequest(shortId, tenantId, adminPhone, tenantDoc, busi
         cashRequestStatus: 'approved',
         cashRequestReviewedBy: adminPhone,
         cashRequestReviewedAt: new Date(),
+        // [FIX-STALE-PROOF] A customer can submit a payment screenshot, have it
+        // REJECTed (rejectPayment resets paymentStatus:'unpaid'/status:'pending' but
+        // does NOT clear paymentProof — see rejectPayment's non-cash branch), then
+        // switch to "pay cash" instead of resubmitting a screenshot. Without this,
+        // the order kept its stale paymentProof reference all the way through cash
+        // approval. confirmPayment()'s isNoPaymentOrder() check
+        // (`paymentStatus==='unpaid' && !paymentProof`) would then see a non-null
+        // paymentProof and conclude this was a normal proof-based payment, sending
+        // "✅ Payment Confirmed! Your payment has been verified." for an order where
+        // no payment was ever actually verified. Clearing both fields here — the
+        // same fields RESEND_PROOF already clears on its own retry path
+        // (webhookController.js RESEND_PROOF handler) — makes a cash-approved order
+        // unambiguously reflect "no proof" state for every downstream consumer.
+        paymentProof: null,
+        proofReceivedAt: null,
       }},
       { new: false }
     ).select('_id customerPhone item shortId quantity totalPrice paymentStatus status paymentReference').lean();
@@ -734,18 +760,44 @@ async function approveCashRequest(shortId, tenantId, adminPhone, tenantDoc, busi
       return `⚠️ Cash request for #${shortId} can't be approved right now.`;
     }
 
+    // [FIX-CASH-FLOW-CONTINUATION] Reference shown to the customer should be the
+    // full human-readable payment reference (DSB-MMDD-XXXXXX) when we have one,
+    // matching what they were quoted at checkout — falling back to the bare
+    // shortId for older orders created before paymentReference existed.
+    const customerRef = order.paymentReference || order.shortId || shortId;
+
     await dispatchMessage(order.customerPhone, {
       type: 'text',
       body:
-        `✅ *Cash Payment Approved*\n\n` +
-        `Your request for order *#${order.shortId || shortId}* has been confirmed.\n\n` +
-        `You may now proceed with payment by cash. We're standing by to process your order.`,
+        `✅ *Cash payment approved!*\n\n` +
+        `Your request for order *${customerRef}* has been approved.\n\n` +
+        `💵 You can pay in cash when you collect or receive your order.\n\n` +
+        `⏳ We'll confirm your order shortly — please wait. 🙏`,
     }, tenantDoc).catch(err => logger.warn('[AdminCmd] approveCashRequest: customer dispatch failed', {
       customerPhone: order.customerPhone, err: err.message,
     }));
 
     logger.info('[AdminCmd] Cash request approved', { shortId, adminPhone, tenantId });
-    return `✅ *Cash request approved*\n\nOrder #${shortId} — ${order.item}\nCustomer ${order.customerPhone} notified.`;
+
+    // [FIX-CASH-FLOW-CONTINUATION] Cash approval used to be a dead end: the admin
+    // got a plain-text "approved" receipt with no next action, so the order sat
+    // at cashRequestStatus='approved' / status='pending' until someone remembered
+    // to separately type "APPROVE <shortId>" or "CANCEL ORDER <shortId>". Send the
+    // admin actionable follow-up buttons instead so the order keeps moving:
+    //   - "Confirm Order"  → APPROVE_<shortId>, handled by confirmPayment() above,
+    //     which already knows (via isNoPaymentOrder) to send the customer "Order
+    //     Confirmed!" copy rather than "Payment Confirmed!" for cash orders.
+    //   - "Cancel Order"   → CANCEL_ORDER_<shortId>, handled by cancelOrderByShortId().
+    return {
+      type: 'buttons',
+      body:
+        `✅ *Cash payment approved* for order #${order.shortId || shortId}.\n\n` +
+        `Customer ${order.customerPhone} notified. Tap below when you're ready to confirm the order:`,
+      buttons: [
+        { id: `APPROVE_${order.shortId || shortId}`,      title: '✅ Confirm Order' },
+        { id: `CANCEL_ORDER_${order.shortId || shortId}`, title: '❌ Cancel Order'  },
+      ],
+    };
   } catch (err) {
     logger.error('[AdminCmd] approveCashRequest failed', { shortId, adminPhone, err: err.message });
     return `⚠️ Something went wrong approving the cash request for #${shortId}. Please try again.`;
@@ -788,7 +840,7 @@ async function rejectCashRequest(shortId, tenantId, adminPhone, tenantDoc, busin
       postFlowAck: null,
     }).catch(() => {});
 
-    const { buildPaymentInstructionsUI } = await import('../../payment/paymentService.js');
+    const { buildPaymentInstructionsUI } = await import('../payment/paymentService.js');
     const paymentUI = buildPaymentInstructionsUI(business, order.totalPrice, order.shortId || shortId, order.paymentReference || null);
     await dispatchMessage(order.customerPhone, paymentUI, tenantDoc).catch(err => logger.warn('[AdminCmd] rejectCashRequest: customer dispatch failed', {
       customerPhone: order.customerPhone, err: err.message,
@@ -990,7 +1042,7 @@ async function declineBooking(shortId, reason, tenantId, adminPhone, tenantDoc) 
             { id: 'QUESTION', title: '❓ Ask a Question'   },
           ]
         : [
-            { id: 'BOOK',     title: '📅 Try Different Date' },
+            { id: 'BOOK',     title: '📅 Pick Another Date' },
             { id: 'QUESTION', title: '❓ Ask a Question'      },
           ],
     },
@@ -1162,7 +1214,7 @@ async function markOrderReady(shortId, tenantId, adminPhone, tenantDoc, business
         `Please collect your order at the counter 😊\n\n` +
         `Thank you for choosing *${bizName}*!`,
       buttons: [
-        { id: `COLLECTED_${order.shortId || shortId}`, title: '✅ Collected — Thanks!' },
+        { id: `COLLECTED_${order.shortId || shortId}`, title: '✅ Collected — Thanks' },
         { id: 'SUPPORT', title: '❓ Need Help' },
       ],
     }, tenantDoc).catch(err => logger.warn('[AdminCmd] markOrderReady: customer dispatch failed', {
@@ -1188,6 +1240,18 @@ async function markOrderReady(shortId, tenantId, adminPhone, tenantDoc, business
 
 // ── Resume bot ────────────────────────────────────────────────────────────────
 async function resumeBot(customerPhone, tenantId, tenantDoc) {
+  // [FIX-RESUME-IDEMPOTENT] Read the session first so we know whether humanMode was
+  // actually true before this call. Without this, two near-simultaneous "RESUME BOT"
+  // taps (or a retried request) both saw updateSession() return the session doc
+  // (non-null just means "a session exists", not "humanMode actually changed") and
+  // both sent the customer a "Our automated assistant is back!" message — a
+  // redundant, slightly confusing duplicate for something that only happened once.
+  const priorSession = await (async () => {
+    const { getSession } = await import('../../core/sessions/sessionService.js');
+    return getSession(customerPhone, tenantId).catch(() => null);
+  })();
+  const wasHumanMode = priorSession?.humanMode === true;
+
   // upsert returns null when no document matches — meaning there is no active
   // session for this customer (TTL-expired). The admin gets a success message either
   // way (the bot IS effectively not running for that customer), but logging the miss
@@ -1211,7 +1275,9 @@ async function resumeBot(customerPhone, tenantId, tenantDoc) {
   // exists in the DB — firing a "bot is back!" message for a conversation that is gone
   // is confusing. The bot will re-create the session correctly on the customer's next
   // message regardless of whether we send this notification now.
-  if (updated && tenantDoc) {
+  // [FIX-RESUME-IDEMPOTENT] ...and only when humanMode was actually true before this
+  // call — see comment above.
+  if (updated && wasHumanMode && tenantDoc) {
     dispatchMessage(
       customerPhone,
       {

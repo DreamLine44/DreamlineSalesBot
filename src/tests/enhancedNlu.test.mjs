@@ -11,13 +11,13 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import {
   resolveProductEntities,
-} from '../core/nlu/enhancedNlu.js';
+} from '../core/nlu/extraction/enhancedNlu.js';
 import {
   isEnhancedNluEnabled,
   buildConversationContext,
   appendAiHistoryTurn,
   getAiHistoryMessages,
-} from '../core/nlu/nluContext.js';
+} from '../core/nlu/extraction/nluContext.js';
 
 function readSource(relPath) {
   return fs.readFileSync(new URL(relPath, import.meta.url), 'utf8');
@@ -107,7 +107,7 @@ test('resolveProductEntities: empty input returns empty array', () => {
 // ── Source wiring assertions ──────────────────────────────────────────────────
 
 test('groqProvider.js: classifyMessageStructured exports JSON NLU shape', () => {
-  const src = readSource('../core/ai/providers/groqProvider.js');
+  const src = readSource('../core/nlu/extraction/groqProvider.js');
   assert.match(src, /export async function classifyMessageStructured/);
   assert.match(src, /primaryIntent/);
   assert.match(src, /secondaryIntents/);
@@ -116,7 +116,7 @@ test('groqProvider.js: classifyMessageStructured exports JSON NLU shape', () => 
 });
 
 test('intentEngine.js: classifyWithAI delegates to enhanced NLU when enabled', () => {
-  const src = readSource('../core/intents/intentEngine.js');
+  const src = readSource('../core/nlu/classification/intentEngine.js');
   assert.match(src, /classifyMessageEnhanced/);
   assert.match(src, /isEnhancedNluEnabled/);
   assert.match(src, /nlu:\s*\{/);

@@ -7,22 +7,18 @@
 
 import { formatMoney } from '../../utils/formatCurrency.js';
 import { cartTotal, cartItemCount, formatCartSummary } from '../../core/shared/cartEngine.js';
-import { findBestMatch } from '../../utils/matchEngine.js';
+import { findBestMatch, getAIReply, getAiHistoryMessages, buildConversationContext } from '../../core/nlu/nluFeature.js';
 import { normalizeHoursDays } from '../../utils/businessHoursUtils.js';
-import { getAIReply } from '../../core/ai/providers/aiRouter.js';
-import { getAiHistoryMessages, buildConversationContext } from '../../core/nlu/nluContext.js';
 import {
   extractShortId,
   lookupActivityByReference,
   recoverRecentActivities,
   formatLookupFailureMessage,
   isValidShortIdFormat,
-} from '../activity/activityLookupService.js';
-import {
   formatOrderStatusCard,
   formatBookingStatusCard,
   detectStatusScope,
-} from '../activity/activityStatusService.js';
+} from '../activity/activityFeature.js';
 import {
   isBusinessScopeQuestion,
   mergeQuestionContext,

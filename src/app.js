@@ -30,7 +30,7 @@ import path           from 'path';
 
 const __dirname  = path.dirname(fileURLToPath(import.meta.url));
 const _require   = createRequire(import.meta.url);
-const { version } = (() => { try { return _require('./package.json'); } catch { return { version: '2.0.0' }; } })();
+const { version } = (() => { try { return _require('../package.json'); } catch { return { version: '2.0.0' }; } })();
 
 import crypto            from 'crypto';
 import { connectToDB }           from './config/database.js';
@@ -41,7 +41,7 @@ import { createRateLimiter, webhookLimiter, adminLimiter } from './middleware/ra
 import { requireApiKey, requireSuperAdminKey } from './middleware/authMiddleware.js';
 import { startScheduler, stopScheduler } from './services/shared/sharedFeature.js';
 import { provisionBookingDateFlowsOnStartup } from './services/booking/bookingFeature.js';
-import { aiHealthCheck }         from './core/ai/providers/aiRouter.js';
+import { aiHealthCheck }         from './core/nlu/extraction/aiRouter.js';
 import { registerAllModules }    from './core/shared/moduleRegistry.js';
 import { getSupportedModes }     from './config/modes.js';
 

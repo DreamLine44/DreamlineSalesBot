@@ -32,19 +32,15 @@
  */
 
 import crypto          from 'crypto';
-import Order          from '../models/Order.js';
-import Booking        from '../models/Booking.js';
-import Session        from '../models/Session.js';
-import UserProfile    from '../models/UserProfile.js';
-import BusinessConfig from '../models/BusinessConfig.js';
-import Tenant         from '../models/Tenant.js';
+import { Order, Booking, Session, UserProfile, BusinessConfig, Tenant } from '../models/index.js';
 import { getAnalyticsSummary, getAnalyticsTimeseries } from '../core/analytics/analyticsService.js';
 import { getTenantUsageSummary } from '../services/shared/sharedFeature.js';
-import { updateSession }       from '../core/sessions/sessionService.js';
+import { updateSession, getSession } from '../core/sessions/sessionService.js';
 import { dispatchText, dispatchMessage } from '../core/whatsapp/dispatcher.js';
 import { scheduleWaCatalogSync } from '../modules/catalog/waCatalogSyncScheduler.js';
 import logger from '../config/logger.js';
 import { formatOrderItemsForMessage } from '../services/order/orderService.js';
+import { applyAdminPhonesUpdate, getAdminPhones } from '../utils/adminPhones.js';
 
 // [AUDIT-FIX-9] User-supplied search strings were interpolated directly into
 // $regex filters (getCustomers below, and the equivalent pattern in
@@ -79,7 +75,7 @@ export async function getDashboardOverview(req, res) {
       UserProfile.countDocuments({ tenantId }),
       Session.countDocuments({ tenantId, humanMode: true }),
       getAnalyticsSummary(tenantId, 30),
-      BusinessConfig.findOne({ tenantId }).select('name businessMode adminPhone').lean(),
+      BusinessConfig.findOne({ tenantId }).select('name businessMode adminPhone adminPhones').lean(),
       // [AUDIT-FIX-USAGE-WIRE] getTenantUsageSummary() was built specifically
       // "for the dashboard overview" per its own doc comment, but nothing ever
       // called it — plan/limits/usage were invisible to every tenant. Folded
@@ -139,8 +135,26 @@ export async function updateOrderStatus(req, res) {
       return res.status(400).json({ error: `Invalid status. Must be one of: ${VALID_ORDER_STATUSES.join(', ')}` });
     }
 
+    // [FIX-DASH-SYNC] Guard against two separate bugs this endpoint previously had,
+    // both stemming from not sharing adminCommandService's state-machine treatment:
+    //   1. No idempotency guard — two rapid PATCHes (dashboard double-click, retried
+    //      request) both matched and both re-ran the customer-notification branch
+    //      below, sending duplicate "order ready" / "order confirmed" messages.
+    //      Added `status: { $ne: status }` so a PATCH that doesn't actually change
+    //      anything is a no-op instead of re-firing side effects.
+    //   2. Setting status:'confirmed' here never touched paymentStatus, so an order
+    //      confirmed via the dashboard still had paymentStatus !== 'confirmed'.
+    //      adminCommandService.confirmPayment()'s double-tap guard is keyed off
+    //      `paymentStatus: { $ne: 'confirmed' }` — if the SAME order was later
+    //      confirmed again via a WhatsApp APPROVE_<shortId> button (e.g. a stale
+    //      button tapped after dashboard staff already confirmed it), that guard
+    //      would still pass and send the customer a second "Order Confirmed!"
+    //      WhatsApp message. Setting paymentStatus:'confirmed' here keeps both
+    //      write paths agreeing on the same source of truth. Same reasoning applies
+    //      to cancelled/rejected — cancelOrderByShortId() sets paymentStatus:'cancelled'
+    //      too, so mirror that here rather than leaving it stale.
     const order = await Order.findOneAndUpdate(
-      { _id: orderId, tenantId },
+      { _id: orderId, tenantId, status: { $ne: status } },
       { $set: {
           status,
           ...(notes ? { notes } : {}),
@@ -149,7 +163,8 @@ export async function updateOrderStatus(req, res) {
           // is generated when the customer is shown payment instructions again. Without this
           // the scheduler / payment instructions UI would continue to display the old ref.
           ...(status === 'pending' ? { paymentReference: null } : {}),
-          ...(status === 'confirmed' ? { abandonedCartAt: null } : {}),
+          ...(status === 'confirmed' ? { abandonedCartAt: null, paymentStatus: 'confirmed' } : {}),
+          ...(status === 'cancelled' || status === 'rejected' ? { paymentStatus: 'cancelled' } : {}),
           // [FIX-32] Clear abandonedCartAt on completion/cancellation — order is no longer
           // "abandoned" regardless of outcome. Without this, the scheduler job could send
           // a follow-up nudge for an order that was already completed or cancelled.
@@ -164,7 +179,13 @@ export async function updateOrderStatus(req, res) {
       },
       { new: true },
     );
-    if (!order) return res.status(404).json({ error: 'Order not found' });
+    // Already at the requested status (idempotent no-op) — return the current order
+    // as-is rather than re-running notifications or reporting a false 404.
+    if (!order) {
+      const current = await Order.findOne({ _id: orderId, tenantId }).lean().catch(() => null);
+      if (!current) return res.status(404).json({ error: 'Order not found' });
+      return res.json({ order: current });
+    }
 
     // [FIX-6a] Notify customer — all significant status transitions
     try {
@@ -192,7 +213,7 @@ export async function updateOrderStatus(req, res) {
               `Please collect your order at the counter 😊\n\n` +
               `Thank you for choosing *${bizName}*!`,
             buttons: [
-              { id: `COLLECTED_${order.shortId}`, title: '✅ Collected — Thanks!' },
+              { id: `COLLECTED_${order.shortId}`, title: '✅ Collected — Thanks' },
               { id: 'SUPPORT',                     title: '❓ Need Help'           },
             ],
           }, tenant);
@@ -335,7 +356,7 @@ export async function notifyOrderReady(req, res) {
           `Please collect your order at the counter 😊\n\n` +
           `Thank you for choosing *${bizName}*!`,
         buttons: [
-          { id: `COLLECTED_${order.shortId}`, title: '✅ Collected — Thanks!' },
+          { id: `COLLECTED_${order.shortId}`, title: '✅ Collected — Thanks' },
           { id: 'SUPPORT',                     title: '❓ Need Help'           },
         ],
       }, tenant);
@@ -405,12 +426,27 @@ export async function updateBookingStatus(req, res) {
       updateFields.reminderSentAt = null; // re-arm the reminder
     }
 
+    // [FIX-DASH-BOOKING-SYNC] Same idempotency gap as updateOrderStatus above (see its
+    // [FIX-DASH-SYNC] comment) and the mirrored adminRoutes.js booking route — a
+    // retried/duplicated PATCH previously re-matched unconditionally and re-sent the
+    // customer notification below (e.g. a second "Booking Confirmed!" text) even when
+    // the booking was already at the requested status. Skip the guard when this PATCH
+    // is also changing date/time fields — that's a legitimate reschedule and should
+    // always apply even if `status` itself is unchanged (e.g. re-confirming a booking
+    // whose time was just corrected).
+    const isRescheduling = req.body.date !== undefined || req.body.time !== undefined;
     const booking = await Booking.findOneAndUpdate(
-      { _id: bookingId, tenantId },
+      isRescheduling
+        ? { _id: bookingId, tenantId }
+        : { _id: bookingId, tenantId, status: { $ne: status } },
       { $set: updateFields },
       { new: true },
     );
-    if (!booking) return res.status(404).json({ error: 'Booking not found' });
+    if (!booking) {
+      const current = await Booking.findOne({ _id: bookingId, tenantId }).lean().catch(() => null);
+      if (!current) return res.status(404).json({ error: 'Booking not found' });
+      return res.json({ booking: current });
+    }
 
     // [FIX-6b] Notify customer
     try {
@@ -514,11 +550,18 @@ export async function setHumanMode(req, res) {
     // The previous dynamic import() was unnecessary — sessionService has no circular
     // dependencies with dashboardController — and added async resolution overhead on
     // every humanMode toggle (a frequent admin action).
+    // [FIX-RESUME-IDEMPOTENT] Mirrors adminCommandService.resumeBot()'s fix — read the
+    // prior humanMode value first so a duplicate/retried PATCH that doesn't actually
+    // change anything doesn't re-send the "connected back to our automated assistant"
+    // notification a second time.
+    const priorSession = await getSession(phone, tenantId).catch(() => null);
+    const wasHumanMode = priorSession?.humanMode === true;
+
     const session = await updateSession(phone, tenantId, { humanMode });
     if (!session) return res.status(404).json({ error: 'Session not found' });
 
-    // When handing back to bot, let the customer know
-    if (!humanMode) {
+    // When handing back to bot, let the customer know — but only if it was actually ON.
+    if (!humanMode && wasHumanMode) {
       try {
         const tenant = await loadTenant(tenantId);
         if (tenant) {
@@ -591,7 +634,7 @@ export async function getBusinessSettings(req, res) {
   try {
     const { tenantId } = req.params;
     const business = await BusinessConfig.findOne({ tenantId })
-      .select('name description businessMode adminPhone address menuItems services faq payment leadCapture hours customMessages addOns settings multiItemCart waCatalog')
+      .select('name description businessMode adminPhone adminPhones address menuItems services faq payment leadCapture hours customMessages addOns settings multiItemCart waCatalog')
       .lean();
     if (!business) return res.status(404).json({ error: 'Business not found' });
     res.json({ business });
@@ -616,6 +659,15 @@ export async function updateBusinessSettings(req, res) {
     const updates = {};
     for (const key of allowed) {
       if (req.body[key] !== undefined) updates[key] = req.body[key];
+    }
+
+    // [FEAT-MULTI-ADMIN] The dashboard's single "Admin Phone" field may hold
+    // up to 2 numbers separated by ',' '/' or ';' — both numbers receive
+    // order/booking/payment notifications and can send admin commands.
+    // Expand into adminPhone (primary, unchanged for every existing
+    // single-number display line) + adminPhones (full list).
+    if (updates.adminPhone !== undefined) {
+      Object.assign(updates, applyAdminPhonesUpdate(updates.adminPhone));
     }
 
     // [FIX-SETTINGS-WHITELIST-1] Same $set-replaces-whole-subdocument hazard as

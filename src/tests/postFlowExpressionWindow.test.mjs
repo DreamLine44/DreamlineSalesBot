@@ -31,7 +31,7 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const src = readFileSync(join(__dirname, '../services/postFlowHandler.js'), 'utf8');
+const src = readFileSync(join(__dirname, '../services/shared/postFlowHandler.js'), 'utf8');
 
 function caseBody(caseLabel, src) {
   const startMarker = `case '${caseLabel}':`;

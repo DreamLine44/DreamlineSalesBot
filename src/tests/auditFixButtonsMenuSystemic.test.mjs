@@ -24,8 +24,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { buildWelcomeSequence } from '../core/conversations/moduleRouter.js';
 import { getModeConfig } from '../config/modes.js';
-import { detectIntent } from '../core/intents/intentEngine.js';
-import { INTENT_PATTERNS } from '../core/intents/patterns.js';
+import { detectIntent } from '../core/nlu/classification/intentEngine.js';
+import { INTENT_PATTERNS } from '../core/nlu/classification/patterns.js';
 
 // ── 1. Catalog welcome wiring ────────────────────────────────────────────────
 

@@ -65,17 +65,10 @@
  *                forever — the dashboard showed it as disconnected even when live.
  */
 
-import Tenant           from '../models/Tenant.js';
-import BusinessConfig   from '../models/BusinessConfig.js';
-import Session          from '../models/Session.js';
-import Order            from '../models/Order.js';
-import Booking          from '../models/Booking.js';
-import UserProfile      from '../models/UserProfile.js';
-import Analytics        from '../models/Analytics.js';
-import ProcessedMessage from '../models/ProcessedMessage.js';
-import WhatsAppConnectionRequest from '../models/WhatsAppConnectionRequest.js';
+import { Tenant, BusinessConfig, Session, Order, Booking, UserProfile, Analytics, ProcessedMessage, WhatsAppConnectionRequest } from '../models/index.js';
 import crypto           from 'crypto';
 import logger           from '../config/logger.js';
+import { applyAdminPhonesUpdate } from '../utils/adminPhones.js';
 
 // [AUDIT-FIX-9] Same fix as dashboardController.getCustomers — listTenants'
 // ?name= search was interpolated directly into a $regex filter. An unescaped
@@ -284,9 +277,13 @@ export async function createTenant(req, res) {
     const storedVerifyToken   = whatsapp.verifyToken   ? encryptToken(whatsapp.verifyToken)   : null;
     const storedWebhookSecret = whatsapp.webhookSecret ? encryptToken(whatsapp.webhookSecret) : null;
 
+    // [FEAT-MULTI-ADMIN] adminPhone may hold up to 2 numbers separated by
+    // ',' '/' or ';' — parse into adminPhone (primary) + adminPhones (full list).
+    const adminPhoneFields = applyAdminPhonesUpdate(adminPhone) || { adminPhone: null, adminPhones: [] };
+
     const tenant = await Tenant.create({
       name: name.trim(),
-      adminPhone,
+      ...adminPhoneFields,
       ...(email ? { email: email.trim() } : {}),
       onboardingStep: 1,
       whatsapp: {
@@ -304,7 +301,7 @@ export async function createTenant(req, res) {
       tenantId:      String(tenant._id),
       phoneNumberId: tenant.whatsapp.phoneNumberId,
       name:          name.trim(),
-      businessMode,  adminPhone,  description,
+      businessMode,  ...adminPhoneFields,  description,
       menuItems,     services,    payment,
       leadCapture,   faq,
       addOns: [],
@@ -577,6 +574,13 @@ export async function updateTenant(req, res) {
           updates[field] = flatVal;
         }
       }
+    }
+
+    // [FEAT-MULTI-ADMIN] 'adminPhone' may hold up to 2 numbers separated by
+    // ',' '/' or ';'. Expand it into the adminPhone (primary) + adminPhones
+    // (full list) pair the schema stores — same helper used by createTenant.
+    if (updates.adminPhone !== undefined) {
+      Object.assign(updates, applyAdminPhonesUpdate(updates.adminPhone));
     }
 
     // [FIX-CATALOGID-BUSINESSCONFIG-SYNC] Read the catalog ID out separately —

@@ -27,7 +27,7 @@ function read(relPath) {
 }
 
 function appointmentReminderCaseSource() {
-  const src = read('../services/postFlowHandler.js');
+  const src = read('../services/shared/postFlowHandler.js');
   const start = src.indexOf(`case 'APPOINTMENT_REMINDER':`);
   assert.ok(start !== -1, `'APPOINTMENT_REMINDER' case not found in postFlowHandler.js`);
   const end = src.indexOf(`case 'WALKIN':`, start);
@@ -49,7 +49,7 @@ test('postFlowHandler.js: APPOINTMENT_REMINDER answers questions via the AI prov
   assert.ok(qIdx !== -1);
   const afterQ = block.slice(qIdx, qIdx + 600);
   assert.ok(
-    afterQ.includes("await import('../core/ai/providers/aiRouter.js')"),
+    afterQ.includes("await import('../../core/nlu/nluFeature.js')"),
     'the isQuestion branch should call the AI provider to actually answer the question'
   );
 });

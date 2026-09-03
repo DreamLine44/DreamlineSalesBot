@@ -10,7 +10,7 @@
 // an existing one.
 //
 // CHANGES COVERED BY THIS FILE:
-//   1. core/intents/patterns.js — BUTTON_ID_MAP gained three new entries:
+//   1. core/nlu/classification/patterns.js — BUTTON_ID_MAP gained three new entries:
 //      MORE_MENU, MAIN_MENU, BROWSE_CATALOG. BROWSE_CATALOG in particular
 //      fixes a pre-existing dead-wiring bug: modules/catalog/waCatalogFlow.js's
 //      browseCatalogExplicit() and waCatalogConfig.js's withCatalogWelcomeOption()
@@ -51,8 +51,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import { detectIntent } from '../core/intents/intentEngine.js';
-import { BUTTON_ID_MAP } from '../core/intents/patterns.js';
+import { detectIntent } from '../core/nlu/classification/intentEngine.js';
+import { BUTTON_ID_MAP } from '../core/nlu/classification/patterns.js';
 import { buildWelcomeSequence } from '../core/conversations/moduleRouter.js';
 import { RESTAURANT_CONFIG } from '../modules/restaurant/configs/index.js';
 import { RETAIL_CONFIG } from '../modules/retail/flows/index.js';
@@ -87,7 +87,7 @@ test('BUTTON_ID_MAP: no duplicate/overwritten keys were introduced by the NAV-ME
   // Re-parse the source text (not the imported object, which can never show a
   // silently-overwritten duplicate key) — same technique patterns.test.mjs
   // already uses for this exact class of bug.
-  const src = readSource('../core/intents/patterns.js');
+  const src = readSource('../core/nlu/classification/patterns.js');
   const mapBody = src.slice(src.indexOf('BUTTON_ID_MAP = {'), src.indexOf('\n};', src.indexOf('BUTTON_ID_MAP = {')));
   const keyMatches = [...mapBody.matchAll(/^\s*'([A-Z0-9_]+)':/gm)].map(m => m[1]);
   const seen = new Set();

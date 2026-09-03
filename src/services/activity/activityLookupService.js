@@ -5,8 +5,7 @@
  * Used by status tracking, Q&A mode, and admin commands.
  */
 
-import Order from '../../models/Order.js';
-import Booking from '../../models/Booking.js';
+import { Order, Booking } from '../../models/index.js';
 import { resolveActiveOrder } from '../order/activeOrderResolver.js';
 import { getActiveBookings, getBookingByShortId } from '../booking/bookingService.js';
 

@@ -56,7 +56,7 @@ function classify(raw) {
 }
 
 test('intentEngine.js: wires up the direct ORDER/BOOKING phrase step before Levenshtein', () => {
-  const src = read('../core/intents/intentEngine.js');
+  const src = read('../core/nlu/classification/intentEngine.js');
   const exactIdx  = src.indexOf('4. Exact keyword match');
   const directIdx = src.indexOf('4.5. Direct ORDER / BOOKING phrase match');
   const levIdx    = src.indexOf('5. Partial match with Levenshtein');

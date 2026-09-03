@@ -4,7 +4,7 @@
  * [FIX-SILENT-ORDER-MISS companion] Read-only diagnostic.
  *
  * WHY:
- *   The direct-order matcher (cartEngine.js parseNaturalOrderMessage /
+ *   The direct-order matcher (cartMessageParser.js parseNaturalOrderMessage /
  *   parseMultiItemMessage, and matchEngine.js findBestMatch) only resolves a
  *   customer's typed product name to a cart line if it fuzzy-matches an
  *   AVAILABLE entry in business.menuItems with HIGH confidence. When a tenant's

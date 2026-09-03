@@ -12,8 +12,7 @@
 import { handleIncomingMessage } from './webhookController.js';
 import { getSession, clearSession } from '../core/sessions/sessionService.js';
 import { _registerSimSlot, _resolveSimSlotIfPending } from '../core/whatsapp/dispatcher.js';
-import BusinessConfig from '../models/BusinessConfig.js';
-import Tenant         from '../models/Tenant.js';
+import { BusinessConfig, Tenant } from '../models/index.js';
 import logger         from '../config/logger.js';
 
 // ── POST /api/message ─────────────────────────────────────────────────────────

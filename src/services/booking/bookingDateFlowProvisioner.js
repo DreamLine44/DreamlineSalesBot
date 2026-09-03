@@ -8,8 +8,7 @@
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import Tenant from '../../models/Tenant.js';
-import BusinessConfig from '../../models/BusinessConfig.js';
+import { Tenant, BusinessConfig } from '../../models/index.js';
 import { decryptToken } from '../../controllers/tenantController.js';
 import { resolveBookingDateFlowId } from './bookingDateFlow.js';
 import logger from '../../config/logger.js';

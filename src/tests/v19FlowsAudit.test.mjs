@@ -45,7 +45,7 @@ function read(relPath) {
 }
 
 test('patterns.js: RESCHEDULE button ID no longer aliases straight to START_BOOKING', () => {
-  const src = read('../core/intents/patterns.js');
+  const src = read('../core/nlu/classification/patterns.js');
   const match = src.match(/'RESCHEDULE':\s*'([A-Z_]+)'/);
   assert.ok(match, "Expected to find a BUTTON_ID_MAP entry for 'RESCHEDULE'");
   assert.notEqual(

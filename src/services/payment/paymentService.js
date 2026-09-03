@@ -34,11 +34,11 @@
  *                    (the retry-reactivation timestamp) falls within the window.
  */
 
-import Order          from '../../models/Order.js';
-import BusinessConfig from '../../models/BusinessConfig.js';
+import { Order, BusinessConfig } from '../../models/index.js';
 import { decryptToken } from '../../controllers/tenantController.js';
 import logger from '../../config/logger.js';
 import { formatMoney } from '../../utils/formatCurrency.js';
+import { getAdminPhones } from '../../utils/adminPhones.js';
 
 const PROOF_WINDOW_HOURS = Number(process.env.PROOF_ELIGIBLE_HOURS || 4);
 
@@ -90,11 +90,16 @@ export async function receiveProof(customerPhone, tenantId, imageId, tenantDoc) 
   // customer's experience backward.
   try {
     const business  = await BusinessConfig.findOne({ tenantId }).lean();
-    const adminPhone = business?.adminPhone || tenantDoc?.adminPhone;
-    if (adminPhone && tenantDoc) {
+    const adminPhones = getAdminPhones(business, tenantDoc);
+    if (adminPhones.length && tenantDoc) {
       const { dispatchMessage } = await import('../../core/whatsapp/dispatcher.js');
       const currency = business?.payment?.currency || 'D';
 
+      // [FEAT-MULTI-ADMIN] Each configured admin number gets its own image
+      // forward + approval card — imageForwarded is tracked per recipient
+      // since a delivery failure to one admin shouldn't be reported as a
+      // failure for the other.
+      for (const adminPhone of adminPhones) {
       // [FIX-IMG-ORDER] Forward the image FIRST (awaited), then the approval card.
       // Previously both were fire-and-forget so the card often arrived before the image,
       // making "Screenshot sent above ↑" incorrect.
@@ -173,6 +178,7 @@ export async function receiveProof(customerPhone, tenantId, imageId, tenantDoc) 
           err: cardErr.message, orderId: order._id, shortId: order.shortId, tenantId, customerPhone,
         });
       });
+      }
     }
   } catch (notifyErr) {
     // Proof is already saved on the order — an admin-notify failure must not be
@@ -218,11 +224,11 @@ export async function handleDonePayment(customerPhone, tenantId, tenantDoc) {
   if (tenantDoc) {
     try {
       const business   = await BusinessConfig.findOne({ tenantId }).lean();
-      const adminPhone = business?.adminPhone || tenantDoc?.adminPhone;
-      if (adminPhone) {
+      const adminPhones = getAdminPhones(business, tenantDoc);
+      if (adminPhones.length) {
         const { dispatchMessage } = await import('../../core/whatsapp/dispatcher.js');
         const currency = business?.payment?.currency || 'D';
-        await dispatchMessage(adminPhone, {
+        const alertPayload = {
           type: 'buttons',
           body:
             `✅ *Self-Confirmed Order*\n\n` +
@@ -235,7 +241,10 @@ export async function handleDonePayment(customerPhone, tenantId, tenantDoc) {
             { id: `APPROVE_${order.shortId}`, title: '✅ Mark Done' },
             { id: `REJECT_${order.shortId}`,  title: '❌ Cancel'    },
           ],
-        }, tenantDoc).catch(() => {});
+        };
+        for (const adminPhone of adminPhones) {
+          await dispatchMessage(adminPhone, alertPayload, tenantDoc).catch(() => {});
+        }
       }
     } catch (err) {
       logger.warn('[PaymentService] Admin notification for self-confirm failed (non-fatal)', { err: err.message });
@@ -368,11 +377,11 @@ export async function requestCashPayment(customerPhone, tenantId, tenantDoc) {
 
   try {
     const business = await BusinessConfig.findOne({ tenantId }).lean();
-    const adminPhone = business?.adminPhone || tenantDoc?.adminPhone;
-    if (adminPhone && tenantDoc) {
+    const adminPhones = getAdminPhones(business, tenantDoc);
+    if (adminPhones.length && tenantDoc) {
       const { dispatchMessage } = await import('../../core/whatsapp/dispatcher.js');
       const currency = business?.payment?.currency || 'D';
-      await dispatchMessage(adminPhone, {
+      const alertPayload = {
         type: 'buttons',
         body:
           `💵 *Cash Payment Request*\n\n` +
@@ -385,7 +394,10 @@ export async function requestCashPayment(customerPhone, tenantId, tenantDoc) {
           { id: `APPROVE_CASH_${order.shortId}`, title: '✅ Approve Cash' },
           { id: `REJECT_CASH_${order.shortId}`,  title: '❌ Reject'      },
         ],
-      }, tenantDoc).catch(() => {});
+      };
+      for (const adminPhone of adminPhones) {
+        await dispatchMessage(adminPhone, alertPayload, tenantDoc).catch(() => {});
+      }
     }
   } catch (err) {
     logger.warn('[PaymentService] Cash request admin alert failed (non-fatal)', { err: err.message, orderId: order._id });

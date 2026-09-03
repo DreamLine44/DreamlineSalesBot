@@ -16,8 +16,7 @@
 import '../config/env.js';
 import mongoose       from 'mongoose';
 import { connectToDB } from '../config/database.js';
-import Tenant         from '../models/Tenant.js';
-import BusinessConfig from '../models/BusinessConfig.js';
+import { Tenant, BusinessConfig } from '../models/index.js';
 import crypto         from 'crypto';
 
 const BUSINESSES = [

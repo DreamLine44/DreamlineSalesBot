@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { buildSystemPrompt } from '../core/ai/providers/groqProvider.js';
+import { buildSystemPrompt } from '../core/nlu/extraction/groqProvider.js';
 
 // [FIX-GROQ-HOURS] regression: hours.days stores decimal open/close NUMBERS
 // (8.5 = 08:30) plus a `closed` boolean — there is no openTime/closeTime field

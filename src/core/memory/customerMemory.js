@@ -26,9 +26,7 @@
  *               are unaffected by this rule.
  */
 
-import UserProfile from '../../models/UserProfile.js';
-import Order       from '../../models/Order.js';
-import Booking     from '../../models/Booking.js';
+import { UserProfile, Order, Booking } from '../../models/index.js';
 import mongoose    from 'mongoose';
 import logger      from '../../config/logger.js';
 

@@ -10,10 +10,10 @@
 
 import { updateSession, getSession } from '../../core/sessions/sessionService.js';
 import { updateName }                from '../../core/memory/customerMemory.js';
-import UserProfile from '../../models/UserProfile.js';
-import Tenant      from '../../models/Tenant.js';
+import { UserProfile, Tenant } from '../../models/index.js';
 import mongoose    from 'mongoose';
 import logger      from '../../config/logger.js';
+import { getAdminPhones } from '../../utils/adminPhones.js';
 
 const toOid = (id) => {
   if (!id) return id;
@@ -169,18 +169,18 @@ async function finaliseLead({ session, lead, business, tenantDoc }) {
   const cfg = business?.leadCapture || {};
   if (cfg.notifyAdmin && tenantDoc) {
     try {
-      const adminPhone = business?.adminPhone || tenantDoc?.adminPhone;
-      if (adminPhone) {
+      const adminPhones = getAdminPhones(business, tenantDoc);
+      if (adminPhones.length) {
         const { dispatchText } = await import('../../core/whatsapp/dispatcher.js');
         const nameStr  = lead.name  ? `\n👤 Name: *${lead.name}*`    : '';
         const emailStr = lead.email ? `\n📧 Email: *${lead.email}*`   : '';
-        dispatchText(
-          adminPhone,
+        const alertBody =
           `🎯 *New Lead Captured — ${bizName}*\n\n` +
           `📱 Phone: *${session.customerPhone}*${nameStr}${emailStr}\n\n` +
-          `Source: WhatsApp bot`,
-          tenantDoc
-        ).catch(() => {});
+          `Source: WhatsApp bot`;
+        for (const adminPhone of adminPhones) {
+          dispatchText(adminPhone, alertBody, tenantDoc).catch(() => {});
+        }
       }
     } catch (err) {
       logger.warn('[LeadCapture] Admin notification failed (non-fatal)', { err: err.message });

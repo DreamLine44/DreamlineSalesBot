@@ -34,8 +34,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import { INTENT_PATTERNS } from '../core/intents/patterns.js';
-import { detectIntent } from '../core/intents/intentEngine.js';
+import { INTENT_PATTERNS } from '../core/nlu/classification/patterns.js';
+import { detectIntent } from '../core/nlu/classification/intentEngine.js';
 
 function read(relPath) {
   return fs.readFileSync(new URL(relPath, import.meta.url), 'utf8');
@@ -44,7 +44,7 @@ function read(relPath) {
 // ── STATUS_CMD_RE single source of truth in activityStatusService ─────────
 
 test('activityStatusService.js: STATUS_CMD_RE is declared exactly once', () => {
-  const svcSrc = read('../services/activityStatusService.js');
+  const svcSrc = read('../services/activity/activityStatusService.js');
   const matches = svcSrc.match(/export const STATUS_CMD_RE = /g) || [];
   assert.equal(matches.length, 1, 'STATUS_CMD_RE should live in activityStatusService as the single source of truth');
   const whSrc = read('../controllers/webhookController.js');
@@ -53,7 +53,7 @@ test('activityStatusService.js: STATUS_CMD_RE is declared exactly once', () => {
 });
 
 test('activityStatusService.js: STATUS_CMD_RE recognises active order/booking phrasing', async () => {
-  const { STATUS_CMD_RE } = await import('../services/activityStatusService.js');
+  const { STATUS_CMD_RE } = await import('../services/activity/activityStatusService.js');
   const mustMatch = [
     'active order', 'active orders', 'active booking', 'active bookings',
     'do i have any active orders', 'do i have any active bookings',
@@ -112,7 +112,7 @@ test('_detectMidFlowStatusRequest never intercepts free-text or date/time flow s
 test('webhookController.js: mid-flow SUPPORT escape is present and imports INTENT_PATTERNS', () => {
   const src = read('../controllers/webhookController.js');
   assert.ok(
-    src.includes("import { INTENT_PATTERNS }") && src.includes("from '../core/intents/patterns.js'"),
+    /import\s*\{[^}]*\bINTENT_PATTERNS\b[^}]*\}\s*from\s*'\.\.\/core\/nlu\/nluFeature\.js'/.test(src),
     'INTENT_PATTERNS must be imported for the mid-flow SUPPORT escape to read SUPPORT keywords'
   );
   assert.ok(

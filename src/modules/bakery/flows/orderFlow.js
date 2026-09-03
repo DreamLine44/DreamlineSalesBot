@@ -14,19 +14,14 @@
 
 import { updateSession }  from '../../../core/sessions/sessionService.js';
 import { completeFlow, cancelFlow } from '../../../core/conversations/flowEngine.js';
-import { findBestMatch }  from '../../../utils/matchEngine.js';
-import { parseQuantity }  from '../../../utils/parseQuantity.js';
+import { findBestMatch, parseQuantity, parseMultiItemMessage, parseNaturalOrderMessage, parseCartModification } from '../../../core/nlu/nluFeature.js';
 import { saveOrder }      from '../../../services/order/orderService.js';
 import { trackOrderAnalytics } from '../../../core/analytics/analyticsService.js';
 import { buildWhatsAppImageUrl } from '../../../config/cloudinary.js';
-import { itemLabel }      from '../../../utils/itemLabel.js';
-import { formatMoney }    from '../../../utils/formatCurrency.js';
+import { itemLabel, formatMoney } from '../../../utils/formatFeature.js';
 import logger             from '../../../config/logger.js';
-import {
-  parseMultiItemMessage, mergeCartLines, enforceCartLimit,
-  cartTotal, cartToOrderItems, formatCartSummary, buildUnmatchedNote,
-  parseCartModification, applyCartModification,
-} from '../../../core/shared/cartEngine.js';
+import { mergeCartLines, enforceCartLimit, cartTotal, cartToOrderItems, formatCartSummary, buildUnmatchedNote, applyCartModification } from '../../../core/shared/cartEngine.js';
+import { getAdminPhones } from '../../../utils/adminPhones.js';
 
 const norm = (s = '') => s.toLowerCase().replace(/[^\w\s]/g, ' ').replace(/\s+/g, ' ').trim();
 
@@ -201,7 +196,7 @@ export async function handleBakeryOrderFlow({ session, message, business, tenant
 
       // [FIX-DUALLAYER-CONFIRM] Widened via shared regex guard so "yes please" /
       // "let's checkout" / "go ahead" also register, not just a bare word.
-      const { isAffirmative: _isAffirmativeCheckout } = await import('../../../core/shared/confirmationMatcher.js');
+      const { isAffirmative: _isAffirmativeCheckout } = await import('../../../core/nlu/nluFeature.js');
       const isCheckout = raw === 'CONFIRM' || /^(yes|y|yeah|yep|confirm|ok|okay|sure|checkout|place|done)$/i.test(clean) ||
         _isAffirmativeCheckout(raw);
       if (isCheckout) {
@@ -246,8 +241,11 @@ export async function handleBakeryOrderFlow({ session, message, business, tenant
       if (multiAdd) {
         newLines = multiAdd.lines;
       } else {
-        const { item: singleItem, confidenceLevel: singleConf } = findBestMatch(menu, clean);
-        if (singleItem && singleConf === 'HIGH') newLines = [{ item: singleItem, quantity: 1, variant: null }];
+        // [AUDIT-FIX-CONFIRM-ADD-QTY] Was findBestMatch(menu, clean) with a
+        // hardcoded quantity of 1 — see the matching fix note in
+        // restaurant/flows/orderFlow.js. Same problem, same fix.
+        const singleOrder = parseNaturalOrderMessage(menu, raw);
+        if (singleOrder?.lines?.length) newLines = singleOrder.lines;
       }
 
       if (newLines) {
@@ -438,7 +436,7 @@ export async function handleBakeryOrderFlow({ session, message, business, tenant
     // regex + Groq AI understanding on top of the button-ID check, which
     // still wins outright when it's an actual button tap.
     case 'CONFIRM': {
-      const { resolveConfirmation } = await import('../../../core/shared/confirmationMatcher.js');
+      const { resolveConfirmation } = await import('../../../core/nlu/nluFeature.js');
       const verdict = await resolveConfirmation({ raw, business });
       if (verdict === 'no') return cancelFlow(session, business);
       if (verdict !== 'yes') {
@@ -503,7 +501,7 @@ export async function handleBakeryOrderFlow({ session, message, business, tenant
       // Payment flow
       const payment = business?.payment;
       if (payment?.enabled && data.totalPrice) {
-        const { buildPaymentInstructionsUI } = await import('../../../services/paymentService.js');
+        const { buildPaymentInstructionsUI } = await import('../../../services/payment/paymentService.js');
         await updateSession(session.customerPhone, session.tenantId, {
           step: 'PAYMENT_PROOF', currentFlow: 'ORDER',
         });
@@ -531,8 +529,8 @@ export async function handleBakeryOrderFlow({ session, message, business, tenant
       // AWAIT_ADMIN_CONFIRM so the customer cannot place a duplicate order before
       // the admin acts — mirrors the restaurant/electronics pattern.
       try {
-        const adminPhone = business?.adminPhone || tenant?.adminPhone;
-        if (adminPhone && tenant && savedOrder) {
+        const adminPhones = getAdminPhones(business, tenant);
+        if (adminPhones.length && tenant && savedOrder) {
           const { dispatchMessage } = await import('../../../core/whatsapp/dispatcher.js');
           const currency    = business?.payment?.currency || 'D';
           const notesLine   = data.notes          ? `\n📝 Notes: ${data.notes}`             : '';
@@ -541,7 +539,7 @@ export async function handleBakeryOrderFlow({ session, message, business, tenant
           const itemsLine   = isCart
             ? `🧁 ${formatCartSummary(cart, business).replace(/\n/g, '\n🧁 ')}\n`
             : `🧁 *${data.quantity}× ${itemLabel(data.item, data.variant)}*\n`;
-          await dispatchMessage(adminPhone, {
+          const alertPayload = {
             type: 'buttons',
             body:
               `🔔 *New Bakery Order — ${business?.name || 'Bakery'}*\n\n` +
@@ -555,7 +553,10 @@ export async function handleBakeryOrderFlow({ session, message, business, tenant
               { id: `APPROVE_${savedOrder.shortId}`, title: '✅ Confirm Order' },
               { id: `REJECT_${savedOrder.shortId}`,  title: '❌ Cancel Order'  },
             ],
-          }, tenant).catch(e => logger.warn('[BakeryOrder] admin notify failed', { err: e.message }));
+          };
+          for (const adminPhone of adminPhones) {
+            await dispatchMessage(adminPhone, alertPayload, tenant).catch(e => logger.warn('[BakeryOrder] admin notify failed', { err: e.message }));
+          }
         }
       } catch {}
 
@@ -678,7 +679,7 @@ function _buildPickupTimeUI(business) {
     body:   `⏰ *When would you like it?*`,
     button: 'Choose time',
     sections: [{
-      title: 'Collection / Delivery Window',
+      title: 'Pickup / Delivery Time',
       rows: [
         { id: 'SLOT_MORNING',   title: '🌅 Morning',    description: '8:00 AM – 12:00 PM'  },
         { id: 'SLOT_AFTERNOON', title: '☀️ Afternoon',  description: '12:00 PM – 4:00 PM'  },

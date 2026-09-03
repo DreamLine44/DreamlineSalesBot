@@ -19,19 +19,14 @@
 
 import { updateSession }  from '../../../core/sessions/sessionService.js';
 import { completeFlow, cancelFlow } from '../../../core/conversations/flowEngine.js';
-import { getAIReply }     from '../../../core/ai/providers/aiRouter.js';
-import { findBestMatch }  from '../../../utils/matchEngine.js';
-import { parseQuantity }  from '../../../utils/parseQuantity.js';
+import { getAIReply, findBestMatch, parseQuantity, parseMultiItemMessage, parseNaturalOrderMessage, parseCartModification } from '../../../core/nlu/nluFeature.js';
 import { saveOrder }      from '../../../services/order/orderService.js';
 import { trackOrderAnalytics } from '../../../core/analytics/analyticsService.js';
 import logger             from '../../../config/logger.js';
 import { buildWhatsAppImageUrl } from '../../../config/cloudinary.js';
 import { formatMoney } from '../../../utils/formatCurrency.js';
-import {
-  parseMultiItemMessage, mergeCartLines, enforceCartLimit,
-  cartTotal, cartToOrderItems, formatCartSummary, buildUnmatchedNote,
-  parseCartModification, applyCartModification,
-} from '../../../core/shared/cartEngine.js';
+import { mergeCartLines, enforceCartLimit, cartTotal, cartToOrderItems, formatCartSummary, buildUnmatchedNote, applyCartModification } from '../../../core/shared/cartEngine.js';
+import { getAdminPhones } from '../../../utils/adminPhones.js';
 
 const norm = (s = '') => s.toLowerCase().replace(/[^\w\s]/g, ' ').replace(/\s+/g, ' ').trim();
 
@@ -222,7 +217,7 @@ export async function handleCosmeticsOrderFlow({ session, message, business, ten
 
       // [FIX-DUALLAYER-CONFIRM] Widened via shared regex guard so "yes please" /
       // "let's checkout" / "go ahead" also register, not just a bare word.
-      const { isAffirmative: _isAffirmativeCheckout } = await import('../../../core/shared/confirmationMatcher.js');
+      const { isAffirmative: _isAffirmativeCheckout } = await import('../../../core/nlu/nluFeature.js');
       const isCheckout = raw === 'CONFIRM' || /^(yes|y|yeah|yep|confirm|ok|okay|sure|checkout|place|done)$/i.test(clean) ||
         _isAffirmativeCheckout(raw);
       if (isCheckout) {
@@ -233,7 +228,7 @@ export async function handleCosmeticsOrderFlow({ session, message, business, ten
           type: 'buttons',
           body: `💄 *Your Order:*\n\n${formatCartSummary(cart, business)}\n\nAny special requests for the whole order?\n_(e.g. "Gift wrap", "Include a card")_`,
           buttons: [
-            { id: 'GIFT_NONE', title: '✅ No special requests' },
+            { id: 'GIFT_NONE', title: '✅ No requests' },
             { id: 'CANCEL',    title: '❌ Cancel'               },
           ],
           footer: 'Or type your request and send',
@@ -268,9 +263,14 @@ export async function handleCosmeticsOrderFlow({ session, message, business, ten
       if (multiAdd && !multiAdd.lines.some(l => _shadeOptions(l.item).length)) {
         newLines = multiAdd.lines;
       } else {
-        const { item: singleItem, confidenceLevel: singleConf } = findBestMatch(menu, clean);
-        if (singleItem && singleConf === 'HIGH' && !_shadeOptions(singleItem).length) {
-          newLines = [{ item: singleItem, quantity: 1, variant: null }];
+        // [AUDIT-FIX-CONFIRM-ADD-QTY] Was findBestMatch(menu, clean) with a
+        // hardcoded quantity of 1 — see the matching fix note in
+        // restaurant/flows/orderFlow.js. Same problem, same fix, with the
+        // shade-options restriction preserved.
+        const singleOrder = parseNaturalOrderMessage(menu, raw);
+        const singleItem = singleOrder?.lines?.[0]?.item;
+        if (singleItem && !_shadeOptions(singleItem).length) {
+          newLines = singleOrder.lines;
         }
       }
 
@@ -355,7 +355,7 @@ export async function handleCosmeticsOrderFlow({ session, message, business, ten
         type: 'buttons',
         body: `🎁 Any special requests?\n_(e.g. "Gift wrap", "Include a card", "Fragrance-free packaging")_`,
         buttons: [
-          { id: 'GIFT_NONE', title: '✅ No special requests' },
+          { id: 'GIFT_NONE', title: '✅ No requests' },
           { id: 'CANCEL',    title: '❌ Cancel'               },
         ],
         footer: 'Or type your request and send',
@@ -402,10 +402,10 @@ export async function handleCosmeticsOrderFlow({ session, message, business, ten
     }
 
     // ── CONFIRM ───────────────────────────────────────────────────────────────
-    // [FIX-DUALLAYER-CONFIRM] See core/shared/confirmationMatcher.js — was
+    // [FIX-DUALLAYER-CONFIRM] See core/nlu/resolution/confirmationMatcher.js — was
     // exact-match-only, so a typed "yes please"/"go ahead" never registered.
     case 'CONFIRM': {
-      const { resolveConfirmation } = await import('../../../core/shared/confirmationMatcher.js');
+      const { resolveConfirmation } = await import('../../../core/nlu/nluFeature.js');
       const verdict = await resolveConfirmation({ raw, business });
       if (verdict === 'no') return cancelFlow(session, business);
       if (verdict !== 'yes') {
@@ -463,7 +463,7 @@ export async function handleCosmeticsOrderFlow({ session, message, business, ten
       // Payment
       const payment = business?.payment;
       if (payment?.enabled && data.totalPrice) {
-        const { buildPaymentInstructionsUI } = await import('../../../services/paymentService.js');
+        const { buildPaymentInstructionsUI } = await import('../../../services/payment/paymentService.js');
         await updateSession(session.customerPhone, session.tenantId, {
           step: 'PAYMENT_PROOF', currentFlow: 'ORDER',
         });
@@ -487,14 +487,14 @@ export async function handleCosmeticsOrderFlow({ session, message, business, ten
       // to dispatchMessage with APPROVE_/REJECT_ buttons. Also parks session at
       // AWAIT_ADMIN_CONFIRM — mirrors restaurant/electronics/bakery pattern.
       try {
-        const adminPhone = business?.adminPhone || tenant?.adminPhone;
-        if (adminPhone && tenant && savedOrder) {
+        const adminPhones = getAdminPhones(business, tenant);
+        if (adminPhones.length && tenant && savedOrder) {
           const { dispatchMessage } = await import('../../../core/whatsapp/dispatcher.js');
           const currency = business?.payment?.currency || 'D';
           const itemsLine = isCart
             ? `💄 ${formatCartSummary(cart, business).replace(/\n/g, '\n💄 ')}\n`
             : `💄 *${data.quantity}× ${data.item?.name}${shade}*\n`;
-          await dispatchMessage(adminPhone, {
+          const alertPayload = {
             type: 'buttons',
             body:
               `🔔 *New Cosmetics Order — ${business?.name || 'Beauty'}*\n\n` +
@@ -508,7 +508,10 @@ export async function handleCosmeticsOrderFlow({ session, message, business, ten
               { id: `APPROVE_${savedOrder.shortId}`, title: '✅ Confirm Order' },
               { id: `REJECT_${savedOrder.shortId}`,  title: '❌ Cancel Order'  },
             ],
-          }, tenant).catch(e => logger.warn('[CosmeticsOrder] admin notify failed', { err: e.message }));
+          };
+          for (const adminPhone of adminPhones) {
+            await dispatchMessage(adminPhone, alertPayload, tenant).catch(e => logger.warn('[CosmeticsOrder] admin notify failed', { err: e.message }));
+          }
         }
       } catch {}
 

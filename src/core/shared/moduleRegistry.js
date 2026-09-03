@@ -89,28 +89,106 @@ async function startFlowOrAnswerQuestion({ flowName, session, message, business,
   return handleQuestionAction({ session, message, business, tenant, isInteractive });
 }
 
-async function parseDirectBookingRequest(message, business) {
+// [FEAT-NLU-BOOKING-PREFILL] Rewritten for PARTIAL, multi-entity extraction —
+// previously this required party size, date, AND time to all resolve or it
+// discarded the entire message (`return null` on any single miss), and party
+// size only recognised digits ("table for 3"), not word numbers ("table for
+// three people") even though the flow's own PARTY_SIZE step already accepts
+// word numbers via parseQuantity(). Concretely, "hello I want to book a table
+// for three people on the first of next month at 3 pm" used to extract
+// NOTHING (party size: "three" isn't a digit; date: "the first of next
+// month" didn't match the old date regex either) even though every field is
+// unambiguously stated — the customer was asked all three questions again
+// from scratch.
+//
+// Now returns whatever subset of {partySize, date, parsedDate, dateRaw, time}
+// it can confidently resolve, independently per field, instead of all-or-
+// nothing — callers (see the START_BOOKING action registration below and
+// bookingFlow.js's INIT branch) pre-fill whatever was found and only ask for
+// what's still missing.
+// Exported (in addition to being used internally by the START_BOOKING action
+// below) so it can be unit-tested directly with real inputs/outputs rather
+// than only via source-text pattern matching — it has no DB dependency of its
+// own (both dynamic imports inside it — parseQuantity.js, bookingDateParser.js
+// — are pure, no-mongoose modules), so it's safe and cheap to call in tests.
+export async function parseDirectBookingRequest(message, business) {
   const raw = String(message || '').trim();
-  const partyMatch = raw.match(/\b(?:table|party)\s*(?:for|of)?\s*(\d{1,2})\b/i)
-    || raw.match(/\bfor\s+(\d{1,2})\b/i);
-  const timeMatch = raw.match(/\b(\d{1,2}(?::\d{2})?\s*(?:am|pm))\b/i);
-  const dateMatch = raw.match(/\b(?:today|tomorrow|next\s+(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday))\b/i)
-    || raw.match(/\b\d{1,2}(?:st|nd|rd|th)?\s+(?:of\s+)?(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)(?:\s+\d{4})?\b/i);
-  if (!partyMatch || !timeMatch || !dateMatch) return null;
+  if (raw.length < 4) return null;
 
-  const { resolveBookingDateInput } = await import('../../services/booking/bookingDateParser.js');
-  const tz = business?.hours?.timezone || 'UTC';
-  const resolved = await resolveBookingDateInput(dateMatch[0], tz);
-  if (!resolved.ok) return null;
+  const result = {};
 
-  const time = timeMatch[1].replace(/\s+/g, ' ').trim();
-  return {
-    partySize: Number(partyMatch[1]),
-    date: resolved.label,
-    parsedDate: resolved.parsed,
-    dateRaw: resolved.raw,
-    time,
-  };
+  // ── Party size — digit OR word number, near "table/party/booking for" or
+  // trailing "N people/guests/persons/pax/of us". Isolating the numeric token
+  // first, then handing ONLY that token to parseQuantity(), is what lets word
+  // numbers work here — parseQuantity("three people") itself returns null
+  // (it has no digit to fall back on), but parseQuantity("three") is 3.
+  //
+  // [AUDIT-FIX-BOOKING-ARTICLE-1] "a"/"an" are ALSO plain grammatical articles
+  // ("a table for a friend's birthday", "a reservation for an anniversary
+  // dinner", "a table for a party of six"), so they must never resolve to a
+  // bare party size of 1 unless a qualifier word unambiguously marks them as
+  // a quantity. NUM_WORD_STRICT (no a/an) is used for the general pattern,
+  // which has an OPTIONAL trailing qualifier — matching "a"/"an" there let
+  // any unrelated noun phrase right after "for a"/"for an" silently produce
+  // partySize:1, and (worse) let the regex stop at "a" instead of continuing
+  // on to a real number later in the same sentence ("a party of six" matched
+  // "a", never reaching "six"). "a"/"an" are only trusted when IMMEDIATELY
+  // followed by an explicit singular/plural quantity qualifier (handled by
+  // partyMatch2 below, whose qualifier list is mandatory, not optional).
+  const NUM_WORD_STRICT = '(?:\\d{1,2}|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|dozen|couple|few|several)';
+  const NUM_WORD = `(?:${NUM_WORD_STRICT}|a|an)`;
+  const partyMatch =
+    raw.match(new RegExp(`\\b(?:table|party|booking|reservation)\\s*(?:for|of)?\\s*(${NUM_WORD_STRICT})\\s*(?:people|persons|guests|pax)?\\b`, 'i')) ||
+    raw.match(new RegExp(`\\bfor\\s+(${NUM_WORD})\\s+(?:people|persons|guests|pax|person|guest|of\\s+us)\\b`, 'i'));
+  if (partyMatch) {
+    const { parseQuantity } = await import('../nlu/resolution/parseQuantity.js');
+    const partySize = parseQuantity(partyMatch[1]);
+    // Sanity cap matches bookingFlow.js's own PARTY_SIZE step limit — an
+    // implausible extraction (party of 90 from a garbled match) is dropped
+    // rather than silently pre-filled, so the customer gets asked normally.
+    if (partySize && partySize >= 1 && partySize <= 50) result.partySize = partySize;
+  }
+
+  // ── Date — try several candidate substrings against the SAME deterministic
+  // resolver the DATE step itself uses (resolveBookingDateInput), instead of
+  // a narrow whitelist regex that only recognised "today/tomorrow/next
+  // <weekday>" or a full "<ordinal> of <month name>". This reuses one source
+  // of truth for "what counts as a valid date" rather than maintaining a
+  // second, weaker copy of it here.
+  const dateCandidates = [
+    // today / tomorrow / next <weekday>
+    raw.match(/\btoday\b/i)?.[0],
+    raw.match(/\btomorrow\b/i)?.[0],
+    raw.match(/\bnext\s+(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/i)?.[0],
+    raw.match(/\bthis\s+(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/i)?.[0],
+    // "<ordinal> (day) of next/this month" — word "first" or digit ordinal
+    raw.match(/\b(?:the\s+)?(?:first|1st|\d{1,2}(?:st|nd|rd|th)?)\s+(?:day\s+)?of\s+(?:next|this)\s+month\b/i)?.[0],
+    // "<ordinal> of <month name>" / "<month name> <ordinal>", optional year
+    raw.match(/\b\d{1,2}(?:st|nd|rd|th)?\s+(?:of\s+)?(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)(?:\s+\d{4})?\b/i)?.[0],
+    raw.match(/\b(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\s+\d{1,2}(?:st|nd|rd|th)?(?:\s+\d{4})?\b/i)?.[0],
+    // numeric date formats (dd/mm, dd-mm-yyyy, etc.)
+    raw.match(/\b\d{1,2}[\/\-.]\d{1,2}(?:[\/\-.]\d{2,4})?\b/)?.[0],
+  ].filter(Boolean);
+
+  if (dateCandidates.length) {
+    const { resolveBookingDateInput } = await import('../nlu/resolution/bookingDateParser.js');
+    const tz = business?.hours?.timezone || 'UTC';
+    for (const candidate of dateCandidates) {
+      const resolved = await resolveBookingDateInput(candidate, tz).catch(() => null);
+      if (resolved?.ok) {
+        result.date = resolved.label;
+        result.parsedDate = resolved.parsed;
+        result.dateRaw = resolved.raw;
+        break;
+      }
+    }
+  }
+
+  // ── Time — "3pm", "3:30 pm", "15:00".
+  const timeMatch = raw.match(/\b(\d{1,2}(?::\d{2})?\s*(?:am|pm))\b/i) || raw.match(/\b([01]?\d|2[0-3]):([0-5]\d)\b/);
+  if (timeMatch) result.time = timeMatch[0].replace(/\s+/g, ' ').trim();
+
+  return Object.keys(result).length ? result : null;
 }
 
 function directOrderHandoff(mode, lines) {
@@ -325,10 +403,8 @@ export async function registerAllModules() {
     // to order".
     let orderSession = session;
     const nluProducts = session?.data?._nluPending?.products;
-    const {
-      mergeCartLines, parseMultiItemMessage, parseNaturalOrderMessage,
-      parseCartModification, applyCartModification,
-    } = await import('../shared/cartEngine.js');
+    const { mergeCartLines, applyCartModification } = await import('../shared/cartEngine.js');
+    const { parseMultiItemMessage, parseNaturalOrderMessage, parseCartModification } = await import('../nlu/resolution/cartMessageParser.js');
     const menu = (business?.menuItems || []).filter(item => item.available !== false);
     const existingCart = Array.isArray(session?.data?.cart) ? session.data.cart : [];
     const cartModification = existingCart.length
@@ -498,15 +574,42 @@ export async function registerAllModules() {
     // every direct-booking request for a service-less business threw
     // "updateSession is not defined" instead of confirming the booking.
     const { updateSession } = await import('../sessions/sessionService.js');
+    // [FEAT-NLU-BOOKING-PREFILL] parseDirectBookingRequest() now returns
+    // PARTIAL matches (whatever of partySize/date/time it could resolve, not
+    // all-or-nothing — see that function's comment). We can no longer jump
+    // straight to the all-fields-confirmed step just because `directBooking`
+    // is truthy, since it might only contain one field. Instead: merge
+    // whatever was found into `data` and hand off to the flow with step:null
+    // so its own INIT branch (message === null) — which now checks for pre-filled
+    // data via _resumeFromPrefill() — decides where to actually land: skips
+    // any step whose answer is already known, and only asks for what's
+    // genuinely still missing. startFlow() can't be reused here because it
+    // unconditionally resets `data` to {} on every call, which would wipe out
+    // the very fields we just extracted.
+    // [AUDIT-FIX-BOOKING-SERVICES-PREFILL] This used to be gated behind
+    // `!(business?.services || []).length` — i.e. prefill only ever applied
+    // to booking-capable businesses with NO services list configured
+    // (plain restaurants). Any SALON/BARBERSHOP/SERVICES/GENERAL tenant that
+    // configures a services list (the common case for those modes) fell
+    // straight to the plain startFlow() call below, which unconditionally
+    // resets `data` to {} — so a message like "book a haircut on the 15th
+    // at 3pm" silently discarded the date and time it had just extracted,
+    // for the majority of booking-capable business types. bookingFlow.js's
+    // SELECT_SERVICE case now itself checks for pre-filled date/time once a
+    // service is chosen (see its [AUDIT-FIX-BOOKING-SERVICES-PREFILL] note),
+    // so merging here is safe regardless of whether services are configured
+    // — the flow's own INIT/SELECT_SERVICE branches decide what's still
+    // missing either way.
     const directBooking = await parseDirectBookingRequest(message, business).catch(() => null);
-    if (directBooking && !(business?.services || []).length) {
+    if (directBooking) {
+      const mergedData = { ...(session.data || {}), ...directBooking };
       const updated = await updateSession(session.customerPhone, session.tenantId, {
         currentFlow: 'BOOKING',
-        step: 'BOOKING_CONFIRM',
-        data: { ...(session.data || {}), ...directBooking },
+        step: null,
+        data: mergedData,
       });
       return advance({
-        session: { ...session, ...updated, currentFlow: 'BOOKING', step: 'BOOKING_CONFIRM', data: { ...(session.data || {}), ...directBooking } },
+        session: { ...session, ...updated, currentFlow: 'BOOKING', step: null, data: mergedData },
         message: null,
         business,
         tenant,
