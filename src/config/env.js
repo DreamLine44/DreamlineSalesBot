@@ -17,8 +17,21 @@
  */
 import { config } from 'dotenv';
 
-// Load env-specific overrides first (.env.production.local), then base .env
-config({ path: `.env.${process.env.NODE_ENV || 'development'}.local` });
+function isTestRuntime() {
+  const argv = process.argv || [];
+  return (
+    process.env.NODE_ENV === 'test' ||
+    argv.includes('--test') ||
+    argv.some(arg => /node:test/.test(arg) || /\.test\.(mjs|js|cjs)$/.test(arg))
+  );
+}
+
+// Load env-specific overrides first (.env.production.local), then base .env.
+// Skip the repo-local .env.*.local files during automated tests so test runs do
+// not inherit developer-specific overrides from the workspace itself.
+if (!isTestRuntime()) {
+  config({ path: `.env.${process.env.NODE_ENV || 'development'}.local` });
+}
 config({ path: '.env', override: false });
 
 // ── Exported env vars ─────────────────────────────────────────────────────────
