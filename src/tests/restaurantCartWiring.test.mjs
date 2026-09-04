@@ -75,6 +75,17 @@ test('webhook refreshes the session before deciding whether a flow is active', (
     'the active-flow gate must use a freshly loaded session');
 });
 
+test('webhook restores ORDER/CONFIRM when a confirm tap finds a cart without currentFlow', () => {
+  const webhookSrc = read('../controllers/webhookController.js');
+  const activeFlowIndex = webhookSrc.indexOf('// ── 15. Active flow');
+  const block = webhookSrc.slice(activeFlowIndex, activeFlowIndex + 2600);
+  assert.match(block, /CONFIRM_ORDER/);
+  assert.match(block, /session\.data\?\.cart/);
+  assert.match(block, /currentFlow:\s*'ORDER'/);
+  assert.match(block, /step:\s*'CONFIRM'/);
+  assert.match(block, /advance\(/);
+});
+
 test('restaurant config documents ITEM_ADDED, not CART_REVIEW', () => {
   assert.match(configSrc, /ORDER:\s*\[[^\]]*'ITEM_ADDED'[^\]]*\]/);
   assert.doesNotMatch(configSrc, /ORDER:\s*\[[^\]]*'CART_REVIEW'[^\]]*\]/);

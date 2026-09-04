@@ -2402,6 +2402,34 @@ async function _handleIncomingMessageSerialized({ tenantId, tenantDoc, from, msg
   // currentFlow:null cannot route a valid CONFIRM tap through generic intent
   // handling and reset the customer to the welcome menu.
   session = await getSession(from, tenantId) || session;
+
+  // [FIX-CONFIRM-CART-RECOVERY] A review card can remain visible in WhatsApp
+  // after another request clears currentFlow while leaving the assembled cart
+  // in session.data. In that state a valid Confirm button used to skip this
+  // block entirely and fall through to the generic welcome router. Restore the
+  // same ORDER/CONFIRM state used by every normal order handoff before calling
+  // advance(). Accept the visible title too because older Meta deliveries may
+  // provide the reply title when the button ID is unavailable.
+  const confirmTapText = String(messageText || '').trim().toUpperCase();
+  const isConfirmTap = isInteractive && (
+    confirmTapText === 'CONFIRM' ||
+    confirmTapText === 'CONFIRM_ORDER' ||
+    confirmTapText === '✅ CONFIRM ORDER'
+  );
+  if (isConfirmTap && !session.currentFlow && Array.isArray(session.data?.cart) && session.data.cart.length) {
+    await updateSession(from, tenantId, {
+      currentFlow: 'ORDER',
+      step: 'CONFIRM',
+      orderChannel: session.orderChannel || 'menu',
+    });
+    session = await getSession(from, tenantId) || {
+      ...session,
+      currentFlow: 'ORDER',
+      step: 'CONFIRM',
+      orderChannel: session.orderChannel || 'menu',
+    };
+  }
+
   if (session.currentFlow) {
     // Natural-order ambiguity continuation: the clarification buttons use the
     // live menu item's name as their ID. Consume that selection before any
