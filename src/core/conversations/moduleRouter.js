@@ -35,7 +35,7 @@
  *             config with no circular dependencies so there is no reason for lazy loading.
  */
 
-import { startFlow, cancelFlow } from './flowEngine.js';
+import { startFlow, advance, cancelFlow } from './flowEngine.js';
 import { updateSession }         from '../sessions/sessionService.js';
 import { dispatchMessage }          from '../whatsapp/dispatcher.js';
 import { getModeConfig }         from '../../config/modes.js';
@@ -55,6 +55,33 @@ const ACTION_REGISTRY = new Map();
 
 export function registerAction(action, handler) {
   ACTION_REGISTRY.set(action.toUpperCase(), handler);
+}
+
+async function recoverConfirmAction({ session, message, business, tenant }) {
+  const cart = Array.isArray(session?.data?.cart) ? session.data.cart : [];
+  if (!cart.length) {
+    logger.warn('[Router] CONFIRM received without an active cart', {
+      customerPhone: session?.customerPhone,
+      tenantId: session?.tenantId,
+    });
+    return {
+      type: 'buttons',
+      body: '⚠️ This order session has expired. Please start the order again.',
+      buttons: [{ id: 'ORDER', title: '🛒 Start New Order' }],
+    };
+  }
+
+  const recoveredSession = { ...session, currentFlow: 'ORDER', step: 'CONFIRM' };
+  await updateSession(session.customerPhone, session.tenantId, {
+    currentFlow: 'ORDER',
+    step: 'CONFIRM',
+  });
+  logger.warn('[Router] Recovered CONFIRM into active ORDER flow', {
+    customerPhone: session.customerPhone,
+    tenantId: session.tenantId,
+    message,
+  });
+  return advance({ session: recoveredSession, message, business, tenant, isInteractive: true });
 }
 
 /**
@@ -1032,6 +1059,13 @@ export async function route({ action, intent, session, message, business, tenant
   const handler = ACTION_REGISTRY.get(upper);
   if (handler) {
     return handler({ session, message, business, tenant, intent, isInteractive, suggestion });
+  }
+
+  // [FIX-CONFIRM-ROUTER-BOUNDARY] A CONFIRM tap must never become the generic
+  // welcome response. Normally webhookController sends it directly to advance;
+  // this recovery handles a race or stale-flow snapshot that reaches the router.
+  if (upper === 'CONFIRM' || upper === 'CONFIRM_ORDER') {
+    return recoverConfirmAction({ session, message, business, tenant });
   }
 
   // [FIX-RTR-3] NOTE: START_ORDER and START_BOOKING are intentionally handled here

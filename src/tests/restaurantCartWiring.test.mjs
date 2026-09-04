@@ -86,6 +86,14 @@ test('webhook restores ORDER/CONFIRM when a confirm tap finds a cart without cur
   assert.match(block, /advance\(/);
 });
 
+test('router has a final CONFIRM recovery instead of treating it as an unknown welcome action', () => {
+  const routerSrc = read('../core/conversations/moduleRouter.js');
+  assert.match(routerSrc, /recoverConfirmAction/);
+  assert.match(routerSrc, /upper === 'CONFIRM' \|\| upper === 'CONFIRM_ORDER'/);
+  assert.match(routerSrc, /advance\(/);
+  assert.match(routerSrc, /order session has expired/);
+});
+
 test('restaurant config documents ITEM_ADDED, not CART_REVIEW', () => {
   assert.match(configSrc, /ORDER:\s*\[[^\]]*'ITEM_ADDED'[^\]]*\]/);
   assert.doesNotMatch(configSrc, /ORDER:\s*\[[^\]]*'CART_REVIEW'[^\]]*\]/);
