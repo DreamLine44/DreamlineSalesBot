@@ -147,6 +147,19 @@ export async function advance({ session, message, business, tenant, isInteractiv
 export async function startFlow({ flowName, session, business, tenant, message = null }) {
   const mode = (business?.businessMode || 'RETAIL').toUpperCase();
   const key  = `${mode}:${flowName.toUpperCase()}`;
+  const handler = FLOW_REGISTRY.get(key) || GENERIC_REGISTRY.get(flowName.toUpperCase());
+
+  if (!handler) {
+    logger.warn(`[FlowEngine] No handler to start ${key}`);
+    await updateSession(session.customerPhone, session.tenantId, {
+      currentFlow: null, step: null, data: {},
+    }).catch(err => logger.warn('[FlowEngine] Failed to clear unsupported flow', { err: err.message }));
+    return {
+      type:    'buttons',
+      body:    '⚠️ This option is not available. Please choose another action.',
+      buttons: [{ id: 'SHOW_MENU', title: '🔄 Start Over' }],
+    };
+  }
 
   // Reset session to fresh flow state.
   // [FIX-STARTFLOW-DOUBLE-READ] updateSession() uses findOneAndUpdate(..., { new: true })
@@ -186,16 +199,6 @@ export async function startFlow({ flowName, session, business, tenant, message =
   }
 
   const updated = await updateSession(session.customerPhone, session.tenantId, sessionPatch);
-
-  const handler = FLOW_REGISTRY.get(key) || GENERIC_REGISTRY.get(flowName.toUpperCase());
-  if (!handler) {
-    logger.warn(`[FlowEngine] No handler to start ${key}`);
-    return {
-      type:    'buttons',
-      body:    '⚠️ This option is not available. Please choose another action.',
-      buttons: [{ id: 'SHOW_MENU', title: '🔄 Start Over' }],
-    };
-  }
 
   // Call handler with the forwarded message (null for a genuine fresh-tap start,
   // to trigger first-step UI; the customer's real text when one was passed in,

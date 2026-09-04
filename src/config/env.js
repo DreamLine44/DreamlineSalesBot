@@ -88,6 +88,9 @@ export function validateEnv() {
     if (!process.env.ENCRYPTION_KEY) {
       errors.push('Missing required env var: ENCRYPTION_KEY (any non-empty string; used for WhatsApp access token encryption at rest — generate with: openssl rand -hex 32)');
     }
+    if (!process.env.ADMIN_SESSION_SECRET) {
+      errors.push('Missing required env var: ADMIN_SESSION_SECRET (used to sign admin session tokens)');
+    }
 
     // In production, simulation mode must be OFF and Meta creds must be set
     if (process.env.SIMULATION_MODE === 'true') {

@@ -43,6 +43,9 @@ export const BUTTON_ID_MAP = {
 
   // Flow control
   'CONFIRM':            'CONFIRM',
+  // Legacy compatibility for order cards created before the confirm ID was
+  // standardised to CONFIRM. Existing WhatsApp messages can still be tapped.
+  'CONFIRM_ORDER':      'CONFIRM',
   'CANCEL':             'CANCEL',
   // [FIX-1] CANCEL_ORDER was missing from this map. Without it, detectIntent() received
   // an unmapped interactive ID at step 1 and returned CONTINUE_FLOW — routing to the

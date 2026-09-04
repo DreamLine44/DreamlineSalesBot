@@ -482,6 +482,10 @@ const FLOW_PASSTHROUGH_IDS = new Set([
   //   detected action=ORDER and RESTARTED the entire flow from scratch — the most
   //   customer-visible bug: customer fills out an order, taps confirm, order resets.
   'CONFIRM',
+  // Legacy compatibility: older deployed order cards used CONFIRM_ORDER.
+  // WhatsApp keeps those buttons tappable after a deployment, so accept the
+  // old ID as an in-flow confirm instead of sending it through intent routing.
+  'CONFIRM_ORDER',
   // COLLECT: "🏪 Collect In-Store" button in bakery FULFILMENT step.
   //   Without this, tapping Collect triggered intent detection which had no ORDER
   //   match for "COLLECT" and fell through to FALLBACK — customer stuck at fulfilment.
@@ -2589,7 +2593,7 @@ async function _handleIncomingMessageSerialized({ tenantId, tenantDoc, from, msg
       // cart; EDIT_CART_MENU/EDIT_CART_PICK — the Edit Order sub-flow. CONFIRM
       // now also offers Edit Order (EDIT_CART) alongside Confirm/Cancel.
       ITEM_ADDED:           new Set(['ADD_ANOTHER_ITEM', 'REVIEW_CART']),
-      CONFIRM:              new Set(['CONFIRM', 'CANCEL', 'ADD_MORE_ITEMS', 'ADD_ANOTHER_ITEM', 'EDIT_CART']),
+      CONFIRM:              new Set(['CONFIRM', 'CONFIRM_ORDER', 'CANCEL', 'ADD_MORE_ITEMS', 'ADD_ANOTHER_ITEM', 'EDIT_CART']),
       EDIT_CART_MENU:       new Set(['EDIT_ADD', 'EDIT_REMOVE', 'EDIT_INCREASE', 'EDIT_DECREASE', 'EDIT_CLEAR', 'EDIT_BACK']),
       EDIT_CART_PICK:       new Set([]), // expects free text (line number) or "back"
       PAYMENT_PROOF:        new Set(['DONE', 'SUPPORT', 'CANCEL', 'CANCEL_ORDER', 'REQUEST_CASH_PAYMENT']),

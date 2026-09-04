@@ -534,7 +534,7 @@ export async function handleDeliveryOrder({ session, message, business, tenant, 
 
         if (savedOrder?._id) {
           const { default: Order } = await import('../../../models/Order.js');
-          Order.updateOne({ _id: savedOrder._id }, { $set: { paymentReference: ref } }).catch(() => {});
+          await Order.updateOne({ _id: savedOrder._id }, { $set: { paymentReference: ref } });
         }
 
         await updateSession(session.customerPhone, session.tenantId, {

@@ -1036,7 +1036,7 @@ export async function handleSalonProductOrder({ session, message, business, tena
           ref = `SLN-${mm}${dd}-${shortIdRef}`;
           if (savedOrder?._id) {
             const { default: Order } = await import('../../../models/Order.js');
-            Order.updateOne({ _id: savedOrder._id }, { $set: { paymentReference: ref } }).catch(() => {});
+            await Order.updateOne({ _id: savedOrder._id }, { $set: { paymentReference: ref } });
           }
         }
         return buildPaymentInstructionsUI(business, data.totalPrice, shortIdRef || null, ref);
@@ -1178,7 +1178,7 @@ async function _checkoutProductCart(cart, session, business, tenant, isBarbersho
       ref = `SLN-${mm}${dd}-${shortIdRef}`;
       if (savedOrder?._id) {
         const { default: Order } = await import('../../../models/Order.js');
-        Order.updateOne({ _id: savedOrder._id }, { $set: { paymentReference: ref } }).catch(() => {});
+        await Order.updateOne({ _id: savedOrder._id }, { $set: { paymentReference: ref } });
       }
     }
     return buildPaymentInstructionsUI(business, totalPrice, shortIdRef || null, ref);

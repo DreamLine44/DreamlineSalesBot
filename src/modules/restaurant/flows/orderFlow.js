@@ -626,7 +626,7 @@ export async function handleOrderFlow({ session, message, business, tenant, isIn
       // parser below, so a message like "remove the coke" is never at risk
       // of being swept up as a confirm/decline guess.
       const { isAffirmative: _isAffirmativeConfirm } = await import('../../../core/nlu/nluFeature.js');
-      const isConfirm = /^(yes|y|yeah|yep|confirm|ok|okay|sure|place|confirmed)$/i.test(clean) ||
+      const isConfirm = /^(yes|y|yeah|yep|confirm|confirm order|confirm_order|ok|okay|sure|place|confirmed)$/i.test(clean) ||
         _isAffirmativeConfirm(raw);
       if (isConfirm) {
         // [MULTICART-v40-EDIT] One consolidated save — _checkoutCart already
@@ -1030,7 +1030,7 @@ async function _checkoutCart(cart, session, business, tenant) {
     const ref = `DSB-${mm}${dd}-${shortId}`;
     if (savedOrder?._id) {
       const { default: Order } = await import('../../../models/Order.js');
-      Order.updateOne({ _id: savedOrder._id }, { $set: { paymentReference: ref } }).catch(() => {});
+      await Order.updateOne({ _id: savedOrder._id }, { $set: { paymentReference: ref } });
     }
 
     await updateSession(session.customerPhone, session.tenantId, {

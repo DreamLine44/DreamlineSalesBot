@@ -517,7 +517,7 @@ export async function handleBakeryOrderFlow({ session, message, business, tenant
           ref = `DSB-${mm}${dd}-${shortIdRef}`;
           if (savedOrder?._id) {
             const { default: Order } = await import('../../../models/Order.js');
-            Order.updateOne({ _id: savedOrder._id }, { $set: { paymentReference: ref } }).catch(() => {});
+            await Order.updateOne({ _id: savedOrder._id }, { $set: { paymentReference: ref } });
           }
         }
         return buildPaymentInstructionsUI(business, data.totalPrice, shortIdRef || null, ref);

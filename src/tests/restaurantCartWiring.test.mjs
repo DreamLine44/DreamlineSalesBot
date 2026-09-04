@@ -58,6 +58,14 @@ test('CONFIRM accepts both ADD_MORE_ITEMS and ADD_ANOTHER_ITEM for add-more', ()
   assert.match(block, /_checkoutCart/);
 });
 
+test('legacy CONFIRM_ORDER button remains wired to the active order flow', () => {
+  const webhookSrc = read('../controllers/webhookController.js');
+  const patternsSrc = read('../core/nlu/classification/patterns.js');
+  assert.match(webhookSrc, /'CONFIRM_ORDER'/);
+  assert.match(patternsSrc, /'CONFIRM_ORDER':\s*'CONFIRM'/);
+  assert.match(orderFlowSrc, /confirm_order/);
+});
+
 test('restaurant config documents ITEM_ADDED, not CART_REVIEW', () => {
   assert.match(configSrc, /ORDER:\s*\[[^\]]*'ITEM_ADDED'[^\]]*\]/);
   assert.doesNotMatch(configSrc, /ORDER:\s*\[[^\]]*'CART_REVIEW'[^\]]*\]/);

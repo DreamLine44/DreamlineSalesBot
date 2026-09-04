@@ -501,7 +501,7 @@ export async function handleElectronicsOrder({
 
         if (savedOrder?._id) {
           // [FIX-1] Static import — no dynamic import needed
-          Order.updateOne({ _id: savedOrder._id }, { $set: { paymentReference: ref } }).catch(() => {});
+          await Order.updateOne({ _id: savedOrder._id }, { $set: { paymentReference: ref } });
         }
 
         await updateSession(session.customerPhone, session.tenantId, {
