@@ -89,21 +89,35 @@ export const resolveOrderFields = ({ item, quantity, totalPrice, addOns, items }
 // all undefined. Single-item callers (the vast majority) pass no `items`, so
 // resolveOrderFields()'s hasCart:false branch returns their scalar fields
 // completely unchanged — zero behavior change for every existing caller.
-export async function saveOrder({ item, quantity, totalPrice, addOns, items, notes, customerName, customerPhone, tenantId, businessId, status }) {
+export async function saveOrder({ item, quantity, totalPrice, addOns, items, notes, customerName, customerPhone, tenantId, businessId, status, idempotencyKey }) {
   const resolved = resolveOrderFields({ item, quantity, totalPrice, addOns, items });
 
-  const order = await Order.create({
-    item:          resolved.resolvedItem,
-    quantity:      resolved.resolvedQuantity,
-    totalPrice:    resolved.resolvedTotal,
-    addOns:        resolved.resolvedAddOns,
-    items:         resolved.hasCart ? items : [],
-    notes:         notes         || null,
-    customerName:  customerName  || null,
-    customerPhone, tenantId, businessId,
-    status:        status || 'pending',
-    paymentStatus: 'unpaid',
-  });
+  let order;
+  try {
+    order = await Order.create({
+      item:          resolved.resolvedItem,
+      quantity:      resolved.resolvedQuantity,
+      totalPrice:    resolved.resolvedTotal,
+      addOns:        resolved.resolvedAddOns,
+      items:         resolved.hasCart ? items : [],
+      notes:         notes         || null,
+      customerName:  customerName  || null,
+      customerPhone, tenantId, businessId,
+      status:        status || 'pending',
+      paymentStatus: 'unpaid',
+      ...(idempotencyKey ? { idempotencyKey } : {}),
+    });
+  } catch (err) {
+    // A rapid double-tap can race two creates. The unique idempotency index
+    // makes the second create safe; return the already-created order instead
+    // of showing the customer a generic checkout failure.
+    if (err?.code === 11000 && idempotencyKey) {
+      order = await Order.findOne({ tenantId, customerPhone, idempotencyKey });
+      if (!order) throw err;
+    } else {
+      throw err;
+    }
+  }
 
   // [FIX-BUG5] Update customer memory — fire-and-forget, never blocks order completion
   // [FIX-MEM-DOUBLECOUNT] countOrder:false — this fires on EVERY saveOrder() call,

@@ -3,8 +3,9 @@
  *
  * Stores customer orders with full payment lifecycle support.
  *
- * idempotencyKey: auto-generated UUID per order — prevents duplicate key errors
- * on the (tenantId, customerPhone, idempotencyKey) compound index.
+ * idempotencyKey: caller-stable key for a checkout attempt, with a UUID default
+ * for legacy callers. The checkout flow supplies a stable session/cart key so
+ * rapid duplicate Confirm taps resolve to one order.
  *
  * paymentStatus tracks payment lifecycle (screenshot-based, admin-confirmed):
  *   unpaid → payment_pending_verification → paid | payment_failed | refunded

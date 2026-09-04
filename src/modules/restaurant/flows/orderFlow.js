@@ -971,6 +971,9 @@ async function _addItemAndPrompt(session, business, data, { item, quantity, vari
  */
 async function _checkoutCart(cart, session, business, tenant) {
   const data = session.data || {};
+  const checkoutKey = session._id
+    ? `checkout:${String(session._id)}:${cart.map(line => `${line.item?._id || line.item?.name}:${line.quantity}:${line.variant || ''}`).join('|')}`
+    : null;
 
   let savedOrder = null;
   try {
@@ -980,6 +983,7 @@ async function _checkoutCart(cart, session, business, tenant) {
       customerPhone: session.customerPhone,
       tenantId:      session.tenantId,
       businessId:    business._id,
+      idempotencyKey: checkoutKey,
     });
 
     trackOrderAnalytics(
@@ -1030,7 +1034,13 @@ async function _checkoutCart(cart, session, business, tenant) {
     const ref = `DSB-${mm}${dd}-${shortId}`;
     if (savedOrder?._id) {
       const { default: Order } = await import('../../../models/Order.js');
-      await Order.updateOne({ _id: savedOrder._id }, { $set: { paymentReference: ref } });
+      try {
+        await Order.updateOne({ _id: savedOrder._id }, { $set: { paymentReference: ref } });
+      } catch (err) {
+        logger.error('[OrderFlow] Payment reference persistence failed; continuing with generated reference', {
+          err: err.message, orderId: savedOrder._id, ref, tenantId: session.tenantId,
+        });
+      }
     }
 
     await updateSession(session.customerPhone, session.tenantId, {
@@ -1053,7 +1063,11 @@ async function _checkoutCart(cart, session, business, tenant) {
             `⏳ Status: *Pending* — awaiting payment screenshot.`,
         };
         for (const adminPhone of adminPhones) {
-          await dispatchMessage(adminPhone, alertPayload, tenant).catch(() => {});
+          await dispatchMessage(adminPhone, alertPayload, tenant).catch(err => {
+            logger.error('[OrderFlow] Failed to notify admin of paid-order checkout', {
+              err: err.message, adminPhone, orderId: savedOrder?._id, tenantId: session.tenantId,
+            });
+          });
         }
       }
     } catch { /* non-fatal */ }
@@ -1086,7 +1100,11 @@ async function _checkoutCart(cart, session, business, tenant) {
         ],
       };
       for (const adminPhone of adminPhones) {
-        await dispatchMessage(adminPhone, alertPayload, tenant).catch(() => {});
+        await dispatchMessage(adminPhone, alertPayload, tenant).catch(err => {
+          logger.error('[OrderFlow] Failed to notify admin of cash-order checkout', {
+            err: err.message, adminPhone, orderId: savedOrder?._id, tenantId: session.tenantId,
+          });
+        });
       }
     }
   } catch { /* non-fatal */ }
@@ -1102,7 +1120,7 @@ async function _checkoutCart(cart, session, business, tenant) {
   return {
     type: 'text',
     body:
-      `✅ *Order Confirmed*\n\n` +
+      `✅ *Order Received*\n\n` +
       `Your order has been received successfully.\n\n` +
       `🧾 Items (${itemCount}):\n${cartSummary}\n` +
       (totalPrice != null ? `💰 Total: *${currency}${formatMoney(totalPrice)}*\n\n` : '\n') +
