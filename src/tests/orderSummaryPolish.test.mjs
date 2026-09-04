@@ -24,6 +24,7 @@ import { parseNaturalOrderMessage } from '../core/nlu/resolution/cartMessagePars
 import { formatPhoneDisplay } from '../utils/formatPhone.js';
 import { buildCartReviewUI } from '../modules/restaurant/handlers/uiBuilders.js';
 import { handleOrderFlow } from '../modules/restaurant/flows/orderFlow.js';
+import { buildPaymentInstructionsUI } from '../services/payment/paymentService.js';
 
 test('duplicate catalog lines for the same item are merged into one summed line (already fixed, not regressed)', () => {
   const item = { _id: 'abc123', name: 'Superkanja', price: 150 };
@@ -54,6 +55,25 @@ test('buildCartReviewUI omits the Items line when itemCount is not provided (bac
     business: { payment: { currency: 'D' } },
   });
   assert.doesNotMatch(ui.body, /Items:/);
+});
+
+test('buildPaymentInstructionsUI includes the itemized order summary before payment details', () => {
+  const ui = buildPaymentInstructionsUI(
+    { payment: { currency: 'D', requireProof: true, channels: [{ provider: 'Wave', accountNo: '0551234567' }] } },
+    350,
+    'A1B2C3',
+    'DSB-0904-A1B2C3',
+    '2× Superkanja — D300\n1× Akara — D50',
+  );
+
+  assert.match(ui.body, /🧾 \*Order Summary\*/);
+  assert.match(ui.body, /2× Superkanja — D300/);
+  assert.match(ui.body, /1× Akara — D50/);
+  assert.deepEqual(ui.buttons.map(button => ({ id: button.id, title: button.title })), [
+    { id: 'REQUEST_CASH_PAYMENT', title: '💵 Pay with Cash' },
+    { id: 'SUPPORT', title: '❓ Need Help' },
+    { id: 'CANCEL', title: '❌ Cancel Order' },
+  ]);
 });
 
 test('formatPhoneDisplay labels a raw phone number instead of showing bare digits', () => {

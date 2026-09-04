@@ -1058,7 +1058,7 @@ async function _checkoutCart(cart, session, business, tenant) {
       }
     } catch { /* non-fatal */ }
 
-    return buildPaymentInstructionsUI(business, totalPrice, shortId, ref);
+    return buildPaymentInstructionsUI(business, totalPrice, shortId, ref, cartSummary);
   }
 
   // Cash / no-payment branch — mirrors CONFIRM's own cash branch: always

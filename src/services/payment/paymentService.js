@@ -275,8 +275,9 @@ export async function handleDonePayment(customerPhone, tenantId, tenantDoc) {
  * @param {number} totalPrice
  * @param {string} shortId
  * @param {string|null} storedRef  - existing paymentReference from the Order doc, if any
+ * @param {string|null} summaryText - optional itemized order summary to include before instructions
  */
-export const buildPaymentInstructionsUI = (business, totalPrice, shortId, storedRef = null) => {
+export const buildPaymentInstructionsUI = (business, totalPrice, shortId, storedRef = null, summaryText = null) => {
   const payment  = business?.payment || {};
   const currency = payment.currency || 'D';
 
@@ -341,6 +342,7 @@ export const buildPaymentInstructionsUI = (business, totalPrice, shortId, stored
   return {
     type: 'buttons',
     body:
+      (summaryText ? `🧾 *Order Summary*\n\n${summaryText}\n\n` : '') +
       `💳 *Payment Instructions*\n\n` +
       `🛒 Total: *${currency}${formatMoney(totalPrice)}*` +
       (ref ? `\n📝 Reference: *${ref}*` : '') +
