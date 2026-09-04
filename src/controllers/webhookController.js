@@ -2397,6 +2397,11 @@ async function _handleIncomingMessageSerialized({ tenantId, tenantDoc, from, msg
   }
 
   // ── 15. Active flow ───────────────────────────────────────────────────────
+  // WhatsApp button taps can arrive after another webhook has already advanced
+  // the session. Refresh immediately before this gate so a stale snapshot with
+  // currentFlow:null cannot route a valid CONFIRM tap through generic intent
+  // handling and reset the customer to the welcome menu.
+  session = await getSession(from, tenantId) || session;
   if (session.currentFlow) {
     // Natural-order ambiguity continuation: the clarification buttons use the
     // live menu item's name as their ID. Consume that selection before any
@@ -3370,6 +3375,35 @@ async function _handleIncomingMessageSerialized({ tenantId, tenantDoc, from, msg
   }
 
   // ── 16. Intent → module router ────────────────────────────────────────────
+  // [FIX-DIRECT-ORDER-PRECEDENCE] A typed sentence that contains both an order
+  // intent and resolvable menu items must enter the same START_ORDER handoff as
+  // a menu selection. Do this before intent detection: a greeting-prefixed
+  // sentence such as "hello i want to order three plates of domoda and a plate
+  // of superkanja" can otherwise be classified as GREET by a fallback/AI path
+  // and receive the generic welcome card instead of the cart review.
+  if (!isInteractive && !session.currentFlow && messageText) {
+    const hasOrderIntent = /\b(?:order|buy|purchase|want|need|give|get|would\s+like)\b/i.test(messageText);
+    if (hasOrderIntent) {
+      try {
+        const { parseMultiItemMessage, parseNaturalOrderMessage } = await import('../core/nlu/resolution/cartMessageParser.js');
+        const menu = (business?.menuItems || []).filter(item => item.available !== false);
+        const directOrder = parseMultiItemMessage(menu, messageText) || parseNaturalOrderMessage(menu, messageText);
+        if (directOrder?.lines?.length || directOrder?.ambiguous) {
+          const directReply = await route({
+            action: 'START_ORDER', intent: 'ORDER', session, message: messageText,
+            business, tenant: tenantDoc, isInteractive: false,
+          });
+          if (directReply) {
+            const directPayloads = Array.isArray(directReply) ? directReply : [directReply];
+            for (const directPayload of directPayloads) await dispatchMessage(from, directPayload, tenantDoc);
+          }
+          return;
+        }
+      } catch (err) {
+        logger.debug('[Webhook] direct-order pre-router skipped', { err: err.message, from, tenantId });
+      }
+    }
+  }
   const extractedName = extractCustomerName(messageText);
   if (extractedName && !session.customerName) {
     // [FIX-NAME-1] Persist the name to BOTH the session (fast path for this conversation)

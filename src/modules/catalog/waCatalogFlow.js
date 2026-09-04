@@ -376,6 +376,7 @@ async function handleMultiItemCatalogOrder({ session, business, tenant, normaliz
     currentFlow: 'ORDER',
     step:        'CONFIRM',
     data:        { cart: cappedCart, orderViaCatalog: true },
+    orderChannel: 'catalog',
     menuViewed:  true,
     pendingCatalogQueue: [], // consolidated cart -- no per-line queue to drain
   });
@@ -448,6 +449,7 @@ export async function drainCatalogQueue({ session, business, tenant }) {
     currentFlow:         'ORDER',
     step:                'CONFIRM',
     data:                { cart: cappedCart, orderViaCatalog: true },
+    orderChannel:       'catalog',
     menuViewed:          true,
     postFlowAck:         null,
     pendingCatalogQueue: [],

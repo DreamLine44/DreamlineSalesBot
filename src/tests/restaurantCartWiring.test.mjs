@@ -66,6 +66,15 @@ test('legacy CONFIRM_ORDER button remains wired to the active order flow', () =>
   assert.match(orderFlowSrc, /confirm_order/);
 });
 
+test('webhook refreshes the session before deciding whether a flow is active', () => {
+  const webhookSrc = read('../controllers/webhookController.js');
+  const activeFlowIndex = webhookSrc.indexOf('// ── 15. Active flow');
+  const refreshIndex = webhookSrc.indexOf('session = await getSession(from, tenantId) || session;', activeFlowIndex);
+  const gateIndex = webhookSrc.indexOf('if (session.currentFlow)', activeFlowIndex);
+  assert.ok(refreshIndex >= 0 && refreshIndex < gateIndex,
+    'the active-flow gate must use a freshly loaded session');
+});
+
 test('restaurant config documents ITEM_ADDED, not CART_REVIEW', () => {
   assert.match(configSrc, /ORDER:\s*\[[^\]]*'ITEM_ADDED'[^\]]*\]/);
   assert.doesNotMatch(configSrc, /ORDER:\s*\[[^\]]*'CART_REVIEW'[^\]]*\]/);

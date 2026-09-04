@@ -22,6 +22,16 @@ test('sendAndArmCatalog sets orderChannel to catalog', () => {
   assert.match(src, /orderChannel:\s*'catalog'/);
 });
 
+test('catalog cart confirmation handoffs persist orderChannel as catalog', () => {
+  const src = readSource('../modules/catalog/waCatalogFlow.js');
+  const multiStart = src.indexOf('async function handleMultiItemCatalogOrder');
+  const drainStart = src.indexOf('export async function drainCatalogQueue');
+  const multiBlock = src.slice(multiStart, drainStart);
+  const drainBlock = src.slice(drainStart);
+  assert.match(multiBlock, /data:\s*\{ cart: cappedCart, orderViaCatalog: true \}[\s\S]{0,120}orderChannel:\s*'catalog'/);
+  assert.match(drainBlock, /data:\s*\{ cart: cappedCart, orderViaCatalog: true \}[\s\S]{0,120}orderChannel:\s*'catalog'/);
+});
+
 test('START_ORDER honors session.orderChannel === catalog before offerCatalogOnStartOrder', () => {
   const src = readSource('../core/shared/moduleRegistry.js');
   const start = src.indexOf("registerAction('START_ORDER'");
