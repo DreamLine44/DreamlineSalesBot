@@ -18,7 +18,7 @@
  */
 
 import { updateSession }  from '../../../core/sessions/sessionService.js';
-import { completeFlow, cancelFlow } from '../../../core/conversations/flowEngine.js';
+import { cancelFlow } from '../../../core/conversations/flowEngine.js';
 import { getAIReply, findBestMatch, parseQuantity, parseMultiItemMessage, parseNaturalOrderMessage, parseCartModification } from '../../../core/nlu/nluFeature.js';
 import { saveOrder }      from '../../../services/order/orderService.js';
 import { trackOrderAnalytics } from '../../../core/analytics/analyticsService.js';

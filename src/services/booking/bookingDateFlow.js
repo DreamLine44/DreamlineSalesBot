@@ -9,7 +9,6 @@ import crypto from 'crypto';
 import {
   getLocalNow,
   resolveBookingDateInput,
-  formatBookingDateLabel,
   MAX_BOOKING_MONTHS_AHEAD,
 } from '../../core/nlu/resolution/bookingDateParser.js';
 

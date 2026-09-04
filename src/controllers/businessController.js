@@ -33,7 +33,7 @@ import { getModeConfig, getSupportedModes } from '../config/modes.js';
 import logger from '../config/logger.js';
 import { uploadMenuImage, deleteMenuImage, CLOUDINARY_ENABLED } from '../config/cloudinary.js';
 import { scheduleWaCatalogSync } from '../modules/catalog/waCatalogSyncScheduler.js';
-import { applyAdminPhonesUpdate } from '../utils/adminPhones.js';
+import { applyAdminPhonesUpdate, parseAdminPhonesInput } from '../utils/adminPhones.js';
 
 // [AUDIT-FIX-17] Explicit whitelist — req.tenant is a lean object (no toJSON
 // stripping), so never spread it wholesale into a tenant-facing response.
@@ -100,6 +100,16 @@ export async function updateBusinessConfig(req, res) {
     // path for saving adminPhone (e.g. admin-panel/API callers).
     if (update.adminPhone !== undefined) {
       Object.assign(update, applyAdminPhonesUpdate(update.adminPhone));
+    } else if (update.adminPhones !== undefined) {
+      // [FEAT-MULTI-ADMIN] This route spreads the raw request body (unlike the
+      // whitelisted dashboard/tenant update paths), so a caller could send the
+      // array field directly instead of the text `adminPhone` field. Route it
+      // through the same parser/cap/dedupe and keep the legacy `adminPhone`
+      // mirror in sync — otherwise every "call us at" display line that still
+      // reads the scalar field would go stale.
+      const parsed = parseAdminPhonesInput(update.adminPhones);
+      update.adminPhones = parsed;
+      update.adminPhone  = parsed[0] || null;
     }
 
     // Same alias for services/faq common alternate key names

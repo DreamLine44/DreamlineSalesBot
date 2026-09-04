@@ -37,7 +37,7 @@
 
 import { startFlow, cancelFlow } from './flowEngine.js';
 import { updateSession }         from '../sessions/sessionService.js';
-import { dispatchText, dispatchMessage }          from '../whatsapp/dispatcher.js';
+import { dispatchMessage }          from '../whatsapp/dispatcher.js';
 import { getModeConfig }         from '../../config/modes.js';
 import {
   withCatalogWelcomeOption,

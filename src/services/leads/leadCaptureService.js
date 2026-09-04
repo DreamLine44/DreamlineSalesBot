@@ -8,9 +8,9 @@
  * [FIX]      finaliseLead returns welcome buttons from mode config.
  */
 
-import { updateSession, getSession } from '../../core/sessions/sessionService.js';
+import { updateSession } from '../../core/sessions/sessionService.js';
 import { updateName }                from '../../core/memory/customerMemory.js';
-import { UserProfile, Tenant } from '../../models/index.js';
+import { UserProfile } from '../../models/index.js';
 import mongoose    from 'mongoose';
 import logger      from '../../config/logger.js';
 import { getAdminPhones } from '../../utils/adminPhones.js';

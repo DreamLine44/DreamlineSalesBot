@@ -14,7 +14,6 @@
 import { updateSession }     from '../../../core/sessions/sessionService.js';
 import { completeFlow, cancelFlow } from '../../../core/conversations/flowEngine.js';
 import { handleBookingFlow } from '../../../core/conversations/bookingFlow.js';
-import { getAIReply } from '../../../core/nlu/nluFeature.js';
 import { saveOrder }         from '../../../services/order/orderService.js';
 import logger                from '../../../config/logger.js';
 import { getAdminPhones, getPrimaryAdminPhone } from '../../../utils/adminPhones.js';
@@ -277,7 +276,9 @@ export async function handleEnquiryFlow({ session, message, business, tenant }) 
             `💰 Budget: ${data.budget}\n` +
             `📅 Timeline: ${data.timeline}`;
           for (const phone of adminPhones) {
-            await dispatchText(phone, alertBody, tenant);
+            await dispatchText(phone, alertBody, tenant).catch(e =>
+              logger.warn('[Services] admin notify failed for one recipient (non-fatal)', { err: e.message, phone })
+            );
           }
         } catch (err) {
           logger.warn('[Services] admin notify failed:', err.message);

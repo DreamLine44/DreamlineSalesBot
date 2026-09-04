@@ -30,7 +30,6 @@
 
 import levenshtein from 'fast-levenshtein';
 import { INTENT_PATTERNS, BUTTON_ID_MAP, EMOJI_MAP } from './patterns.js';
-import { getAIReply } from '../extraction/aiRouter.js';
 import { analyzeMessage } from './negationGuard.js';
 import logger from '../../../config/logger.js';
 

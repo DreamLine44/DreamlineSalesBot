@@ -3,7 +3,7 @@
  * Fashion module — product catalog + variants + recommendations
  */
 import { updateSession }  from '../../../core/sessions/sessionService.js';
-import { getAIReply, findBestMatch, parseQuantity } from '../../../core/nlu/nluFeature.js';
+import { findBestMatch, parseQuantity } from '../../../core/nlu/nluFeature.js';
 import { saveOrder }      from '../../../services/order/orderService.js';
 import { trackOrderAnalytics } from '../../../core/analytics/analyticsService.js';
 import logger             from '../../../config/logger.js';

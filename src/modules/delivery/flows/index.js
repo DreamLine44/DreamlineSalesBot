@@ -591,7 +591,9 @@ export async function handleDeliveryOrder({ session, message, business, tenant, 
             ],
           };
           for (const adminPhone of adminPhones) {
-            await dispatchMessage(adminPhone, alertPayload, tenant);
+            await dispatchMessage(adminPhone, alertPayload, tenant).catch(e =>
+              logger.warn('[Delivery] admin notify failed for one recipient (non-fatal)', { err: e.message, adminPhone })
+            );
           }
         }
       } catch (err) {

@@ -44,8 +44,8 @@
  */
 
 import { updateSession }    from '../../../core/sessions/sessionService.js';
-import { completeFlow, cancelFlow } from '../../../core/conversations/flowEngine.js';
-import { getAIReply, findBestMatch, parseQuantity, parseMultiItemMessage, parseNaturalOrderMessage, parseCartModification } from '../../../core/nlu/nluFeature.js';
+import { cancelFlow } from '../../../core/conversations/flowEngine.js';
+import { findBestMatch, parseQuantity, parseMultiItemMessage, parseNaturalOrderMessage, parseCartModification } from '../../../core/nlu/nluFeature.js';
 import {
   buildMenuUI,
   buildItemAddedUI, buildItemsAddedUI, buildCartReviewUI, buildEditCartMenuUI, buildEditCartPickerUI,

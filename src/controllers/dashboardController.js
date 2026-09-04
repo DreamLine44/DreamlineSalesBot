@@ -40,7 +40,7 @@ import { dispatchText, dispatchMessage } from '../core/whatsapp/dispatcher.js';
 import { scheduleWaCatalogSync } from '../modules/catalog/waCatalogSyncScheduler.js';
 import logger from '../config/logger.js';
 import { formatOrderItemsForMessage } from '../services/order/orderService.js';
-import { applyAdminPhonesUpdate, getAdminPhones } from '../utils/adminPhones.js';
+import { applyAdminPhonesUpdate } from '../utils/adminPhones.js';
 
 // [AUDIT-FIX-9] User-supplied search strings were interpolated directly into
 // $regex filters (getCustomers below, and the equivalent pattern in

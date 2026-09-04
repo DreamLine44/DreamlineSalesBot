@@ -506,7 +506,9 @@ export async function handleRetailOrder({ session, message, business, tenant, is
             ],
           };
           for (const adminPhone of adminPhones) {
-            await dispatchMessage(adminPhone, alertPayload, tenant);
+            await dispatchMessage(adminPhone, alertPayload, tenant).catch(e =>
+              logger.warn('[Retail] admin notify failed for one recipient (non-fatal)', { err: e.message, adminPhone })
+            );
           }
         }
       } catch (err) {

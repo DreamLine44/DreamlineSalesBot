@@ -57,7 +57,6 @@ import {
   buildProductList,
   buildItemDetail,
   buildOrderSummary,
-  buildOrderSuccess,
   buildComparisonCard,
   buildAdminOrderAlertBody,
 } from '../handlers/uiBuilders.js';

@@ -122,7 +122,7 @@
 import { updateSession }     from '../../../core/sessions/sessionService.js';
 import { completeFlow, cancelFlow } from '../../../core/conversations/flowEngine.js';
 import { handleBookingFlow } from '../../../core/conversations/bookingFlow.js';
-import { getAIReply, findBestMatch, parseQuantity, parseMultiItemMessage, parseNaturalOrderMessage, parseCartModification } from '../../../core/nlu/nluFeature.js';
+import { findBestMatch, parseQuantity, parseMultiItemMessage, parseNaturalOrderMessage, parseCartModification } from '../../../core/nlu/nluFeature.js';
 import { saveOrder }         from '../../../services/order/orderService.js';
 import { saveBooking }       from '../../../services/booking/bookingService.js';
 import { trackOrderAnalytics } from '../../../core/analytics/analyticsService.js';
@@ -133,7 +133,6 @@ import { getAdminPhones }    from '../../../utils/adminPhones.js';
 import {
   isBarbershopMode as _isBarbershop,
   getSalonServices as _getServices,
-  getSalonPrepTip as _getPrepTip,
 } from '../salonHelpers.js';
 
 // ── Salon Config ───────────────────────────────────────────────────────────────
